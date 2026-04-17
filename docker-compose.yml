@@ -1,0 +1,23 @@
+services:
+  vauxtra:
+    build: .
+    image: vauxtra:local
+    # To pull the pre-built GHCR image instead of building from source:
+    # image: ghcr.io/ptitzgeg-on-git/vauxtra:latest
+    container_name: vauxtra
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8888/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

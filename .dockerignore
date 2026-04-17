@@ -1,0 +1,15 @@
+# Not needed in Docker image
+data/
+.env
+.git/
+.github/
+tests/
+docs/
+vauxtra_mcp/
+__pycache__/
+frontend/node_modules/
+frontend/dist/
+*.md
+*.pyc
+*.tsbuildinfo
+.DS_Store
