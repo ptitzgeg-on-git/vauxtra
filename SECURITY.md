@@ -8,7 +8,7 @@ Only the latest release on the `main` branch is actively maintained and receives
 
 Please **do not** open a public issue for sensitive vulnerabilities.
 
-Contact the maintainer via GitHub private message with:
+Contact the maintainer by [opening a GitHub Security Advisory](https://github.com/ptitzgeg-on-git/vauxtra/security/advisories/new) with:
 - Description of the problem
 - Estimated impact
 - Steps to reproduce

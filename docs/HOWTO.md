@@ -169,7 +169,7 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 
 1. **Save** the service
 2. **Push**: `POST /api/services/{id}/push` — apply to providers
-3. **DNS check**: `POST /api/services/{id}/check-dns-propagation` — verify DNS records
+3. **Verify**: check service health on the Services page
 
 ### Drift detection
 
@@ -278,7 +278,6 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `toggle_service` | Enable/disable a service |
 | `sync_services_from_providers` | Discover services from all providers |
 | `import_services_from_sync` | Import discovered services |
-| `get_service_topology` | Get service-to-provider mapping |
 
 **Operations**
 | Tool | Description |
@@ -288,7 +287,6 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `push_service` | Push to providers |
 | `check_drift` | Detect drift |
 | `reconcile_service` | Fix drift automatically |
-| `check_dns_propagation` | DNS propagation check (3 resolvers) |
 
 **Providers**
 | Tool | Description |
@@ -297,10 +295,11 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_provider_types` | Get supported provider types |
 | `test_provider` | Test provider connection |
 | `get_provider_health` | Get provider health |
+| `get_all_providers_health` | Get all providers health (batch) |
 | `get_tunnel_health` | Aggregate tunnel health |
-| `get_provider_services` | Get services from a provider |
-| `get_provider_dns_records` | Get DNS records from a provider |
-| `get_provider_tunnel_routes` | Get tunnel routes |
+| `create_provider` | Create a new provider |
+| `update_provider` | Update an existing provider |
+| `delete_provider` | Delete a provider |
 
 **Docker**
 | Tool | Description |
