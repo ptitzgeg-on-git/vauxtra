@@ -1,0 +1,14 @@
+fastapi>=0.135
+uvicorn[standard]>=0.44
+python-multipart>=0.0.26
+itsdangerous>=2.2
+requests>=2.32
+cryptography>=46
+apprise>=1.9
+apscheduler>=3.11
+cloudflare>=4.3
+sse-starlette>=3.3
+docker>=7.1
+slowapi>=0.1.9
+dnspython>=2.8
+pytest>=9.0

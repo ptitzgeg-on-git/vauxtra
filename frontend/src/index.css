@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --vx-bg: 250 250 250;
+  --vx-fg: 15 23 42;
+  --vx-card: 255 255 255;
+  --vx-border: 226 232 240;
+  --vx-input: 255 255 255;
+  --vx-muted: 241 245 249;
+  --vx-muted-fg: 100 116 139;
+  --vx-accent: 248 250 252;
+  --vx-accent-fg: 30 41 59;
+  --vx-primary: 79 70 229;
+  --vx-primary-fg: 255 255 255;
+  --vx-secondary: 248 250 252;
+  --vx-secondary-fg: 30 41 59;
+  --vx-destructive: 220 38 38;
+  --vx-destructive-fg: 255 255 255;
+}
+
+html.dark {
+  --vx-bg: 3 7 18;
+  --vx-fg: 226 232 240;
+  --vx-card: 15 23 42;
+  --vx-border: 51 65 85;
+  --vx-input: 15 23 42;
+  --vx-muted: 30 41 59;
+  --vx-muted-fg: 148 163 184;
+  --vx-accent: 30 41 59;
+  --vx-accent-fg: 226 232 240;
+  --vx-primary: 129 140 248;
+  --vx-primary-fg: 15 23 42;
+  --vx-secondary: 30 41 59;
+  --vx-secondary-fg: 226 232 240;
+  --vx-destructive: 248 113 113;
+  --vx-destructive-fg: 15 23 42;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    @apply bg-input border-border text-foreground placeholder:text-muted-foreground;
+  }
+
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):focus,
+  select:focus,
+  textarea:focus {
+    @apply outline-none ring-2 ring-primary/20 border-primary;
+  }
+}
+
+@layer utilities {
+  .animate-in {
+    animation-duration: 400ms;
+    animation-fill-mode: both;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+/* Base custom scrollbars for webkit */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--vx-muted-fg) / 0.45);
+  background-clip: padding-box;
+  border: 4px solid transparent;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--vx-muted-fg) / 0.75);
+}
