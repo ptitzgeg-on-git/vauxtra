@@ -6,6 +6,8 @@ Thank you for your interest in contributing! This guide covers local setup, code
 
 ### Backend (FastAPI)
 
+> Requires **Python 3.13+**
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -21,6 +23,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8888 --reload
 The API is available at `http://localhost:8888`. Interactive docs at `http://localhost:8888/api/docs` (requires `DEBUG=true` in `.env`).
 
 ### Frontend (React + Vite)
+
+> Requires **Node.js 22+**
 
 ```bash
 cd frontend
@@ -40,6 +44,10 @@ Access: `http://localhost:8888`
 ---
 
 ## Running Tests
+
+CI runs automatically via `.github/workflows/ci.yml` on every push to `main` and on pull requests.
+
+Locally:
 
 ```bash
 # Backend tests

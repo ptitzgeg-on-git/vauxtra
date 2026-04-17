@@ -20,9 +20,7 @@
 - **Preflight & dry-run** — validate routing config before pushing; preview changes without committing
 - **Drift detection & reconcile** — detect when live provider state diverges from expected and fix it automatically
 - **Auto-reconcile scheduler** — periodic background reconciliation with webhook notifications
-- **DNS propagation checker** — verify A-record propagation across Google, Cloudflare, and Quad9 resolvers after a push
 - **Certificate expiry monitoring** — track NPM certificates, flag those expiring within 30 days
-- **Service templates** — quick-create for common patterns (HTTP webapp, HTTPS, WebSocket, Cloudflare Tunnel, etc.)
 - **API Keys** — bearer token authentication for CI/CD pipelines and MCP server access
 - **MCP Server** — expose all operations as tools for AI assistants (Claude Desktop, Cursor)
 - **Webhook alerts** — Apprise-compatible webhook for service down/recovery and reconcile events
@@ -63,6 +61,7 @@ docker run -d \
   --name vauxtra \
   -p 8888:8888 \
   -v vauxtra_data:/app/data \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
   ghcr.io/ptitzgeg-on-git/vauxtra:latest
 ```
 
@@ -77,6 +76,9 @@ services:
       - "8888:8888"
     volumes:
       - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=${TZ:-Europe/Paris}
     restart: unless-stopped
 ```
 
@@ -183,9 +185,9 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 See [docs/HOWTO.md](docs/HOWTO.md#10-mcp-integration) for the full list. Summary:
 
-**Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`, `get_service_topology`
+**Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
 
-**Operations** — `run_preflight`, `dry_run_push`, `push_service`, `check_drift`, `reconcile_service`, `check_dns_propagation`
+**Operations** — `run_preflight`, `dry_run_push`, `push_service`, `check_drift`, `reconcile_service`
 
 **Providers** — `list_providers`, `get_provider_types`, `create_provider`, `update_provider`, `delete_provider`, `test_provider`, `get_provider_health`, `get_all_providers_health`, `get_tunnel_health`
 

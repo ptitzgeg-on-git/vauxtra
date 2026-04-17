@@ -159,18 +159,6 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
 
 
 @mcp.tool()
-def get_service_topology() -> dict[str, Any]:
-    """
-    Get a topology view mapping services to their providers.
-
-    Returns which services are assigned to which proxy, DNS, and tunnel providers.
-    """
-    r = client.get("/services/topology")
-    r.raise_for_status()
-    return r.json()
-
-
-@mcp.tool()
 def discover_docker_containers(endpoint_id: int | None = None) -> list[dict[str, Any]]:
     """
     Discover running Docker containers from a Docker endpoint.

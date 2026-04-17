@@ -102,15 +102,3 @@ def reconcile_service(service_id: int) -> dict[str, Any]:
     r = client.post(f"/services/{service_id}/reconcile")
     r.raise_for_status()
     return r.json()
-
-
-@mcp.tool()
-def check_dns_propagation(service_id: int) -> dict[str, Any]:
-    """
-    Check whether a service's DNS record has propagated across public resolvers (8.8.8.8, 1.1.1.1, 9.9.9.9).
-
-    Returns per-resolver propagation status.
-    """
-    r = client.post(f"/services/{service_id}/check-dns-propagation")
-    r.raise_for_status()
-    return r.json()
