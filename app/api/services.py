@@ -619,15 +619,15 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                 if old_proxy_row:
                     try:
                         create_provider(old_proxy_row).delete_host(old["npm_host_id"])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        add_log("warn", f"Could not clean up old proxy host during mode switch: {e}")
             if old["dns_provider_id"] and old["dns_ip"]:
                 old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["dns_provider_id"],)).fetchone()
                 if old_dns_row:
                     try:
                         create_provider(old_dns_row).delete_rewrite(old_public_host, old["dns_ip"])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        add_log("warn", f"Could not clean up old DNS rewrite during mode switch: {e}")
 
         tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.tunnel_provider_id,)).fetchone()
         if not tunnel_row:
@@ -661,8 +661,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                         if old_tunnel_row:
                             try:
                                 create_provider(old_tunnel_row).delete_host(old_public_host)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                add_log("warn", f"Could not clean up old tunnel during mode switch: {e}")
 
                 if ok:
                     add_log("ok", f"Tunnel updated: {new_public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
@@ -680,8 +680,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             if old_tunnel_row:
                 try:
                     create_provider(old_tunnel_row).delete_host(old_public_host)
-                except Exception:
-                    pass
+                except Exception as e:
+                    add_log("warn", f"Could not clean up old tunnel during mode switch: {e}")
 
         if body.proxy_provider_id:
             proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
@@ -722,8 +722,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                                 if old_proxy_row:
                                     try:
                                         create_provider(old_proxy_row).delete_host(old["npm_host_id"])
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        add_log("warn", f"Could not clean up old proxy host: {e}")
                         else:
                             errors.append("Failed to create proxy host")
 
@@ -761,8 +761,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                                 if old_dns_row:
                                     try:
                                         create_provider(old_dns_row).delete_rewrite(old_public_host, old_dns_ip)
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        add_log("warn", f"Could not clean up old DNS rewrite: {e}")
                             add_log("ok", f"DNS updated: {new_public_host} → {dns_ip} ({dns_target_source})")
                         else:
                             errors.append("Failed to update DNS rewrite")
