@@ -4,6 +4,9 @@
 > Self-hosted DNS & reverse proxy management panel for homelab.  
 > Orchestrates Nginx Proxy Manager, Traefik, Cloudflare, Pi-hole, AdGuard Home, and more — from one unified interface.
 
+[![Tests](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml/badge.svg)](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml)
+[![Latest Release](https://img.shields.io/github/v/release/ptitzgeg-on-git/vauxtra?label=release)](https://github.com/ptitzgeg-on-git/vauxtra/releases)
+[![Docker Pulls](https://ghcr-badge.egpl.dev/ptitzgeg-on-git/vauxtra/latest_tag?trim=major&label=ghcr)](https://github.com/ptitzgeg-on-git/vauxtra/pkgs/container/vauxtra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.13-blue)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb)](https://react.dev/)

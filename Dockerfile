@@ -7,8 +7,11 @@ COPY frontend/ .
 RUN npm run build
 
 FROM python:3.13-slim
+ARG APP_VERSION=dev
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends curl gosu && rm -rf /var/lib/apt/lists/* && groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+ENV TZ=UTC
+ENV APP_VERSION=${APP_VERSION}
+RUN apt-get update && apt-get install -y --no-install-recommends curl gosu tzdata && rm -rf /var/lib/apt/lists/* && groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
