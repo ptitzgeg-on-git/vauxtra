@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Body, Request, HTTPException
-from app.models import get_db, get_db_ctx, add_log, set_tags, set_environments
+from app.models import get_db, add_log
 from app.providers.factory import create_provider, PROVIDER_TYPES
 from app.auth import require_auth
 from app.public_target import resolve_public_target

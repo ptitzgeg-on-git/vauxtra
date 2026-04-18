@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Settings, X, ChevronRight, BookOpen, Zap, Server, Container } from 'lucide-react';
+import { Settings, X, ChevronRight, BookOpen, Zap, Server, Container, ExternalLink } from 'lucide-react';
 import { api } from '@/api/client';
 import { ProviderLogo } from '@/components/ui/ProviderLogos';
 import {
@@ -12,6 +12,7 @@ import {
   categoryByType,
   providerColor,
   getGuidedSteps,
+  getProjectUrl,
   canSubmitProvider,
 } from '@/components/features/providers/providerConstants';
 import { StepTypeSelector, StepCredentials } from '@/components/features/provider-modal';
@@ -192,14 +193,28 @@ export function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
           ) : step === 2 ? (
             /* ── Step 2: Setup mode (Guided vs Expert) ── */
             <div className="space-y-6">
-              {/* Provider badge */}
+              {/* Provider badge + project link */}
               {formData.type && (() => {
                 const FallbackIcon = fallbackIconByType[formData.type] || Server;
                 const color = providerColor[formData.type] || 'bg-primary/10 text-primary border-primary/20';
+                const projectUrl = getProjectUrl(formData.type, selectedMeta);
                 return (
-                  <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-semibold ${color}`}>
-                    <ProviderLogo type={formData.type} className="w-4 h-4" fallback={<FallbackIcon className="w-4 h-4" />} />
-                    {selectedMeta.label || formData.type}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-semibold ${color}`}>
+                      <ProviderLogo type={formData.type} className="w-4 h-4" fallback={<FallbackIcon className="w-4 h-4" />} />
+                      {selectedMeta.label || formData.type}
+                    </div>
+                    {projectUrl && (
+                      <a
+                        href={projectUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        Project website
+                      </a>
+                    )}
                   </div>
                 );
               })()}

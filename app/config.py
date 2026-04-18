@@ -5,7 +5,7 @@ import hashlib
 
 from cryptography.fernet import Fernet
 
-APP_VERSION = "1.0.0"
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 DB_PATH  = os.path.join(DATA_DIR, "vauxtra.db")

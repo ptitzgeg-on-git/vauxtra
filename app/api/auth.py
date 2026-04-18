@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from app.auth import get_session, is_authenticated, has_password_configured, check_password, hash_password, require_auth
 from app.limiter import limiter
-from app.models import get_db, get_db_ctx
+from app.models import get_db
 
 router = APIRouter()
 

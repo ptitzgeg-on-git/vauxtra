@@ -35,7 +35,8 @@ export type ProviderType =
   | 'pihole'
   | 'cloudflare'
   | 'cloudflare_tunnel'
-  | 'traefik';
+  | 'traefik'
+  | 'technitium';
 
 export interface Provider {
   id: number;

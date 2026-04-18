@@ -1,11 +1,12 @@
 import json
 
-from app.providers.adguard    import AdGuardProvider
-from app.providers.npm        import NPMProvider
-from app.providers.pihole     import PiholeProvider
-from app.providers.cloudflare import CloudflareProvider
+from app.providers.adguard      import AdGuardProvider
+from app.providers.npm          import NPMProvider
+from app.providers.pihole       import PiholeProvider
+from app.providers.cloudflare   import CloudflareProvider
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
-from app.providers.traefik    import TraefikProvider
+from app.providers.traefik      import TraefikProvider
+from app.providers.technitium   import TechnitiumProvider
 from app.config import decrypt_secret
 
 PROVIDER_TYPES = {
@@ -175,6 +176,41 @@ PROVIDER_TYPES = {
             },
         ],
     },
+    "technitium": {
+        "label": "Technitium DNS", "category": "dns", "available": True,
+        "description": "Self-hosted authoritative DNS server",
+        "category_label": "Local DNS",
+        "category_color": "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400",
+        "provider_color": "bg-indigo-500/10 text-indigo-600 border-indigo-500/30 dark:text-indigo-400",
+        "capabilities": {
+            "proxy": False,
+            "dns": True,
+            "public_dns": False,
+            "supports_auto_public_target": False,
+            "supports_tunnel": False,
+        },
+        "icon": "ti-server", "color": "indigo",
+        "placeholder_url": "http://192.168.1.10:5380",
+        "user_label": "Username", "pass_label": "Password",
+        "user_placeholder": "admin",
+        "guided_steps": [
+            {
+                "title": "Technitium DNS credentials",
+                "body": "Enter the URL of your Technitium DNS Server web console (default port 5380). Use the same credentials as the web interface.",
+                "fields": [
+                    {"key": "url", "label": "Technitium URL", "placeholder": "http://technitium:5380",
+                     "hint": "Default port is 5380.", "input_type": "url"},
+                    {"key": "username", "label": "Username", "placeholder": "admin", "input_type": "text"},
+                    {"key": "password", "label": "Password", "placeholder": "(web UI password)",
+                     "input_type": "password"},
+                ],
+            },
+            {
+                "title": "Prepare your DNS zones",
+                "body": "Vauxtra creates A records inside your existing Technitium zones.\n\nMake sure the zones you want to manage are already created in Technitium (e.g. home.local). Vauxtra will auto-detect the right zone for each domain it needs to update.",
+            },
+        ],
+    },
     "cloudflare_tunnel": {
         "label": "Cloudflare Tunnel", "category": "proxy", "available": True,
         "description": "Cloudflare Zero Trust Tunnel",
@@ -238,6 +274,7 @@ _PROVIDER_REGISTRY: dict[str, tuple[type, bool]] = {
     "traefik":           (TraefikProvider,            False),
     "cloudflare":        (CloudflareProvider,         True),
     "cloudflare_tunnel": (CloudflareTunnelProvider,   True),
+    "technitium":        (TechnitiumProvider,         False),
 }
 
 

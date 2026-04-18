@@ -45,7 +45,9 @@ Access: `http://localhost:8888`
 
 ## Running Tests
 
-CI runs automatically via `.github/workflows/ci.yml` on every push to `main` and on pull requests.
+CI runs automatically on every push and pull request:
+- `.github/workflows/tests.yml` — Python tests + ruff + frontend typecheck/build
+- `.github/workflows/docker-publish.yml` — Docker build + release (push to `main` or version tag)
 
 Locally:
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
-from app.models import get_db, get_db_ctx, add_log
+from app.models import get_db, add_log
 from app.auth import require_auth
 from app.limiter import limiter
 from app.config import (

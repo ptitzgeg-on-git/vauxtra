@@ -3,7 +3,7 @@
  * Used by both ProviderModal (main panel) and Setup (first-run wizard).
  */
 
-import { Globe, Shield, Server, Box, ShieldCheck, Waypoints } from 'lucide-react';
+import { Globe, Shield, Server, Box, ShieldCheck, Waypoints, Cpu } from 'lucide-react';
 import type { ComponentType } from 'react';
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ export type ProviderTypeMeta = {
   category_color?: string;
   provider_color?: string;
   guided_steps?: ApiGuidedStep[];
+  project_url?: string;
 };
 
 export type ProviderTypeMap = Record<string, ProviderTypeMeta>;
@@ -98,6 +99,7 @@ export const fallbackIconByType: Record<string, ComponentType<{ className?: stri
   npm: Server,
   traefik: Box,
   adguard: ShieldCheck,
+  technitium: Cpu,
 };
 
 // ─── Metadata fallbacks (authoritative source is now /api/providers/types) ───
@@ -109,6 +111,7 @@ export const descByType: Record<string, string> = {
   npm: 'Nginx Proxy Manager',
   traefik: 'Dynamic reverse proxy (read-only)',
   adguard: 'DNS sinkhole & filtering',
+  technitium: 'Self-hosted authoritative DNS server',
 };
 
 export const categoryByType: Record<string, { label: string; color: string }> = {
@@ -118,6 +121,7 @@ export const categoryByType: Record<string, { label: string; color: string }> = 
   npm: { label: 'Reverse Proxy', color: 'bg-green-500/10 text-green-700 dark:text-green-400' },
   traefik: { label: 'Reverse Proxy', color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
   adguard: { label: 'Local DNS', color: 'bg-teal-500/10 text-teal-600 dark:text-teal-400' },
+  technitium: { label: 'Local DNS', color: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400' },
 };
 
 export const providerColor: Record<string, string> = {
@@ -127,6 +131,7 @@ export const providerColor: Record<string, string> = {
   traefik: 'bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400',
   pihole: 'bg-red-500/10 text-red-600 border-red-500/30 dark:text-red-400',
   adguard: 'bg-teal-500/10 text-teal-600 border-teal-500/30 dark:text-teal-400',
+  technitium: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/30 dark:text-indigo-400',
 };
 
 /** Resolve description from API meta first, then local fallback. */
@@ -350,7 +355,53 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
       ],
     },
   ],
+  technitium: [
+    {
+      title: 'Technitium DNS credentials',
+      body: 'Enter the URL of your Technitium DNS Server web console (default port 5380). Use the same credentials as the web interface.',
+      fields: [
+        {
+          key: 'url',
+          label: 'Technitium URL',
+          placeholder: 'http://technitium:5380',
+          hint: 'Default port is 5380.',
+          inputType: 'url',
+        },
+        {
+          key: 'username',
+          label: 'Username',
+          placeholder: 'admin',
+          inputType: 'text',
+        },
+        {
+          key: 'password',
+          label: 'Password',
+          placeholder: '(web UI password)',
+          inputType: 'password',
+        },
+      ],
+    },
+    {
+      title: 'Prepare your DNS zones',
+      body: 'Vauxtra creates A records inside your existing Technitium zones.\n\nMake sure the zones you want to manage are already created in Technitium (e.g. home.local). Vauxtra will auto-detect the right zone for each domain it needs to update.',
+    },
+  ],
 };
+
+export const projectUrlByType: Record<string, string> = {
+  npm: 'https://nginxproxymanager.com',
+  adguard: 'https://github.com/AdguardTeam/AdGuardHome',
+  pihole: 'https://pi-hole.net',
+  traefik: 'https://traefik.io',
+  cloudflare: 'https://dash.cloudflare.com',
+  cloudflare_tunnel: 'https://one.dash.cloudflare.com',
+  technitium: 'https://technitium.com/dns',
+};
+
+/** Resolve project URL from API meta first, then local fallback. */
+export function getProjectUrl(type: string, meta?: ProviderTypeMeta): string | undefined {
+  return meta?.project_url || projectUrlByType[type];
+}
 
 // ─── Helpers ────────────────────────────────────────────────────
 
