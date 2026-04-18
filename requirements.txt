@@ -11,4 +11,3 @@ sse-starlette>=3.3
 docker>=7.1
 slowapi>=0.1.9
 dnspython>=2.8
-pytest>=9.0
