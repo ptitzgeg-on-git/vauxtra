@@ -2,7 +2,7 @@ import asyncio
 import json
 
 from fastapi import APIRouter, Request, HTTPException
-from app.models import get_db, get_db_ctx, add_log
+from app.models import get_db, add_log
 from app.auth import require_auth
 
 try:

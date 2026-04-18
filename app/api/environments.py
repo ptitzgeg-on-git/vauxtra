@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException
-from app.models import get_db, get_db_ctx
+from app.models import get_db
 from app.auth import require_auth
 
 router = APIRouter()
