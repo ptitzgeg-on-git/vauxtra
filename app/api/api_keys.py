@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, field_validator
 
-from app.models import get_db, get_db_ctx, add_log
+from app.models import get_db, add_log
 from app.auth import require_auth
 from app.limiter import limiter
 

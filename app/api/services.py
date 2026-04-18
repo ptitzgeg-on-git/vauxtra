@@ -4,7 +4,6 @@ from fastapi import APIRouter, Query, Request, HTTPException
 from pydantic import BaseModel, model_validator, field_validator
 from app.models import (
     get_db,
-    get_db_ctx,
     add_log,
     row_to_service,
     set_tags,
@@ -605,8 +604,6 @@ def update_service(sid: int, request: Request, body: ServiceIn):
 
     old_mode = (old["expose_mode"] or "proxy_dns").strip().lower()
     new_mode = body.expose_mode
-    new_fqdn = _service_fqdn(body.subdomain, body.domain)
-    old_fqdn = _service_fqdn(old["subdomain"], old["domain"])
     new_public_host = _service_public_hostname(new_mode, body.tunnel_hostname, body.subdomain, body.domain)
     old_public_host = _service_public_hostname(old_mode, old["tunnel_hostname"] or "", old["subdomain"], old["domain"])
     errors = []

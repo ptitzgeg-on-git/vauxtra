@@ -14,7 +14,7 @@ services:
     env_file:
       - .env
     environment:
-      - TZ=${TZ:-Europe/Paris}
+      - TZ=${TZ:-UTC}
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8888/api/health"]
       interval: 30s

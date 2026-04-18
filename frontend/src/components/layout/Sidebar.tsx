@@ -13,8 +13,7 @@ import {
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
-import type { Service, Provider } from '@/types/api';
-import pkg from '../../../package.json';
+import type { Service, Provider, HealthResponse } from '@/types/api';
 
 interface CertExpiryResponse {
   expiring_soon_count: number;
@@ -40,6 +39,12 @@ export function Sidebar({ isMobile = false }: { isMobile?: boolean }) {
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     staleTime: 30_000,
+  });
+
+  const { data: health } = useQuery<HealthResponse>({
+    queryKey: ['health'],
+    queryFn: () => api.get<HealthResponse>('/health'),
+    staleTime: 60_000,
   });
 
   const { data: certExpiry } = useQuery<CertExpiryResponse>({
@@ -207,7 +212,7 @@ export function Sidebar({ isMobile = false }: { isMobile?: boolean }) {
         <div className="flex items-center justify-between text-muted-foreground text-xs px-2">
           <span className="font-semibold">Version</span>
           <span className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border">
-            v{pkg.version}
+            {health?.version ? `v${health.version}` : '—'}
           </span>
         </div>
         <div className="flex items-center gap-3 text-muted-foreground text-[11px] px-2 pt-1">

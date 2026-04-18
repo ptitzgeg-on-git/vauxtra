@@ -1,7 +1,7 @@
 import sqlite3
 import os
 from contextlib import contextmanager
-from app.config import DB_PATH, DATA_DIR
+from app.config import DATA_DIR, DB_PATH  # noqa: F401 — re-exported for test patching
 from app.db import get_connection
 
 # Increment this constant whenever a new ALTER is added to _migrate().

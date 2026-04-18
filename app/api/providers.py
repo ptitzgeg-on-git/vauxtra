@@ -2,7 +2,6 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from app.models import get_db, get_db_ctx, add_log
 from app.providers.factory import create_provider, PROVIDER_TYPES

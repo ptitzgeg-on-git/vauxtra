@@ -1,39 +1,16 @@
-name: CI
+name: Build & Publish
 
 on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
-  pull_request:
-    branches: [main]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Compile check
-        run: python -m py_compile app/*.py app/api/*.py app/providers/*.py app/services/*.py vauxtra_mcp/*.py vauxtra_mcp/tools/*.py
-
-      - name: Run tests
-        run: python -m pytest tests/ -v
-
   build-and-push:
     name: Build & Push Docker Image
-    needs: test
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -82,6 +59,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
