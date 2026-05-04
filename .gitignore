@@ -41,3 +41,8 @@ lab/providers/state/
 SESSION_SUMMARY.md
 QA_REPORT.md
 DOCUMENTATION_INDEX.md
+
+# Internal-only docs (keep local, do not publish)
+docs/UX_BUG_TRACKER.md
+TESTING_GUIDE.md
+docs/ai/

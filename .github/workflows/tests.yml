@@ -32,6 +32,9 @@ jobs:
       - name: API-MCP parity gate
         run: python scripts/check_api_mcp_parity.py
 
+      - name: Repo hygiene gate
+        run: python scripts/check_repo_hygiene.py
+
       - name: Run tests
         run: python -m pytest tests/ -v
 
