@@ -18,6 +18,7 @@
 - [ ] No new `any` types introduced in TypeScript
 - [ ] All UI text in English
 - [ ] No secrets committed (`.env` is gitignored)
+- [ ] Public wording is product-focused (no authoring-process or tool-attribution text)
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
 - [ ] `CHANGELOG.md` updated (for features and bug fixes)
 
