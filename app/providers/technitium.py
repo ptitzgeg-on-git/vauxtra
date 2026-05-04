@@ -81,6 +81,57 @@ class TechnitiumProvider(DNSProvider):
     def test_connection(self) -> bool:
         return self._ensure_token()
 
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        checks: list[dict] = []
+
+        # 1. Authentication
+        login_ok = self._login()
+        checks.append({
+            "name": "Login",
+            "ok": login_ok,
+            "detail": "Authenticated successfully" if login_ok else "Login failed — check username/password and URL",
+            "blocking": True,
+        })
+        if not login_ok:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        # 2. List zones
+        zones: list[str] = []
+        try:
+            zones = self._list_zones()
+            zones_ok = True
+            zones_detail = f"{len(zones)} zone(s) accessible" if zones else "No zones found"
+        except Exception as exc:
+            zones_ok = False
+            zones_detail = str(exc)
+        checks.append({
+            "name": "List zones",
+            "ok": zones_ok,
+            "detail": zones_detail,
+            "blocking": not zones_ok,
+        })
+
+        warnings: list[str] = []
+        if zones_ok and not zones:
+            warnings.append("No DNS zones found. Create at least one zone in Technitium before using Vauxtra.")
+
+        # 3. Optional write probe
+        if write_probe and zones:
+            test_domain = f"_vauxtra-probe.{zones[0]}"
+            test_ip = "127.0.0.1"
+            write_ok = self.add_rewrite(test_domain, test_ip)
+            if write_ok:
+                self.delete_rewrite(test_domain, test_ip)
+            checks.append({
+                "name": "DNS write",
+                "ok": write_ok,
+                "detail": "Write probe passed" if write_ok else "Could not write a test record — check permissions",
+                "blocking": not write_ok,
+            })
+
+        overall_ok = all(c["ok"] for c in checks if c.get("blocking"))
+        return {"ok": overall_ok, "checks": checks, "warnings": warnings}
+
     def list_rewrites(self) -> list[dict]:
         if not self._ensure_token():
             return []
