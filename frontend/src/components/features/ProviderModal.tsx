@@ -9,7 +9,6 @@ import {
   type ProviderValidationResult,
   emptyForm,
   fallbackIconByType,
-  categoryByType,
   providerColor,
   getGuidedSteps,
   getProjectUrl,
@@ -46,19 +45,35 @@ export function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     return entries.sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])));
   }, [providerTypes]);
 
-  // Group providers by category for display
+  // Group providers by functional role for display (DNS vs Reverse/Tunnel)
   const groupedProviders = useMemo(() => {
-    const groups: Record<string, Array<[string, ProviderTypeMap[string]]>> = {};
-    const categoryOrder = ['External DNS', 'Zero Trust', 'Local DNS', 'Reverse Proxy'];
+    const groups: Record<string, Array<[string, ProviderTypeMap[string]]>> = {
+      'DNS Providers': [],
+      'Reverse & Tunnel Providers': [],
+      Other: [],
+    };
+
+    const dnsTypes = new Set(['cloudflare', 'pihole', 'adguard', 'technitium']);
+    const reverseTypes = new Set(['npm', 'traefik', 'cloudflare_tunnel']);
+
     for (const entry of availableProviderTypes) {
-      const cat = categoryByType[entry[0]]?.label || 'Other';
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(entry);
+      const [type, meta] = entry;
+      const metaCategory = String(meta?.category || '').toLowerCase();
+
+      if (metaCategory === 'dns' || dnsTypes.has(type)) {
+        groups['DNS Providers'].push(entry);
+      } else if (metaCategory === 'proxy' || reverseTypes.has(type)) {
+        groups['Reverse & Tunnel Providers'].push(entry);
+      } else {
+        groups.Other.push(entry);
+      }
     }
-    // Sort groups by predefined order
-    return categoryOrder
-      .filter((cat) => groups[cat]?.length)
-      .map((cat) => ({ category: cat, providers: groups[cat] }));
+
+    return [
+      { category: 'DNS Providers', providers: groups['DNS Providers'] },
+      { category: 'Reverse & Tunnel Providers', providers: groups['Reverse & Tunnel Providers'] },
+      { category: 'Other', providers: groups.Other },
+    ].filter((group) => group.providers.length > 0);
   }, [availableProviderTypes]);
 
   const selectedMeta = (providerTypes || {})[formData.type] || {};

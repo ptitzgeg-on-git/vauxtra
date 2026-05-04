@@ -12,12 +12,15 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { Link } from 'react-router-dom';
+import { useT } from '@/i18n';
 import type { Service, Provider, CertificateExpiryResponse, CertificateExpiry } from '@/types/api';
 
 type LogItem = { id: number; level: string; message: string; created_at: string };
 type LogsResponse = { items: LogItem[]; total: number };
 
 export function Dashboard() {
+  const t = useT();
+
   const { data: services, isError: servicesError, refetch: refetchServices } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
@@ -95,6 +98,32 @@ export function Dashboard() {
       {/* Header row */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight text-foreground">Overview</h1>
+      </div>
+
+      {/* Quick actions */}
+      <div className="bg-card border border-border rounded-lg p-4">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h2 className="text-sm font-semibold text-foreground">{t('dashboard.quick_actions.title')}</h2>
+          <span className="text-[11px] text-muted-foreground">{t('dashboard.quick_actions.shortcuts')}</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          <Link to="/services" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
+            <span className="font-medium">{t('dashboard.quick_actions.create_endpoint')}</span>
+            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
+          </Link>
+          <Link to="/providers" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
+            <span className="font-medium">{t('dashboard.quick_actions.add_integration')}</span>
+            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
+          </Link>
+          <Link to="/settings?tab=backup" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
+            <span className="font-medium">{t('dashboard.quick_actions.export_backup')}</span>
+            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
+          </Link>
+          <Link to="/settings?tab=general" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
+            <span className="font-medium">{t('dashboard.quick_actions.open_settings')}</span>
+            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
+          </Link>
+        </div>
       </div>
 
       {/* Backend connectivity error */}

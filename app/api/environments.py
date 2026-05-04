@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Request, HTTPException
-from app.models import get_db
+from fastapi import APIRouter, HTTPException, Request
+
 from app.auth import require_auth
+from app.models import get_db
 
 router = APIRouter()
 

@@ -1,6 +1,6 @@
-import { ArrowLeft, ArrowRight, GitMerge, Server, Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, GitMerge, Server, Plus, Trash2, CheckCircle2, Shield, type LucideIcon } from 'lucide-react';
 import { ProviderLogo } from '@/components/ui/ProviderLogos';
-import { fallbackIconByType as iconByType, descByType, providerColor } from '@/components/features/providers/providerConstants';
+import { fallbackIconByType as iconByType, descByType, providerColor, categoryByType } from '@/components/features/providers/providerConstants';
 import type { ProviderItem } from './types';
 
 interface ProvidersStepProps {
@@ -12,7 +12,69 @@ interface ProvidersStepProps {
   onContinue: () => void;
 }
 
+function renderProviderCard(provider: ProviderItem, onDelete: (id: number) => void, deleteIsPending: boolean) {
+  const FallbackIcon = iconByType[provider.type] || Server;
+  const color = providerColor[provider.type] || 'bg-primary/10 text-primary border-primary/20';
+
+  return (
+    <div key={provider.id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-background border border-border group hover:border-primary/30 transition-colors">
+      <div className={`p-2 rounded-lg border ${color}`}>
+        <ProviderLogo type={provider.type} className="w-4 h-4" fallback={<FallbackIcon className="w-4 h-4" />} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-foreground">{provider.name}</p>
+        <p className="text-xs text-muted-foreground">{descByType[provider.type] || provider.type}</p>
+      </div>
+      <button
+        onClick={() => onDelete(provider.id)}
+        disabled={deleteIsPending}
+        className="text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+        title="Remove provider"
+      >
+        <Trash2 size={16} />
+      </button>
+      <CheckCircle2 size={18} className="text-primary shrink-0" />
+    </div>
+  );
+}
+
+function renderProviderCategory(
+  label: string,
+  Icon: LucideIcon,
+  providers: ProviderItem[],
+  onDelete: (id: number) => void,
+  deleteIsPending: boolean,
+) {
+  if (providers.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Icon size={16} className="text-muted-foreground" />
+        <h3 className="text-sm font-semibold text-foreground">{label}</h3>
+        <span className="ml-auto text-xs font-medium text-muted-foreground bg-muted px-2 py-1 rounded-full">
+          {providers.length}
+        </span>
+      </div>
+      <div className="space-y-2 pl-6 border-l border-border">
+        {providers.map((provider) => renderProviderCard(provider, onDelete, deleteIsPending))}
+      </div>
+    </div>
+  );
+}
+
 export function ProvidersStep({ providers, onAdd, onDelete, deleteIsPending, onBack, onContinue }: ProvidersStepProps) {
+  // Group providers by category
+  const dnsProviders = providers.filter(p => {
+    const category = categoryByType[p.type];
+    return category?.label?.includes('DNS') || categoryByType[p.type]?.label?.includes('Zero Trust');
+  });
+  
+  const proxyProviders = providers.filter(p => {
+    const category = categoryByType[p.type];
+    return category?.label?.includes('Proxy') || (p.type === 'npm' || p.type === 'traefik');
+  });
+
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex items-center gap-3">
@@ -35,31 +97,9 @@ export function ProvidersStep({ providers, onAdd, onDelete, deleteIsPending, onB
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
-            {providers.map((p) => {
-              const FallbackIcon = iconByType[p.type] || Server;
-              const color = providerColor[p.type] || 'bg-primary/10 text-primary border-primary/20';
-              return (
-                <div key={p.id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-background border border-border group">
-                  <div className={`p-2 rounded-lg border ${color}`}>
-                    <ProviderLogo type={p.type} className="w-4 h-4" fallback={<FallbackIcon className="w-4 h-4" />} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground">{p.name}</p>
-                    <p className="text-xs text-muted-foreground">{descByType[p.type] || p.type}</p>
-                  </div>
-                  <button
-                    onClick={() => onDelete(p.id)}
-                    disabled={deleteIsPending}
-                    className="text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-                    title="Remove provider"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                  <CheckCircle2 size={18} className="text-primary shrink-0" />
-                </div>
-              );
-            })}
+          <div className="space-y-6">
+            {renderProviderCategory('DNS Providers', Shield, dnsProviders, onDelete, deleteIsPending)}
+            {renderProviderCategory('Reverse Proxies', Server, proxyProviders, onDelete, deleteIsPending)}
           </div>
         )}
 

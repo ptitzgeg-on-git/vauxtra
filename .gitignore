@@ -1,23 +1,51 @@
+# Runtime data and secrets
+data/
+data.backup-*/
+data.reset-*/
+.env
+.env.*
+!.env.example
+.secret_key
+*.secret_key
+*.db
+*.sqlite
+
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.egg-info/
 .pytest_cache/
 .coverage
-
-# Runtime data
-data/
-*.db
-*.sqlite
-.env
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 
-# OS / editors
+# Local artifacts
+local/
+.local/
+tmp/
+reports/
+*.log
+vauxtra-dev/
+lab/providers/state/
+
+# Editor and OS
 .DS_Store
 *.swp
 .idea/
 .vscode/
+
+# Generated notes
+SESSION_SUMMARY.md
+QA_REPORT.md
+DOCUMENTATION_INDEX.md
+
+# Internal-only docs (keep local, do not publish)
+docs/UX_BUG_TRACKER.md
+TESTING_GUIDE.md
+docs/ai/
+docs/ARCHITECTURE.md
+docs/OPEN_SOURCE_HYGIENE.md
+lab/providers/README.md

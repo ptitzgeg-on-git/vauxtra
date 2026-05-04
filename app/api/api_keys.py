@@ -9,12 +9,12 @@ import hashlib
 import secrets
 from typing import Literal
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
-from app.models import get_db, add_log
 from app.auth import require_auth
 from app.limiter import limiter
+from app.models import add_log, get_db
 
 router = APIRouter()
 

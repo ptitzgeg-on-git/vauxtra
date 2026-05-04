@@ -54,6 +54,32 @@ class _FakeDiagnosticsProvider:
         }
 
 
+class _FakeSyncProvider:
+    def test_connection(self):
+        return True
+
+    def list_hosts(self):
+        return []
+
+    def list_rewrites(self):
+        return []
+
+    def find_best_certificate(self, _domain_suffix):
+        return None
+
+    def create_host(self, *args, **kwargs):
+        return {"id": 123}
+
+    def update_host(self, *args, **kwargs):
+        return True
+
+    def update_rewrite(self, *args, **kwargs):
+        return False
+
+    def add_rewrite(self, *args, **kwargs):
+        return True
+
+
 class IsolatedDBTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -242,7 +268,11 @@ class ServicesApiTests(IsolatedDBTestCase):
             services_api,
             "create_provider",
             lambda _row: type("FakeProvider", (), {"test_connection": lambda self: True})(),
-        ), patch.object(sync_api, "require_auth", lambda _req, scope=None: None):
+        ), patch.object(sync_api, "require_auth", lambda _req, scope=None: None), patch.object(
+            sync_api,
+            "create_provider",
+            lambda _row: _FakeSyncProvider(),
+        ):
             service_payload = services_api.ServiceIn(
                 subdomain="app",
                 domain="example.com",

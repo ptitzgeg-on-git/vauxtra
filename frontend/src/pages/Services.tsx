@@ -182,7 +182,7 @@ export function Services() {
     },
   });
 
-  const allServices: Service[] = Array.isArray(services) ? services : [];
+  const allServices = useMemo<Service[]>(() => (Array.isArray(services) ? services : []), [services]);
 
   const modeCounts = useMemo(() => ({
     all: allServices.length,
@@ -216,13 +216,13 @@ export function Services() {
     });
   };
 
-  const toggleSelectAll = () => {
+  const toggleSelectAll = useCallback(() => {
     if (selectedIds.size === filteredServices.length) {
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(filteredServices.map(s => s.id)));
     }
-  };
+  }, [filteredServices, selectedIds.size]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -254,7 +254,7 @@ export function Services() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selectedIds.size, filteredServices.length]);
+  }, [selectedIds.size, filteredServices.length, toggleSelectAll]);
 
   const isRouteModalOpen = isExposeModalOpen || Boolean(editingService);
   const routeModalMode = editingService ? 'edit' : 'create';

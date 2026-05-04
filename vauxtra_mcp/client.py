@@ -1,5 +1,6 @@
 """Shared HTTP client for all MCP tools — reads VAUXTRA_URL and VAUXTRA_API_KEY from env."""
 import os
+
 import httpx
 
 VAUXTRA_URL = os.environ.get("VAUXTRA_URL", "http://localhost:8888").rstrip("/")

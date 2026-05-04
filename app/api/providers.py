@@ -1,13 +1,14 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from app.models import get_db, get_db_ctx, add_log
-from app.providers.factory import create_provider, PROVIDER_TYPES
-from app.auth import require_auth
-from app.validators import is_valid_url
+
+from app.auth import require_auth, require_auth_or_setup
 from app.config import encrypt_secret
+from app.models import add_log, get_db, get_db_ctx
+from app.providers.factory import PROVIDER_TYPES, create_provider
+from app.validators import is_valid_url
 
 router = APIRouter()
 
@@ -28,7 +29,7 @@ def _safe_json_load(raw: str | None) -> dict[str, Any]:
     try:
         data = json.loads(raw or "{}")
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (TypeError, json.JSONDecodeError):
         return {}
 
 
@@ -145,7 +146,7 @@ class ProviderDraftValidationIn(ProviderIn):
 
 @router.get("/api/providers")
 def list_providers(request: Request):
-    require_auth(request)
+    require_auth_or_setup(request)
     conn = get_db()
     rows = conn.execute(
         "SELECT id, name, type, url, username, enabled, extra, created_at FROM providers ORDER BY id"
@@ -182,13 +183,13 @@ def all_providers_health(request: Request):
 
 @router.get("/api/providers/types")
 def list_types(request: Request):
-    require_auth(request)
+    require_auth_or_setup(request)
     return PROVIDER_TYPES
 
 
 @router.post("/api/providers/validate-draft")
 def validate_provider_draft(request: Request, body: ProviderDraftValidationIn):
-    require_auth(request)
+    require_auth_or_setup(request)
 
     if not PROVIDER_TYPES.get(body.type, {}).get("available"):
         raise HTTPException(400, f"Provider type '{body.type}' not yet available")
@@ -273,7 +274,7 @@ def list_tunnel_health(request: Request):
 
 @router.post("/api/providers", status_code=201)
 def add_provider(request: Request, body: ProviderIn):
-    require_auth(request, scope="write")
+    require_auth_or_setup(request, scope="write")
     if not PROVIDER_TYPES.get(body.type, {}).get("available"):
         raise HTTPException(400, f"Provider type '{body.type}' not yet available")
     conn = get_db()
@@ -336,7 +337,7 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
 
 @router.delete("/api/providers/{pid}")
 def delete_provider(pid: int, request: Request):
-    require_auth(request, scope="write")
+    require_auth_or_setup(request, scope="write")
     conn = get_db()
     row  = conn.execute("SELECT name FROM providers WHERE id=?", (pid,)).fetchone()
     if not row:
@@ -439,3 +440,234 @@ def test_provider(pid: int, request: Request):
             },
             "health": {"ok": False, "status": "down", "error": str(e)},
         }
+
+
+# ──────────────────────────────────────────────────────────────
+# Helper functions for capability-based routing
+# ──────────────────────────────────────────────────────────────
+
+def _check_provider_capability(provider_type: str, capability: str) -> tuple[bool, str]:
+    """
+    Check if a provider supports a specific capability.
+    
+    Args:
+        provider_type: The provider type (e.g., 'adguard', 'npm')
+        capability: The capability to check ('dns', 'proxy')
+    
+    Returns:
+        (has_capability, error_message)
+    """
+    provider_meta = PROVIDER_TYPES.get(provider_type, {})
+    capabilities = provider_meta.get("capabilities", {})
+
+    if capability not in capabilities or not capabilities[capability]:
+        provider_label = provider_meta.get("label", provider_type)
+        return False, f"Provider '{provider_label}' does not support {capability} management"
+
+    return True, ""
+
+
+# ──────────────────────────────────────────────────────────────
+# DNS Records CRUD (All providers with 'dns' capability)
+# ──────────────────────────────────────────────────────────────
+
+class DNSRecordIn(BaseModel):
+    domain: str
+    answer: str  # IP address or target
+
+
+@router.get("/api/providers/{pid}/dns-records")
+def list_dns_records(pid: int, request: Request):
+    """List all DNS records managed by a provider."""
+    require_auth(request)
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Provider not found")
+
+    # Check capability
+    has_dns, error_msg = _check_provider_capability(row["type"], "dns")
+    if not has_dns:
+        raise HTTPException(400, error_msg)
+
+    try:
+        provider = create_provider(row)
+        records = provider.list_rewrites()
+        return {"provider": row["name"], "records": records or []}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list DNS records: {str(e)}")
+
+
+@router.post("/api/providers/{pid}/dns-records", status_code=201)
+def create_dns_record(pid: int, request: Request, body: DNSRecordIn):
+    """Create a new DNS record in a provider."""
+    require_auth(request, scope="write")
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Provider not found")
+
+    # Check capability
+    has_dns, error_msg = _check_provider_capability(row["type"], "dns")
+    if not has_dns:
+        raise HTTPException(400, error_msg)
+
+    try:
+        provider = create_provider(row)
+        success = provider.add_rewrite(body.domain, body.answer)
+        if not success:
+            raise HTTPException(400, "Failed to create DNS record (provider rejected)")
+        add_log("info", f"DNS record created: {body.domain} → {body.answer} ({row['name']})")
+        return {"ok": True, "domain": body.domain, "answer": body.answer}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to create DNS record: {str(e)}")
+
+
+@router.delete("/api/providers/{pid}/dns-records/{domain}")
+def delete_dns_record(pid: int, domain: str, request: Request, answer: str | None = None):
+    """Delete a DNS record from a provider."""
+    require_auth(request, scope="write")
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Provider not found")
+
+    # Check capability
+    has_dns, error_msg = _check_provider_capability(row["type"], "dns")
+    if not has_dns:
+        raise HTTPException(400, error_msg)
+
+    try:
+        provider = create_provider(row)
+        # If answer not provided, find it from list
+        if not answer:
+            records = provider.list_rewrites() or []
+            for r in records:
+                if r.get("domain") == domain:
+                    answer = r.get("answer")
+                    break
+
+        if not answer:
+            raise HTTPException(404, "DNS record not found")
+
+        success = provider.delete_rewrite(domain, answer)
+        if not success:
+            raise HTTPException(400, "Failed to delete DNS record (provider rejected)")
+        add_log("info", f"DNS record deleted: {domain} ({row['name']})")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete DNS record: {str(e)}")
+
+
+# ──────────────────────────────────────────────────────────────
+# Proxy Hosts CRUD (All providers with 'proxy' capability)
+# ──────────────────────────────────────────────────────────────
+
+class ProxyHostIn(BaseModel):
+    domain_names: list[str] = Field(min_length=1)
+    forward_host: str
+    forward_port: int = 80
+    scheme: str = "http"
+
+
+@router.get("/api/providers/{pid}/proxy-hosts")
+def list_proxy_hosts(pid: int, request: Request):
+    """List all proxy hosts managed by a provider."""
+    require_auth(request)
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Provider not found")
+
+    # Check capability
+    has_proxy, error_msg = _check_provider_capability(row["type"], "proxy")
+    if not has_proxy:
+        raise HTTPException(400, error_msg)
+
+    try:
+        provider = create_provider(row)
+        hosts = provider.list_hosts()
+        return {"provider": row["name"], "hosts": hosts or []}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list proxy hosts: {str(e)}")
+
+
+@router.post("/api/providers/{pid}/proxy-hosts", status_code=201)
+def create_proxy_host(pid: int, request: Request, body: ProxyHostIn):
+    """Create a new proxy host in a provider."""
+    require_auth(request, scope="write")
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Provider not found")
+
+    # Check capability
+    has_proxy, error_msg = _check_provider_capability(row["type"], "proxy")
+    if not has_proxy:
+        raise HTTPException(400, error_msg)
+
+    try:
+        provider = create_provider(row)
+        primary_domain = body.domain_names[0].strip()
+        if not primary_domain:
+            raise HTTPException(400, "domain_names must contain at least one non-empty domain")
+
+        result = provider.create_host(
+            domain=primary_domain,
+            ip=body.forward_host,
+            port=body.forward_port,
+            scheme=body.scheme,
+        )
+        if not result:
+            raise HTTPException(400, "Failed to create proxy host (provider rejected)")
+        add_log("info", f"Proxy host created: {', '.join(body.domain_names)} → {body.forward_host}:{body.forward_port}")
+        return {"ok": True, "result": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to create proxy host: {str(e)}")
+
+
+@router.delete("/api/providers/{pid}/proxy-hosts/{host_id}")
+def delete_proxy_host(pid: int, host_id: str, request: Request):
+    """Delete a proxy host from a provider."""
+    require_auth(request, scope="write")
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, "Provider not found")
+
+    # Check capability
+    has_proxy, error_msg = _check_provider_capability(row["type"], "proxy")
+    if not has_proxy:
+        raise HTTPException(400, error_msg)
+
+    try:
+        provider = create_provider(row)
+        success = provider.delete_host(int(host_id))
+        if not success:
+            raise HTTPException(400, "Failed to delete proxy host (provider rejected)")
+        add_log("info", f"Proxy host deleted: ID {host_id}")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete proxy host: {str(e)}")

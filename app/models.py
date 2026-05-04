@@ -1,6 +1,7 @@
-import sqlite3
 import os
+import sqlite3
 from contextlib import contextmanager
+
 from app.config import DATA_DIR, DB_PATH  # noqa: F401 — re-exported for test patching
 from app.db import get_connection
 
@@ -218,7 +219,7 @@ def _update_schema_version(conn: sqlite3.Connection) -> None:
 
 def _migrate_encrypt_passwords(conn: sqlite3.Connection) -> None:
     """Encrypt any plaintext provider passwords still in the database (one-time migration)."""
-    from app.config import fernet, encrypt_secret
+    from app.config import encrypt_secret, fernet
     rows = conn.execute("SELECT id, password FROM providers WHERE password != ''").fetchall()
     for row in rows:
         pwd = row["password"]

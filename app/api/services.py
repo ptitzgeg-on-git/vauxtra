@@ -1,19 +1,21 @@
 import socket
 import time
-from fastapi import APIRouter, Query, Request, HTTPException
-from pydantic import BaseModel, model_validator, field_validator
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, field_validator, model_validator
+
+from app.auth import require_auth
 from app.models import (
-    get_db,
     add_log,
+    get_db,
     row_to_service,
-    set_tags,
     set_environments,
     set_push_targets,
+    set_tags,
 )
 from app.providers.factory import create_provider
-from app.auth import require_auth
 from app.public_target import resolve_public_target, suggest_public_targets
-from app.validators import is_valid_subdomain, is_valid_hostname, is_valid_port
+from app.validators import is_valid_hostname, is_valid_port, is_valid_subdomain
 
 router = APIRouter()
 
@@ -335,9 +337,8 @@ class ServiceIn(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_dependencies(self):
-        if self.expose_mode == "tunnel":
-            if not self.tunnel_provider_id:
-                raise ValueError("Tunnel provider is required in tunnel mode")
+        if self.expose_mode == "tunnel" and not self.tunnel_provider_id:
+            raise ValueError("Tunnel provider is required in tunnel mode")
         return self
 
 
@@ -440,6 +441,74 @@ def list_services(request: Request):
         out.append(service)
 
     return out
+
+
+@router.get("/api/services/{sid}")
+def get_service(sid: int, request: Request):
+    """Return one service with provider metadata, tags, environments and push targets."""
+    require_auth(request)
+    conn = get_db()
+    row = conn.execute(
+        """
+        SELECT s.*,
+               dp.name AS dns_provider_name, dp.type AS dns_type,
+               pp.name AS proxy_provider_name, pp.type AS proxy_type,
+               tp.name AS tunnel_provider_name, tp.type AS tunnel_type,
+               GROUP_CONCAT(DISTINCT t.name || ':' || t.color || ':' || t.id) AS tags_raw,
+               GROUP_CONCAT(DISTINCT e.name || ':' || e.color || ':' || e.id) AS envs_raw
+        FROM services s
+        LEFT JOIN providers dp ON s.dns_provider_id = dp.id
+        LEFT JOIN providers pp ON s.proxy_provider_id = pp.id
+        LEFT JOIN providers tp ON s.tunnel_provider_id = tp.id
+        LEFT JOIN service_tags st ON st.service_id = s.id
+        LEFT JOIN tags t ON t.id = st.tag_id
+        LEFT JOIN service_environments se ON se.service_id = s.id
+        LEFT JOIN environments e ON e.id = se.environment_id
+        WHERE s.id = ?
+        GROUP BY s.id
+        """,
+        (sid,),
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Service not found")
+
+    push_targets_rows = conn.execute(
+        """
+        SELECT spt.role,
+               p.id AS provider_id,
+               p.name AS provider_name,
+               p.type AS provider_type,
+               p.enabled AS provider_enabled
+        FROM service_push_targets spt
+        JOIN providers p ON p.id = spt.provider_id
+        WHERE spt.service_id=?
+        ORDER BY p.name
+        """,
+        (sid,),
+    ).fetchall()
+    conn.close()
+
+    service = row_to_service(row)
+    push_targets = [
+        {
+            "role": t["role"],
+            "provider_id": t["provider_id"],
+            "provider_name": t["provider_name"],
+            "provider_type": t["provider_type"],
+            "provider_enabled": bool(t["provider_enabled"]),
+        }
+        for t in push_targets_rows
+    ]
+    service["push_targets"] = push_targets
+    service["extra_proxy_provider_ids"] = [
+        t["provider_id"] for t in push_targets if t["role"] == "proxy"
+    ]
+    service["extra_dns_provider_ids"] = [
+        t["provider_id"] for t in push_targets if t["role"] == "dns"
+    ]
+    return service
 
 
 @router.get("/api/services/history")
@@ -988,3 +1057,86 @@ def check_all(request: Request):
     conn.commit()
     conn.close()
     return {"checked": len(services), "ok": ok_count, "error": error_count}
+
+
+class _BulkActionBody(BaseModel):
+    ids:    list[int]
+    action: str  # "enable" | "disable" | "delete"
+
+
+@router.post("/api/services/bulk")
+def bulk_action(body: _BulkActionBody, request: Request):
+    """Bulk enable, disable, or delete a list of services by ID."""
+    require_auth(request, scope="write")
+
+    if body.action not in ("enable", "disable", "delete"):
+        raise HTTPException(400, f"Unknown action '{body.action}'. Allowed: enable, disable, delete")
+
+    if not body.ids:
+        return {"ok": True, "affected": 0, "errors": []}
+
+    conn = get_db()
+    errors: list[str] = []
+    affected = 0
+
+    if body.action in ("enable", "disable"):
+        enabled_val = 1 if body.action == "enable" else 0
+        placeholders = ",".join(["?"] * len(body.ids))
+        conn.execute(
+            f"UPDATE services SET enabled=? WHERE id IN ({placeholders})",
+            [enabled_val, *body.ids],
+        )
+        affected = conn.execute(
+            f"SELECT COUNT(*) FROM services WHERE id IN ({placeholders})",
+            body.ids,
+        ).fetchone()[0]
+        conn.commit()
+        add_log("info", f"Bulk {body.action}: {affected} service(s)")
+
+    elif body.action == "delete":
+        for sid in body.ids:
+            svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+            if not svc:
+                errors.append(f"Service {sid} not found")
+                continue
+
+            mode = (svc["expose_mode"] or "proxy_dns").strip().lower()
+            public_host = _service_public_hostname(
+                mode, svc["tunnel_hostname"] or "", svc["subdomain"], svc["domain"]
+            )
+
+            # Remove from proxy provider
+            if mode != "tunnel" and svc["proxy_provider_id"] and svc["npm_host_id"]:
+                row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["proxy_provider_id"],)).fetchone()
+                if row:
+                    try:
+                        create_provider(row).delete_host(svc["npm_host_id"])
+                    except Exception as e:
+                        errors.append(f"{public_host}: proxy delete failed — {e}")
+
+            # Remove from DNS provider
+            if mode != "tunnel" and svc["dns_provider_id"] and svc["dns_ip"]:
+                row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["dns_provider_id"],)).fetchone()
+                if row:
+                    try:
+                        create_provider(row).delete_rewrite(public_host, svc["dns_ip"])
+                    except Exception as e:
+                        errors.append(f"{public_host}: DNS delete failed — {e}")
+
+            # Remove tunnel route
+            if mode == "tunnel" and svc["tunnel_provider_id"]:
+                row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["tunnel_provider_id"],)).fetchone()
+                if row:
+                    try:
+                        create_provider(row).delete_host(public_host)
+                    except Exception as e:
+                        errors.append(f"{public_host}: tunnel delete failed — {e}")
+
+            conn.execute("DELETE FROM services WHERE id=?", (sid,))
+            affected += 1
+
+        conn.commit()
+        add_log("info", f"Bulk delete: {affected} service(s)")
+
+    conn.close()
+    return {"ok": True, "affected": affected, "errors": errors}

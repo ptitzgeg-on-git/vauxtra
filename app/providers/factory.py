@@ -1,13 +1,15 @@
 import json
+import os
+from urllib.parse import urlsplit, urlunsplit
 
-from app.providers.adguard      import AdGuardProvider
-from app.providers.npm          import NPMProvider
-from app.providers.pihole       import PiholeProvider
-from app.providers.cloudflare   import CloudflareProvider
-from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
-from app.providers.traefik      import TraefikProvider
-from app.providers.technitium   import TechnitiumProvider
 from app.config import decrypt_secret
+from app.providers.adguard import AdGuardProvider
+from app.providers.cloudflare import CloudflareProvider
+from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
+from app.providers.npm import NPMProvider
+from app.providers.pihole import PiholeProvider
+from app.providers.technitium import TechnitiumProvider
+from app.providers.traefik import TraefikProvider
 
 PROVIDER_TYPES = {
     "npm": {
@@ -278,9 +280,44 @@ _PROVIDER_REGISTRY: dict[str, tuple[type, bool]] = {
 }
 
 
+def _is_container_runtime() -> bool:
+    return os.path.exists("/.dockerenv")
+
+
+def _rewrite_loopback_url(url: str) -> str:
+    """Map localhost URLs to a host-reachable endpoint when running in Docker."""
+    if not url:
+        return url
+
+    if os.environ.get("VAUXTRA_REWRITE_LOCALHOST", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return url
+
+    if not _is_container_runtime():
+        return url
+
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        return url
+
+    target_host = os.environ.get("VAUXTRA_LOCALHOST_ALIAS", "host.docker.internal").strip() or "host.docker.internal"
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+
+    netloc = f"{userinfo}{target_host}"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 def create_provider(provider_row):
     ptype = provider_row["type"]
-    url   = provider_row["url"]
+    url   = _rewrite_loopback_url(provider_row["url"])
     user  = provider_row["username"]
     pwd   = decrypt_secret(provider_row["password"])
 
@@ -290,7 +327,7 @@ def create_provider(provider_row):
 
     cls, needs_extra = entry
     if needs_extra:
-        extra_raw = provider_row["extra"] if "extra" in provider_row.keys() else "{}"
+        extra_raw = provider_row.get("extra", "{}")
         try:
             extra = json.loads(extra_raw) if extra_raw else {}
         except Exception:

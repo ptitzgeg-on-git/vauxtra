@@ -1,6 +1,9 @@
+from urllib.parse import quote
+
 import requests
-from app.providers.base import DNSProvider
+
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import DNSProvider
 
 
 class PiholeProvider(DNSProvider):
@@ -12,6 +15,7 @@ class PiholeProvider(DNSProvider):
         self.session  = requests.Session()
         self.session.timeout = PROVIDER_TIMEOUT
         self._v6_sid  = None
+        self._v6_csrf = None
         self._version = None
 
     def _detect_version(self) -> int:
@@ -31,13 +35,30 @@ class PiholeProvider(DNSProvider):
                 timeout=10,
             )
             if r.status_code == 200:
-                self._v6_sid = r.json().get("session", {}).get("sid", "")
-                if self._v6_sid:
+                payload = r.json() if r.content else {}
+                session = payload.get("session", {}) if isinstance(payload, dict) else {}
+                self._v6_sid = session.get("sid") or payload.get("sid") or ""
+                self._v6_csrf = session.get("csrf") or payload.get("csrf") or ""
+                if self._v6_sid and self._v6_csrf:
                     self.session.headers["X-FTL-SID"] = self._v6_sid
+                    self.session.headers["X-FTL-CSRF"] = self._v6_csrf
                     return True
         except requests.RequestException:
             pass
         return False
+
+    def _logout_v6(self) -> None:
+        if not self._v6_sid:
+            return
+        try:
+            self.session.delete(f"{self.url}/api/auth", timeout=5)
+        except requests.RequestException:
+            pass
+        finally:
+            self._v6_sid = None
+            self._v6_csrf = None
+            self.session.headers.pop("X-FTL-SID", None)
+            self.session.headers.pop("X-FTL-CSRF", None)
 
     def _ensure_auth(self) -> bool:
         if self._version is None:
@@ -46,47 +67,64 @@ class PiholeProvider(DNSProvider):
             if self._v6_sid:
                 # Verify the session is still valid
                 try:
-                    r = self.session.get(f"{self.url}/api/dns/local/records", timeout=5)
+                    r = self.session.get(f"{self.url}/api/config/dns/hosts", timeout=5)
                     if r.status_code == 200:
                         return True
                 except requests.RequestException:
                     pass
                 self._v6_sid = None
+                self._v6_csrf = None
+                self.session.headers.pop("X-FTL-SID", None)
+                self.session.headers.pop("X-FTL-CSRF", None)
             return self._login_v6()
         return True
 
     def test_connection(self) -> bool:
+        created_v6_session = False
         if not self._ensure_auth():
             return False
         try:
             if self._version == 6:
-                r = self.session.get(f"{self.url}/api/dns/local/records", timeout=5)
+                created_v6_session = bool(self._v6_sid)
+                r = self.session.get(f"{self.url}/api/config/dns/hosts", timeout=5)
                 return r.status_code == 200
             else:
                 r = self.session.get(
                     f"{self.url}/admin/api.php",
-                    params={"list": "all", "auth": self.api_key},
+                    params={"customdns": "", "action": "get", "auth": self.api_key},
                     timeout=5,
                 )
                 if r.status_code != 200:
                     return False
-                data = r.json()
-                return isinstance(data, (dict, list)) and bool(data)
+                # On Pi-hole v5 this endpoint may legitimately return []
+                # when no local rewrites exist; treat valid JSON response as
+                # a successful authenticated connection.
+                _ = r.json()
+                return True
         except requests.RequestException:
             return False
+        except ValueError:
+            return False
+        finally:
+            # Test calls create many short-lived provider instances; release v6 sessions
+            # immediately to avoid exhausting Pi-hole API session slots.
+            if created_v6_session:
+                self._logout_v6()
 
     def list_rewrites(self) -> list[dict]:
         if not self._ensure_auth():
             return []
         try:
             if self._version == 6:
-                r = self.session.get(f"{self.url}/api/dns/local/records")
+                r = self.session.get(f"{self.url}/api/config/dns/hosts")
                 r.raise_for_status()
-                return [
-                    {"domain": e["domain"], "answer": e["ip"]}
-                    for e in r.json().get("records", [])
-                    if e.get("type") == "A"
-                ]
+                hosts = r.json().get("config", {}).get("dns", {}).get("hosts", [])
+                rewrites = []
+                for entry in hosts:
+                    parts = entry.split()
+                    if len(parts) >= 2:
+                        rewrites.append({"domain": parts[1], "answer": parts[0]})
+                return rewrites
             else:
                 r = self.session.get(
                     f"{self.url}/admin/api.php",
@@ -105,11 +143,9 @@ class PiholeProvider(DNSProvider):
             return False
         try:
             if self._version == 6:
-                r = self.session.post(
-                    f"{self.url}/api/dns/local/records",
-                    json={"domain": domain, "ip": ip, "type": "A", "ttl": 300},
-                )
-                return r.status_code in (200, 201)
+                entry = quote(f"{ip} {domain}", safe="")
+                r = self.session.put(f"{self.url}/api/config/dns/hosts/{entry}")
+                return r.status_code == 201
             else:
                 r = self.session.get(
                     f"{self.url}/admin/api.php",
@@ -129,11 +165,9 @@ class PiholeProvider(DNSProvider):
             return False
         try:
             if self._version == 6:
-                r = self.session.delete(
-                    f"{self.url}/api/dns/local/records",
-                    json={"domain": domain, "ip": ip},
-                )
-                return r.status_code in (200, 204)
+                entry = quote(f"{ip} {domain}", safe="")
+                r = self.session.delete(f"{self.url}/api/config/dns/hosts/{entry}")
+                return r.status_code == 204
             else:
                 r = self.session.get(
                     f"{self.url}/admin/api.php",

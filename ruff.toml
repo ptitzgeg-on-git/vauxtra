@@ -1,0 +1,27 @@
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E402",    # module-level import not at top (intentional lazy imports to avoid circular deps)
+    "E501",    # line too long (handled by formatter)
+    "W293",    # whitespace in blank lines inside docstrings (ruff marks fix as unsafe)
+    "B008",    # function calls in argument defaults (FastAPI dependency injection pattern)
+    "B904",    # raise from err inside except (HTTPException re-raise pattern)
+    "SIM105",  # contextlib.suppress — try/except/pass is more explicit in network code
+    "SIM108",  # ternary operator (readability preference)
+    "SIM117",  # nested with statements — stream context managers need to stay nested
+]
+
+[lint.isort]
+known-first-party = ["app", "vauxtra_mcp"]

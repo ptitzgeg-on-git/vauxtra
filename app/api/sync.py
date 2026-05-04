@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Body, Request, HTTPException
-from app.models import get_db, add_log
-from app.providers.factory import create_provider, PROVIDER_TYPES
-from app.auth import require_auth
+from fastapi import APIRouter, Body, HTTPException, Request
+
+from app.auth import require_auth, require_auth_or_setup
+from app.models import add_log, get_db
+from app.providers.factory import PROVIDER_TYPES, create_provider
 from app.public_target import resolve_public_target
 
 router = APIRouter()
 
 
 def _service_public_host(service_row) -> str:
-    mode = (service_row["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in service_row.keys() else "proxy_dns"
+    mode = (service_row["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in service_row else "proxy_dns"
     if mode == "tunnel":
-        tunnel_hostname = str(service_row["tunnel_hostname"] or "").strip().lower() if "tunnel_hostname" in service_row.keys() else ""
+        tunnel_hostname = str(service_row["tunnel_hostname"] or "").strip().lower() if "tunnel_hostname" in service_row else ""
         if tunnel_hostname:
             return tunnel_hostname
     return f"{service_row['subdomain']}.{service_row['domain']}".strip(".").lower()
@@ -18,7 +19,7 @@ def _service_public_host(service_row) -> str:
 
 def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
     public_host = _service_public_host(svc)
-    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in svc.keys() else "proxy_dns"
+    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in svc else "proxy_dns"
 
     extra_targets = conn.execute(
         """
@@ -69,7 +70,7 @@ def _find_host_id(proxy, public_host: str):
             domains = h.get("domains") or h.get("domain_names") or []
             if public_host in domains:
                 return h.get("id")
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return None
     return None
 
@@ -85,7 +86,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
     dns_target = ""
     dns_target_source = ""
     if expose_mode != "tunnel":
-        dns_target_mode = (svc["public_target_mode"] or "manual") if "public_target_mode" in svc.keys() else "manual"
+        dns_target_mode = (svc["public_target_mode"] or "manual") if "public_target_mode" in svc else "manual"
         manual_value = svc["dns_ip"] if dns_target_mode != "auto" else ""
         dns_target, dns_target_source = resolve_public_target(
             conn,
@@ -327,7 +328,7 @@ def push_service(sid: int, request: Request):
             errors.append(f"Proxy ({row['name']}): {e}")
 
     if expose_mode != "tunnel":
-        dns_target_mode = (svc["public_target_mode"] or "manual") if "public_target_mode" in svc.keys() else "manual"
+        dns_target_mode = (svc["public_target_mode"] or "manual") if "public_target_mode" in svc else "manual"
         manual_value = svc["dns_ip"] if dns_target_mode != "auto" else ""
         dns_target, dns_target_source = resolve_public_target(
             conn,
@@ -420,7 +421,7 @@ def reconcile_service(sid: int, request: Request):
 
 @router.post("/api/services/sync")
 def sync_services(request: Request):
-    require_auth(request)
+    require_auth_or_setup(request)
     conn = get_db()
     providers = conn.execute("SELECT * FROM providers WHERE enabled=1").fetchall()
     existing_fqdns = {
@@ -485,7 +486,7 @@ def sync_services(request: Request):
 
 @router.post("/api/services/import")
 def import_services(request: Request, data: dict = Body(...)):
-    require_auth(request, scope="write")
+    require_auth_or_setup(request, scope="write")
     imported = 0
     errors   = []
     conn     = get_db()

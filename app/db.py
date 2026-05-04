@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 
-from app.config import DB_PATH, DATA_DIR
+from app.config import DATA_DIR, DB_PATH
 
 
 def get_sqlite_connection() -> sqlite3.Connection:

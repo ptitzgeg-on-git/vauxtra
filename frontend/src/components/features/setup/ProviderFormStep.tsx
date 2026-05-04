@@ -47,6 +47,33 @@ export function ProviderFormStep({
     return entries.sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])));
   }, [providerTypes]);
 
+  const groupedProviderTypes = useMemo(() => {
+    const dnsTypes = new Set(['cloudflare', 'pihole', 'adguard', 'technitium']);
+    const reverseTypes = new Set(['npm', 'traefik', 'cloudflare_tunnel']);
+    const groups: Record<string, Array<[string, ProviderTypeMeta]>> = {
+      'DNS Providers': [],
+      'Reverse & Tunnel Providers': [],
+      Other: [],
+    };
+
+    for (const [type, meta] of availableProviderTypes) {
+      const metaCategory = String(meta?.category || '').toLowerCase();
+      if (metaCategory === 'dns' || dnsTypes.has(type)) {
+        groups['DNS Providers'].push([type, meta]);
+      } else if (metaCategory === 'proxy' || reverseTypes.has(type)) {
+        groups['Reverse & Tunnel Providers'].push([type, meta]);
+      } else {
+        groups.Other.push([type, meta]);
+      }
+    }
+
+    return [
+      { title: 'DNS Providers', items: groups['DNS Providers'] },
+      { title: 'Reverse & Tunnel Providers', items: groups['Reverse & Tunnel Providers'] },
+      { title: 'Other', items: groups.Other },
+    ].filter((group) => group.items.length > 0);
+  }, [availableProviderTypes]);
+
   const selectedMeta = (providerTypes || {})[formData.type] || {};
   const currentGuidedSteps: GuidedStep[] = getGuidedSteps(formData.type, selectedMeta);
   const currentGuidedStep = currentGuidedSteps[guidedStepIndex];
@@ -94,30 +121,37 @@ export function ProviderFormStep({
       {/* Type selection */}
       {!formData.type && (
         <div className="bg-card border border-border rounded-xl p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {availableProviderTypes.map(([type, meta]) => {
-              const FallbackIcon = iconByType[type] || Server;
-              return (
-                <button
-                  key={type}
-                  onClick={() => chooseProviderType(type, String(meta.label || type))}
-                  className="flex items-start gap-4 p-4 rounded-xl text-left border border-border bg-background hover:border-primary/40 hover:bg-primary/5 transition-all"
-                >
-                  <div className={`p-2.5 rounded-lg border ${providerColor[type] || 'bg-primary/10 text-primary border-primary/20'}`}>
-                    <ProviderLogo type={type} className="w-6 h-6" fallback={<FallbackIcon className="w-6 h-6" />} />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-semibold text-sm text-foreground">{meta.label || type}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">{descByType[type]}</div>
-                    {categoryByType[type] && (
-                      <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${categoryByType[type].color}`}>
-                        {categoryByType[type].label}
-                      </span>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
+          <div className="space-y-4">
+            {groupedProviderTypes.map((group) => (
+              <div key={group.title} className="space-y-2">
+                <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest">{group.title}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {group.items.map(([type, meta]) => {
+                    const FallbackIcon = iconByType[type] || Server;
+                    return (
+                      <button
+                        key={type}
+                        onClick={() => chooseProviderType(type, String(meta.label || type))}
+                        className="flex items-start gap-4 p-4 rounded-xl text-left border border-border bg-background hover:border-primary/40 hover:bg-primary/5 transition-all"
+                      >
+                        <div className={`p-2.5 rounded-lg border ${providerColor[type] || 'bg-primary/10 text-primary border-primary/20'}`}>
+                          <ProviderLogo type={type} className="w-6 h-6" fallback={<FallbackIcon className="w-6 h-6" />} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-sm text-foreground">{meta.label || type}</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">{descByType[type]}</div>
+                          {categoryByType[type] && (
+                            <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${categoryByType[type].color}`}>
+                              {categoryByType[type].label}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

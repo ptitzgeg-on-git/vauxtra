@@ -1,7 +1,7 @@
-import os
-import secrets
 import base64
 import hashlib
+import os
+import secrets
 
 from cryptography.fernet import Fernet
 
@@ -20,7 +20,8 @@ def _get_or_generate_secret() -> str:
     key_file = os.path.join(DATA_DIR, ".secret_key")
     os.makedirs(DATA_DIR, exist_ok=True)
     if os.path.exists(key_file):
-        stored = open(key_file).read().strip()
+        with open(key_file) as fh:
+            stored = fh.read().strip()
         if stored:
             return stored
     generated = secrets.token_hex(32)
@@ -65,9 +66,9 @@ def decrypt_secret(s: str) -> str:
 
 def derive_fernet_from_passphrase(passphrase: str, salt: bytes) -> Fernet:
     """Derive a Fernet key from a passphrase using PBKDF2-HMAC-SHA256."""
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
-    
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
