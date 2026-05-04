@@ -1,39 +1,44 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.sessions import SessionMiddleware
+
+import app.cache as cache_module
+from app.config import DEBUG, HTTPS_ONLY, SECRET_KEY
 from app.limiter import limiter
-
-from app.config import SECRET_KEY, HTTPS_ONLY, DEBUG
 from app.models import init_db
+from app.security import validate_cors_origins
 
-from app.api.health        import router as health_router
-from app.api.providers     import router as providers_router
-from app.api.services      import router as services_router
-from app.api.tags          import router as tags_router
-from app.api.settings      import router as settings_router
-from app.api.backup        import router as backup_router
-from app.api.certificates  import router as certificates_router
-from app.api.environments  import router as environments_router
-from app.api.webhooks      import router as webhooks_router
-from app.api.sync          import router as sync_router
-from app.api.docker        import router as docker_router
-from app.api.api_keys      import router as api_keys_router
-from app.api.auth          import router as auth_router
+_logger = logging.getLogger(__name__)
+
+from app.api.api_keys import router as api_keys_router
+from app.api.auth import router as auth_router
+from app.api.backup import router as backup_router
+from app.api.certificates import router as certificates_router
+from app.api.docker import router as docker_router
+from app.api.environments import router as environments_router
+from app.api.health import router as health_router
+from app.api.providers import router as providers_router
+from app.api.services import router as services_router
+from app.api.settings import router as settings_router
+from app.api.sync import router as sync_router
+from app.api.tags import router as tags_router
+from app.api.webhooks import router as webhooks_router
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
-    from app.scheduler import start
     from app.models import get_db
+    from app.scheduler import start
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key='check_interval'").fetchone()
     conn.close()
@@ -52,12 +57,17 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ✅ Validate CORS origins securely
 _default_cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888"
-_cors_origins = [
-    o.strip()
-    for o in os.environ.get("CORS_ORIGINS", _default_cors).split(",")
-    if o.strip()
-]
+try:
+    _cors_origins = validate_cors_origins(
+        os.environ.get("CORS_ORIGINS", ""),
+        _default_cors
+    )
+    _logger.info(f"CORS origins validated: {len(_cors_origins)} allowed")
+except ValueError as e:
+    _logger.error(f"Invalid CORS configuration: {e}")
+    _cors_origins = _default_cors.split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +85,22 @@ app.add_middleware(
     https_only=HTTPS_ONLY,
     same_site="strict",
 )
+
+
+@app.middleware("http")
+async def request_cache_middleware(request: Request, call_next):
+    """Create per-request cache to avoid N+1 queries."""
+    from app.cache import RequestCache
+
+    # Create fresh cache for this request
+    cache_module._request_cache = RequestCache()
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        # Clear cache after request completes
+        cache_module._request_cache = None
 
 
 @app.middleware("http")

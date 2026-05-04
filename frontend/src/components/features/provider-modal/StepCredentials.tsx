@@ -175,7 +175,6 @@ export function StepCredentials({
               type="text"
               value={formData.name}
               onChange={(e) => updateField('name', e.target.value)}
-              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
               className="w-full bg-card border border-border focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-lg px-4 py-2.5 text-sm font-medium text-foreground placeholder:text-muted-foreground outline-none transition-all shadow-sm"
               placeholder={`e.g. ${selectedMeta.label || formData.type} — main`}

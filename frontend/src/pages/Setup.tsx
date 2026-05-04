@@ -98,7 +98,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     if (formData.type && !wizardMode && currentGuidedSteps.length === 0) {
       setWizardMode('expert');
     }
-  }, [formData.type, wizardMode, currentGuidedSteps.length]);
+  }, [formData.type, wizardMode, currentGuidedSteps.length, setWizardMode]);
 
   /* ─────────────────── API Calls ─────────────────── */
 

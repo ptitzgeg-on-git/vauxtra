@@ -1,4 +1,6 @@
 import re
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
 
@@ -10,6 +12,29 @@ router = APIRouter()
 
 
 DOCKER_HOST_RE = re.compile(r"^(unix|tcp|ssh)://.+")
+
+
+def _is_valid_docker_host(value: str) -> bool:
+    if not DOCKER_HOST_RE.match(value):
+        return False
+    parsed = urlparse(value)
+    scheme = (parsed.scheme or "").lower()
+
+    if scheme == "unix":
+        # unix:///var/run/docker.sock
+        return bool(parsed.path and parsed.path.startswith("/"))
+
+    if scheme == "tcp":
+        # tcp://host:2375 or tcp://127.0.0.1:2376
+        if not parsed.hostname:
+            return False
+        return parsed.port is not None
+
+    if scheme == "ssh":
+        # ssh://user@host or ssh://host
+        return bool(parsed.hostname)
+
+    return False
 
 
 class DockerEndpointIn(BaseModel):
@@ -29,8 +54,10 @@ class DockerEndpointIn(BaseModel):
     @classmethod
     def val_host(cls, v: str) -> str:
         value = (v or "").strip()
-        if not DOCKER_HOST_RE.match(value):
-            raise ValueError("docker_host must start with unix://, tcp:// or ssh://")
+        if not _is_valid_docker_host(value):
+            raise ValueError(
+                "Invalid docker_host. Use unix:///path.sock, tcp://host:port, or ssh://user@host"
+            )
         return value
 
 
@@ -203,14 +230,14 @@ def delete_docker_endpoint(endpoint_id: int, request: Request):
 def _extract_container_port(attrs: dict) -> int | None:
     network = attrs.get("NetworkSettings", {}) or {}
     ports = network.get("Ports") or {}
-    for key in ports.keys():
+    for key in ports:
         try:
             return int(str(key).split("/")[0])
         except Exception:
             continue
 
     exposed = (attrs.get("Config", {}) or {}).get("ExposedPorts") or {}
-    for key in exposed.keys():
+    for key in exposed:
         try:
             return int(str(key).split("/")[0])
         except Exception:

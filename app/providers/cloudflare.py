@@ -10,10 +10,11 @@ Storage convention (DB columns):
 from __future__ import annotations
 
 import ipaddress
+
 import requests
 
-from app.providers.base import DNSProvider
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import DNSProvider
 
 try:
     import cloudflare as _cf
@@ -231,7 +232,7 @@ class CloudflareProvider(DNSProvider):
             zones_resp = self._api_request("GET", "/zones", params={"per_page": 5})
             zones_list = zones_resp.get("result") or []
             zone_count = len(zones_list) if isinstance(zones_list, list) else 0
-            
+
             if zones_resp["ok"] and zone_count > 0:
                 _add(
                     "zones_access",

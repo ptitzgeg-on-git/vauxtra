@@ -3,6 +3,7 @@ import {
 } from 'lucide-react';
 import { ProviderLogo } from '@/components/ui/ProviderLogos';
 import { fallbackIconByType as iconByType, providerColor } from '@/components/features/providers/providerConstants';
+import { useT } from '@/i18n';
 import type { ImportableService, ProviderItem } from './types';
 
 interface ImportStepProps {
@@ -21,6 +22,8 @@ export function ImportStep({
   providers, importableServices, loadingImportable,
   onToggle, onSelectAll, onDeselectAll, onRetry, onImportAndFinish, onBack,
 }: ImportStepProps) {
+  const t = useT();
+
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex items-center gap-3">
@@ -28,8 +31,8 @@ export function ImportStep({
           <Download size={20} />
         </div>
         <div>
-          <h2 className="text-xl font-bold text-foreground">Import Existing Services</h2>
-          <p className="text-sm text-muted-foreground">Review services from your connected providers.</p>
+          <h2 className="text-xl font-bold text-foreground">{t('setup.import.title')}</h2>
+          <p className="text-sm text-muted-foreground">{t('setup.import.subtitle')}</p>
         </div>
       </div>
 
@@ -37,37 +40,37 @@ export function ImportStep({
         {loadingImportable ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
-            <span className="ml-3 text-muted-foreground">Scanning providers...</span>
+            <span className="ml-3 text-muted-foreground">{t('setup.import.scanning')}</span>
           </div>
         ) : providers.length === 0 ? (
           <div className="text-center py-8">
             <Server className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">No providers configured.</p>
+            <p className="text-sm text-muted-foreground">{t('setup.import.no_providers')}</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Add providers first to import existing services.
+              {t('setup.import.no_providers_hint')}
             </p>
           </div>
         ) : importableServices.length === 0 ? (
           <div className="text-center py-8">
             <CheckCircle2 className="w-12 h-12 text-primary/30 mx-auto mb-3" />
-            <p className="text-sm text-foreground font-medium">No services found to import</p>
+            <p className="text-sm text-foreground font-medium">{t('setup.import.none_found')}</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Your providers don't have any existing services, or Vauxtra couldn't read them.
+              {t('setup.import.none_found_hint')}
             </p>
             <button onClick={onRetry} className="mt-4 inline-flex items-center gap-2 text-sm text-primary hover:underline">
-              <RefreshCw size={14} /> Retry scan
+              <RefreshCw size={14} /> {t('setup.import.retry')}
             </button>
           </div>
         ) : (
           <>
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">
-                Found <strong>{importableServices.length}</strong> service{importableServices.length > 1 ? 's' : ''} across your providers.
+                {t('setup.import.found', { count: importableServices.length })}
               </p>
               <div className="flex items-center gap-2">
-                <button onClick={onSelectAll} className="text-xs text-primary hover:underline">Select all</button>
+                <button onClick={onSelectAll} className="text-xs text-primary hover:underline">{t('setup.import.select_all')}</button>
                 <span className="text-muted-foreground">|</span>
-                <button onClick={onDeselectAll} className="text-xs text-muted-foreground hover:text-foreground">Deselect all</button>
+                <button onClick={onDeselectAll} className="text-xs text-muted-foreground hover:text-foreground">{t('setup.import.deselect_all')}</button>
               </div>
             </div>
 
@@ -106,7 +109,7 @@ export function ImportStep({
 
             <div className="pt-2 border-t border-border">
               <p className="text-xs text-muted-foreground">
-                Selected services will be visible in Vauxtra for monitoring. You can import more services later from the Services page.
+                {t('setup.import.footer_hint')}
               </p>
             </div>
           </>
@@ -115,12 +118,12 @@ export function ImportStep({
 
       <div className="flex justify-between">
         <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
-          <ArrowLeft size={14} /> Back
+          <ArrowLeft size={14} /> {t('common.back')}
         </button>
         <button onClick={onImportAndFinish} className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all">
           {importableServices.some(s => s.selected)
-            ? `Import ${importableServices.filter(s => s.selected).length} & finish`
-            : 'Skip & finish'}
+            ? t('setup.import.finish_import', { count: importableServices.filter(s => s.selected).length })
+            : t('setup.import.finish_skip')}
           <ArrowRight size={16} />
         </button>
       </div>
