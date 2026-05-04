@@ -21,7 +21,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
 - `.github/CODEOWNERS` — default code ownership for PR reviews
 - Provider modal now shows a "Project website" link for each integration (NPM, AdGuard, Pi-hole, etc.)
-- `docs/OPEN_SOURCE_HYGIENE.md` — open source quality checklist for contributors and release maintainers
 - Grype + Syft SBOM scan added to security workflow; scans run on every PR to `main`
 - cosign keyless image signing on every published Docker image (Sigstore)
 - `ruff.toml` — explicit linter configuration
