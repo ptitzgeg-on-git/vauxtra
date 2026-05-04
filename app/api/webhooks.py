@@ -45,14 +45,28 @@ def add_webhook(request: Request, body: dict):
     url  = _validate_apprise_url(body.get("url", ""))
     if not name or not url:
         raise HTTPException(400, "Name and URL are required")
+    alert_on_any_down        = int(bool(body.get("alert_on_any_down", False)))
+    alert_on_any_up          = int(bool(body.get("alert_on_any_up", False)))
+    alert_on_integration_down = int(bool(body.get("alert_on_integration_down", False)))
+    alert_on_integration_up  = int(bool(body.get("alert_on_integration_up", False)))
+    min_down_minutes         = max(0, int(body.get("min_down_minutes", 0) or 0))
     conn = get_db()
     try:
         cur = conn.execute(
-            "INSERT INTO webhooks (name, url, enabled) VALUES (?,?,1)", (name, url)
+            """INSERT INTO webhooks
+               (name, url, enabled, alert_on_any_down, alert_on_any_up,
+                alert_on_integration_down, alert_on_integration_up, min_down_minutes)
+               VALUES (?,?,1,?,?,?,?,?)""",
+            (name, url, alert_on_any_down, alert_on_any_up,
+             alert_on_integration_down, alert_on_integration_up, min_down_minutes),
         )
         wid = cur.lastrowid
         conn.commit()
-        return {"id": wid, "name": name, "url": url, "enabled": 1}
+        return {"id": wid, "name": name, "url": url, "enabled": 1,
+                "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,
+                "alert_on_integration_down": alert_on_integration_down,
+                "alert_on_integration_up": alert_on_integration_up,
+                "min_down_minutes": min_down_minutes}
     finally:
         conn.close()
 
@@ -68,18 +82,35 @@ def update_webhook(wid: int, request: Request, body: dict):
             raise HTTPException(404, "Webhook not found")
 
         # Support partial updates (e.g. toggle sends only { enabled }).
-        name = body.get("name", existing["name"])
-        url = body.get("url", existing["url"])
+        name    = body.get("name", existing["name"])
+        url     = body.get("url", existing["url"])
         enabled = int(bool(body.get("enabled", existing["enabled"])))
+        alert_on_any_down         = int(bool(body.get("alert_on_any_down",        existing["alert_on_any_down"])))
+        alert_on_any_up           = int(bool(body.get("alert_on_any_up",          existing["alert_on_any_up"])))
+        alert_on_integration_down = int(bool(body.get("alert_on_integration_down", existing["alert_on_integration_down"])))
+        alert_on_integration_up   = int(bool(body.get("alert_on_integration_up",   existing["alert_on_integration_up"])))
+        min_down_minutes          = max(0, int(body.get("min_down_minutes", existing["min_down_minutes"]) or 0))
 
         name = (name or "").strip()
-        url = _validate_apprise_url(url)
+        url  = _validate_apprise_url(url)
         if not name or not url:
             raise HTTPException(400, "Name and URL are required")
 
-        conn.execute("UPDATE webhooks SET name=?, url=?, enabled=? WHERE id=?", (name, url, enabled, wid))
+        conn.execute(
+            """UPDATE webhooks SET name=?, url=?, enabled=?,
+               alert_on_any_down=?, alert_on_any_up=?,
+               alert_on_integration_down=?, alert_on_integration_up=?,
+               min_down_minutes=?
+               WHERE id=?""",
+            (name, url, enabled, alert_on_any_down, alert_on_any_up,
+             alert_on_integration_down, alert_on_integration_up, min_down_minutes, wid),
+        )
         conn.commit()
-        return {"id": wid, "name": name, "url": url, "enabled": enabled}
+        return {"id": wid, "name": name, "url": url, "enabled": enabled,
+                "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,
+                "alert_on_integration_down": alert_on_integration_down,
+                "alert_on_integration_up": alert_on_integration_up,
+                "min_down_minutes": min_down_minutes}
     finally:
         conn.close()
 

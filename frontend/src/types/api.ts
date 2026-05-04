@@ -247,6 +247,11 @@ export interface Webhook {
   url: string;
   enabled: boolean | number;
   created_at: string;
+  alert_on_any_down: boolean | number;
+  alert_on_any_up: boolean | number;
+  alert_on_integration_down: boolean | number;
+  alert_on_integration_up: boolean | number;
+  min_down_minutes: number;
 }
 
 export interface ServiceAlert {

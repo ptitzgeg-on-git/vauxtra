@@ -252,17 +252,6 @@ def revoke_api_key(key_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_logs(level: str = "", page: int = 1, per_page: int = 50) -> dict[str, Any]:
-    """Read logs with optional level filter and pagination."""
-    params: dict[str, Any] = {"page": page, "per_page": per_page}
-    if level:
-        params["level"] = level
-    r = client.get("/logs", params=params)
-    r.raise_for_status()
-    return r.json()
-
-
-@mcp.tool()
 def clear_logs() -> dict[str, Any]:
     """Delete all logs."""
     r = client.post("/logs/clear")

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "react-hot-toast";
-import { Settings, Activity, KeySquare, Plus, AlertCircle, RefreshCw, X, ShieldAlert, Trash2, Loader2 } from "lucide-react";
+import { Settings, Activity, KeySquare, Plus, AlertCircle, RefreshCw, X, ShieldAlert, Trash2, Loader2, PlayCircle } from "lucide-react";
 import { api } from "@/api/client";
 import { ProviderModal } from "@/components/features/ProviderModal";
 import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -14,6 +14,7 @@ interface ProviderDiagnostics {
   provider?: string;
   validation?: { checks?: Array<{ name: string; ok: boolean; blocking: boolean; detail?: string }> };
   health?: { ok?: boolean; status?: string; error?: string };
+  testedAt?: number;
 }
 
 interface ProviderHealthState {
@@ -35,7 +36,30 @@ export function Providers() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [providerDiagnostics, setProviderDiagnostics] = useState<Record<number, ProviderDiagnostics>>({});
+  const [providerDiagnostics, setProviderDiagnosticsRaw] = useState<Record<number, ProviderDiagnostics>>(() => {
+    try {
+      const stored = localStorage.getItem('vauxtra:providerDiagnostics');
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  });
+
+  const setProviderDiagnostics = (updater: (prev: Record<number, ProviderDiagnostics>) => Record<number, ProviderDiagnostics>) => {
+    setProviderDiagnosticsRaw(prev => {
+      const next = updater(prev);
+      try { localStorage.setItem('vauxtra:providerDiagnostics', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
+  // Clear stale diagnostics for providers no longer in the list on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        const stored = localStorage.getItem('vauxtra:providerDiagnostics');
+        if (stored) localStorage.setItem('vauxtra:providerDiagnostics', stored);
+      } catch { /* ignore */ }
+    };
+  }, []);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [validatingId, setValidatingId] = useState<number | null>(null);
@@ -94,7 +118,7 @@ export function Providers() {
         enabledProviders.map(async (provider: Provider) => {
           try {
             const data = await (api.post(`/providers/${provider.id}/test`) as Promise<ProviderDiagnostics>);
-            return [provider.id, data] as const;
+            return [provider.id, { ...data, testedAt: Date.now() }] as const;
           } catch (error: unknown) {
             const err = error as { response?: { data?: { detail?: string } } };
             const detail = err?.response?.data?.detail || t('providers.toast.connection_failed');
@@ -104,6 +128,7 @@ export function Providers() {
                 ok: false,
                 provider: provider.name,
                 health: { ok: false, status: 'error', error: detail },
+                testedAt: Date.now(),
               } satisfies ProviderDiagnostics,
             ] as const;
           }
@@ -136,7 +161,7 @@ export function Providers() {
 
       setProviderDiagnostics((prev) => ({
         ...prev,
-        [id]: data,
+        [id]: { ...data, testedAt: Date.now() },
       }));
 
       if (ok) {
@@ -156,6 +181,7 @@ export function Providers() {
         [id]: {
           ok: false,
           health: { ok: false, status: 'error', error: msg },
+          testedAt: Date.now(),
         },
       }));
       setTestingId(null);
@@ -256,42 +282,43 @@ export function Providers() {
     }
   };
 
-  const getHealthScore = (provider: Provider): { score: number; label: string; color: string } => {
+  const getHealthScore = (provider: Provider): { score: number; label: string; color: string; reason?: string } => {
     const diag = providerDiagnostics[provider.id];
     const tunnelH = tunnelHealthById[provider.id];
     const autoHealth = allHealthById[provider.id];
     if (!diag && !tunnelH && !autoHealth) return { score: -1, label: 'Unknown', color: 'text-muted-foreground' };
 
     let score = 100;
+    let reason: string | undefined;
     // Connection test result (manual)
     if (diag) {
-      if (!diag.ok) score -= 50;
+      if (!diag.ok) { score -= 50; reason = diag.health?.error || 'Connection failed'; }
       if (diag.validation?.checks) {
-        const blocking = diag.validation.checks.filter(c => c.blocking && !c.ok).length;
+        const blocking = diag.validation.checks.filter(c => c.blocking && !c.ok);
         const warnings = diag.validation.checks.filter(c => !c.blocking && !c.ok).length;
-        score -= blocking * 25;
+        score -= blocking.length * 25;
         score -= warnings * 5;
+        if (blocking.length > 0 && !reason) reason = blocking[0].detail || `${blocking.length} blocking check(s) failed`;
       }
-      if (diag.health && !diag.health.ok) score -= 30;
+      if (diag.health && !diag.health.ok) { score -= 30; reason = reason || diag.health.error || diag.health.status || 'Health check failed'; }
     } else if (autoHealth) {
-      // Auto-fetched health (no manual test yet)
       const status = String(autoHealth.status || '').toLowerCase();
       const isHealthy = autoHealth.ok ?? status === 'healthy';
-      if (!isHealthy) score = 20;
+      if (!isHealthy) { score = 20; reason = autoHealth.error || status || 'Unhealthy'; }
     }
     // Tunnel health
     if (tunnelH) {
       const status = String((tunnelH as Record<string, unknown>)?.status || '');
       if (status === 'healthy') score = Math.max(score, 90);
-      else if (status === 'degraded') score = Math.min(score, 60);
-      else if (status === 'down') score = Math.min(score, 20);
+      else if (status === 'degraded') { score = Math.min(score, 60); reason = reason || 'Degraded tunnel'; }
+      else if (status === 'down') { score = Math.min(score, 20); reason = reason || 'Tunnel is down'; }
     }
     if (!provider.enabled) score = Math.min(score, 30);
 
     score = Math.max(0, Math.min(100, score));
-    if (score >= 80) return { score, label: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
-    if (score >= 50) return { score, label: 'Degraded', color: 'text-yellow-600 dark:text-yellow-400' };
-    return { score, label: 'Unhealthy', color: 'text-destructive' };
+    if (score >= 80) return { score, label: 'OK', color: 'text-emerald-600 dark:text-emerald-400' };
+    if (score >= 50) return { score, label: 'Degraded', color: 'text-yellow-600 dark:text-yellow-400', reason };
+    return { score, label: 'Error', color: 'text-destructive', reason };
   };
 
   const getOperationalStatus = (provider: Provider): OperationalStatus => {
@@ -402,7 +429,7 @@ export function Providers() {
             aria-label={t('providers.refresh.button')}
             className="flex items-center justify-center gap-2 px-3 py-2.5 text-sm rounded-lg font-semibold transition-all border border-border bg-card hover:bg-accent text-foreground disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing || isFetchingProviders ? 'animate-spin' : ''}`} />
+            <PlayCircle className={`w-4 h-4 ${isRefreshing || isFetchingProviders ? 'animate-pulse' : ''}`} />
             <span>{t('providers.refresh.button')}</span>
           </button>
           <button 
@@ -540,10 +567,26 @@ export function Providers() {
                             <div className="flex items-center gap-2">
                               {(() => {
                                 const health = getHealthScore(provider);
+                                const diag = providerDiagnostics[provider.id];
+                                const testedAt = diag?.testedAt;
+                                const ageLabel = testedAt
+                                  ? new Date(testedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  : null;
+                                if (health.score < 0) return null;
                                 return (
-                                  <span className={`text-xs font-semibold ${health.color}`} title={health.score >= 0 ? `Health: ${health.score}/100` : 'Not tested'}>
-                                    {health.score >= 0 ? `${health.score}/100` : 'Not tested'}
-                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`text-xs font-semibold ${health.color}`}>
+                                      {health.label}
+                                    </span>
+                                    {health.reason && (
+                                      <span className="text-xs text-muted-foreground truncate max-w-[140px]" title={health.reason}>
+                                        — {health.reason}
+                                      </span>
+                                    )}
+                                    {ageLabel && (
+                                      <span className="text-[10px] text-muted-foreground/60">@ {ageLabel}</span>
+                                    )}
+                                  </div>
                                 );
                               })()}
                             {provider.error_message && (
