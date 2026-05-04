@@ -233,7 +233,6 @@ def my_tool(param: str) -> dict:
 - **Python**: PEP 8, type hints on all public functions. Docstrings only where logic is non-obvious — no tautological comments.
 - **TypeScript**: strict mode, no `any`, interfaces in `frontend/src/types/api.ts`.
 - **No secrets**: never commit `.env`, private keys, or runtime data. Use `data/` and `.env` which are gitignored.
-- **Repo hygiene**: follow [docs/OPEN_SOURCE_HYGIENE.md](docs/OPEN_SOURCE_HYGIENE.md) before opening a PR.
 
 ---
 

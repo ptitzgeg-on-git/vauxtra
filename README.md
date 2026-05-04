@@ -135,7 +135,6 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 - End-user operations and API usage: [docs/HOWTO.md](docs/HOWTO.md)
 - Production deployment checklist and recipes: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - Troubleshooting and known failure patterns: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- Open source hygiene and release quality checklist: [docs/OPEN_SOURCE_HYGIENE.md](docs/OPEN_SOURCE_HYGIENE.md)
 - Security policy and reporting: [SECURITY.md](SECURITY.md)
 - MCP server setup for AI clients: [vauxtra_mcp/README.md](vauxtra_mcp/README.md)
 
