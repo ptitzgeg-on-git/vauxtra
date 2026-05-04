@@ -1,0 +1,10 @@
+services:
+  vauxtra:
+    volumes:
+      - ./.local/data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - DEBUG=true
