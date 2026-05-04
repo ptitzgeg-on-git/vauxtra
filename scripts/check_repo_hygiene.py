@@ -12,13 +12,9 @@ FORBIDDEN_TRACKED_FILES = {
     "DOCUMENTATION_INDEX.md",
     "TESTING_GUIDE.md",
     "docs/UX_BUG_TRACKER.md",
-    "docs/ai/AI_AUTONOMY_SETUP.md",
-    "docs/ai/WORKSPACE_STRUCTURE.md",
 }
 
-FORBIDDEN_TRACKED_PREFIXES = (
-    "docs/ai/",
-)
+FORBIDDEN_TRACKED_PREFIXES: tuple[str, ...] = ()
 
 PUBLIC_DOC_FILES = (
     "README.md",
@@ -27,15 +23,19 @@ PUBLIC_DOC_FILES = (
 )
 
 FORBIDDEN_REFERENCE_TOKENS = (
-    "docs/ai",
-    "AI_AUTONOMY_SETUP",
-    "WORKSPACE_STRUCTURE",
     "UX_BUG_TRACKER",
     "TESTING_GUIDE",
     "CLAUDE.md",
     "SESSION_SUMMARY",
     "QA_REPORT",
     "DOCUMENTATION_INDEX",
+)
+
+FORBIDDEN_PROCESS_ATTRIBUTION_TOKENS = (
+    "generated with",
+    "written by assistant",
+    "authored by bot",
+    "prompt:",
 )
 
 REQUIRED_TRACKED_FILES = (
@@ -76,6 +76,10 @@ def _find_bad_public_references() -> list[str]:
         text = p.read_text(encoding="utf-8", errors="ignore")
         for token in FORBIDDEN_REFERENCE_TOKENS:
             if token in text:
+                bad_refs.append(f"{file_path}: contains '{token}'")
+        lower_text = text.lower()
+        for token in FORBIDDEN_PROCESS_ATTRIBUTION_TOKENS:
+            if token in lower_text:
                 bad_refs.append(f"{file_path}: contains '{token}'")
     return sorted(set(bad_refs))
 

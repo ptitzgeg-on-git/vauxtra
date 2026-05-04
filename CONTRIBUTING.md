@@ -220,7 +220,7 @@ from vauxtra_mcp.client import get, post
 
 @mcp.tool()
 def my_tool(param: str) -> dict:
-    """Short description shown to the AI assistant."""
+    """Short description shown to the MCP client."""
     return get(f"/my-endpoint?param={param}")
 ```
 
@@ -243,5 +243,6 @@ def my_tool(param: str) -> dict:
 - [ ] No new `any` types introduced
 - [ ] All UI text in English — no hardcoded strings in other languages
 - [ ] No secrets committed (`.env` is gitignored)
+- [ ] Public wording stays product-focused (no authoring-process or tool-attribution text)
 - [ ] Commit messages follow Conventional Commits
 - [ ] Bug reports include reproduction steps; feature proposals start as an issue

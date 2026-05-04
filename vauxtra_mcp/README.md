@@ -1,6 +1,6 @@
 # Vauxtra MCP Server
 
-Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextprotocol.io/) tools, enabling AI assistants (Claude Desktop, Cursor, etc.) to manage your homelab network directly.
+Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextprotocol.io/) tools, enabling MCP-compatible clients (Claude Desktop, Cursor, etc.) to manage your homelab network directly.
 
 ---
 

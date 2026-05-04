@@ -2,7 +2,7 @@
 Vauxtra MCP Server
 
 Exposes Vauxtra's DNS & proxy management capabilities as MCP tools
-for integration with AI assistants (Claude Desktop, Cursor, etc.).
+for integration with MCP-compatible clients (Claude Desktop, Cursor, etc.).
 
 Environment variables:
   VAUXTRA_URL      — Base URL of the Vauxtra instance (default: http://localhost:8888)

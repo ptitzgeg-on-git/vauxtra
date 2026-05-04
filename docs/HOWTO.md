@@ -247,7 +247,7 @@ This is used for:
 
 ## 10) MCP Integration
 
-Vauxtra includes an MCP (Model Context Protocol) server for AI assistants.
+Vauxtra includes an MCP (Model Context Protocol) server for MCP-compatible clients.
 
 ### Setup
 
