@@ -53,7 +53,7 @@ Locally:
 
 ```bash
 # Backend tests
-python -m pytest tests/ -v
+PYTHONPATH=. python -m pytest tests/ -v
 
 # Frontend type check
 cd frontend && npm run build
@@ -238,7 +238,7 @@ def my_tool(param: str) -> dict:
 
 ## Pull Request Checklist
 
-- [ ] Tests pass (`pytest tests/ -v`)
+- [ ] Tests pass (`PYTHONPATH=. python -m pytest tests/ -v`)
 - [ ] Frontend builds without errors (`npm run build`)
 - [ ] No new `any` types introduced
 - [ ] All UI text in English — no hardcoded strings in other languages

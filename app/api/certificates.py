@@ -10,7 +10,7 @@ import datetime
 from fastapi import APIRouter, Request
 
 from app.auth import require_auth
-from app.models import get_db_ctx, add_log
+from app.models import add_log, get_db_ctx
 from app.providers.factory import create_provider
 
 router = APIRouter()

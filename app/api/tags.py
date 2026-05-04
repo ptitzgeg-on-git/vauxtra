@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
-from app.models import get_db
+
 from app.auth import require_auth
+from app.models import get_db
 from app.validators import is_valid_tag_color
 
 router = APIRouter()

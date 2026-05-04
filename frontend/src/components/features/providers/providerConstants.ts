@@ -419,10 +419,13 @@ export function buildPayload(formData: ProviderFormState) {
 }
 
 export function canSubmitProvider(formData: ProviderFormState): boolean {
+  const passwordOptionalTypes = new Set(['traefik']);
+  const requiresPassword = !passwordOptionalTypes.has(formData.type);
+
   return (
     Boolean(formData.type) &&
     Boolean(formData.name.trim()) &&
-    Boolean(formData.password.trim()) &&
+    (!requiresPassword || Boolean(formData.password.trim())) &&
     Boolean(formData.url.trim() || formData.type === 'cloudflare' || formData.type === 'cloudflare_tunnel') &&
     (formData.type !== 'cloudflare_tunnel' || (Boolean(formData.tunnel_id.trim()) && Boolean(formData.username.trim())))
   );
