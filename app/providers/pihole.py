@@ -34,9 +34,10 @@ class PiholeProvider(DNSProvider):
                 timeout=10,
             )
             if r.status_code == 200:
-                session = r.json().get("session", {})
-                self._v6_sid = session.get("sid", "")
-                self._v6_csrf = session.get("csrf", "")
+                payload = r.json() if r.content else {}
+                session = payload.get("session", {}) if isinstance(payload, dict) else {}
+                self._v6_sid = session.get("sid") or payload.get("sid") or ""
+                self._v6_csrf = session.get("csrf") or payload.get("csrf") or ""
                 if self._v6_sid and self._v6_csrf:
                     self.session.headers["X-FTL-SID"] = self._v6_sid
                     self.session.headers["X-FTL-CSRF"] = self._v6_csrf
@@ -44,6 +45,19 @@ class PiholeProvider(DNSProvider):
         except requests.RequestException:
             pass
         return False
+
+    def _logout_v6(self) -> None:
+        if not self._v6_sid:
+            return
+        try:
+            self.session.delete(f"{self.url}/api/auth", timeout=5)
+        except requests.RequestException:
+            pass
+        finally:
+            self._v6_sid = None
+            self._v6_csrf = None
+            self.session.headers.pop("X-FTL-SID", None)
+            self.session.headers.pop("X-FTL-CSRF", None)
 
     def _ensure_auth(self) -> bool:
         if self._version is None:
@@ -65,10 +79,12 @@ class PiholeProvider(DNSProvider):
         return True
 
     def test_connection(self) -> bool:
+        created_v6_session = False
         if not self._ensure_auth():
             return False
         try:
             if self._version == 6:
+                created_v6_session = bool(self._v6_sid)
                 r = self.session.get(f"{self.url}/api/config/dns/hosts", timeout=5)
                 return r.status_code == 200
             else:
@@ -88,6 +104,11 @@ class PiholeProvider(DNSProvider):
             return False
         except ValueError:
             return False
+        finally:
+            # Test calls create many short-lived provider instances; release v6 sessions
+            # immediately to avoid exhausting Pi-hole API session slots.
+            if created_v6_session:
+                self._logout_v6()
 
     def list_rewrites(self) -> list[dict]:
         if not self._ensure_auth():

@@ -17,6 +17,13 @@
 
 ---
 
+## Notes
+
+- The in-app "How-To & API" panel has been removed to avoid duplicated/dated guidance.
+- This file is now the single source of truth for end-user operations.
+
+---
+
 ## 1) First Launch & Setup Wizard
 
 On first launch, Vauxtra displays a guided setup wizard to help you configure:
@@ -136,7 +143,8 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 
 1. Create an API token: My Profile → API Tokens → Create Token
 2. Use "Edit zone DNS" template, or Custom Token with Zone → DNS → Edit
-3. In Vauxtra: Add provider → Cloudflare → enter token and account email
+3. In Vauxtra: Add provider → Cloudflare → enter token
+4. Optional: set Zone ID when you want to force a single zone
 
 ### Cloudflare Tunnel
 
@@ -154,7 +162,8 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 ### Pi-hole
 
 1. Find your API token: Settings → API / Web interface → Show API token
-2. In Vauxtra: Add provider → Pi-hole → enter URL and token
+2. In Vauxtra: Add provider → Pi-hole → enter base URL and token/password
+3. Use base URL (e.g. `http://pihole` or `http://localhost:18081`), not `/admin`
 
 ### AdGuard Home
 

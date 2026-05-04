@@ -1,6 +1,6 @@
-import { Monitor, DownloadCloud, Database, FileTerminal, Settings as SettingsIcon, Globe, RefreshCw, Loader2, AlertTriangle, CheckCircle2, AlertCircle, Trash2, Key, Bell, Copy, Plus, Eye, EyeOff, Tag, Layers, ArrowLeft, Languages, Lock, Upload } from "lucide-react";
+import { DownloadCloud, Database, FileTerminal, Globe, RefreshCw, Loader2, AlertTriangle, CheckCircle2, AlertCircle, Trash2, Key, Bell, Copy, Plus, Eye, EyeOff, Tag, Layers, Languages, Lock, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams, Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useI18n, SUPPORTED_LANGUAGES } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -8,7 +8,7 @@ import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { Service, LogsResponse, SyncResult, SyncProxyHost, SyncDnsRewrite, ApiKey, ApiKeyCreated, LogLevel } from "@/types/api";
 import { useTheme } from "@/theme";
 import { toast } from "react-hot-toast";
-import { GeneralTab, HowtoTab } from "@/components/features/settings";
+import { GeneralTab } from "@/components/features/settings";
 import { useWebhookActions } from "@/hooks/useWebhookActions";
 
 const LOCAL_TLDS = ['.lan', '.local', '.home', '.internal', '.localdomain', '.arpa'];
@@ -18,10 +18,9 @@ function isLocalDomain(domain: string) {
 }
 
 export function Settings() {
-  const VALID_TABS = ["general", "language", "howto", "dns", "tags", "environments", "apikeys", "webhooks", "migration", "backup", "logs"];
-  const [searchParams, setSearchParams] = useSearchParams();
+  const VALID_TABS = ["general", "language", "dns", "tags", "environments", "apikeys", "webhooks", "migration", "backup", "logs"];
+  const [searchParams] = useSearchParams();
   const activeTab = VALID_TABS.includes(searchParams.get("tab") || "") ? searchParams.get("tab")! : "general";
-  const setActiveTab = (tab: string) => setSearchParams({ tab }, { replace: true });
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const { theme, resolvedTheme, setTheme } = useTheme();
@@ -49,6 +48,27 @@ export function Settings() {
   const [cpCurrent, setCpCurrent] = useState("");
   const [cpNew, setCpNew] = useState("");
   const [cpConfirm, setCpConfirm] = useState("");
+  const [recentlyChanged, setRecentlyChanged] = useState(false);
+  const recentChangeTimerRef = useRef<number | null>(null);
+
+  const markRecentlyChanged = () => {
+    setRecentlyChanged(true);
+    if (recentChangeTimerRef.current !== null) {
+      window.clearTimeout(recentChangeTimerRef.current);
+    }
+    recentChangeTimerRef.current = window.setTimeout(() => {
+      setRecentlyChanged(false);
+      recentChangeTimerRef.current = null;
+    }, 5000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recentChangeTimerRef.current !== null) {
+        window.clearTimeout(recentChangeTimerRef.current);
+      }
+    };
+  }, []);
 
   const TAG_COLORS = ["blue","teal","green","red","orange","purple","cyan","yellow","pink","lime","indigo"];
   const ENV_COLORS = TAG_COLORS;
@@ -92,6 +112,7 @@ export function Settings() {
       setNewKeyName("");
       setNewKeyScopes(["read"]);
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
+      markRecentlyChanged();
       toast.success(t('settings.api_keys.created'));
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.api_keys.create_failed')),
@@ -101,6 +122,7 @@ export function Settings() {
     mutationFn: (id: number) => api.delete(`/settings/api-keys/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
+      markRecentlyChanged();
       toast.success(t('settings.api_keys.revoked'));
     },
   });
@@ -117,6 +139,7 @@ export function Settings() {
       api.post('/auth/change-password', body),
     onSuccess: () => {
       setCpCurrent(""); setCpNew(""); setCpConfirm("");
+      markRecentlyChanged();
       toast.success(t('settings.auth.changed_success'));
     },
     onError: (err: { response?: { data?: { detail?: string } } }) =>
@@ -140,12 +163,12 @@ export function Settings() {
   });
   const createTagMutation = useMutation({
     mutationFn: (body: { name: string; color: string }) => api.post('/tags', body),
-    onSuccess: () => { setNewTagName(""); queryClient.invalidateQueries({ queryKey: ['tags'] }); toast.success(t('settings.tags.created')); },
+    onSuccess: () => { setNewTagName(""); queryClient.invalidateQueries({ queryKey: ['tags'] }); markRecentlyChanged(); toast.success(t('settings.tags.created')); },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.tags.create_failed')),
   });
   const deleteTagMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/tags/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['tags'] }); toast.success(t('settings.tags.deleted')); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['tags'] }); markRecentlyChanged(); toast.success(t('settings.tags.deleted')); },
   });
 
   // Environments
@@ -157,12 +180,12 @@ export function Settings() {
   });
   const createEnvMutation = useMutation({
     mutationFn: (body: { name: string; color: string }) => api.post('/environments', body),
-    onSuccess: () => { setNewEnvName(""); queryClient.invalidateQueries({ queryKey: ['environments'] }); toast.success(t('settings.env.created')); },
+    onSuccess: () => { setNewEnvName(""); queryClient.invalidateQueries({ queryKey: ['environments'] }); markRecentlyChanged(); toast.success(t('settings.env.created')); },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.env.create_failed')),
   });
   const deleteEnvMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/environments/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['environments'] }); toast.success(t('settings.env.deleted')); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['environments'] }); markRecentlyChanged(); toast.success(t('settings.env.deleted')); },
   });
 
   // Build set of existing public_hosts for fast dedup lookup
@@ -179,6 +202,7 @@ export function Settings() {
     mutationFn: (payload: Record<string, string>) => api.post('/settings', payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
+      markRecentlyChanged();
       toast.success(t('settings.general.policy_saved'));
     },
     onError: (error: unknown) => {
@@ -192,12 +216,13 @@ export function Settings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains'] });
       setNewDomain("");
+      markRecentlyChanged();
     }
   });
 
   const deleteDomainMutation = useMutation({
     mutationFn: (domain: string) => api.delete(`/domains/${domain}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['domains'] }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['domains'] }); markRecentlyChanged(); },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.dns.delete_failed')),
   });
 
@@ -215,6 +240,7 @@ export function Settings() {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
+      markRecentlyChanged();
       if (data.imported > 0) {
         toast.success(t('settings.migration.import_success', { count: data.imported }));
       } else if (data.errors && data.errors.length > 0) {
@@ -233,6 +259,7 @@ export function Settings() {
     mutationFn: () => api.post('/logs/clear'),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['logs'] });
+      markRecentlyChanged();
     },
   });
 
@@ -285,6 +312,7 @@ export function Settings() {
       window.URL.revokeObjectURL(url);
       setShowSecureExport(false);
       setSecurePassphrase('');
+      markRecentlyChanged();
       toast.success(t('settings.backup.export_secure_success'));
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.backup.export_failed')),
@@ -301,6 +329,7 @@ export function Settings() {
       queryClient.invalidateQueries({ queryKey: ['domains'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
       queryClient.invalidateQueries();
+      markRecentlyChanged();
       toast.success(t('settings.backup.restore_success'));
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.backup.restore_failed')),
@@ -413,90 +442,35 @@ export function Settings() {
     changePasswordMutation.mutate({ current_password: cpCurrent, new_password: cpNew });
   };
 
-  const tabs = [
-    { id: "general",      label: t('settings.tab.general'),      icon: SettingsIcon, group: t('settings.group.preferences') },
-    { id: "language",     label: t('settings.language.title'),    icon: Languages,    group: t('settings.group.preferences') },
-    { id: "dns",          label: t('settings.tab.dns'),           icon: Globe,        group: t('settings.group.preferences') },
-    { id: "tags",         label: t('settings.tab.tags'),          icon: Tag,          group: t('settings.group.organization') },
-    { id: "environments", label: t('settings.tab.environments'),  icon: Layers,       group: t('settings.group.organization') },
-    { id: "migration",    label: t('settings.tab.migration'),     icon: RefreshCw,    group: t('settings.group.data') },
-    { id: "backup",       label: t('settings.tab.backup'),        icon: Database,     group: t('settings.group.data') },
-    { id: "apikeys",      label: t('settings.tab.apikeys'),       icon: Key,          group: t('settings.group.security') },
-    { id: "webhooks",     label: t('settings.tab.webhooks'),      icon: Bell,         group: t('settings.group.security') },
-    { id: "howto",        label: t('settings.tab.howto'),         icon: Monitor,      group: t('settings.group.help') },
-    { id: "logs",         label: t('settings.tab.logs'),          icon: FileTerminal, group: t('settings.group.help') },
-  ];
-
-  const groups = [t('settings.group.preferences'), t('settings.group.organization'), t('settings.group.data'), t('settings.group.security'), t('settings.group.help')];
+  const tabLabelMap: Record<string, string> = {
+    general: t('settings.tab.general'),
+    language: t('settings.language.title'),
+    dns: t('settings.tab.dns'),
+    tags: t('settings.tab.tags'),
+    environments: t('settings.tab.environments'),
+    apikeys: t('settings.tab.apikeys'),
+    webhooks: t('settings.tab.webhooks'),
+    migration: t('settings.tab.migration'),
+    backup: t('settings.tab.backup'),
+    logs: t('settings.tab.logs'),
+  };
 
   return (
-    <div className="animate-in fade-in duration-300 max-w-7xl mx-auto">
-      {/* Mobile tabs */}
-      <div className="lg:hidden mb-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Link to="/" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
-            <ArrowLeft className="w-4 h-4" />{t('settings.back')}
-          </Link>
+    <div className="animate-in fade-in duration-300 max-w-7xl mx-auto space-y-6">
+      <div className="flex items-center justify-between gap-3">
+        <div className="space-y-1">
+          <h2 className="text-xl font-semibold text-foreground">{t('settings.title')}</h2>
+          <p className="text-xs text-muted-foreground">System / {tabLabelMap[activeTab] || t('settings.tab.general')}</p>
         </div>
-        <h2 className="text-xl font-semibold text-foreground mb-4">{t('settings.title')}</h2>
-        <div className="flex border-b border-border overflow-x-auto hide-scrollbar">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 border-b-2 font-medium text-sm transition-colors whitespace-nowrap ${
-                activeTab === tab.id
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
-              }`}
-            >
-              <tab.icon className="w-4 h-4" />
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        <Link
+          to="/"
+          className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+        >
+          {t('nav.dashboard')}
+        </Link>
       </div>
 
-      <div className="flex gap-6">
-        {/* Desktop Sidebar */}
-        <aside className="w-56 shrink-0 hidden lg:block">
-          <div className="sticky top-6 space-y-1">
-            <Link
-              to="/"
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-3 px-1 transition-colors group"
-            >
-              <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
-              {t('settings.back')}
-            </Link>
-            <h2 className="text-lg font-semibold text-foreground mb-4">{t('settings.title')}</h2>
-            {groups.map((group) => {
-              const groupTabs = tabs.filter(tab => tab.group === group);
-              if (groupTabs.length === 0) return null;
-              return (
-                <div key={group} className="mb-4">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-3">{group}</p>
-                  {groupTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        activeTab === tab.id
-                          ? "bg-primary/10 text-primary"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                      }`}
-                    >
-                      <tab.icon className="w-4 h-4" />
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        </aside>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
+      <div className={`min-w-0 transition-all duration-500 ${recentlyChanged ? 'ring-2 ring-primary/30 rounded-xl' : ''}`}>
           {activeTab === "general" && (
             <GeneralTab
               theme={theme}
@@ -505,10 +479,6 @@ export function Settings() {
               settingsData={settingsData}
               savePolicyMutation={savePolicyMutation}
             />
-        )}
-
-        {activeTab === "howto" && (
-          <HowtoTab />
         )}
 
         {activeTab === "language" && (
@@ -1389,7 +1359,7 @@ export function Settings() {
                   className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-sm font-mono"
                 />
                 <button
-                  onClick={() => addWebhookMutation.mutate()}
+                  onClick={() => addWebhookMutation.mutate(undefined, { onSuccess: () => markRecentlyChanged() })}
                   disabled={addWebhookMutation.isPending || !newWebhookName.trim() || !newWebhookUrl.trim()}
                   className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
                 >
@@ -1441,7 +1411,7 @@ export function Settings() {
                           {t('settings.webhooks.test')}
                         </button>
                         <button
-                          onClick={() => toggleWebhookMutation.mutate({ id: wh.id, enabled: !wh.enabled })}
+                          onClick={() => toggleWebhookMutation.mutate({ id: wh.id, enabled: !wh.enabled }, { onSuccess: () => markRecentlyChanged() })}
                           className={`text-xs px-3 py-1.5 border rounded-md transition-colors ${wh.enabled ? 'border-primary/30 bg-primary/5 text-primary' : 'border-border bg-muted text-muted-foreground'}`}
                         >
                           {wh.enabled ? t('settings.webhooks.enabled') : t('settings.webhooks.disabled')}
@@ -1454,7 +1424,7 @@ export function Settings() {
                               confirmLabel: t('common.delete'),
                               variant: 'danger',
                             }))
-                              deleteWebhookMutation.mutate(wh.id);
+                              deleteWebhookMutation.mutate(wh.id, { onSuccess: () => markRecentlyChanged() });
                           }}
                           className="text-destructive hover:text-destructive/80 transition-colors p-1"
                           title={t('common.delete')}
@@ -1539,7 +1509,6 @@ export function Settings() {
              </div>
           </div>
         )}
-        </div>
       </div>
 
       {ConfirmDialogElement}

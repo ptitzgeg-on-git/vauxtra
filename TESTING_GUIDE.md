@@ -155,3 +155,149 @@ Same workflow for Technitium DNS provider.
 ---
 
 **Ready to test**: Navigate to http://localhost:5173 and follow the checklist above!
+
+---
+
+## E2E Run Report (2026-05-04, UI-only)
+
+Scope executed end-to-end from a clean reset in Dockerized Vauxtra on `http://127.0.0.1:8888`, using browser clicks/forms only (no direct API test calls).
+
+### What was validated
+
+1. Full reset + first-launch wizard reached from a clean state.
+2. Setup without password completed successfully.
+3. Setup with password completed successfully.
+4. Auth flow validated:
+   - invalid password rejected with clear message,
+   - valid password accepted,
+   - sign-out returns to login screen.
+5. Provider CRUD via UI validated in wizard and providers page:
+   - add provider,
+   - edit provider name,
+   - delete provider.
+6. Service import in setup validated:
+   - provider scan detected importable services,
+   - selected service imported successfully.
+7. Service CRUD validated on Endpoints page:
+   - create route,
+   - edit route,
+   - delete route.
+8. Docker endpoint flow validated in setup:
+   - delete last endpoint blocked with explicit error,
+   - add endpoint works,
+   - delete extra endpoint works.
+9. Backup flow validated in Settings:
+   - export without credentials works,
+   - secure export with passphrase works,
+   - restore from backup JSON via file picker works.
+
+### Issues discovered during this run
+
+1. Webhook URL validation is inconsistent:
+   - adding `https://example.invalid/nope` succeeded (`Webhook added`),
+   - later test on same webhook fails (`Invalid or unrecognized Apprise URL`).
+2. Webhook toggle error path appears broken:
+   - toggling enabled/disabled returned `Name and URL are required`.
+3. Restoring a backup that contains empty `settings` returns instance to initial wizard state.
+   - This may be intended for full restore semantics, but behavior should be explicitly documented in-product before confirmation.
+4. Docker endpoint input accepted malformed value when user mistyped duplicated text.
+   - Suggest stricter URL scheme validation before save.
+
+### Recommended follow-up
+
+1. Add frontend + backend validation parity tests for webhook URLs.
+2. Add regression test for webhook enable/disable update payload.
+3. Clarify restore semantics in UI warning (setup reset/auth impact).
+4. Add strict validation for Docker endpoint URL format and supported schemes.
+
+## Post-fix Verification Run (2026-05-04, UI-only, round 2)
+
+Scope: full browser-only validation pass after backend fixes and container rebuild, including Settings tabs, reverse/DNS provider checks, and endpoint up/down lifecycle.
+
+### Verified OK in this round
+
+1. Settings tabs validated end-to-end:
+   - General (WAN policy save, monitoring toggle),
+   - Language (switch to French and back to English),
+   - DNS Domains (add/delete),
+   - Tags (add/delete),
+   - Environments (add/delete),
+   - Import & Sync (scan providers),
+   - Backup & Restore (export plain, export with passphrase, restore from file),
+   - API Keys (create/revoke),
+   - How-To & API (content render),
+   - System Logs (refresh/clear).
+2. Previously reported backend issues now fixed in UI behavior:
+   - invalid webhook URL is rejected at creation,
+   - webhook enable/disable no longer fails with missing required fields,
+   - restore keeps instance in configured state,
+   - Docker endpoint malformed URL validation is stricter.
+3. Provider reverse + DNS validation completed from Vauxtra UI:
+   - Nginx Proxy Manager connected, tested, permissions validated, health 100/100.
+   - AdGuard Home connected, tested, permissions validated, health 100/100.
+4. Endpoint lifecycle validated with both providers selected:
+   - create route (auto-push successful),
+   - drift check reports no drift,
+   - disable then enable works (up/down state transitions),
+   - delete route returns list to empty state.
+
+### Remaining observation
+
+1. During disable flow, endpoint row label briefly rendered with an unexpected trailing `0` before returning to normal after re-enable/refresh.
+   - Logged as low-severity UX follow-up (see UX tracker).
+
+### Additional provider coverage (non-Cloudflare)
+
+1. Traefik provider flow validated in Integrations:
+   - create in expert mode,
+   - validation passes,
+   - provider links successfully.
+2. Pi-hole provider flow validated:
+   - create,
+   - validation passes,
+   - test connection and validate permissions both pass.
+3. Technitium provider flow validated:
+   - create,
+   - validation passes,
+   - test connection and validate permissions both pass.
+4. Docker Host endpoint flow validated from Integrations modal:
+   - endpoint add succeeds with valid host syntax.
+
+### Extra fix applied during this retest
+
+1. Traefik form submit gating bug fixed in frontend.
+   - Before fix: Validate & Connect could stay disabled unless password was filled.
+   - After fix: Traefik password remains optional as intended and submit is enabled with required fields only.
+
+## UX Polish Verification (2026-05-04, UI-only)
+
+Scope: browser validation of navigation and status readability refinements.
+
+### Verified in this pass
+
+1. Dashboard quick actions are visible and route correctly:
+   - Create endpoint -> Services
+   - Add integration -> Providers
+   - Export backup -> Settings/Backup
+   - Open settings -> Settings/General
+2. Global keyboard shortcuts work in-app:
+   - `g` then `d` -> Dashboard
+   - `g` then `p` -> Providers
+   - `g` then `s` -> Settings (General tab)
+3. Settings page now displays breadcrumb context:
+   - format: `System / <active tab>`
+4. Integrations cards show cleaner status language:
+   - operational state and numeric health score are separated to reduce repetition.
+5. Settings save actions trigger a temporary visual highlight on the content panel.
+
+## Documentation Hardening Pass (2026-05-04)
+
+Scope: final user-facing documentation quality pass for release readiness.
+
+### Verified in this pass
+
+1. In-app "How-To & API" tab was removed to prevent duplicated/stale guidance.
+2. README was aligned with current provider setup behavior (notably Cloudflare Tunnel and Pi-hole URL guidance).
+3. Deployment guide was rewritten as a practical production runbook.
+4. Troubleshooting guide was rewritten as an operator-focused incident runbook.
+5. How-To guide was updated as canonical end-user reference.

@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlparse
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
 
@@ -10,6 +11,31 @@ router = APIRouter()
 
 
 DOCKER_HOST_RE = re.compile(r"^(unix|tcp|ssh)://.+")
+
+
+def _is_valid_docker_host(value: str) -> bool:
+    if not DOCKER_HOST_RE.match(value):
+        return False
+    parsed = urlparse(value)
+    scheme = (parsed.scheme or "").lower()
+
+    if scheme == "unix":
+        # unix:///var/run/docker.sock
+        return bool(parsed.path and parsed.path.startswith("/"))
+
+    if scheme == "tcp":
+        # tcp://host:2375 or tcp://127.0.0.1:2376
+        if not parsed.hostname:
+            return False
+        if parsed.port is None:
+            return False
+        return True
+
+    if scheme == "ssh":
+        # ssh://user@host or ssh://host
+        return bool(parsed.hostname)
+
+    return False
 
 
 class DockerEndpointIn(BaseModel):
@@ -29,8 +55,10 @@ class DockerEndpointIn(BaseModel):
     @classmethod
     def val_host(cls, v: str) -> str:
         value = (v or "").strip()
-        if not DOCKER_HOST_RE.match(value):
-            raise ValueError("docker_host must start with unix://, tcp:// or ssh://")
+        if not _is_valid_docker_host(value):
+            raise ValueError(
+                "Invalid docker_host. Use unix:///path.sock, tcp://host:port, or ssh://user@host"
+            )
         return value
 
 

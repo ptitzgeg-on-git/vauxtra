@@ -3,6 +3,14 @@ import {
   LayoutDashboard,
   Globe,
   Settings,
+  Languages,
+  Tag,
+  Layers,
+  RefreshCw,
+  Database,
+  Key,
+  Bell,
+  FileTerminal,
   Activity,
   GitMerge,
   ShieldCheck,
@@ -91,6 +99,16 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
     badgeVariant?: 'default' | 'error' | 'warn';
   };
 
+  const settingsTab = new URLSearchParams(location.search).get('tab') || 'general';
+
+  const isItemActive = (item: NavItem): boolean => {
+    if (item.href.startsWith('/settings?tab=')) {
+      const tab = item.href.split('tab=')[1] || 'general';
+      return location.pathname === '/settings' && settingsTab === tab;
+    }
+    return location.pathname === item.href;
+  };
+
   const groups: Array<{ title: string; items: NavItem[] }> = [
     {
       title: t('nav.group.overview'),
@@ -108,7 +126,21 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
       items: [
         { icon: <Activity size={18} />, label: t('nav.monitoring'), href: '/monitoring', badge: errorServicesCount || undefined, badgeVariant: errorServicesCount > 0 ? 'error' : 'default' },
         { icon: <ShieldCheck size={18} />, label: t('nav.certificates'), href: '/certificates', badge: expiringSoonCount || undefined, badgeVariant: expiringSoonCount > 0 ? 'warn' : 'default' },
-        { icon: <Settings size={18} />, label: t('nav.settings'), href: '/settings' },
+      ],
+    },
+    {
+      title: t('nav.group.system'),
+      items: [
+        { icon: <Settings size={18} />, label: t('settings.tab.general'), href: '/settings?tab=general' },
+        { icon: <Languages size={18} />, label: t('settings.language.title'), href: '/settings?tab=language' },
+        { icon: <Globe size={18} />, label: t('settings.tab.dns'), href: '/settings?tab=dns' },
+        { icon: <Tag size={18} />, label: t('settings.tab.tags'), href: '/settings?tab=tags' },
+        { icon: <Layers size={18} />, label: t('settings.tab.environments'), href: '/settings?tab=environments' },
+        { icon: <RefreshCw size={18} />, label: t('settings.tab.migration'), href: '/settings?tab=migration' },
+        { icon: <Database size={18} />, label: t('settings.tab.backup'), href: '/settings?tab=backup' },
+        { icon: <Key size={18} />, label: t('settings.tab.apikeys'), href: '/settings?tab=apikeys' },
+        { icon: <Bell size={18} />, label: t('settings.tab.webhooks'), href: '/settings?tab=webhooks' },
+        { icon: <FileTerminal size={18} />, label: t('settings.tab.logs'), href: '/settings?tab=logs' },
       ],
     },
   ];
@@ -132,7 +164,7 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
         <nav className="flex flex-col items-center gap-1 flex-1 w-full px-1.5">
           {groups.flatMap((group) =>
             group.items.map((item) => {
-              const isActive = location.pathname === item.href;
+              const isActive = isItemActive(item);
               return (
                 <NavTooltip key={item.href} label={item.label}>
                   <Link
@@ -206,7 +238,7 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
             </p>
             <div className="space-y-0.5">
               {group.items.map((item) => {
-                const isActive = location.pathname === item.href;
+                const isActive = isItemActive(item);
                 return (
                   <Link
                     key={item.href}

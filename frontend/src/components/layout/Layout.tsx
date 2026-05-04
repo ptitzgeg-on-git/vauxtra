@@ -1,15 +1,12 @@
 import { useState, useEffect } from "react";
-import { Outlet, Link, useLocation } from "react-router-dom";
-import { Menu, X, PanelLeftClose, PanelLeftOpen, Settings, ArrowLeft } from "lucide-react";
+import { Outlet, useNavigate } from "react-router-dom";
+import { Menu, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Sidebar } from "./Sidebar";
-import { useT } from "@/i18n";
 
 const STORAGE_KEY = "vauxtra_sidebar_collapsed";
 
 export function Layout() {
-  const location = useLocation();
-  const t = useT();
-  const isSettingsRoute = location.pathname.startsWith("/settings");
+  const navigate = useNavigate();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem(STORAGE_KEY) === "true"; } catch { return false; }
@@ -18,6 +15,67 @@ export function Layout() {
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, String(collapsed)); } catch { /* ignore */ }
   }, [collapsed]);
+
+  useEffect(() => {
+    let awaitingSecondKey = false;
+    let resetTimer: number | null = null;
+
+    const resetCombo = () => {
+      awaitingSecondKey = false;
+      if (resetTimer !== null) {
+        window.clearTimeout(resetTimer);
+        resetTimer = null;
+      }
+    };
+
+    const isTypingTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (isTypingTarget(event.target)) return;
+
+      const key = event.key.toLowerCase();
+
+      if (!awaitingSecondKey) {
+        if (key === "g") {
+          awaitingSecondKey = true;
+          resetTimer = window.setTimeout(resetCombo, 1200);
+        }
+        return;
+      }
+
+      if (key === "d") {
+        navigate("/");
+        event.preventDefault();
+        resetCombo();
+        return;
+      }
+      if (key === "p") {
+        navigate("/providers");
+        event.preventDefault();
+        resetCombo();
+        return;
+      }
+      if (key === "s") {
+        navigate("/settings?tab=general");
+        event.preventDefault();
+        resetCombo();
+        return;
+      }
+
+      resetCombo();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      resetCombo();
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [navigate]);
 
   return (
     <div className="flex h-screen bg-background text-foreground font-sans scroll-smooth">
@@ -60,26 +118,7 @@ export function Layout() {
       {/* Main Content Area */}
       <main className="flex-1 overflow-x-hidden overflow-y-auto scroll-smooth">
         <div className="mt-14 md:mt-0 p-4 sm:p-6 lg:p-8 min-h-[calc(100vh)]">
-           <div className="mb-4 flex items-center justify-end">
-             {isSettingsRoute ? (
-               <Link
-                 to="/"
-                 className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-               >
-                 <ArrowLeft size={16} />
-                       {t('settings.back')}
-               </Link>
-             ) : (
-               <Link
-                 to="/settings"
-                 className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-               >
-                 <Settings size={16} />
-                       {t('nav.settings')}
-               </Link>
-             )}
-           </div>
-           <Outlet />
+          <Outlet />
         </div>
       </main>
 

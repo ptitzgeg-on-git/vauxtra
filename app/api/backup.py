@@ -328,6 +328,12 @@ def import_backup(request: Request, body: RestoreRequest):
                  ep.get("enabled", 1), ep.get("is_default", 0), ep.get("created_at")),
             )
 
+        # A successful restore should always leave the instance out of first-launch mode,
+        # even if the imported backup has no settings rows.
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')"
+        )
+
         conn.commit()
     except HTTPException:
         conn.rollback()
