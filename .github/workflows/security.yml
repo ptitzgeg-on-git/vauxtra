@@ -89,10 +89,17 @@ jobs:
           fail-build: true
           severity-cutoff: high
           output-format: sarif
+          output-file: grype-results.sarif
 
       - name: Upload Grype results to Security tab
         uses: github/codeql-action/upload-sarif@v4
-        if: always() && steps.grype.outcome == 'success'
+        if: always() && hashFiles('grype-results.sarif') != ''
         with:
-          sarif_file: ${{ steps.grype.outputs.sarif }}
+          sarif_file: grype-results.sarif
           category: grype
+
+      - name: Enforce Grype policy
+        if: steps.grype.outcome == 'failure'
+        run: |
+          echo "Grype found vulnerabilities meeting the configured severity cutoff."
+          exit 1
