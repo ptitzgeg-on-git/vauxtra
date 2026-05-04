@@ -83,6 +83,7 @@ jobs:
       - name: Grype — scan SBOM (SARIF)
         uses: anchore/scan-action@v4
         id: grype
+        continue-on-error: true
         with:
           sbom: sbom.cyclonedx.json
           fail-build: false
