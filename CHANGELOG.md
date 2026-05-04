@@ -15,7 +15,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - Technitium DNS Server provider — session-token auth, zone auto-detection, A record CRUD
 - `Makefile` — `dev`, `test`, `lint`, `lint-fix`, `build`, `release` targets
 - `CHANGELOG.md` — this file
-- `vauxtra_mcp/README.md` — MCP server setup guide for Claude Desktop and Cursor
+- `vauxtra_mcp/README.md` — MCP server setup guide for MCP-compatible clients
 - `.github/dependabot.yml` — automated weekly dependency PRs (pip + npm + Actions)
 - `.github/pull_request_template.md` — PR checklist
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
@@ -63,8 +63,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - `app/security.py` — CORS origin validation, domain sanitization, password strength enforcement
 - `app/cache.py` — request-scoped caching with TTL expiration (eliminates N+1 provider calls)
 - `app/errors.py` — unified error handling with standardized error codes across all endpoints
-- ARCHITECTURE.md — system design and component documentation
-- docs/HOWTO.md, docs/DEPLOYMENT.md, docs/TROUBLESHOOTING.md
+- Core operator documentation set: `docs/HOWTO.md`, `docs/DEPLOYMENT.md`, `docs/TROUBLESHOOTING.md`
 
 ### Changed
 - CORS validation: strict origin checking, no wildcards, port and scheme enforcement
@@ -85,7 +84,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - Auto-reconcile scheduler with webhook (Apprise) notifications
 - Certificate expiry monitoring
 - API key authentication (Bearer tokens) for CI/CD and MCP
-- MCP server exposing core operations as tools for Claude Desktop and Cursor
+- MCP server exposing core operations as tools for MCP-compatible clients
 - React 19 + TypeScript SPA with Tailwind CSS
 - SQLite (WAL mode) — zero external dependencies
 - Multi-architecture Docker image (linux/amd64 + linux/arm64) via GHCR

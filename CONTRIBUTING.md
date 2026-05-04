@@ -13,7 +13,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# MCP server (optional, for Claude Desktop / Cursor integration)
+# MCP server (optional, for MCP-compatible client integration)
 pip install -r vauxtra_mcp/requirements.txt
 
 # Start the backend (auto-reloads on file changes)

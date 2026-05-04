@@ -31,7 +31,7 @@
 | **Auto-reconcile scheduler** | Periodic background reconciliation with webhook notifications |
 | **Certificate monitoring** | Track NPM certificates, flag those expiring within 30 days |
 | **API Keys** | Bearer token auth for CI/CD pipelines and MCP server access |
-| **MCP Server** | Expose core operations as tools for AI assistants (Claude Desktop, Cursor) |
+| **MCP Server** | Expose core operations as tools for MCP-compatible clients and automation |
 | **Webhook alerts** | Apprise-compatible webhook for service down/recovery and reconcile events |
 | **Environments & Tags** | Organise services with colour-coded labels |
 | **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — community-driven |
@@ -55,7 +55,7 @@
 │   └───────────────────────────────┘                     │
 └─────────────────────────────────────────────────────────┘
           │
-   MCP Server (FastMCP) — AI assistant integration
+  MCP Server (FastMCP) — client and automation integration
 ```
 
 Vauxtra is an **orchestrator**: it does not run a reverse proxy or DNS server itself — it configures the ones you already have running.
@@ -135,7 +135,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 - Production deployment checklist and recipes: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - Troubleshooting and known failure patterns: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - Security policy and reporting: [SECURITY.md](SECURITY.md)
-- MCP server setup for AI clients: [vauxtra_mcp/README.md](vauxtra_mcp/README.md)
+- MCP server setup for compatible clients: [vauxtra_mcp/README.md](vauxtra_mcp/README.md)
 
 ---
 
@@ -180,18 +180,18 @@ Traefik is **read-only** in Vauxtra (it configures itself via Docker labels or c
 
 ## MCP Integration
 
-Vauxtra ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server package that exposes core operations as AI tools. Connect it to Claude Desktop, Cursor, or any MCP-compatible client.
+Vauxtra ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server package that exposes core operations as tools. Connect it to any MCP-compatible client.
 
 ### Setup
 
 1. Create an API key in Vauxtra: **Settings → API Keys → New Key**.
 2. Note the generated key (shown once at creation).
 
-> The MCP server runs on the host (next to Claude Desktop / Cursor), not inside the Vauxtra Docker image. Clone this repo and `pip install -r vauxtra_mcp/requirements.txt` on the machine that will launch the MCP client. The server reaches Vauxtra over HTTP using `VAUXTRA_URL` + `VAUXTRA_API_KEY`.
+> The MCP server runs on the host (next to your MCP client), not inside the Vauxtra Docker image. Clone this repo and `pip install -r vauxtra_mcp/requirements.txt` on the machine that will launch the client. The server reaches Vauxtra over HTTP using `VAUXTRA_URL` + `VAUXTRA_API_KEY`.
 
-### Claude Desktop config
+### Example MCP client config
 
-Add to `~/.config/claude/claude_desktop_config.json`:
+Add an equivalent server block to your MCP client configuration:
 
 ```json
 {
