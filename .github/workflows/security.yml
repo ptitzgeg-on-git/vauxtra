@@ -20,7 +20,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
@@ -54,7 +54,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Trivy — filesystem scan (SARIF)
         uses: aquasecurity/trivy-action@v0.21.0
@@ -80,16 +80,19 @@ jobs:
           output-file: sbom.cyclonedx.json
           artifact-name: sbom.cyclonedx.json
 
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.96.0
+
       - name: Grype — scan SBOM (SARIF)
-        uses: anchore/scan-action@v4
         id: grype
-        continue-on-error: true
-        with:
-          sbom: sbom.cyclonedx.json
-          fail-build: true
-          severity-cutoff: high
-          output-format: sarif
-          output-file: grype-results.sarif
+        run: |
+          set +e
+          grype db update
+          grype sbom:sbom.cyclonedx.json --fail-on high -o sarif > grype-results.sarif
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Upload Grype results to Security tab
         uses: github/codeql-action/upload-sarif@v4
@@ -99,7 +102,7 @@ jobs:
           category: grype
 
       - name: Enforce Grype policy
-        if: steps.grype.outcome == 'failure'
+        if: steps.grype.outputs.exit_code != '0'
         run: |
           echo "Grype found vulnerabilities meeting the configured severity cutoff."
           exit 1
