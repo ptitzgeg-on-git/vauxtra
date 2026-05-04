@@ -66,7 +66,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Upload Trivy results to Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-results.sarif
@@ -86,13 +86,13 @@ jobs:
         continue-on-error: true
         with:
           sbom: sbom.cyclonedx.json
-          fail-build: false
-          severity-cutoff: critical
+          fail-build: true
+          severity-cutoff: high
           output-format: sarif
 
       - name: Upload Grype results to Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && steps.grype.outcome == 'success'
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype
