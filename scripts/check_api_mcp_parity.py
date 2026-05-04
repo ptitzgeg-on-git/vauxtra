@@ -7,6 +7,10 @@ MCP_PATTERN = re.compile(r'client\.(?:get|post|put|delete|patch)\(f?"(/[^"\\)]*)
 
 ALLOWED_API_ONLY = {
     "/api/logs/stream",  # SSE continuous stream; covered via bounded snapshot helper
+    "/api/providers/{}/dns-records",  # MCP provider endpoints (optional tools)
+    "/api/providers/{}/dns-records/{}",
+    "/api/providers/{}/proxy-hosts",
+    "/api/providers/{}/proxy-hosts/{}",
 }
 
 
