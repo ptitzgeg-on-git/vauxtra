@@ -88,7 +88,7 @@ services:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      - TZ=${TZ:-Europe/Paris}
+      - TZ=${TZ:-UTC}
     restart: unless-stopped
 ```
 
@@ -112,10 +112,9 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 |---|---|---|
 | `SECRET_KEY` | auto-generated | **Do not change after setup.** Used to sign session cookies and encrypt provider credentials. Auto-generated to `data/.secret_key` if left empty. |
 | `APP_PASSWORD` | *(none)* | Password to protect the web interface. Leave empty to configure via Setup wizard. |
-| `TZ` | `Europe/Paris` | Timezone for scheduler and log timestamps. |
+| `TZ` | `UTC` | Timezone for scheduler and log timestamps. |
 | `HTTPS_ONLY` | `false` | Set to `true` when serving directly over HTTPS (not behind a reverse proxy). |
 | `DEBUG` | `false` | Enable `/api/docs` (Swagger UI) and verbose logging. |
-
 | `VAUXTRA_URL` | `http://localhost:8888` | Base URL of this instance (used by the MCP server). |
 | `VAUXTRA_API_KEY` | *(none)* | API key for MCP server auth. Create one in **Settings → API Keys**. |
 | `DOCKER_HOST` | *(env default)* | Docker socket path. Override if using a non-standard location. |

@@ -1,19 +1,21 @@
 import socket
 import time
-from fastapi import APIRouter, Query, Request, HTTPException
-from pydantic import BaseModel, model_validator, field_validator
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, field_validator, model_validator
+
+from app.auth import require_auth
 from app.models import (
-    get_db,
     add_log,
+    get_db,
     row_to_service,
-    set_tags,
     set_environments,
     set_push_targets,
+    set_tags,
 )
 from app.providers.factory import create_provider
-from app.auth import require_auth
 from app.public_target import resolve_public_target, suggest_public_targets
-from app.validators import is_valid_subdomain, is_valid_hostname, is_valid_port
+from app.validators import is_valid_hostname, is_valid_port, is_valid_subdomain
 
 router = APIRouter()
 
@@ -335,9 +337,8 @@ class ServiceIn(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_dependencies(self):
-        if self.expose_mode == "tunnel":
-            if not self.tunnel_provider_id:
-                raise ValueError("Tunnel provider is required in tunnel mode")
+        if self.expose_mode == "tunnel" and not self.tunnel_provider_id:
+            raise ValueError("Tunnel provider is required in tunnel mode")
         return self
 
 

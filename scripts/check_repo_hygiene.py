@@ -38,6 +38,13 @@ FORBIDDEN_REFERENCE_TOKENS = (
     "DOCUMENTATION_INDEX",
 )
 
+REQUIRED_TRACKED_FILES = (
+    ".github/CODEOWNERS",
+    ".github/dependabot.yml",
+    "SECURITY.md",
+    "LICENSE",
+)
+
 
 def _git_ls_files() -> list[str]:
     result = subprocess.run(
@@ -73,12 +80,17 @@ def _find_bad_public_references() -> list[str]:
     return sorted(set(bad_refs))
 
 
+def _find_missing_required_files(files: list[str]) -> list[str]:
+    return sorted(f for f in REQUIRED_TRACKED_FILES if f not in files)
+
+
 def main() -> int:
     tracked = _git_ls_files()
     bad_tracked = _find_bad_tracked_files(tracked)
     bad_refs = _find_bad_public_references()
+    missing_required = _find_missing_required_files(tracked)
 
-    if not bad_tracked and not bad_refs:
+    if not bad_tracked and not bad_refs and not missing_required:
         print("Repo hygiene check passed")
         return 0
 
@@ -92,6 +104,11 @@ def main() -> int:
         print("\nForbidden public references:")
         for ref in bad_refs:
             print(f" - {ref}")
+
+    if missing_required:
+        print("\nMissing required tracked files:")
+        for path in missing_required:
+            print(f" - {path}")
 
     return 1
 

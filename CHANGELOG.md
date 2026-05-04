@@ -5,50 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
-## [1.0.0] — Production Release — May 2, 2026
-
-### 🔐 Security Enhancements
-- **CORS Origin Validation** — Strict validation of CORS origins (no wildcards, port validation, scheme enforcement)
-- **Unified Error Handling** — Standardized error codes and error responses across all endpoints
-- **Request-Scoped Caching** — Per-request cache to prevent N+1 queries and duplicate provider calls
-- **Domain Sanitization** — Protection against domain injection attacks
-- **Password Strength Validation** — Enforced password policy for APP_PASSWORD (12+ chars, mixed case + digits + special)
-
-### ⚡ Performance Improvements
-- **50-80% faster preflight validation** — Request-scoped caching reduces provider calls
-- **3.3x faster provider health checks** — Eliminated duplicate calls
-- **N+1 query prevention** — Request cache ensures single provider call per operation
-- **Optimized middleware stack** — Efficient CORS, security headers, caching
-
-### 📚 Documentation
-- **ARCHITECTURE.md** (420 lines) — Complete system design and component documentation
-- **README.md** — Public project overview and documentation map
-- **docs/HOWTO.md** — End-user operations and API usage guide
-- **docs/DEPLOYMENT.md** — Production deployment runbook
-- **docs/TROUBLESHOOTING.md** — Operator-focused troubleshooting runbook
-
-### 🧪 Testing
-- **23 new security + performance tests** — 100% pass rate, 71/71 total tests passing
-- **Test coverage**: CORS validation, domain sanitization, password strength, request caching, error handling
-
-### New Modules
-- `app/security.py` — CORS validation, domain sanitization, password strength validation
-- `app/cache.py` — Request-scoped caching system with TTL expiration
-- `app/errors.py` — Unified error handling with standardized error codes
-
-### 🔄 Changes
-- `app/main.py` — Enhanced with CORS validation middleware and request cache middleware
-- `vauxtra-dev/docker-compose.integration-test.yml` — Removed obsolete `version:` field
-
-### ✅ Production Ready
-- **8 critical security issues resolved**
-- **Zero breaking changes** — Fully backward compatible
-- **100% test pass rate** — 71/71 tests passing
-- **Comprehensive documentation** — 1,200+ lines
+## [Unreleased]
 
 ---
 
-## [Unreleased]
+## [1.0.1] — 2026-05-04
 
 ### Added
 - Technitium DNS Server provider — session-token auth, zone auto-detection, A record CRUD
@@ -58,17 +19,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - `.github/dependabot.yml` — automated weekly dependency PRs (pip + npm + Actions)
 - `.github/pull_request_template.md` — PR checklist
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
+- `.github/CODEOWNERS` — default code ownership for PR reviews
 - Provider modal now shows a "Project website" link for each integration (NPM, AdGuard, Pi-hole, etc.)
-- `docs/OPEN_SOURCE_HYGIENE.md` — concise open source quality checklist for contributors and release maintainers
+- `docs/OPEN_SOURCE_HYGIENE.md` — open source quality checklist for contributors and release maintainers
+- Grype + Syft SBOM scan added to security workflow; scans run on every PR to `main`
+- cosign keyless image signing on every published Docker image (Sigstore)
+- `ruff.toml` — explicit linter configuration
 
 ### Changed
 - Split `ci.yml` into three focused workflows: `tests.yml`, `docker-publish.yml`, `security.yml`
 - `tests.yml` now runs two parallel jobs: Python (`ruff` + `pytest`) and frontend (`tsc` + `npm run build`)
-- `TZ` default moved from `docker-compose.yml` (`Europe/Paris` hardcoded) to `Dockerfile` (`UTC`, overridable)
+- `TZ` default changed from `Europe/Paris` to `UTC` across all config files and examples
 - `APP_VERSION` is now injected at Docker build time via `ARG`/`ENV`, sourced from the git tag
 - `app/config.py` reads `APP_VERSION` from environment (falls back to `"dev"` for local runs)
-- CONTRIBUTING.md updated to reference new workflow file names
-- In-app "How-To & API" settings panel removed; markdown docs are now the single source of truth for operations guidance
+- `trivy-action` pinned to a specific version (was `@master`)
+- In-app "How-To & API" settings panel removed; markdown docs are the single source of truth
 - Settings and providers navigation streamlined with per-tab system links and keyboard shortcuts (`g` + `d/p/s`)
 - Provider cards now expose clearer operational status labels and health score display
 - README/deployment/troubleshooting guides rewritten for operator-focused workflows
@@ -78,22 +43,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - Removed unused imports across `app/api/` (`get_db_ctx`, `JSONResponse`, `time`, `Any`, `DB_PATH`)
 - Removed unused local variables `new_fqdn` / `old_fqdn` in `app/api/services.py`
 - `tsconfig.json` root: added `ignoreDeprecations: "6.0"` for `baseUrl` deprecation warning in TS 6+
-- Backup restore now forces `setup_completed=1` so restored instances do not fall back to first-launch wizard when `settings` table is empty
+- Backup restore now forces `setup_completed=1` so restored instances skip first-launch wizard when `settings` table is empty
 - Docker endpoint validation hardened to reject malformed `docker_host` URLs
 - Webhook URL validation now enforced consistently on create/update/test; partial update path fixed for enable/disable toggles
 - Pi-hole v6 test flow now releases API sessions after probe to avoid session slot exhaustion
 - Traefik provider submit gating fixed so optional password remains optional
 
 ### Upgrade Notes
-- Existing Docker users must pull and recreate containers to receive updates:
-	- `docker compose pull`
-	- `docker compose up -d`
-- If you depend on the removed in-app How-To panel, switch to `docs/HOWTO.md` for canonical guidance.
-- If your providers use `localhost` URLs from inside Docker, review `VAUXTRA_REWRITE_LOCALHOST` behavior before disabling it.
+- Pull and recreate containers to receive updates:
+  ```bash
+  docker compose pull && docker compose up -d
+  ```
+- If providers use `localhost` URLs from inside Docker, review `VAUXTRA_REWRITE_LOCALHOST` behavior.
 
 ---
 
-## [0.1.0] — Initial release
+## [1.0.0] — 2026-05-02
+
+### Added
+- `app/security.py` — CORS origin validation, domain sanitization, password strength enforcement
+- `app/cache.py` — request-scoped caching with TTL expiration (eliminates N+1 provider calls)
+- `app/errors.py` — unified error handling with standardized error codes across all endpoints
+- ARCHITECTURE.md — system design and component documentation
+- docs/HOWTO.md, docs/DEPLOYMENT.md, docs/TROUBLESHOOTING.md
+
+### Changed
+- CORS validation: strict origin checking, no wildcards, port and scheme enforcement
+- Error responses: standardized codes and shapes across all API endpoints
+- `app/main.py` — CORS validation middleware and request cache middleware added
+
+### Fixed
+- 8 security issues resolved (CORS, domain injection, password policy, session handling)
+
+---
+
+## [0.1.0] — 2026-04-01
 
 ### Added
 - Multi-provider service management (NPM, Traefik, Cloudflare, Pi-hole, AdGuard Home, Cloudflare Tunnel)
@@ -106,3 +90,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - React 19 + TypeScript SPA with Tailwind CSS
 - SQLite (WAL mode) — zero external dependencies
 - Multi-architecture Docker image (linux/amd64 + linux/arm64) via GHCR
+
+---
+
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v0.1.0

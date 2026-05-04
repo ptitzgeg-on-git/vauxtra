@@ -4,8 +4,8 @@ from typing import Any, Literal
 
 import httpx
 
-from vauxtra_mcp.app import mcp
 from vauxtra_mcp import client
+from vauxtra_mcp.app import mcp
 
 
 @mcp.tool()

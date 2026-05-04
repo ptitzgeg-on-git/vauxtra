@@ -12,7 +12,7 @@ $StateRoot = Join-Path $RepoRoot "lab/providers/state"
 $ProjectName = "vauxtra-providers"
 
 $LabDefaults = [ordered]@{
-  TZ = "Europe/Paris"
+  TZ = "UTC"
   PIHOLE_WEBPASSWORD = "admin"
   TECHNITIUM_ADMIN_PASSWORD = "admin"
   ADGUARD_ADMIN_USERNAME = "admin"

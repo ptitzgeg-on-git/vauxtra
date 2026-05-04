@@ -3,7 +3,8 @@ import hmac
 import os
 import secrets
 
-from fastapi import Request, HTTPException
+from fastapi import HTTPException, Request
+
 from app.config import APP_PASSWORD
 
 _ALLOW_PLAINTEXT_APP_PASSWORD = os.environ.get(
@@ -44,7 +45,7 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
     """
     if not stored_hash:
         return False
-    
+
     # PBKDF2 format only
     if stored_hash.startswith("pbkdf2:"):
         try:
@@ -56,7 +57,7 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
             iterations = int(iterations_str)
             salt = bytes.fromhex(salt_hex)
             expected_hash = bytes.fromhex(hash_hex)
-            
+
             dk = hashlib.pbkdf2_hmac(
                 hash_name,
                 password.encode(),
@@ -67,7 +68,7 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
             return hmac.compare_digest(dk, expected_hash)
         except (ValueError, KeyError):
             return False
-    
+
     return False
 
 

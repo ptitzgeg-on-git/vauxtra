@@ -1,13 +1,14 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from app.models import get_db, get_db_ctx, add_log
-from app.providers.factory import create_provider, PROVIDER_TYPES
+
 from app.auth import require_auth, require_auth_or_setup
-from app.validators import is_valid_url
 from app.config import encrypt_secret
+from app.models import add_log, get_db, get_db_ctx
+from app.providers.factory import PROVIDER_TYPES, create_provider
+from app.validators import is_valid_url
 
 router = APIRouter()
 
@@ -458,11 +459,11 @@ def _check_provider_capability(provider_type: str, capability: str) -> tuple[boo
     """
     provider_meta = PROVIDER_TYPES.get(provider_type, {})
     capabilities = provider_meta.get("capabilities", {})
-    
+
     if capability not in capabilities or not capabilities[capability]:
         provider_label = provider_meta.get("label", provider_type)
         return False, f"Provider '{provider_label}' does not support {capability} management"
-    
+
     return True, ""
 
 
@@ -482,15 +483,15 @@ def list_dns_records(pid: int, request: Request):
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(404, "Provider not found")
-    
+
     # Check capability
     has_dns, error_msg = _check_provider_capability(row["type"], "dns")
     if not has_dns:
         raise HTTPException(400, error_msg)
-    
+
     try:
         provider = create_provider(row)
         records = provider.list_rewrites()
@@ -506,15 +507,15 @@ def create_dns_record(pid: int, request: Request, body: DNSRecordIn):
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(404, "Provider not found")
-    
+
     # Check capability
     has_dns, error_msg = _check_provider_capability(row["type"], "dns")
     if not has_dns:
         raise HTTPException(400, error_msg)
-    
+
     try:
         provider = create_provider(row)
         success = provider.add_rewrite(body.domain, body.answer)
@@ -535,15 +536,15 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(404, "Provider not found")
-    
+
     # Check capability
     has_dns, error_msg = _check_provider_capability(row["type"], "dns")
     if not has_dns:
         raise HTTPException(400, error_msg)
-    
+
     try:
         provider = create_provider(row)
         # If answer not provided, find it from list
@@ -553,10 +554,10 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
                 if r.get("domain") == domain:
                     answer = r.get("answer")
                     break
-        
+
         if not answer:
             raise HTTPException(404, "DNS record not found")
-        
+
         success = provider.delete_rewrite(domain, answer)
         if not success:
             raise HTTPException(400, "Failed to delete DNS record (provider rejected)")
@@ -586,15 +587,15 @@ def list_proxy_hosts(pid: int, request: Request):
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(404, "Provider not found")
-    
+
     # Check capability
     has_proxy, error_msg = _check_provider_capability(row["type"], "proxy")
     if not has_proxy:
         raise HTTPException(400, error_msg)
-    
+
     try:
         provider = create_provider(row)
         hosts = provider.list_hosts()
@@ -612,15 +613,15 @@ def create_proxy_host(pid: int, request: Request, body: ProxyHostIn):
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(404, "Provider not found")
-    
+
     # Check capability
     has_proxy, error_msg = _check_provider_capability(row["type"], "proxy")
     if not has_proxy:
         raise HTTPException(400, error_msg)
-    
+
     try:
         provider = create_provider(row)
         primary_domain = body.domain_names[0].strip()
@@ -650,15 +651,15 @@ def delete_proxy_host(pid: int, host_id: str, request: Request):
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(404, "Provider not found")
-    
+
     # Check capability
     has_proxy, error_msg = _check_provider_capability(row["type"], "proxy")
     if not has_proxy:
         raise HTTPException(400, error_msg)
-    
+
     try:
         provider = create_provider(row)
         success = provider.delete_host(int(host_id))

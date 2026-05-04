@@ -1,6 +1,10 @@
 name: Security Scan
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
     - cron: "0 3 * * 1"  # every Monday at 03:00 UTC
   workflow_dispatch:
@@ -9,12 +13,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  scan:
-    name: Trivy vulnerability scan
+  audit:
+    name: Dependency audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
 
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +26,19 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install pip-audit
-        run: python -m pip install pip-audit -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Run pip-audit
-        run: python -m pip_audit --requirement requirements.txt
+      - name: pip-audit (Python dependencies)
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit --requirement requirements.txt
+
+      - name: npm audit (frontend dependencies)
+        run: cd frontend && npm ci && npm audit --audit-level=high
 
       - name: API-MCP parity gate
         run: python scripts/check_api_mcp_parity.py
@@ -35,8 +46,18 @@ jobs:
       - name: Repo hygiene gate
         run: python scripts/check_repo_hygiene.py
 
-      - name: Run Trivy on repository
-        uses: aquasecurity/trivy-action@master
+  vuln-scan:
+    name: Vulnerability scan (Trivy + Grype)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy — filesystem scan (SARIF)
+        uses: aquasecurity/trivy-action@0.24.0
         with:
           scan-type: fs
           scan-ref: .
@@ -44,8 +65,33 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
 
-      - name: Upload results to GitHub Security tab
+      - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: trivy-results.sarif
+          category: trivy
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+          artifact-name: sbom.cyclonedx.json
+
+      - name: Grype — scan SBOM (SARIF)
+        uses: anchore/scan-action@v4
+        id: grype
+        with:
+          sbom: sbom.cyclonedx.json
+          fail-build: false
+          severity-cutoff: critical
+          output-format: sarif
+
+      - name: Upload Grype results to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype

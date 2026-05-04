@@ -29,15 +29,16 @@ Claude Desktop config (~/.config/claude/claude_desktop_config.json):
 """
 import sys
 
-# Import the shared mcp instance first
-from vauxtra_mcp.app import mcp  # noqa: F401
+import vauxtra_mcp.tools.admin  # noqa: F401
+import vauxtra_mcp.tools.monitoring  # noqa: F401
+import vauxtra_mcp.tools.operations  # noqa: F401
+import vauxtra_mcp.tools.providers  # noqa: F401
 
 # Register all tool modules (decorators fire at import time)
-import vauxtra_mcp.tools.services    # noqa: F401
-import vauxtra_mcp.tools.providers   # noqa: F401
-import vauxtra_mcp.tools.operations  # noqa: F401
-import vauxtra_mcp.tools.monitoring  # noqa: F401
-import vauxtra_mcp.tools.admin       # noqa: F401
+import vauxtra_mcp.tools.services  # noqa: F401
+
+# Import the shared mcp instance first
+from vauxtra_mcp.app import mcp  # noqa: F401
 
 if __name__ == "__main__":
     if "--http" in sys.argv:

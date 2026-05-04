@@ -1,8 +1,9 @@
 from urllib.parse import quote
 
 import requests
-from app.providers.base import DNSProvider
+
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import DNSProvider
 
 
 class PiholeProvider(DNSProvider):

@@ -1,7 +1,8 @@
 """MCP tools — provider management and health checks."""
 from typing import Any
-from vauxtra_mcp.app import mcp
+
 from vauxtra_mcp import client
+from vauxtra_mcp.app import mcp
 
 
 @mcp.tool()

@@ -1,5 +1,6 @@
 import re
 from urllib.parse import urlparse
+
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
 
@@ -27,9 +28,7 @@ def _is_valid_docker_host(value: str) -> bool:
         # tcp://host:2375 or tcp://127.0.0.1:2376
         if not parsed.hostname:
             return False
-        if parsed.port is None:
-            return False
-        return True
+        return parsed.port is not None
 
     if scheme == "ssh":
         # ssh://user@host or ssh://host
@@ -231,14 +230,14 @@ def delete_docker_endpoint(endpoint_id: int, request: Request):
 def _extract_container_port(attrs: dict) -> int | None:
     network = attrs.get("NetworkSettings", {}) or {}
     ports = network.get("Ports") or {}
-    for key in ports.keys():
+    for key in ports:
         try:
             return int(str(key).split("/")[0])
         except Exception:
             continue
 
     exposed = (attrs.get("Config", {}) or {}).get("ExposedPorts") or {}
-    for key in exposed.keys():
+    for key in exposed:
         try:
             return int(str(key).split("/")[0])
         except Exception:

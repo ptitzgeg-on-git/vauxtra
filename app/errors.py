@@ -1,36 +1,36 @@
 """Unified error handling for Vauxtra."""
 
 import logging
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+
 from fastapi import HTTPException, status
 
 _logger = logging.getLogger(__name__)
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """Standardized error codes for API responses."""
-    
+
     # Authentication & Authorization
     UNAUTHORIZED = "UNAUTHORIZED"
     FORBIDDEN = "FORBIDDEN"
-    
+
     # Validation
     INVALID_INPUT = "INVALID_INPUT"
     INVALID_DOMAIN = "INVALID_DOMAIN"
     INVALID_IP = "INVALID_IP"
     INVALID_PORT = "INVALID_PORT"
-    
+
     # Resource management
     NOT_FOUND = "NOT_FOUND"
     ALREADY_EXISTS = "ALREADY_EXISTS"
     CONFLICT = "CONFLICT"
-    
+
     # Provider operations
     PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
     PROVIDER_AUTH_FAILED = "PROVIDER_AUTH_FAILED"
     PROVIDER_OPERATION_FAILED = "PROVIDER_OPERATION_FAILED"
-    
+
     # System
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
@@ -38,14 +38,14 @@ class ErrorCode(str, Enum):
 
 class VauxtraException(Exception):
     """Base exception for Vauxtra."""
-    
+
     def __init__(
         self,
         code: ErrorCode,
         message: str,
         http_status: int = status.HTTP_400_BAD_REQUEST,
-        detail: Optional[str] = None,
-        error_id: Optional[str] = None,
+        detail: str | None = None,
+        error_id: str | None = None,
     ):
         self.code = code
         self.message = message
@@ -53,7 +53,7 @@ class VauxtraException(Exception):
         self.detail = detail
         self.error_id = error_id
         super().__init__(message)
-    
+
     def to_http_exception(self) -> HTTPException:
         """Convert to FastAPI HTTPException."""
         return HTTPException(
@@ -69,13 +69,13 @@ class VauxtraException(Exception):
 
 class ProviderException(VauxtraException):
     """Exception from provider operations."""
-    
+
     def __init__(
         self,
         provider_type: str,
         operation: str,
         error: str,
-        detail: Optional[str] = None,
+        detail: str | None = None,
     ):
         message = f"{provider_type}: {operation} failed — {error}"
         super().__init__(
@@ -90,7 +90,7 @@ class ProviderException(VauxtraException):
 
 class ValidationError(VauxtraException):
     """Validation error for input data."""
-    
+
     def __init__(self, field: str, reason: str):
         message = f"Invalid {field}: {reason}"
         super().__init__(
@@ -143,10 +143,10 @@ def safe_provider_call(
                     "error": error_msg,
                 },
             )
-        
+
         if default_on_error is not None:
             return default_on_error
-        
+
         raise ProviderException(
             provider_type=provider_type,
             operation=operation,

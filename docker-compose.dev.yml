@@ -6,5 +6,5 @@ services:
     env_file:
       - .env
     environment:
-      - TZ=${TZ:-Europe/Paris}
+      - TZ=${TZ:-UTC}
       - DEBUG=true

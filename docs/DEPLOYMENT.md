@@ -24,7 +24,7 @@ services:
     ports:
       - "8888:8888"
     environment:
-      TZ: Europe/Paris
+      TZ: UTC
       HTTPS_ONLY: "false"
       DEBUG: "false"
       # Optional but recommended in production:
@@ -122,7 +122,7 @@ Recovery rule:
 |---|---|---|
 | `SECRET_KEY` | auto-generated | Set explicitly for predictable recovery and keep stable |
 | `APP_PASSWORD` | empty | Set for non-wizard bootstrap or leave empty for setup flow |
-| `TZ` | `Europe/Paris` | Set to your timezone |
+| `TZ` | `UTC` | Set to your timezone |
 | `HTTPS_ONLY` | `false` | Use `true` only when app itself is served over HTTPS |
 | `DEBUG` | `false` | Keep `false` in production |
 | `CORS_ORIGINS` | local defaults | Restrict to actual frontend origins |

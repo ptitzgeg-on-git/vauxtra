@@ -1,8 +1,9 @@
 """Nginx Proxy Manager provider — proxy host and certificate management."""
 
 import requests
-from app.providers.base import ProxyProvider
+
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import ProxyProvider
 
 
 class NPMProvider(ProxyProvider):

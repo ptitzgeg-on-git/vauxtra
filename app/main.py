@@ -1,44 +1,44 @@
-import os
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from app.limiter import limiter
+from starlette.middleware.sessions import SessionMiddleware
 
-from app.config import SECRET_KEY, HTTPS_ONLY, DEBUG
+import app.cache as cache_module
+from app.config import DEBUG, HTTPS_ONLY, SECRET_KEY
+from app.limiter import limiter
 from app.models import init_db
 from app.security import validate_cors_origins
-import app.cache as cache_module
 
 _logger = logging.getLogger(__name__)
 
-from app.api.health        import router as health_router
-from app.api.providers     import router as providers_router
-from app.api.services      import router as services_router
-from app.api.tags          import router as tags_router
-from app.api.settings      import router as settings_router
-from app.api.backup        import router as backup_router
-from app.api.certificates  import router as certificates_router
-from app.api.environments  import router as environments_router
-from app.api.webhooks      import router as webhooks_router
-from app.api.sync          import router as sync_router
-from app.api.docker        import router as docker_router
-from app.api.api_keys      import router as api_keys_router
-from app.api.auth          import router as auth_router
+from app.api.api_keys import router as api_keys_router
+from app.api.auth import router as auth_router
+from app.api.backup import router as backup_router
+from app.api.certificates import router as certificates_router
+from app.api.docker import router as docker_router
+from app.api.environments import router as environments_router
+from app.api.health import router as health_router
+from app.api.providers import router as providers_router
+from app.api.services import router as services_router
+from app.api.settings import router as settings_router
+from app.api.sync import router as sync_router
+from app.api.tags import router as tags_router
+from app.api.webhooks import router as webhooks_router
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
-    from app.scheduler import start
     from app.models import get_db
+    from app.scheduler import start
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key='check_interval'").fetchone()
     conn.close()
@@ -91,11 +91,10 @@ app.add_middleware(
 async def request_cache_middleware(request: Request, call_next):
     """Create per-request cache to avoid N+1 queries."""
     from app.cache import RequestCache
-    import app.cache as cache_module
-    
+
     # Create fresh cache for this request
     cache_module._request_cache = RequestCache()
-    
+
     try:
         response = await call_next(request)
         return response

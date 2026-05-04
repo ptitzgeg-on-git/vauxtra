@@ -6,9 +6,13 @@ import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.models import get_db, add_log
+from app.models import add_log, get_db
 from app.providers.factory import create_provider
-from app.public_target import detect_server_public_ip, load_public_target_policy, resolve_public_target
+from app.public_target import (
+    detect_server_public_ip,
+    load_public_target_policy,
+    resolve_public_target,
+)
 
 _scheduler = BackgroundScheduler(daemon=True)
 _lock      = threading.Lock()
@@ -260,7 +264,7 @@ def _run_dns_auto_updates(conn) -> None:
     auto-update is disabled until manually re-enabled via the UI.
     """
     global _dns_update_failures
-    
+
     services = conn.execute(
         """
         SELECT id, subdomain, domain, dns_ip, dns_provider_id, proxy_provider_id
@@ -323,7 +327,7 @@ def _run_dns_auto_updates(conn) -> None:
             # Increment failure count
             _dns_update_failures[sid] = _dns_update_failures.get(sid, 0) + 1
             state_changed = True
-            
+
             if _dns_update_failures[sid] >= _DNS_FAILURE_THRESHOLD:
                 # Circuit-breaker triggered: disable auto-update for this service
                 conn.execute("UPDATE services SET auto_update_dns=0 WHERE id=?", (sid,))
@@ -335,7 +339,7 @@ def _run_dns_auto_updates(conn) -> None:
                 del _dns_update_failures[sid]
             else:
                 add_log("error", f"[AutoDNS] {fqdn}: {e} (failure {_dns_update_failures[sid]}/{_DNS_FAILURE_THRESHOLD})", conn)
-    
+
     if state_changed:
         _save_scheduler_state()
 
@@ -536,7 +540,7 @@ def start(interval_minutes: int = 0) -> None:
     """Start the scheduler. Call once at application startup."""
     # Load persisted alert state from database
     _load_scheduler_state()
-    
+
     configure(interval_minutes)
 
     # Load auto-reconcile settings from DB

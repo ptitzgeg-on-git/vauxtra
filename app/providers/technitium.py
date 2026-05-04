@@ -1,8 +1,9 @@
 """Technitium DNS Server provider — DNS rewrite management via HTTP API."""
 
 import requests
-from app.providers.base import DNSProvider
+
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import DNSProvider
 
 
 class TechnitiumProvider(DNSProvider):

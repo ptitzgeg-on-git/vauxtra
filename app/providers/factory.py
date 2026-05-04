@@ -2,14 +2,14 @@ import json
 import os
 from urllib.parse import urlsplit, urlunsplit
 
-from app.providers.adguard      import AdGuardProvider
-from app.providers.npm          import NPMProvider
-from app.providers.pihole       import PiholeProvider
-from app.providers.cloudflare   import CloudflareProvider
-from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
-from app.providers.traefik      import TraefikProvider
-from app.providers.technitium   import TechnitiumProvider
 from app.config import decrypt_secret
+from app.providers.adguard import AdGuardProvider
+from app.providers.cloudflare import CloudflareProvider
+from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
+from app.providers.npm import NPMProvider
+from app.providers.pihole import PiholeProvider
+from app.providers.technitium import TechnitiumProvider
+from app.providers.traefik import TraefikProvider
 
 PROVIDER_TYPES = {
     "npm": {
@@ -327,7 +327,7 @@ def create_provider(provider_row):
 
     cls, needs_extra = entry
     if needs_extra:
-        extra_raw = provider_row["extra"] if "extra" in provider_row.keys() else "{}"
+        extra_raw = provider_row.get("extra", "{}")
         try:
             extra = json.loads(extra_raw) if extra_raw else {}
         except Exception:

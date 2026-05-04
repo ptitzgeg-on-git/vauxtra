@@ -1,17 +1,16 @@
+import base64
 import json
 import os
-import base64
-from datetime import datetime, timezone
-from fastapi import APIRouter, Request, HTTPException
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
-from app.models import get_db, add_log
+
 from app.auth import require_auth, require_auth_or_setup
+from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, encrypt_secret
 from app.limiter import limiter
-from app.config import (
-    decrypt_secret, encrypt_secret,
-    encrypt_for_backup, decrypt_from_backup
-)
+from app.models import add_log, get_db
 
 router = APIRouter()
 
@@ -45,7 +44,7 @@ def export_backup(request: Request):
     try:
         data = {
             "version":             _BACKUP_VERSION,
-            "exported_at":         datetime.now(timezone.utc).isoformat(),
+            "exported_at":         datetime.now(UTC).isoformat(),
             "secrets_included":    False,
             "providers":           [
                 {**dict(r), "password": ""}
@@ -72,7 +71,7 @@ def export_backup(request: Request):
     finally:
         conn.close()
 
-    filename = f"vauxtra-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    filename = f"vauxtra-backup-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.json"
     return Response(
         content=json.dumps(data, indent=2, ensure_ascii=False),
         media_type="application/json",
@@ -113,7 +112,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
 
         data = {
             "version":             _BACKUP_VERSION,
-            "exported_at":         datetime.now(timezone.utc).isoformat(),
+            "exported_at":         datetime.now(UTC).isoformat(),
             "secrets_included":    True,
             "encryption_salt":     salt_b64,
             "providers":           providers,
@@ -136,7 +135,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
     finally:
         conn.close()
 
-    filename = f"vauxtra-backup-secure-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    filename = f"vauxtra-backup-secure-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.json"
     add_log("info", "Secure backup exported with encrypted secrets")
     return Response(
         content=json.dumps(data, indent=2, ensure_ascii=False),
@@ -150,20 +149,20 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
 def import_backup(request: Request, body: RestoreRequest):
     """Restore from backup. If backup contains encrypted secrets, passphrase is required."""
     require_auth_or_setup(request, scope="admin")
-    
+
     data = body.backup
     if not isinstance(data, dict) or "version" not in data:
         raise HTTPException(400, "Invalid backup format")
-    
+
     secrets_included = data.get("secrets_included", False)
     salt_b64 = data.get("encryption_salt", "")
-    
+
     if secrets_included and not body.passphrase:
         raise HTTPException(400, "This backup contains encrypted secrets. Passphrase is required.")
-    
+
     if secrets_included and not salt_b64:
         raise HTTPException(400, "Backup is corrupted: missing encryption salt")
-    
+
     salt = base64.urlsafe_b64decode(salt_b64) if salt_b64 else b""
 
     conn = get_db()
@@ -195,7 +194,7 @@ def import_backup(request: Request, body: RestoreRequest):
                     password = encrypt_secret(decrypted)
                 except Exception as e:
                     raise HTTPException(400, f"Failed to decrypt provider secrets. Wrong passphrase? ({e})")
-            
+
             conn.execute(
                 """INSERT OR REPLACE INTO providers
                    (id, name, type, url, username, password, extra, enabled, created_at)

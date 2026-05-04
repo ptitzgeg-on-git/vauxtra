@@ -1,14 +1,14 @@
 """Authentication endpoints — login, logout, session check, password setup."""
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import (
-    get_session,
-    is_authenticated,
-    has_password_configured,
     check_password,
+    get_session,
+    has_password_configured,
     hash_password,
+    is_authenticated,
     require_auth,
     require_auth_or_setup,
 )
@@ -44,7 +44,7 @@ def auth_me(request: Request):
         provider_count = conn.execute("SELECT COUNT(*) as c FROM providers").fetchone()["c"]
     finally:
         conn.close()
-    
+
     return {
         "authenticated": is_authenticated(request),
         "auth_required": has_password_configured(),
@@ -74,7 +74,7 @@ def auth_login(request: Request, body: LoginBody):
     Failed attempts include a small delay to slow down brute-force attacks.
     """
     import time
-    
+
     if not has_password_configured():
         raise HTTPException(400, "Authentication is disabled — no password configured")
 
@@ -129,7 +129,7 @@ def setup_password(request: Request, body: SetPasswordBody):
 def change_password(request: Request, body: ChangePasswordBody):
     """Change the admin password (requires current password verification)."""
     require_auth(request)
-    
+
     if not check_password(body.current_password):
         raise HTTPException(401, "Current password is incorrect")
 

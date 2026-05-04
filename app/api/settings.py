@@ -1,9 +1,10 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, Request, HTTPException
-from app.models import get_db, add_log
+from fastapi import APIRouter, HTTPException, Request
+
 from app.auth import require_auth
+from app.models import add_log, get_db
 
 try:
     from sse_starlette.sse import EventSourceResponse as _SSEResponse

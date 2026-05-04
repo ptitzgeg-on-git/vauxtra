@@ -1,8 +1,9 @@
 """AdGuard Home provider — DNS rewrite management."""
 
 import requests
-from app.providers.base import DNSProvider
+
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import DNSProvider
 
 
 class AdGuardProvider(DNSProvider):
