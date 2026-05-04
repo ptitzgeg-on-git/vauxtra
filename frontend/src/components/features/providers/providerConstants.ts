@@ -259,27 +259,31 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
   ],
   npm: [
     {
-      title: 'Enter your NPM URL',
-      body: "Nginx Proxy Manager's admin panel is typically at http://<npm-host>:81. Enter the full URL below.",
+      title: 'Create a dedicated NPM user',
+      body: 'Vauxtra needs a user account in Nginx Proxy Manager to manage proxy hosts.\n\n1. Open NPM at http://<npm-host>:81\n2. Go to Users (top-right menu) → Add User\n3. Fill in name, email and a strong password\n4. Under Permissions, enable Manage Proxy Hosts\n5. Save — then use that email and password in the next step\n\nTip: Using a dedicated Vauxtra user (instead of admin) limits blast radius.',
+    },
+    {
+      title: 'Enter the NPM URL',
+      body: 'Enter the URL of your NPM admin panel. The default port is 81.',
       fields: [
         {
           key: 'url',
           label: 'NPM URL',
-          placeholder: 'http://npm:81',
-          hint: 'Default admin port is 81. Use the internal hostname or IP.',
+          placeholder: 'http://192.168.1.10:81',
+          hint: 'Use the internal IP or hostname. Include the port (default: 81).',
           inputType: 'url',
         },
       ],
     },
     {
       title: 'NPM Credentials',
-      body: 'In NPM go to Users → Add User. Create a user with "Manage Proxy Hosts" permission. Enter its credentials below.',
+      body: 'Enter the email and password of the NPM user you created in step 1.',
       fields: [
         {
           key: 'username',
           label: 'Email',
-          placeholder: 'user@example.com',
-          hint: 'The NPM user email.',
+          placeholder: 'vauxtra@example.com',
+          hint: 'The email you set when creating the NPM user.',
           inputType: 'text',
         },
         {
@@ -293,21 +297,25 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
   ],
   pihole: [
     {
-      title: 'Pi-hole URL and API key',
-      body: 'Find your API token in Pi-hole Settings → API / Web interface → Show API token.\nEnter the Pi-hole URL and token below.',
+      title: 'Find your Pi-hole API token',
+      body: 'Vauxtra uses the Pi-hole API to manage local DNS entries.\n\nTo find your API token:\n  Pi-hole v5:  Settings → API / Web interface → Show API token\n  Pi-hole v6:  Settings → API → Create / show API key\n\nAlternatively, you can use your admin panel password directly.\nThe URL is typically http://<pi-hole-ip> (port 80, no /admin suffix).',
+    },
+    {
+      title: 'Pi-hole URL and credentials',
+      body: 'Enter the Pi-hole URL and the API token (or admin password) you located in the previous step.',
       fields: [
         {
           key: 'url',
           label: 'Pi-hole URL',
-          placeholder: 'http://10.0.0.53',
-          hint: 'IP or hostname of your Pi-hole. No /admin suffix needed.',
+          placeholder: 'http://192.168.1.53',
+          hint: 'IP or hostname only — no /admin suffix needed.',
           inputType: 'url',
         },
         {
           key: 'password',
           label: 'API Token / Admin password',
           placeholder: '(paste API token or admin password)',
-          hint: 'Settings → API / Web interface → Show API token.',
+          hint: 'Settings → API / Web interface → Show API token (v5) or Settings → API (v6).',
           inputType: 'password',
         },
       ],
@@ -315,14 +323,14 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
   ],
   adguard: [
     {
-      title: 'AdGuard Home credentials',
-      body: 'AdGuard Home uses the same username/password as the web admin panel (port 3000 by default).',
+      title: 'AdGuard Home connection details',
+      body: 'Vauxtra uses the AdGuard Home REST API with your web admin credentials.\n\nNo extra configuration is needed in AdGuard — just use the same username and password as the admin panel.\n\nDefault URL: http://<host>:3000\nDefault credentials set during first-run setup.',
       fields: [
         {
           key: 'url',
           label: 'AdGuard URL',
-          placeholder: 'http://adguard:3000',
-          hint: 'Default port is 3000.',
+          placeholder: 'http://192.168.1.10:3000',
+          hint: 'Default port is 3000. Use the internal IP or hostname.',
           inputType: 'url',
         },
         {
@@ -343,13 +351,13 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
   traefik: [
     {
       title: 'Expose the Traefik API',
-      body: 'Vauxtra reads Traefik config read-only — it does not write any files.\n\nExpose the API at a reachable URL (e.g. --api.insecure=true or via a dedicated router). Credentials are optional unless you added BasicAuth.',
+      body: 'Vauxtra reads Traefik in read-only mode — it never modifies your routing configuration.\n\nYou need to expose the Traefik API on a reachable URL. Two common ways:\n\n  Option A — Insecure (quick test):\n    Add --api.insecure=true to your Traefik static config.\n    API will be available at http://<host>:8080/api/\n\n  Option B — Secure router (recommended):\n    Create a dedicated Traefik entrypoint/router for /api/\n    Add BasicAuth middleware if you want credentials.\n\nLeave username/password blank if no auth is configured.',
       fields: [
         {
           key: 'url',
           label: 'Traefik API URL',
-          placeholder: 'http://traefik:8080',
-          hint: 'The Traefik API endpoint. No auth required unless configured.',
+          placeholder: 'http://192.168.1.10:8080',
+          hint: 'Full URL to the Traefik API dashboard (no /api suffix needed).',
           inputType: 'url',
         },
       ],
@@ -357,14 +365,18 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
   ],
   technitium: [
     {
-      title: 'Technitium DNS credentials',
-      body: 'Enter the URL of your Technitium DNS Server web console (default port 5380). Use the same credentials as the web interface.',
+      title: 'Prepare your DNS zones',
+      body: 'Vauxtra creates A records inside your existing Technitium zones.\n\nBefore connecting, you need at least one DNS zone set up in Technitium.\n\nTo create a zone:\n  1. Open Technitium at http://<host>:5380\n  2. Go to the Zones tab → Add Zone\n  3. Choose Primary Zone, enter your domain (e.g. home.lab or home.local)\n  4. Click Save\n\nVauxtra will auto-detect the correct zone for each service domain it manages.',
+    },
+    {
+      title: 'Technitium credentials',
+      body: 'Enter the URL of your Technitium web console and your admin credentials.\nDefault port is 5380.',
       fields: [
         {
           key: 'url',
           label: 'Technitium URL',
-          placeholder: 'http://technitium:5380',
-          hint: 'Default port is 5380.',
+          placeholder: 'http://192.168.1.10:5380',
+          hint: 'Default port is 5380. Use the internal IP or hostname.',
           inputType: 'url',
         },
         {
@@ -380,10 +392,6 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
           inputType: 'password',
         },
       ],
-    },
-    {
-      title: 'Prepare your DNS zones',
-      body: 'Vauxtra creates A records inside your existing Technitium zones.\n\nMake sure the zones you want to manage are already created in Technitium (e.g. home.local). Vauxtra will auto-detect the right zone for each domain it needs to update.',
     },
   ],
 };

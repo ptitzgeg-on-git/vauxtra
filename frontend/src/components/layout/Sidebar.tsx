@@ -287,7 +287,7 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-[11px] px-2 pt-1">
-          <a href="https://github.com/ptitzgeg-on-git/vauxtra/wiki" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <a href="https://github.com/ptitzgeg-on-git/vauxtra/blob/main/docs/HOWTO.md" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
             <BookOpen size={12} />
             {t('nav.docs')}
           </a>
