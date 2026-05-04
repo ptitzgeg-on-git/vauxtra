@@ -67,7 +67,7 @@ def save_settings(request: Request, body: dict):
                 timeout = float(value)
                 if timeout < 0.5 or timeout > 10.0:
                     continue
-            except Exception:
+            except (TypeError, ValueError):
                 continue
         if key == "public_target_priority" and not _is_valid_public_target_priority(str(value)):
             continue
@@ -81,7 +81,7 @@ def save_settings(request: Request, body: dict):
         try:
             from app.scheduler import configure
             configure(int(body["check_interval"]))
-        except (ValueError, Exception):
+        except (ImportError, TypeError, ValueError):
             pass
     return {"ok": True}
 

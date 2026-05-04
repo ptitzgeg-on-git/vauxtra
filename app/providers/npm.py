@@ -15,7 +15,6 @@ class NPMProvider(ProxyProvider):
         self.password = password
         self.session = requests.Session()
         self.session.headers["Content-Type"] = "application/json"
-        self.session.timeout = PROVIDER_TIMEOUT
         self._token = None
 
     def _login(self) -> bool:
@@ -54,7 +53,10 @@ class NPMProvider(ProxyProvider):
         if not self._ensure_auth():
             return []
         try:
-            r = self.session.get(f"{self.api_url}/nginx/proxy-hosts")
+            r = self.session.get(
+                f"{self.api_url}/nginx/proxy-hosts",
+                timeout=PROVIDER_TIMEOUT,
+            )
             r.raise_for_status()
             hosts = r.json()
             return [
@@ -95,7 +97,9 @@ class NPMProvider(ProxyProvider):
         }
         try:
             r = self.session.post(
-                f"{self.api_url}/nginx/proxy-hosts", json=payload
+                f"{self.api_url}/nginx/proxy-hosts",
+                json=payload,
+                timeout=PROVIDER_TIMEOUT,
             )
             r.raise_for_status()
             data = r.json()
@@ -107,7 +111,10 @@ class NPMProvider(ProxyProvider):
         if not self._ensure_auth():
             return False
         try:
-            r = self.session.delete(f"{self.api_url}/nginx/proxy-hosts/{host_id}")
+            r = self.session.delete(
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
+                timeout=PROVIDER_TIMEOUT,
+            )
             return r.status_code in (200, 204) or r.text == "true"
         except requests.RequestException:
             return False
@@ -134,7 +141,9 @@ class NPMProvider(ProxyProvider):
         }
         try:
             r = self.session.put(
-                f"{self.api_url}/nginx/proxy-hosts/{host_id}", json=payload
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
+                json=payload,
+                timeout=PROVIDER_TIMEOUT,
             )
             return r.status_code == 200
         except requests.RequestException:

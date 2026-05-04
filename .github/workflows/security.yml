@@ -19,6 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pip-audit
+        run: python -m pip install pip-audit -r requirements.txt
+
+      - name: Run pip-audit
+        run: python -m pip_audit --requirement requirements.txt
+
+      - name: API-MCP parity gate
+        run: python scripts/check_api_mcp_parity.py
+
       - name: Run Trivy on repository
         uses: aquasecurity/trivy-action@master
         with:

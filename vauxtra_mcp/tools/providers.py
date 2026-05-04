@@ -113,6 +113,38 @@ def test_provider(provider_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+def test_provider_connection(provider_id: int) -> dict[str, Any]:
+    """Run the provider connectivity test endpoint and return structured diagnostics."""
+    r = client.post(f"/providers/{provider_id}/test")
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def validate_provider_draft(
+    type: str,
+    url: str,
+    username: str = "",
+    password: str = "",
+    extra: dict[str, Any] | None = None,
+    hostname_hint: str = "",
+    write_probe: bool = False,
+) -> dict[str, Any]:
+    """Validate a provider draft before creation (no DB write)."""
+    r = client.post("/providers/validate-draft", json={
+        "type": type,
+        "url": url,
+        "username": username,
+        "password": password,
+        "extra": extra or {},
+        "hostname_hint": hostname_hint,
+        "write_probe": write_probe,
+    })
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
 def get_provider_health(provider_id: int) -> dict[str, Any]:
     """Get the current health status of a specific provider."""
     r = client.get(f"/providers/{provider_id}/health")

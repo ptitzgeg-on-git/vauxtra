@@ -29,6 +29,9 @@ jobs:
       - name: Ruff lint
         run: ruff check app/ vauxtra_mcp/
 
+      - name: API-MCP parity gate
+        run: python scripts/check_api_mcp_parity.py
+
       - name: Run tests
         run: python -m pytest tests/ -v
 
@@ -47,8 +50,14 @@ jobs:
       - name: Install dependencies
         run: cd frontend && npm ci
 
+      - name: ESLint
+        run: cd frontend && npm run lint
+
       - name: TypeScript check
         run: cd frontend && npx tsc --noEmit
 
       - name: Build
         run: cd frontend && npm run build
+
+      - name: Locale semantic quality
+        run: cd frontend && npm run i18n:quality

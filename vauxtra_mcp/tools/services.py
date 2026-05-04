@@ -209,3 +209,75 @@ def import_docker_containers(
     r = client.post("/docker/import", json=payload)
     r.raise_for_status()
     return r.json()
+
+
+@mcp.tool()
+def get_services_history() -> dict[str, Any]:
+    """Return the last 24h uptime history for all services."""
+    r = client.get("/services/history")
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, Any]:
+    """Suggest WAN/public targets for DNS based on current connectivity and provider context."""
+    params = {"proxy_provider_id": proxy_provider_id} if proxy_provider_id is not None else {}
+    r = client.get("/services/public-target/suggest", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def check_service_health(service_id: int) -> dict[str, Any]:
+    """Run a live health/TCP and DNS check for one service."""
+    r = client.get(f"/services/{service_id}/check")
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def bulk_service_action(service_ids: list[int], action: str) -> dict[str, Any]:
+    """Run bulk service actions: enable, disable, or delete."""
+    r = client.post("/services/bulk", json={"ids": service_ids, "action": action})
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def add_docker_endpoint(name: str, docker_host: str, enabled: bool = True) -> dict[str, Any]:
+    """Create a Docker endpoint for container discovery."""
+    r = client.post(
+        "/docker/endpoints",
+        json={
+            "name": name,
+            "docker_host": docker_host,
+            "enabled": enabled,
+        },
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def set_default_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
+    """Mark one Docker endpoint as default for discovery/import."""
+    r = client.post(f"/docker/endpoints/{endpoint_id}/default")
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def test_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
+    """Test connectivity to one Docker endpoint and return visible container count."""
+    r = client.post(f"/docker/endpoints/{endpoint_id}/test")
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def delete_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
+    """Delete a Docker endpoint (requires at least one endpoint to remain)."""
+    r = client.delete(f"/docker/endpoints/{endpoint_id}")
+    r.raise_for_status()
+    return r.json()

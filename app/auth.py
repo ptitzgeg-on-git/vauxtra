@@ -1,9 +1,15 @@
 import hashlib
 import hmac
+import os
 import secrets
 
 from fastapi import Request, HTTPException
 from app.config import APP_PASSWORD
+
+_ALLOW_PLAINTEXT_APP_PASSWORD = os.environ.get(
+    "ALLOW_PLAINTEXT_APP_PASSWORD",
+    "false",
+).strip().lower() in ("1", "true", "yes")
 
 # PBKDF2 parameters (OWASP 2023 recommendations)
 PBKDF2_ITERATIONS = 600_000
@@ -75,7 +81,7 @@ def _get_db_password_hash() -> str:
             return row["value"] if row else ""
         finally:
             conn.close()
-    except Exception:
+    except (KeyError, ValueError, OSError):
         return ""
 
 
@@ -84,10 +90,33 @@ def has_password_configured() -> bool:
     return bool(APP_PASSWORD) or bool(_get_db_password_hash())
 
 
+def is_setup_incomplete() -> bool:
+    """True when setup wizard has not been marked as completed yet."""
+    try:
+        from app.models import get_db
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT value FROM settings WHERE key='setup_completed'").fetchone()
+            return not (row and row["value"] == "1")
+        finally:
+            conn.close()
+    except (KeyError, ValueError, OSError):
+        return False
+
+
 def check_password(candidate: str) -> bool:
-    """Verify a password against env var (plaintext) or DB hash."""
+    """Verify a password against env hash/plaintext or DB hash.
+
+    Rules:
+    - If APP_PASSWORD is PBKDF2-formatted, it is treated as a hash.
+    - Plaintext APP_PASSWORD is only honored when explicitly allowed.
+    - Database hash remains the safe default fallback.
+    """
     if APP_PASSWORD:
-        return hmac.compare_digest(candidate, APP_PASSWORD)
+        if APP_PASSWORD.startswith("pbkdf2:"):
+            return verify_password_hash(candidate, APP_PASSWORD)
+        if _ALLOW_PLAINTEXT_APP_PASSWORD:
+            return hmac.compare_digest(candidate, APP_PASSWORD)
     db_hash = _get_db_password_hash()
     if db_hash:
         return verify_password_hash(candidate, db_hash)
@@ -153,3 +182,10 @@ def require_auth(request: Request, scope: str | None = None) -> None:
             status_code=403,
             detail=f"Insufficient scope: '{scope}' required",
         )
+
+
+def require_auth_or_setup(request: Request, scope: str | None = None) -> None:
+    """Allow access during initial setup, otherwise enforce auth/scope."""
+    if is_setup_incomplete():
+        return
+    require_auth(request, scope=scope)

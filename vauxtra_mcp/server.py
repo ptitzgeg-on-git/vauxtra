@@ -37,6 +37,7 @@ import vauxtra_mcp.tools.services    # noqa: F401
 import vauxtra_mcp.tools.providers   # noqa: F401
 import vauxtra_mcp.tools.operations  # noqa: F401
 import vauxtra_mcp.tools.monitoring  # noqa: F401
+import vauxtra_mcp.tools.admin       # noqa: F401
 
 if __name__ == "__main__":
     if "--http" in sys.argv:

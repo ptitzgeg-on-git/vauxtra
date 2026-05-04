@@ -3,7 +3,15 @@
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 
-from app.auth import get_session, is_authenticated, has_password_configured, check_password, hash_password, require_auth
+from app.auth import (
+    get_session,
+    is_authenticated,
+    has_password_configured,
+    check_password,
+    hash_password,
+    require_auth,
+    require_auth_or_setup,
+)
 from app.limiter import limiter
 from app.models import get_db
 
@@ -31,8 +39,8 @@ def auth_me(request: Request):
         # Check if setup wizard was completed
         setup_row = conn.execute("SELECT value FROM settings WHERE key='setup_completed'").fetchone()
         setup_completed = setup_row and setup_row["value"] == "1"
-        
-        # Check if any providers exist (alternative indicator of completed setup)
+
+        # Setup is considered pending only on an empty install.
         provider_count = conn.execute("SELECT COUNT(*) as c FROM providers").fetchone()["c"]
     finally:
         conn.close()
@@ -40,14 +48,14 @@ def auth_me(request: Request):
     return {
         "authenticated": is_authenticated(request),
         "auth_required": has_password_configured(),
-        "setup_required": not setup_completed and provider_count == 0,
+        "setup_required": (not setup_completed) and provider_count == 0,
     }
 
 
 @router.post("/api/auth/setup-complete")
 def mark_setup_complete(request: Request):
     """Mark the setup wizard as completed (stored server-side)."""
-    require_auth(request)
+    require_auth_or_setup(request)
     conn = get_db()
     try:
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')")

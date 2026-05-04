@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from app.models import get_db, add_log
-from app.auth import require_auth
+from app.auth import require_auth, require_auth_or_setup
 from app.limiter import limiter
 from app.config import (
     decrypt_secret, encrypt_secret,
@@ -149,7 +149,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
 @limiter.limit("3/minute")
 def import_backup(request: Request, body: RestoreRequest):
     """Restore from backup. If backup contains encrypted secrets, passphrase is required."""
-    require_auth(request, scope="admin")
+    require_auth_or_setup(request, scope="admin")
     
     data = body.backup
     if not isinstance(data, dict) or "version" not in data:
@@ -329,6 +329,10 @@ def import_backup(request: Request, body: RestoreRequest):
             )
 
         conn.commit()
+    except HTTPException:
+        conn.rollback()
+        conn.close()
+        raise
     except Exception as e:
         conn.rollback()
         conn.close()

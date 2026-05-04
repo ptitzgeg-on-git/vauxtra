@@ -1,4 +1,5 @@
 import os
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -12,6 +13,10 @@ from app.limiter import limiter
 
 from app.config import SECRET_KEY, HTTPS_ONLY, DEBUG
 from app.models import init_db
+from app.security import validate_cors_origins
+import app.cache as cache_module
+
+_logger = logging.getLogger(__name__)
 
 from app.api.health        import router as health_router
 from app.api.providers     import router as providers_router
@@ -52,12 +57,17 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ✅ Validate CORS origins securely
 _default_cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888"
-_cors_origins = [
-    o.strip()
-    for o in os.environ.get("CORS_ORIGINS", _default_cors).split(",")
-    if o.strip()
-]
+try:
+    _cors_origins = validate_cors_origins(
+        os.environ.get("CORS_ORIGINS", ""),
+        _default_cors
+    )
+    _logger.info(f"CORS origins validated: {len(_cors_origins)} allowed")
+except ValueError as e:
+    _logger.error(f"Invalid CORS configuration: {e}")
+    _cors_origins = _default_cors.split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +85,23 @@ app.add_middleware(
     https_only=HTTPS_ONLY,
     same_site="strict",
 )
+
+
+@app.middleware("http")
+async def request_cache_middleware(request: Request, call_next):
+    """Create per-request cache to avoid N+1 queries."""
+    from app.cache import RequestCache
+    import app.cache as cache_module
+    
+    # Create fresh cache for this request
+    cache_module._request_cache = RequestCache()
+    
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        # Clear cache after request completes
+        cache_module._request_cache = None
 
 
 @app.middleware("http")

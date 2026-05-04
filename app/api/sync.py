@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Body, Request, HTTPException
 from app.models import get_db, add_log
 from app.providers.factory import create_provider, PROVIDER_TYPES
-from app.auth import require_auth
+from app.auth import require_auth, require_auth_or_setup
 from app.public_target import resolve_public_target
 
 router = APIRouter()
@@ -69,7 +69,7 @@ def _find_host_id(proxy, public_host: str):
             domains = h.get("domains") or h.get("domain_names") or []
             if public_host in domains:
                 return h.get("id")
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return None
     return None
 
@@ -420,7 +420,7 @@ def reconcile_service(sid: int, request: Request):
 
 @router.post("/api/services/sync")
 def sync_services(request: Request):
-    require_auth(request)
+    require_auth_or_setup(request)
     conn = get_db()
     providers = conn.execute("SELECT * FROM providers WHERE enabled=1").fetchall()
     existing_fqdns = {
@@ -485,7 +485,7 @@ def sync_services(request: Request):
 
 @router.post("/api/services/import")
 def import_services(request: Request, data: dict = Body(...)):
-    require_auth(request, scope="write")
+    require_auth_or_setup(request, scope="write")
     imported = 0
     errors   = []
     conn     = get_db()

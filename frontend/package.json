@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "i18n:check": "node scripts/check-locale-parity.mjs",
+    "i18n:quality": "node scripts/check-locale-quality.mjs",
+    "quality": "npm run lint && npm run i18n:check && npm run i18n:quality && npm run build"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",
@@ -31,7 +34,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
-    "postcss": "^8.5.9",
+    "postcss": "^8.5.10",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.0",
