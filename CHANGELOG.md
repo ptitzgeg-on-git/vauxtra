@@ -22,11 +22,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### 📚 Documentation
 - **ARCHITECTURE.md** (420 lines) — Complete system design and component documentation
-- **SECURITY_DEPLOYMENT.md** (440 lines) — Production deployment and security hardening guide
-- **TROUBLESHOOTING.md** (340 lines) — Comprehensive troubleshooting and FAQ
-- **QA_REPORT.md** (200 lines) — Quality assurance and testing report
-- **SESSION_SUMMARY.md** (300+ lines) — Development session overview
-- **DOCUMENTATION_INDEX.md** — Navigation guide for all documentation
+- **README.md** — Public project overview and documentation map
+- **docs/HOWTO.md** — End-user operations and API usage guide
+- **docs/DEPLOYMENT.md** — Production deployment runbook
+- **docs/TROUBLESHOOTING.md** — Operator-focused troubleshooting runbook
 
 ### 🧪 Testing
 - **23 new security + performance tests** — 100% pass rate, 71/71 total tests passing
@@ -53,7 +52,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 - Technitium DNS Server provider — session-token auth, zone auto-detection, A record CRUD
-- `CLAUDE.md` — comprehensive AI agent directives including git workflow, release process, and task guide
 - `Makefile` — `dev`, `test`, `lint`, `lint-fix`, `build`, `release` targets
 - `CHANGELOG.md` — this file
 - `vauxtra_mcp/README.md` — MCP server setup guide for Claude Desktop and Cursor
@@ -61,6 +59,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - `.github/pull_request_template.md` — PR checklist
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
 - Provider modal now shows a "Project website" link for each integration (NPM, AdGuard, Pi-hole, etc.)
+- `docs/OPEN_SOURCE_HYGIENE.md` — concise open source quality checklist for contributors and release maintainers
 
 ### Changed
 - Split `ci.yml` into three focused workflows: `tests.yml`, `docker-publish.yml`, `security.yml`
@@ -69,11 +68,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - `APP_VERSION` is now injected at Docker build time via `ARG`/`ENV`, sourced from the git tag
 - `app/config.py` reads `APP_VERSION` from environment (falls back to `"dev"` for local runs)
 - CONTRIBUTING.md updated to reference new workflow file names
+- In-app "How-To & API" settings panel removed; markdown docs are now the single source of truth for operations guidance
+- Settings and providers navigation streamlined with per-tab system links and keyboard shortcuts (`g` + `d/p/s`)
+- Provider cards now expose clearer operational status labels and health score display
+- README/deployment/troubleshooting guides rewritten for operator-focused workflows
+- New localhost URL rewrite behavior for provider connections in Docker runtime (`VAUXTRA_REWRITE_LOCALHOST`, `VAUXTRA_LOCALHOST_ALIAS`)
 
 ### Fixed
 - Removed unused imports across `app/api/` (`get_db_ctx`, `JSONResponse`, `time`, `Any`, `DB_PATH`)
 - Removed unused local variables `new_fqdn` / `old_fqdn` in `app/api/services.py`
 - `tsconfig.json` root: added `ignoreDeprecations: "6.0"` for `baseUrl` deprecation warning in TS 6+
+- Backup restore now forces `setup_completed=1` so restored instances do not fall back to first-launch wizard when `settings` table is empty
+- Docker endpoint validation hardened to reject malformed `docker_host` URLs
+- Webhook URL validation now enforced consistently on create/update/test; partial update path fixed for enable/disable toggles
+- Pi-hole v6 test flow now releases API sessions after probe to avoid session slot exhaustion
+- Traefik provider submit gating fixed so optional password remains optional
+
+### Upgrade Notes
+- Existing Docker users must pull and recreate containers to receive updates:
+	- `docker compose pull`
+	- `docker compose up -d`
+- If you depend on the removed in-app How-To panel, switch to `docs/HOWTO.md` for canonical guidance.
+- If your providers use `localhost` URLs from inside Docker, review `VAUXTRA_REWRITE_LOCALHOST` behavior before disabling it.
 
 ---
 
@@ -86,7 +102,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - Auto-reconcile scheduler with webhook (Apprise) notifications
 - Certificate expiry monitoring
 - API key authentication (Bearer tokens) for CI/CD and MCP
-- MCP server exposing all operations as tools for Claude Desktop and Cursor
+- MCP server exposing core operations as tools for Claude Desktop and Cursor
 - React 19 + TypeScript SPA with Tailwind CSS
 - SQLite (WAL mode) — zero external dependencies
 - Multi-architecture Docker image (linux/amd64 + linux/arm64) via GHCR
