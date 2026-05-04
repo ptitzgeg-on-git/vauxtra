@@ -1,33 +1,40 @@
 # Vauxtra
 
 > **The missing link in your network stack.**  
-> Self-hosted DNS & reverse proxy management panel for homelab.  
-> Orchestrates Nginx Proxy Manager, Traefik, Cloudflare, Pi-hole, AdGuard Home, and more — from one unified interface.
+> Self-hosted DNS & reverse proxy management panel — built for homelab.  
+> Orchestrate Nginx Proxy Manager, Traefik, Cloudflare, Pi-hole, AdGuard Home, and more from one unified interface.
+
+<div align="center">
 
 [![Tests](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml/badge.svg)](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml)
 [![Latest Release](https://img.shields.io/github/v/release/ptitzgeg-on-git/vauxtra?label=release)](https://github.com/ptitzgeg-on-git/vauxtra/releases)
-[![Docker Pulls](https://ghcr-badge.egpl.dev/ptitzgeg-on-git/vauxtra/latest_tag?trim=major&label=ghcr)](https://github.com/ptitzgeg-on-git/vauxtra/pkgs/container/vauxtra)
+[![Docker Image](https://ghcr-badge.egpl.dev/ptitzgeg-on-git/vauxtra/latest_tag?trim=major&label=ghcr)](https://github.com/ptitzgeg-on-git/vauxtra/pkgs/container/vauxtra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.13-blue)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-green)](https://fastapi.tiangolo.com/)
 [![MCP Ready](https://img.shields.io/badge/MCP-Ready-purple)](https://modelcontextprotocol.io/)
 
+</div>
+
 ---
 
 ## Features
 
-- **Multi-provider routing** — manage proxy hosts (NPM, Traefik) and DNS rewrites (Cloudflare, Pi-hole, AdGuard) from a single service record
-- **Cloudflare Tunnel** — expose services without port-forwarding via Cloudflare Tunnel integration
-- **Docker discovery** — auto-detect running containers with Traefik label parsing and confidence scoring
-- **Preflight & dry-run** — validate routing config before pushing; preview changes without committing
-- **Drift detection & reconcile** — detect when live provider state diverges from expected and fix it automatically
-- **Auto-reconcile scheduler** — periodic background reconciliation with webhook notifications
-- **Certificate expiry monitoring** — track NPM certificates, flag those expiring within 30 days
-- **API Keys** — bearer token authentication for CI/CD pipelines and MCP server access
-- **MCP Server** — expose all operations as tools for AI assistants (Claude Desktop, Cursor)
-- **Webhook alerts** — Apprise-compatible webhook for service down/recovery and reconcile events
-- **Environments & Tags** — organise services with colour-coded labels
+| Category | What you get |
+|---|---|
+| **Multi-provider routing** | Manage proxy hosts (NPM, Traefik) and DNS rewrites (Cloudflare, Pi-hole, AdGuard) from a single service record |
+| **Cloudflare Tunnel** | Expose services without port-forwarding via Cloudflare Tunnel integration |
+| **Docker discovery** | Auto-detect running containers with Traefik label parsing and confidence scoring |
+| **Preflight & dry-run** | Validate routing config before pushing; preview changes without committing |
+| **Drift detection** | Detect when live provider state diverges from expected and reconcile automatically |
+| **Auto-reconcile scheduler** | Periodic background reconciliation with webhook notifications |
+| **Certificate monitoring** | Track NPM certificates, flag those expiring within 30 days |
+| **API Keys** | Bearer token auth for CI/CD pipelines and MCP server access |
+| **MCP Server** | Expose all operations as tools for AI assistants (Claude Desktop, Cursor) |
+| **Webhook alerts** | Apprise-compatible webhook for service down/recovery and reconcile events |
+| **Environments & Tags** | Organise services with colour-coded labels |
+| **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — community-driven |
 
 ---
 
@@ -258,6 +265,28 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - How to add a DNS or proxy provider
 - How to add an MCP tool
 - PR checklist
+
+### Translating Vauxtra
+
+The UI is fully internationalized. To add or improve a translation:
+
+1. Duplicate [`frontend/src/locales/en.json`](frontend/src/locales/en.json)
+2. Name it with the [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) (e.g. `ko.json`)
+3. Add the language to `SUPPORTED_LANGUAGES` in [`frontend/src/i18n/index.tsx`](frontend/src/i18n/index.tsx)
+4. Open a PR — no backend change needed
+
+---
+
+## Upgrading
+
+Vauxtra follows a **rolling release** model on the `latest` Docker tag:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The database is automatically migrated on startup. No manual steps required.
 
 ---
 

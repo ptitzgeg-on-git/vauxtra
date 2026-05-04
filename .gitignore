@@ -7,9 +7,22 @@ __pycache__/
 
 # Runtime data
 data/
+data.backup-*/
+*.secret_key
+.secret_key
 *.db
 *.sqlite
 .env
+.env.local
+.local/
+local/
+reports/
+tmp/
+*.log
+
+# Development — local docker-compose volumes (never commit)
+vauxtra-dev/
+lab/providers/state/
 
 # Frontend
 frontend/node_modules/
@@ -21,3 +34,8 @@ frontend/dist/
 *.swp
 .idea/
 .vscode/
+
+# Auto-generated dev/session artifacts (do not commit)
+SESSION_SUMMARY.md
+QA_REPORT.md
+DOCUMENTATION_INDEX.md
