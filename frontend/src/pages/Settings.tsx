@@ -1,23 +1,31 @@
-import { Monitor, DownloadCloud, Database, FileTerminal, Settings as SettingsIcon, Globe, RefreshCw, Loader2, AlertTriangle, CheckCircle2, AlertCircle, Trash2, Key, Bell, Copy, Plus, Eye, EyeOff, Tag, Layers } from "lucide-react";
-import { useState, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Monitor, DownloadCloud, Database, FileTerminal, Settings as SettingsIcon, Globe, RefreshCw, Loader2, AlertTriangle, CheckCircle2, AlertCircle, Trash2, Key, Bell, Copy, Plus, Eye, EyeOff, Tag, Layers, ArrowLeft, Languages, Lock, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams, Link } from "react-router-dom";
+import { useI18n, SUPPORTED_LANGUAGES } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
-import type { Service, LogsResponse, SyncResult, SyncProxyHost, SyncDnsRewrite, ApiKey, ApiKeyCreated } from "@/types/api";
+import type { Service, LogsResponse, SyncResult, SyncProxyHost, SyncDnsRewrite, ApiKey, ApiKeyCreated, LogLevel } from "@/types/api";
 import { useTheme } from "@/theme";
 import { toast } from "react-hot-toast";
 import { GeneralTab, HowtoTab } from "@/components/features/settings";
 import { useWebhookActions } from "@/hooks/useWebhookActions";
 
+const LOCAL_TLDS = ['.lan', '.local', '.home', '.internal', '.localdomain', '.arpa'];
+
+function isLocalDomain(domain: string) {
+  return LOCAL_TLDS.some((tld) => domain.endsWith(tld));
+}
+
 export function Settings() {
-  const VALID_TABS = ["general", "howto", "dns", "tags", "environments", "apikeys", "webhooks", "migration", "backup", "logs"];
+  const VALID_TABS = ["general", "language", "howto", "dns", "tags", "environments", "apikeys", "webhooks", "migration", "backup", "logs"];
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = VALID_TABS.includes(searchParams.get("tab") || "") ? searchParams.get("tab")! : "general";
   const setActiveTab = (tab: string) => setSearchParams({ tab }, { replace: true });
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const { theme, resolvedTheme, setTheme } = useTheme();
+  const { lang, setLang, t } = useI18n();
   const [newDomain, setNewDomain] = useState("");
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
@@ -29,10 +37,18 @@ export function Settings() {
   const [newTagColor, setNewTagColor] = useState("blue");
   const [newEnvName, setNewEnvName] = useState("");
   const [newEnvColor, setNewEnvColor] = useState("green");
-
-  // local TLD patterns considered non-public
-  const LOCAL_TLDS = ['.lan', '.local', '.home', '.internal', '.localdomain', '.arpa'];
-  const isLocalDomain = (domain: string) => LOCAL_TLDS.some((tld) => domain.endsWith(tld));
+  const [apiKeySearch, setApiKeySearch] = useState("");
+  const [webhookSearch, setWebhookSearch] = useState("");
+  const [compactApiKeys, setCompactApiKeys] = useState(false);
+  const [compactWebhooks, setCompactWebhooks] = useState(false);
+  const [logQuery, setLogQuery] = useState('');
+  const [logLevelFilter, setLogLevelFilter] = useState<'all' | LogLevel>('all');
+  const [logsAutoScroll, setLogsAutoScroll] = useState(true);
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
+  // Change password
+  const [cpCurrent, setCpCurrent] = useState("");
+  const [cpNew, setCpNew] = useState("");
+  const [cpConfirm, setCpConfirm] = useState("");
 
   const TAG_COLORS = ["blue","teal","green","red","orange","purple","cyan","yellow","pink","lime","indigo"];
   const ENV_COLORS = TAG_COLORS;
@@ -76,17 +92,35 @@ export function Settings() {
       setNewKeyName("");
       setNewKeyScopes(["read"]);
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
-      toast.success('API key created');
+      toast.success(t('settings.api_keys.created'));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || 'Failed to create API key'),
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.api_keys.create_failed')),
   });
 
   const revokeKeyMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/settings/api-keys/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
-      toast.success('API key revoked');
+      toast.success(t('settings.api_keys.revoked'));
     },
+  });
+
+  // Auth status (to know if password is configured)
+  const { data: authStatus } = useQuery<{ authenticated: boolean; auth_required: boolean }>({
+    queryKey: ['auth-me'],
+    queryFn: () => api.get('/auth/me'),
+    enabled: activeTab === 'apikeys',
+  });
+
+  const changePasswordMutation = useMutation({
+    mutationFn: (body: { current_password: string; new_password: string }) =>
+      api.post('/auth/change-password', body),
+    onSuccess: () => {
+      setCpCurrent(""); setCpNew(""); setCpConfirm("");
+      toast.success(t('settings.auth.changed_success'));
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error(err?.response?.data?.detail || t('settings.auth.change_failed')),
   });
 
   // Webhooks
@@ -106,12 +140,12 @@ export function Settings() {
   });
   const createTagMutation = useMutation({
     mutationFn: (body: { name: string; color: string }) => api.post('/tags', body),
-    onSuccess: () => { setNewTagName(""); queryClient.invalidateQueries({ queryKey: ['tags'] }); toast.success('Tag created'); },
-    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || 'Failed to create tag'),
+    onSuccess: () => { setNewTagName(""); queryClient.invalidateQueries({ queryKey: ['tags'] }); toast.success(t('settings.tags.created')); },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.tags.create_failed')),
   });
   const deleteTagMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/tags/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['tags'] }); toast.success('Tag deleted'); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['tags'] }); toast.success(t('settings.tags.deleted')); },
   });
 
   // Environments
@@ -123,12 +157,12 @@ export function Settings() {
   });
   const createEnvMutation = useMutation({
     mutationFn: (body: { name: string; color: string }) => api.post('/environments', body),
-    onSuccess: () => { setNewEnvName(""); queryClient.invalidateQueries({ queryKey: ['environments'] }); toast.success('Environment created'); },
-    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || 'Failed to create environment'),
+    onSuccess: () => { setNewEnvName(""); queryClient.invalidateQueries({ queryKey: ['environments'] }); toast.success(t('settings.env.created')); },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.env.create_failed')),
   });
   const deleteEnvMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/environments/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['environments'] }); toast.success('Environment deleted'); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['environments'] }); toast.success(t('settings.env.deleted')); },
   });
 
   // Build set of existing public_hosts for fast dedup lookup
@@ -145,11 +179,11 @@ export function Settings() {
     mutationFn: (payload: Record<string, string>) => api.post('/settings', payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
-      toast.success('WAN detection policy saved');
+      toast.success(t('settings.general.policy_saved'));
     },
     onError: (error: unknown) => {
       const axErr = error as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || 'Unable to save WAN policy');
+      toast.error(axErr?.response?.data?.detail || t('settings.general.policy_save_failed'));
     },
   });
 
@@ -164,7 +198,7 @@ export function Settings() {
   const deleteDomainMutation = useMutation({
     mutationFn: (domain: string) => api.delete(`/domains/${domain}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['domains'] }),
-    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || 'Failed to delete domain'),
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.dns.delete_failed')),
   });
 
   const syncMutation = useMutation({
@@ -182,16 +216,16 @@ export function Settings() {
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
       if (data.imported > 0) {
-        toast.success(`Imported ${data.imported} service${data.imported > 1 ? 's' : ''} successfully`);
+        toast.success(t('settings.migration.import_success', { count: data.imported }));
       } else if (data.errors && data.errors.length > 0) {
-        toast.error(`${data.errors.length} service(s) already exist or failed`);
+        toast.error(t('settings.migration.import_exists_or_failed', { count: data.errors.length }));
       } else {
-        toast.success('Sync complete — all services already imported');
+        toast.success(t('settings.migration.sync_complete'));
       }
     },
     onError: (err: unknown) => {
       const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || 'Import failed');
+      toast.error(axErr?.response?.data?.detail || t('settings.migration.import_failed'));
     },
   });
 
@@ -202,30 +236,74 @@ export function Settings() {
     },
   });
 
+  // ── Backup state ──────────────────────────────────────────────────────────
+  const [showSecureExport, setShowSecureExport] = useState(false);
+  const [securePassphrase, setSecurePassphrase] = useState('');
+  const [importPending, setImportPending] = useState<{
+    json: Record<string, unknown>;
+    needsPassphrase: boolean;
+    summary: { services: number; providers: number; domains: number; tags: number; environments: number; webhooks: number };
+  } | null>(null);
+  const [importPassphrase, setImportPassphrase] = useState('');
+
+  const summarizeBackup = (backup: Record<string, unknown>) => {
+    const count = (key: string) => (Array.isArray(backup[key]) ? backup[key].length : 0);
+    return {
+      services: count('services'),
+      providers: count('providers'),
+      domains: count('domains'),
+      tags: count('tags'),
+      environments: count('environments'),
+      webhooks: count('webhooks'),
+    };
+  };
+
   const generateBackupMutation = useMutation({
     mutationFn: () => api.get('/backup', { responseType: 'blob' }),
     onSuccess: (data: unknown) => {
       const url = window.URL.createObjectURL(new Blob([data as BlobPart]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `vauxtra_backup_${new Date().toISOString().split('T')[0]}.json`);
+      link.setAttribute('download', `vauxtra-backup-${new Date().toISOString().split('T')[0]}.json`);
       document.body.appendChild(link);
       link.click();
       window.URL.revokeObjectURL(url);
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || 'Failed to generate backup'),
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.backup.export_failed')),
+  });
+
+  const secureBackupMutation = useMutation({
+    mutationFn: (passphrase: string) =>
+      api.post('/backup/secure', { passphrase }, { responseType: 'blob' }),
+    onSuccess: (data: unknown) => {
+      const url = window.URL.createObjectURL(new Blob([data as BlobPart]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `vauxtra-backup-secure-${new Date().toISOString().split('T')[0]}.json`);
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      setShowSecureExport(false);
+      setSecurePassphrase('');
+      toast.success(t('settings.backup.export_secure_success'));
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.backup.export_failed')),
   });
 
   const restoreBackupMutation = useMutation({
-    mutationFn: (payload: Record<string, unknown>) => api.post('/restore', payload),
+    mutationFn: (payload: { backup: Record<string, unknown>; passphrase: string }) =>
+      api.post('/restore', payload),
     onSuccess: () => {
+      setImportPending(null);
+      setImportPassphrase('');
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       queryClient.invalidateQueries({ queryKey: ['domains'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
       queryClient.invalidateQueries();
+      toast.success(t('settings.backup.restore_success'));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || 'Failed to restore backup'),
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.backup.restore_failed')),
   });
 
   // Build enriched rows from sync result for the preview table
@@ -278,26 +356,89 @@ export function Settings() {
   // Pre-select all "new" rows whenever syncRows changes
   const allNewKeys = useMemo(() => syncRows.filter(r => r.status === 'new').map(r => r.key), [syncRows]);
 
+  const filteredApiKeys = useMemo(() => {
+    const q = apiKeySearch.trim().toLowerCase();
+    if (!q) return apiKeys;
+    return apiKeys.filter((key) =>
+      key.name.toLowerCase().includes(q) ||
+      key.prefix.toLowerCase().includes(q) ||
+      key.scopes.some((scope) => scope.toLowerCase().includes(q)),
+    );
+  }, [apiKeys, apiKeySearch]);
+
+  const filteredWebhooks = useMemo(() => {
+    const q = webhookSearch.trim().toLowerCase();
+    if (!q) return webhooks;
+    return webhooks.filter((wh) =>
+      wh.name.toLowerCase().includes(q) ||
+      wh.url.toLowerCase().includes(q),
+    );
+  }, [webhooks, webhookSearch]);
+
+  const logItems = useMemo(() => (logs?.items ?? []), [logs]);
+
+  const filteredLogs = useMemo(() => {
+    const q = logQuery.trim().toLowerCase();
+    return logItems.filter((log) => {
+      const levelMatch = logLevelFilter === 'all' || log.level === logLevelFilter;
+      if (!levelMatch) return false;
+      if (!q) return true;
+      return (
+        log.message.toLowerCase().includes(q) ||
+        log.created_at.toLowerCase().includes(q) ||
+        log.level.toLowerCase().includes(q)
+      );
+    });
+  }, [logItems, logLevelFilter, logQuery]);
+
+  useEffect(() => {
+    if (!logsAutoScroll) return;
+    if (!logContainerRef.current) return;
+    const el = logContainerRef.current;
+    el.scrollTop = el.scrollHeight;
+  }, [filteredLogs, logsAutoScroll]);
+
+  const toggleSelectedRow = (key: string) => {
+    setSelectedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const submitChangePassword = () => {
+    if (!cpCurrent) { toast.error(t('settings.auth.current_required')); return; }
+    if (cpNew.length < 8) { toast.error(t('settings.auth.new_min')); return; }
+    if (cpNew !== cpConfirm) { toast.error(t('settings.auth.confirm_mismatch')); return; }
+    changePasswordMutation.mutate({ current_password: cpCurrent, new_password: cpNew });
+  };
+
   const tabs = [
-    { id: "general", label: "General", icon: SettingsIcon, group: "Preferences" },
-    { id: "dns", label: "DNS Domains", icon: Globe, group: "Preferences" },
-    { id: "tags", label: "Tags", icon: Tag, group: "Organization" },
-    { id: "environments", label: "Environments", icon: Layers, group: "Organization" },
-    { id: "migration", label: "Import & Sync", icon: RefreshCw, group: "Data" },
-    { id: "backup", label: "Backup & Restore", icon: Database, group: "Data" },
-    { id: "apikeys", label: "API Keys", icon: Key, group: "Security" },
-    { id: "webhooks", label: "Webhooks", icon: Bell, group: "Security" },
-    { id: "howto", label: "How-To & API", icon: Monitor, group: "Help" },
-    { id: "logs", label: "System Logs", icon: FileTerminal, group: "Help" },
+    { id: "general",      label: t('settings.tab.general'),      icon: SettingsIcon, group: t('settings.group.preferences') },
+    { id: "language",     label: t('settings.language.title'),    icon: Languages,    group: t('settings.group.preferences') },
+    { id: "dns",          label: t('settings.tab.dns'),           icon: Globe,        group: t('settings.group.preferences') },
+    { id: "tags",         label: t('settings.tab.tags'),          icon: Tag,          group: t('settings.group.organization') },
+    { id: "environments", label: t('settings.tab.environments'),  icon: Layers,       group: t('settings.group.organization') },
+    { id: "migration",    label: t('settings.tab.migration'),     icon: RefreshCw,    group: t('settings.group.data') },
+    { id: "backup",       label: t('settings.tab.backup'),        icon: Database,     group: t('settings.group.data') },
+    { id: "apikeys",      label: t('settings.tab.apikeys'),       icon: Key,          group: t('settings.group.security') },
+    { id: "webhooks",     label: t('settings.tab.webhooks'),      icon: Bell,         group: t('settings.group.security') },
+    { id: "howto",        label: t('settings.tab.howto'),         icon: Monitor,      group: t('settings.group.help') },
+    { id: "logs",         label: t('settings.tab.logs'),          icon: FileTerminal, group: t('settings.group.help') },
   ];
 
-  const groups = ["Preferences", "Organization", "Data", "Security", "Help"];
+  const groups = [t('settings.group.preferences'), t('settings.group.organization'), t('settings.group.data'), t('settings.group.security'), t('settings.group.help')];
 
   return (
     <div className="animate-in fade-in duration-300 max-w-7xl mx-auto">
       {/* Mobile tabs */}
       <div className="lg:hidden mb-6">
-        <h2 className="text-xl font-semibold text-foreground mb-4">Settings</h2>
+        <div className="flex items-center gap-3 mb-4">
+          <Link to="/" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+            <ArrowLeft className="w-4 h-4" />{t('settings.back')}
+          </Link>
+        </div>
+        <h2 className="text-xl font-semibold text-foreground mb-4">{t('settings.title')}</h2>
         <div className="flex border-b border-border overflow-x-auto hide-scrollbar">
           {tabs.map((tab) => (
             <button
@@ -320,9 +461,16 @@ export function Settings() {
         {/* Desktop Sidebar */}
         <aside className="w-56 shrink-0 hidden lg:block">
           <div className="sticky top-6 space-y-1">
-            <h2 className="text-lg font-semibold text-foreground mb-4">Settings</h2>
+            <Link
+              to="/"
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-3 px-1 transition-colors group"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
+              {t('settings.back')}
+            </Link>
+            <h2 className="text-lg font-semibold text-foreground mb-4">{t('settings.title')}</h2>
             {groups.map((group) => {
-              const groupTabs = tabs.filter(t => t.group === group);
+              const groupTabs = tabs.filter(tab => tab.group === group);
               if (groupTabs.length === 0) return null;
               return (
                 <div key={group} className="mb-4">
@@ -363,14 +511,52 @@ export function Settings() {
           <HowtoTab />
         )}
 
+        {activeTab === "language" && (
+          <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
+            <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
+              <Languages className="w-5 h-5 text-muted-foreground" />
+              {t('settings.language.title')}
+            </h3>
+            <p className="text-sm text-muted-foreground mb-6">{t('settings.language.description')}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              {SUPPORTED_LANGUAGES.map((l) => (
+                <button
+                  key={l.code}
+                  onClick={() => setLang(l.code)}
+                  className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+                    lang === l.code
+                      ? 'border-primary bg-primary/5 text-primary ring-1 ring-primary/30'
+                      : 'border-border text-foreground hover:border-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  <span className="text-xl leading-none">{l.flag}</span>
+                  <span>{l.label}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-6 p-4 rounded-lg bg-muted/50 border border-border">
+              <p className="text-sm font-medium mb-1">{t('settings.language.contribute')}</p>
+              <p className="text-xs text-muted-foreground mb-3">{t('settings.language.contribute_description')}</p>
+              <a
+                href="https://github.com/ptitzgeg-on-git/vauxtra/blob/main/CONTRIBUTING.md#translations"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+              >
+                {t('settings.language.contribute_link')}
+              </a>
+            </div>
+          </div>
+        )}
+
         {activeTab === "dns" && (
           <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
                 <Globe className="w-5 h-5 text-muted-foreground" />
-                Root Domains
+                {t('settings.dns.title')}
               </h3>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">Manage the root domains used globally across your reversed proxied services and Pi-hole / AdGuard setups.</p>
+                <p className="text-sm text-muted-foreground">{t('settings.dns.desc')}</p>
                 
                 <form 
                   onSubmit={(e) => { 
@@ -378,7 +564,7 @@ export function Settings() {
                     const trimmed = newDomain.trim().toLowerCase();
                     if (!trimmed) return;
                     if (Array.isArray(domains) && domains.includes(trimmed)) {
-                      toast.error(`Domain "${trimmed}" already exists`);
+                      toast.error(t('settings.dns.exists', { domain: trimmed }));
                       return;
                     }
                     addDomainMutation.mutate(trimmed); 
@@ -388,11 +574,11 @@ export function Settings() {
                   <input 
                     value={newDomain} 
                     onChange={e => setNewDomain(e.target.value)} 
-                    placeholder="example.com" 
+                    placeholder={t('settings.dns.placeholder')} 
                     required 
                     className="flex-1 p-2 rounded-md bg-input border border-border" 
                   />
-                  <button type="submit" disabled={addDomainMutation.isPending} className="bg-primary text-primary-foreground px-4 rounded-md">Add Domain</button>
+                  <button type="submit" disabled={addDomainMutation.isPending} className="bg-primary text-primary-foreground px-4 rounded-md">{t('settings.dns.add')}</button>
                 </form>
 
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-6">
@@ -403,18 +589,18 @@ export function Settings() {
                       <div>
                         <span className="font-medium">{domain}</span>
                         {depCount > 0 && (
-                          <p className="text-[11px] text-muted-foreground">{depCount} service{depCount > 1 ? 's' : ''}</p>
+                          <p className="text-[11px] text-muted-foreground">{t('settings.dns.service_count', { count: depCount })}</p>
                         )}
                       </div>
                       <button
                         onClick={async () => {
                           const hasServices = depCount > 0;
                           const confirmed = await confirm({
-                            title: hasServices ? 'Domain has services' : 'Delete domain',
+                            title: hasServices ? t('settings.dns.confirm.has_services_title') : t('settings.dns.confirm.delete_title'),
                             message: hasServices
-                              ? `${depCount} service${depCount > 1 ? 's' : ''} use${depCount === 1 ? 's' : ''} "${domain}". Deleting it may break existing routes.\n\nDelete anyway?`
-                              : `Delete domain "${domain}"?`,
-                            confirmLabel: 'Delete',
+                              ? t('settings.dns.confirm.has_services_message', { count: depCount, domain })
+                              : t('settings.dns.confirm.delete_message', { domain }),
+                            confirmLabel: t('common.delete'),
                             variant: hasServices ? 'warning' : 'danger',
                           });
                           if (confirmed) deleteDomainMutation.mutate(domain);
@@ -436,9 +622,9 @@ export function Settings() {
             <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <Tag className="w-5 h-5 text-muted-foreground" />
-                Service Tags
+                {t('settings.tags.title')}
               </h3>
-              <p className="text-sm text-muted-foreground mb-4">Create tags to organize and filter your services.</p>
+              <p className="text-sm text-muted-foreground mb-4">{t('settings.tags.desc')}</p>
               <form
                 onSubmit={e => {
                   e.preventDefault();
@@ -450,7 +636,7 @@ export function Settings() {
                 <input
                   value={newTagName}
                   onChange={e => setNewTagName(e.target.value)}
-                  placeholder="Tag name"
+                  placeholder={t('settings.tags.name_placeholder')}
                   required
                   className="flex-1 bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
@@ -458,7 +644,7 @@ export function Settings() {
                   value={newTagColor}
                   onChange={e => setNewTagColor(e.target.value)}
                   className="bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  aria-label="Tag color"
+                  aria-label={t('settings.tags.color_aria')}
                 >
                   {TAG_COLORS.map(c => (
                     <option key={c} value={c}>{c}</option>
@@ -469,11 +655,11 @@ export function Settings() {
                   disabled={createTagMutation.isPending}
                   className="bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-60 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1"
                 >
-                  <Plus className="w-4 h-4" /> Add
+                  <Plus className="w-4 h-4" /> {t('common.add')}
                 </button>
               </form>
               {tags.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No tags yet.</p>
+                <p className="text-sm text-muted-foreground">{t('settings.tags.empty')}</p>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {tags.map(tag => (
@@ -490,7 +676,7 @@ export function Settings() {
                       <button
                         onClick={() => deleteTagMutation.mutate(tag.id)}
                         className="ml-1 hover:opacity-70"
-                        aria-label={`Delete tag ${tag.name}`}
+                        aria-label={t('settings.tags.delete_aria', { name: tag.name })}
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -507,9 +693,9 @@ export function Settings() {
             <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <Layers className="w-5 h-5 text-muted-foreground" />
-                Environments
+                {t('settings.env.title')}
               </h3>
-              <p className="text-sm text-muted-foreground mb-4">Define deployment environments for your services (e.g. production, staging, development).</p>
+              <p className="text-sm text-muted-foreground mb-4">{t('settings.env.desc')}</p>
               <form
                 onSubmit={e => {
                   e.preventDefault();
@@ -521,7 +707,7 @@ export function Settings() {
                 <input
                   value={newEnvName}
                   onChange={e => setNewEnvName(e.target.value)}
-                  placeholder="Environment name"
+                  placeholder={t('settings.env.name_placeholder')}
                   required
                   className="flex-1 bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
@@ -529,7 +715,7 @@ export function Settings() {
                   value={newEnvColor}
                   onChange={e => setNewEnvColor(e.target.value)}
                   className="bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                  aria-label="Environment color"
+                  aria-label={t('settings.env.color_aria')}
                 >
                   {ENV_COLORS.map(c => (
                     <option key={c} value={c}>{c}</option>
@@ -540,11 +726,11 @@ export function Settings() {
                   disabled={createEnvMutation.isPending}
                   className="bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-60 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1"
                 >
-                  <Plus className="w-4 h-4" /> Add
+                  <Plus className="w-4 h-4" /> {t('common.add')}
                 </button>
               </form>
               {environments.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No environments yet.</p>
+                <p className="text-sm text-muted-foreground">{t('settings.env.empty')}</p>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {environments.map(env => (
@@ -561,7 +747,7 @@ export function Settings() {
                       <button
                         onClick={() => deleteEnvMutation.mutate(env.id)}
                         className="ml-1 hover:opacity-70"
-                        aria-label={`Delete environment ${env.name}`}
+                        aria-label={t('settings.env.delete_aria', { name: env.name })}
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -577,13 +763,11 @@ export function Settings() {
           <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
             <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
               <RefreshCw className="w-5 h-5 text-muted-foreground" />
-              Synchronization &amp; Import
+              {t('settings.migration.title')}
             </h3>
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Fetch routes from your active providers (NPM, Traefik, Pi-hole…) and review what
-                will be imported. Already-tracked services are highlighted so you never create
-                duplicates.
+                {t('settings.migration.desc')}
               </p>
 
               <div className="flex flex-wrap gap-3 pt-2">
@@ -593,7 +777,7 @@ export function Settings() {
                   className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:opacity-90 rounded-md transition-colors font-medium text-sm shadow-sm"
                 >
                   <RefreshCw className={`w-4 h-4 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
-                  {syncMutation.isPending ? 'Scanning providers…' : 'Scan providers'}
+                  {syncMutation.isPending ? t('settings.migration.scanning') : t('settings.migration.scan')}
                 </button>
 
                 {syncRows.length > 0 && (
@@ -603,14 +787,14 @@ export function Settings() {
                       const existsCount = syncRows.filter(r => r.status === 'exists').length;
                       const localCount = syncRows.filter(r => r.isLocal && r.status === 'new').length;
                       
-                      let message = `Quick Import will import all ${newCount} new service${newCount !== 1 ? 's' : ''}.`;
-                      if (existsCount > 0) message += `\n${existsCount} already-tracked service${existsCount !== 1 ? 's' : ''} will be skipped.`;
-                      if (localCount > 0) message += `\n\n⚠ ${localCount} service${localCount !== 1 ? 's use' : ' uses'} a local TLD — external DNS will not resolve them.`;
+                      let message = t('settings.migration.quick_import_message', { count: newCount });
+                      if (existsCount > 0) message += `\n${t('settings.migration.quick_import_skipped', { count: existsCount })}`;
+                      if (localCount > 0) message += `\n\n${t('settings.migration.quick_import_local_warn', { count: localCount })}`;
                       
                       const confirmed = await confirm({
-                        title: 'Quick Import',
+                        title: t('settings.migration.quick_import_title'),
                         message,
-                        confirmLabel: 'Import',
+                        confirmLabel: t('settings.migration.import'),
                         variant: localCount > 0 ? 'warning' : 'info',
                       });
                       if (!confirmed) return;
@@ -620,7 +804,7 @@ export function Settings() {
                     className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md transition-colors font-medium text-sm shadow-sm border border-border"
                   >
                     {importMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                    {importMutation.isPending ? 'Importing…' : `Quick Import (${allNewKeys.length} new)`}
+                    {importMutation.isPending ? t('settings.migration.importing') : t('settings.migration.quick_import_cta', { count: allNewKeys.length })}
                   </button>
                 )}
               </div>
@@ -630,18 +814,18 @@ export function Settings() {
                 <div className="mt-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      Discovered — {syncRows.length} route{syncRows.length !== 1 ? 's' : ''}
+                      {t('settings.migration.discovered', { count: syncRows.length })}
                     </p>
                     <div className="flex gap-2 text-xs">
                       <button
                         className="text-primary hover:underline"
                         onClick={() => setSelectedRows(new Set(allNewKeys))}
-                      >Select all new</button>
+                      >{t('settings.migration.select_all_new')}</button>
                       <span className="text-muted-foreground">·</span>
                       <button
                         className="text-muted-foreground hover:text-foreground"
                         onClick={() => setSelectedRows(new Set())}
-                      >Clear</button>
+                      >{t('settings.migration.clear_selection')}</button>
                     </div>
                   </div>
 
@@ -650,11 +834,11 @@ export function Settings() {
                       <thead className="bg-muted/50 border-b border-border">
                         <tr>
                           <th className="w-8 px-3 py-2"></th>
-                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">Subdomain</th>
-                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">Domain</th>
-                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">Target</th>
-                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">Provider</th>
-                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">Status</th>
+                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_subdomain')}</th>
+                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_domain')}</th>
+                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_target')}</th>
+                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_provider')}</th>
+                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_status')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
@@ -664,14 +848,18 @@ export function Settings() {
                           return (
                             <tr
                               key={row.key}
-                              className={`transition-colors ${isSelectable ? 'hover:bg-muted/30 cursor-pointer' : 'opacity-60'}`}
+                              className={`transition-colors ${isSelectable ? 'hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-1 focus-visible:ring-offset-background' : 'opacity-60'}`}
+                              tabIndex={isSelectable ? 0 : -1}
+                              aria-selected={isSelectable ? checked : undefined}
+                              onKeyDown={(e) => {
+                                if (!isSelectable) return;
+                                if (e.key !== 'Enter' && e.key !== ' ') return;
+                                e.preventDefault();
+                                toggleSelectedRow(row.key);
+                              }}
                               onClick={() => {
                                 if (!isSelectable) return;
-                                setSelectedRows((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(row.key)) next.delete(row.key); else next.add(row.key);
-                                  return next;
-                                });
+                                toggleSelectedRow(row.key);
                               }}
                             >
                               <td className="px-3 py-2">
@@ -679,8 +867,10 @@ export function Settings() {
                                   type="checkbox"
                                   checked={checked}
                                   disabled={!isSelectable}
-                                  onChange={() => {}}
+                                  onChange={() => toggleSelectedRow(row.key)}
+                                  onClick={(e) => e.stopPropagation()}
                                   className="rounded"
+                                  aria-label={t('settings.migration.select_route_aria', { host: row.publicHost })}
                                 />
                               </td>
                               <td className="px-3 py-2 font-mono font-medium text-foreground">{row.subdomain || '—'}</td>
@@ -690,16 +880,16 @@ export function Settings() {
                               <td className="px-3 py-2">
                                 {row.status === 'exists' ? (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-muted text-muted-foreground border border-border">
-                                    <CheckCircle2 className="w-3 h-3" /> tracked
+                                    <CheckCircle2 className="w-3 h-3" /> {t('settings.migration.status_tracked')}
                                   </span>
                                 ) : row.isLocal ? (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border border-yellow-500/30"
-                                    title="Local TLD — external DNS resolvers will not resolve this hostname">
-                                    <AlertTriangle className="w-3 h-3" /> local
+                                    title={t('settings.migration.local_tld_title')}>
+                                    <AlertTriangle className="w-3 h-3" /> {t('settings.migration.status_local')}
                                   </span>
                                 ) : (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
-                                    <AlertCircle className="w-3 h-3" /> new
+                                    <AlertCircle className="w-3 h-3" /> {t('settings.migration.status_new')}
                                   </span>
                                 )}
                               </td>
@@ -734,14 +924,14 @@ export function Settings() {
                       disabled={importMutation.isPending || selectedRows.size === 0}
                       className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-60 font-medium"
                     >
-                      {importMutation.isPending ? 'Importing…' : `Import selected (${selectedRows.size})`}
+                      {importMutation.isPending ? t('settings.migration.importing') : t('settings.migration.import_selected', { count: selectedRows.size })}
                     </button>
 
                     {importMutation.data && (
                       <p className="text-xs text-muted-foreground">
-                        ✓ Imported: {importMutation.data.imported}
+                        {t('settings.migration.imported', { count: importMutation.data.imported })}
                         {importMutation.data.errors.length > 0 && (
-                          <span className="text-destructive ml-2">Errors: {importMutation.data.errors.length}</span>
+                          <span className="text-destructive ml-2">{t('settings.migration.errors', { count: importMutation.data.errors.length })}</span>
                         )}
                       </p>
                     )}
@@ -751,7 +941,7 @@ export function Settings() {
 
               {syncResult && syncRows.length === 0 && (
                 <div className="mt-4 p-4 rounded-lg border border-border bg-muted/30 text-sm text-muted-foreground">
-                  No routes discovered from providers.
+                  {t('settings.migration.no_routes')}
                 </div>
               )}
 
@@ -760,64 +950,287 @@ export function Settings() {
         )}
 
         {activeTab === "backup" && (
-          <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
-              <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+          <div className="space-y-6">
+            {/* ── Export ── */}
+            <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
+              <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <DownloadCloud className="w-5 h-5 text-muted-foreground" />
-                Data Management
+                {t('settings.backup.export_title')}
               </h3>
-              <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">Export your complete configuration including services, providers and settings to a JSON file.</p>
-                <div className="flex gap-4">
-                  <button 
-                    onClick={() => generateBackupMutation.mutate()}
-                    disabled={generateBackupMutation.isPending}
-                    className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md transition-colors font-medium text-sm"
+              <p className="text-sm text-muted-foreground mb-5">
+                {t('settings.backup.export_desc')}
+              </p>
+
+              <div className="flex flex-wrap gap-3">
+                {/* Basic export */}
+                <button
+                  onClick={() => generateBackupMutation.mutate()}
+                  disabled={generateBackupMutation.isPending}
+                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg transition-colors font-medium text-sm disabled:opacity-60"
+                >
+                  {generateBackupMutation.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <DownloadCloud className="w-4 h-4" />}
+                  {t('settings.backup.export_plain')}
+                </button>
+
+                {/* Secure export toggle */}
+                <button
+                  onClick={() => setShowSecureExport(v => !v)}
+                  className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-lg border border-border transition-colors font-medium text-sm"
+                >
+                  <Lock className="w-4 h-4" />
+                  {t('settings.backup.export_secure')}
+                </button>
+              </div>
+
+              {/* Inline passphrase form for secure export */}
+              {showSecureExport && (
+                <div className="mt-4 p-4 rounded-lg border border-border bg-muted/30">
+                  <p className="text-xs text-muted-foreground mb-3">
+                    {t('settings.backup.secure_export_help')}
+                  </p>
+                  <form
+                    className="flex items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (securePassphrase.length < 8) {
+                        toast.error(t('settings.backup.passphrase_min'));
+                        return;
+                      }
+                      secureBackupMutation.mutate(securePassphrase);
+                    }}
                   >
-                    <DownloadCloud className="w-4 h-4" /> Export Backup
-                  </button>
-                  <label className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md cursor-pointer transition-colors border border-border font-medium text-sm">
-                    <Database className="w-4 h-4" /> Import Backup
-                    <input type="file" className="hidden" accept=".json" onChange={async (e) => {
+                    <input
+                      type="password"
+                      value={securePassphrase}
+                      onChange={e => setSecurePassphrase(e.target.value)}
+                      placeholder={t('settings.backup.passphrase_placeholder')}
+                      minLength={8}
+                      required
+                      className="flex-1 bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                    <button
+                      type="submit"
+                      disabled={secureBackupMutation.isPending || securePassphrase.length < 8}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium disabled:opacity-60"
+                    >
+                      {secureBackupMutation.isPending
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Lock className="w-4 h-4" />}
+                      {t('settings.backup.export')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowSecureExport(false); setSecurePassphrase(''); }}
+                      className="px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted"
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground mt-4">
+                <strong>{t('settings.backup.no_credentials')}</strong> — {t('settings.backup.no_credentials_desc')}<br />
+                <strong>{t('settings.backup.with_credentials')}</strong> — {t('settings.backup.with_credentials_desc')}
+              </p>
+            </div>
+
+            {/* ── Import ── */}
+            <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
+              <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
+                <Upload className="w-5 h-5 text-muted-foreground" />
+                {t('settings.backup.import_title')}
+              </h3>
+              <p className="text-sm text-muted-foreground mb-5">
+                {t('settings.backup.import_desc')} <span className="text-destructive font-medium">{t('settings.backup.import_warning')}</span>
+              </p>
+
+              {!importPending ? (
+                <label className="inline-flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-lg border border-border cursor-pointer transition-colors font-medium text-sm">
+                  <Database className="w-4 h-4" />
+                  {t('settings.backup.choose_file')}
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".json"
+                    onChange={async (e) => {
                       const file = e.target.files?.[0];
-                      if(!file) return;
+                      if (!file) return;
                       try {
                         const text = await file.text();
                         const json = JSON.parse(text);
+                        if (typeof json !== 'object' || !json.version) {
+                          toast.error(t('settings.backup.invalid_file'));
+                          return;
+                        }
+                        setImportPending({
+                          json,
+                          needsPassphrase: !!json.secrets_included,
+                          summary: summarizeBackup(json as Record<string, unknown>),
+                        });
+                      } catch {
+                        toast.error(t('settings.backup.invalid_json'));
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              ) : (
+                <div className="p-4 rounded-lg border border-border bg-muted/30 space-y-4">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Database className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-medium">{t('settings.backup.version', { version: importPending.json.version as string })}</span>
+                    <span className="text-muted-foreground">·</span>
+                    {importPending.needsPassphrase ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                        <Lock className="w-3 h-3" /> {t('settings.backup.encrypted_credentials')}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground border border-border">
+                        {t('settings.backup.no_credentials')}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                    <div className="px-2 py-1.5 rounded border border-border bg-background">{t('settings.backup.summary.services')}: <strong>{importPending.summary.services}</strong></div>
+                    <div className="px-2 py-1.5 rounded border border-border bg-background">{t('settings.backup.summary.providers')}: <strong>{importPending.summary.providers}</strong></div>
+                    <div className="px-2 py-1.5 rounded border border-border bg-background">{t('settings.backup.summary.domains')}: <strong>{importPending.summary.domains}</strong></div>
+                    <div className="px-2 py-1.5 rounded border border-border bg-background">{t('settings.backup.summary.tags')}: <strong>{importPending.summary.tags}</strong></div>
+                    <div className="px-2 py-1.5 rounded border border-border bg-background">{t('settings.backup.summary.environments')}: <strong>{importPending.summary.environments}</strong></div>
+                    <div className="px-2 py-1.5 rounded border border-border bg-background">{t('settings.backup.summary.webhooks')}: <strong>{importPending.summary.webhooks}</strong></div>
+                  </div>
+
+                  {importPending.needsPassphrase && (
+                    <div>
+                      <label className="text-xs font-medium text-foreground mb-1.5 block">{t('settings.backup.passphrase_used')}</label>
+                      <input
+                        type="password"
+                        value={importPassphrase}
+                        onChange={e => setImportPassphrase(e.target.value)}
+                        placeholder={t('settings.backup.passphrase_enter')}
+                        className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        autoFocus
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      disabled={restoreBackupMutation.isPending || (importPending.needsPassphrase && !importPassphrase)}
+                      onClick={async () => {
+                        const summary = importPending.summary;
                         const confirmed = await confirm({
-                          title: 'Restore backup',
-                          message: 'WARNING: Restoring a backup will DELETE all current services, providers, domains and settings, replacing them with the backup contents. This cannot be undone.',
-                          confirmLabel: 'Restore',
+                          title: t('settings.backup.restore_confirm_title'),
+                          message: t('settings.backup.restore_confirm_message', {
+                            services: summary.services,
+                            providers: summary.providers,
+                            domains: summary.domains,
+                            tags: summary.tags,
+                            environments: summary.environments,
+                            webhooks: summary.webhooks,
+                          }),
+                          confirmLabel: t('settings.backup.restore'),
                           variant: 'danger',
                         });
-                        if (confirmed) {
-                          restoreBackupMutation.mutate(json);
-                        }
-                      } catch {
-                        toast.error("Invalid JSON format.");
-                      }
-                      // Reset input so same file can be selected again
-                      e.target.value = '';
-                    }} />
-                  </label>
+                        if (!confirmed) return;
+                        restoreBackupMutation.mutate({
+                          backup: importPending.json,
+                          passphrase: importPassphrase,
+                        });
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-lg text-sm font-medium disabled:opacity-60"
+                    >
+                      {restoreBackupMutation.isPending
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Upload className="w-4 h-4" />}
+                      {restoreBackupMutation.isPending ? t('settings.backup.restoring') : t('settings.backup.restore')}
+                    </button>
+                    <button
+                      onClick={() => { setImportPending(null); setImportPassphrase(''); }}
+                      className="px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted"
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
+            </div>
           </div>
         )}
 
         {activeTab === "apikeys" && (
           <div className="space-y-6">
+            {authStatus?.auth_required && (
+              <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
+                <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
+                  <Lock className="w-5 h-5 text-muted-foreground" />
+                  {t('settings.auth.change_password')}
+                </h3>
+                <p className="text-sm text-muted-foreground mb-5">
+                  {t('settings.auth.change_password_desc')}
+                </p>
+                <form
+                  className="space-y-3 max-w-sm"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitChangePassword();
+                  }}
+                >
+                  <input
+                    type="password"
+                    placeholder={t('settings.auth.current_password')}
+                    value={cpCurrent}
+                    onChange={e => setCpCurrent(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    autoComplete="current-password"
+                    required
+                  />
+                  <input
+                    type="password"
+                    placeholder={t('settings.auth.new_password')}
+                    value={cpNew}
+                    onChange={e => setCpNew(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                  />
+                  <input
+                    type="password"
+                    placeholder={t('settings.auth.confirm_password')}
+                    value={cpConfirm}
+                    onChange={e => setCpConfirm(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={changePasswordMutation.isPending}
+                    className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
+                  >
+                    {changePasswordMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                    {t('settings.auth.change_password')}
+                  </button>
+                </form>
+              </div>
+            )}
+
             <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <Key className="w-5 h-5 text-muted-foreground" />
-                API Keys
+                {t('settings.api_keys.title')}
               </h3>
               <p className="text-sm text-muted-foreground mb-6">
-                API keys allow external tools (MCP, scripts) to authenticate with Vauxtra. Keys are shown only once at creation.
+                {t('settings.api_keys.desc')}
               </p>
 
               {createdKey && (
                 <div className="bg-primary/5 border border-primary/30 rounded-lg p-4 mb-6">
-                  <p className="text-sm font-medium text-foreground mb-2">New API key created — copy it now, it won't be shown again:</p>
+                  <p className="text-sm font-medium text-foreground mb-2">{t('settings.api_keys.created_once')}</p>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 bg-muted px-3 py-2 rounded font-mono text-sm border border-border break-all">
                       {showKeySecret ? createdKey : createdKey.slice(0, 10) + '•'.repeat(30)}
@@ -825,14 +1238,14 @@ export function Settings() {
                     <button
                       onClick={() => setShowKeySecret(!showKeySecret)}
                       className="p-2 rounded-md hover:bg-accent transition-colors"
-                      title={showKeySecret ? 'Hide' : 'Reveal'}
+                      title={showKeySecret ? t('settings.api_keys.hide') : t('settings.api_keys.reveal')}
                     >
                       {showKeySecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                     <button
-                      onClick={() => { navigator.clipboard.writeText(createdKey); toast.success('Copied to clipboard'); }}
+                      onClick={() => { navigator.clipboard.writeText(createdKey); toast.success(t('settings.api_keys.copied')); }}
                       className="p-2 rounded-md hover:bg-accent transition-colors"
-                      title="Copy"
+                      title={t('settings.api_keys.copy')}
                     >
                       <Copy className="w-4 h-4" />
                     </button>
@@ -843,7 +1256,7 @@ export function Settings() {
               <div className="flex flex-col sm:flex-row gap-3 mb-6">
                 <input
                   type="text"
-                  placeholder="Key name (e.g. MCP, CI/CD)"
+                  placeholder={t('settings.api_keys.name_placeholder')}
                   value={newKeyName}
                   onChange={e => setNewKeyName(e.target.value)}
                   className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-sm"
@@ -867,8 +1280,8 @@ export function Settings() {
                 </div>
                 <button
                   onClick={() => {
-                    if (!newKeyName.trim()) { toast.error('Name is required'); return; }
-                    if (!newKeyScopes.length) { toast.error('Select at least one scope'); return; }
+                    if (!newKeyName.trim()) { toast.error(t('settings.api_keys.name_required')); return; }
+                    if (!newKeyScopes.length) { toast.error(t('settings.api_keys.scope_required')); return; }
                     setCreatedKey(null);
                     setShowKeySecret(false);
                     createKeyMutation.mutate({ name: newKeyName, scopes: newKeyScopes });
@@ -877,21 +1290,42 @@ export function Settings() {
                   className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
                 >
                   <Plus className="w-4 h-4" />
-                  Create Key
+                  {t('settings.api_keys.create')}
                 </button>
               </div>
 
+              <div className="sticky top-0 z-10 -mx-1 mb-4 px-1 py-2 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-y border-border flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+                <input
+                  type="text"
+                  value={apiKeySearch}
+                  onChange={(e) => setApiKeySearch(e.target.value)}
+                  placeholder={t('settings.api_keys.search_placeholder')}
+                  className="sm:w-72 px-3 py-1.5 rounded-md border border-input bg-background text-xs"
+                />
+                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={compactApiKeys}
+                    onChange={(e) => setCompactApiKeys(e.target.checked)}
+                    className="rounded"
+                  />
+                  {t('settings.list.compact_rows')}
+                </label>
+              </div>
+
               {apiKeys.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">No API keys yet. Create one to enable MCP or script access.</p>
+                <p className="text-sm text-muted-foreground text-center py-8">{t('settings.api_keys.empty')}</p>
+              ) : filteredApiKeys.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">{t('settings.api_keys.no_match')}</p>
               ) : (
                 <div className="space-y-2">
-                  {apiKeys.map(key => (
-                    <div key={key.id} className="flex items-center justify-between px-4 py-3 rounded-lg border border-border bg-background">
+                  {filteredApiKeys.map(key => (
+                    <div key={key.id} className={`flex items-center justify-between ${compactApiKeys ? 'px-3 py-2' : 'px-4 py-3'} rounded-lg border border-border bg-background`}>
                       <div className="flex items-center gap-3 min-w-0">
                         <Key className="w-4 h-4 text-muted-foreground shrink-0" />
                         <div className="min-w-0">
                           <span className="font-medium text-sm">{key.name}</span>
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <div className={`flex items-center gap-2 ${compactApiKeys ? 'mt-0' : 'mt-0.5'}`}>
                             <code className="text-xs text-muted-foreground font-mono">{key.prefix}•••</code>
                             <span className="text-xs text-muted-foreground">·</span>
                             {key.scopes.map(s => (
@@ -902,20 +1336,20 @@ export function Settings() {
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
                         <span className="text-xs text-muted-foreground hidden sm:inline">
-                          {key.last_used_at ? `Last used ${key.last_used_at}` : 'Never used'}
+                          {key.last_used_at ? t('settings.api_keys.last_used', { date: key.last_used_at }) : t('settings.api_keys.never_used')}
                         </span>
                         <button
                           onClick={async () => {
                             if (await confirm({
-                              title: 'Revoke API key',
-                              message: `Revoke API key "${key.name}"? This cannot be undone.`,
-                              confirmLabel: 'Revoke',
+                              title: t('settings.api_keys.revoke_title'),
+                              message: t('settings.api_keys.revoke_message', { name: key.name }),
+                              confirmLabel: t('settings.api_keys.revoke'),
                               variant: 'danger',
                             }))
                               revokeKeyMutation.mutate(key.id);
                           }}
                           className="text-destructive hover:text-destructive/80 transition-colors p-1"
-                          title="Revoke"
+                          title={t('settings.api_keys.revoke')}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -933,23 +1367,23 @@ export function Settings() {
             <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <Bell className="w-5 h-5 text-muted-foreground" />
-                Notification Webhooks
+                {t('settings.webhooks.title')}
               </h3>
               <p className="text-sm text-muted-foreground mb-6">
-                Webhooks use <a href="https://github.com/caronc/apprise" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Apprise</a> URLs to send notifications (Discord, Slack, Telegram, email, etc.).
+                {t('settings.webhooks.desc')} <a href="https://github.com/caronc/apprise" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Apprise</a>.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3 mb-6">
                 <input
                   type="text"
-                  placeholder="Name (e.g. Discord alerts)"
+                  placeholder={t('settings.webhooks.name_placeholder')}
                   value={newWebhookName}
                   onChange={e => setNewWebhookName(e.target.value)}
                   className="sm:w-48 px-3 py-2 rounded-lg border border-input bg-background text-sm"
                 />
                 <input
                   type="text"
-                  placeholder="Apprise URL (e.g. discord://webhook_id/token)"
+                  placeholder={t('settings.webhooks.url_placeholder')}
                   value={newWebhookUrl}
                   onChange={e => setNewWebhookUrl(e.target.value)}
                   className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-sm font-mono"
@@ -960,16 +1394,37 @@ export function Settings() {
                   className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
                 >
                   <Plus className="w-4 h-4" />
-                  Add Webhook
+                  {t('settings.webhooks.add')}
                 </button>
               </div>
 
+              <div className="sticky top-0 z-10 -mx-1 mb-4 px-1 py-2 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-y border-border flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+                <input
+                  type="text"
+                  value={webhookSearch}
+                  onChange={(e) => setWebhookSearch(e.target.value)}
+                  placeholder={t('settings.webhooks.search_placeholder')}
+                  className="sm:w-72 px-3 py-1.5 rounded-md border border-input bg-background text-xs"
+                />
+                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={compactWebhooks}
+                    onChange={(e) => setCompactWebhooks(e.target.checked)}
+                    className="rounded"
+                  />
+                  {t('settings.list.compact_rows')}
+                </label>
+              </div>
+
               {webhooks.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">No webhooks configured. Add one to receive notifications when services go down or recover.</p>
+                <p className="text-sm text-muted-foreground text-center py-8">{t('settings.webhooks.empty')}</p>
+              ) : filteredWebhooks.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">{t('settings.webhooks.no_match')}</p>
               ) : (
                 <div className="space-y-2">
-                  {webhooks.map(wh => (
-                    <div key={wh.id} className="flex items-center justify-between px-4 py-3 rounded-lg border border-border bg-background">
+                  {filteredWebhooks.map(wh => (
+                    <div key={wh.id} className={`flex items-center justify-between ${compactWebhooks ? 'px-3 py-2' : 'px-4 py-3'} rounded-lg border border-border bg-background`}>
                       <div className="flex items-center gap-3 min-w-0">
                         <Bell className="w-4 h-4 text-muted-foreground shrink-0" />
                         <div className="min-w-0">
@@ -983,26 +1438,26 @@ export function Settings() {
                           disabled={testWebhookMutation.isPending}
                           className="text-xs px-3 py-1.5 border border-border bg-background rounded-md hover:bg-accent transition-colors"
                         >
-                          Test
+                          {t('settings.webhooks.test')}
                         </button>
                         <button
                           onClick={() => toggleWebhookMutation.mutate({ id: wh.id, enabled: !wh.enabled })}
                           className={`text-xs px-3 py-1.5 border rounded-md transition-colors ${wh.enabled ? 'border-primary/30 bg-primary/5 text-primary' : 'border-border bg-muted text-muted-foreground'}`}
                         >
-                          {wh.enabled ? 'Enabled' : 'Disabled'}
+                          {wh.enabled ? t('settings.webhooks.enabled') : t('settings.webhooks.disabled')}
                         </button>
                         <button
                           onClick={async () => {
                             if (await confirm({
-                              title: 'Delete webhook',
-                              message: `Delete webhook "${wh.name}"?`,
-                              confirmLabel: 'Delete',
+                              title: t('settings.webhooks.delete_title'),
+                              message: t('settings.webhooks.delete_message', { name: wh.name }),
+                              confirmLabel: t('common.delete'),
                               variant: 'danger',
                             }))
                               deleteWebhookMutation.mutate(wh.id);
                           }}
                           className="text-destructive hover:text-destructive/80 transition-colors p-1"
-                          title="Delete"
+                          title={t('common.delete')}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -1019,24 +1474,68 @@ export function Settings() {
           <div className="bg-card border border-border rounded-xl shadow-sm overflow-hidden">
              <div className="px-6 py-4 border-b border-border flex justify-between items-center bg-muted/30">
                <h3 className="font-semibold flex items-center gap-2">
-                <FileTerminal className="w-4 h-4" /> Action Logs
+                <FileTerminal className="w-4 h-4" /> {t('settings.logs.title')}
                </h3>
-               <button
-                 onClick={() => clearLogsMutation.mutate()}
-                 disabled={clearLogsMutation.isPending}
-                 className="text-xs px-3 py-1.5 border border-border bg-background rounded-md hover:bg-accent transition-colors"
-               >
-                 {clearLogsMutation.isPending ? "Clearing..." : "Clear Logs"}
-               </button>
+               <div className="flex items-center gap-2">
+                 <button
+                   onClick={() => queryClient.invalidateQueries({ queryKey: ['logs'] })}
+                   className="text-xs px-3 py-1.5 border border-border bg-background rounded-md hover:bg-accent transition-colors"
+                 >
+                   {t('settings.logs.refresh')}
+                 </button>
+                 <button
+                   onClick={() => clearLogsMutation.mutate()}
+                   disabled={clearLogsMutation.isPending}
+                   className="text-xs px-3 py-1.5 border border-border bg-background rounded-md hover:bg-accent transition-colors"
+                 >
+                   {clearLogsMutation.isPending ? t('settings.logs.clearing') : t('settings.logs.clear')}
+                 </button>
+               </div>
              </div>
-             <div className="p-4 max-h-[600px] overflow-y-auto font-mono text-xs space-y-2 bg-card text-foreground">
-                {(logs as LogsResponse | undefined)?.items ? (logs as LogsResponse).items.map((log, i) => (
+             <div className="px-4 py-3 border-b border-border bg-card/70 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+               <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                 <input
+                   type="text"
+                   value={logQuery}
+                   onChange={(e) => setLogQuery(e.target.value)}
+                   placeholder={t('settings.logs.search_placeholder')}
+                   className="sm:w-72 px-3 py-1.5 rounded-md border border-input bg-background text-xs"
+                 />
+                 <select
+                   value={logLevelFilter}
+                   onChange={(e) => setLogLevelFilter(e.target.value as 'all' | LogLevel)}
+                   className="px-2.5 py-1.5 rounded-md border border-input bg-background text-xs"
+                   aria-label={t('settings.logs.level_filter_aria')}
+                 >
+                   <option value="all">{t('settings.logs.level_all')}</option>
+                    <option value="ok">{t('settings.logs.level_ok')}</option>
+                    <option value="info">{t('settings.logs.level_info')}</option>
+                    <option value="warning">{t('settings.logs.level_warning')}</option>
+                    <option value="error">{t('settings.logs.level_error')}</option>
+                 </select>
+               </div>
+               <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                 <input
+                   type="checkbox"
+                   checked={logsAutoScroll}
+                   onChange={(e) => setLogsAutoScroll(e.target.checked)}
+                   className="rounded"
+                 />
+                 {t('settings.logs.autoscroll')}
+               </label>
+             </div>
+             <div ref={logContainerRef} className="p-4 max-h-[600px] overflow-y-auto font-mono text-xs space-y-2 bg-card text-foreground">
+                {filteredLogs.length > 0 ? filteredLogs.map((log, i) => (
                   <div key={i} className="flex gap-4 border-b border-border/40 pb-2">
                     <span className="text-muted-foreground w-32 shrink-0">{log.created_at}</span>
                     <span className="text-primary w-24 shrink-0">[{log.level}]</span>
                     <span>{log.message}</span>
                   </div>
-                )) : <div className="text-muted-foreground">No logs available or API disconnected.</div>}
+                 )) : (
+                   <div className="text-muted-foreground">
+                     {logItems.length > 0 ? t('settings.logs.no_match') : t('settings.logs.empty')}
+                   </div>
+                 )}
              </div>
           </div>
         )}
