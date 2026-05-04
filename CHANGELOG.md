@@ -92,6 +92,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 ---
 
 [Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.1...HEAD
-[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v0.1.0...v1.0.0
+[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.1
+[1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases
 [0.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v0.1.0

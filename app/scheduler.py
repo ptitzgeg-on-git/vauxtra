@@ -194,6 +194,8 @@ def run_health_checks() -> None:
 
         if changed:
             _fire_global_webhook(changed)
+        if any("provider_id" in c for c in changed):
+            _fire_integration_webhook(changed)
         _fire_service_webhooks()
 
 
@@ -347,34 +349,35 @@ def _run_dns_auto_updates(conn) -> None:
 # ── Webhook ───────────────────────────────────────────────────────────────
 
 def _fire_global_webhook(changed: list[dict]) -> None:
+    """Fire service-status alerts to all webhooks that opted into global alerts."""
     try:
+        down = [s for s in changed if s["new"] == "error"]
+        up   = [s for s in changed if s["new"] == "ok"]
+        if not down and not up:
+            return
+
         conn = get_db()
-        rows = conn.execute(
-            "SELECT key, value FROM settings WHERE key IN ('webhook_url', 'webhook_enabled')"
+        webhooks = conn.execute(
+            """SELECT url, alert_on_any_down, alert_on_any_up, min_down_minutes
+               FROM webhooks WHERE enabled=1
+               AND (alert_on_any_down=1 OR alert_on_any_up=1)"""
         ).fetchall()
         conn.close()
-        cfg = {r["key"]: r["value"] for r in rows}
-
-        if cfg.get("webhook_enabled") != "true":
-            return
-        url = cfg.get("webhook_url", "").strip()
-        if not url:
-            return
 
         import apprise
-        a = apprise.Apprise()
-        if not a.add(url):
-            return
 
-        down  = [s for s in changed if s["new"] == "error"]
-        up    = [s for s in changed if s["new"] == "ok"]
-        lines = []
-        if down:
-            lines.append("Down: " + ", ".join(s["fqdn"] for s in down))
-        if up:
-            lines.append("Recovered: " + ", ".join(s["fqdn"] for s in up))
-
-        a.notify(title="Vauxtra - Status change", body="\n".join(lines))
+        for wh in webhooks:
+            lines = []
+            if wh["alert_on_any_down"] and down:
+                lines.append("Down: " + ", ".join(s["fqdn"] for s in down))
+            if wh["alert_on_any_up"] and up:
+                lines.append("Recovered: " + ", ".join(s["fqdn"] for s in up))
+            if not lines:
+                continue
+            a = apprise.Apprise()
+            if not a.add(wh["url"]):
+                continue
+            a.notify(title="Vauxtra - Status change", body="\n".join(lines))
     except Exception:
         import traceback
         add_log("error", f"Global webhook failed: {traceback.format_exc()}")
@@ -474,33 +477,68 @@ def _fire_service_webhooks() -> None:
         add_log("error", f"Service webhook failed: {traceback.format_exc()}")
 
 
+def _fire_integration_webhook(changed: list[dict]) -> None:
+    """Fire integration-status alerts to webhooks that opted into integration alerts."""
+    try:
+        integration_changed = [c for c in changed if "provider_id" in c]
+        if not integration_changed:
+            return
+
+        down = [c for c in integration_changed if c["new"] == "error"]
+        up   = [c for c in integration_changed if c["new"] == "ok"]
+        if not down and not up:
+            return
+
+        conn = get_db()
+        webhooks = conn.execute(
+            """SELECT url, alert_on_integration_down, alert_on_integration_up
+               FROM webhooks WHERE enabled=1
+               AND (alert_on_integration_down=1 OR alert_on_integration_up=1)"""
+        ).fetchall()
+        conn.close()
+
+        import apprise
+
+        for wh in webhooks:
+            lines = []
+            if wh["alert_on_integration_down"] and down:
+                lines.append("Integration down: " + ", ".join(c["fqdn"] for c in down))
+            if wh["alert_on_integration_up"] and up:
+                lines.append("Integration recovered: " + ", ".join(c["fqdn"] for c in up))
+            if not lines:
+                continue
+            a = apprise.Apprise()
+            if not a.add(wh["url"]):
+                continue
+            a.notify(title="Vauxtra - Integration alert", body="\n".join(lines))
+    except Exception:
+        import traceback
+        add_log("error", f"Integration webhook failed: {traceback.format_exc()}")
+
+
 def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
     try:
         conn = get_db()
-        rows = conn.execute(
-            "SELECT key, value FROM settings WHERE key IN ('webhook_url', 'webhook_enabled')"
+        webhooks = conn.execute(
+            "SELECT url FROM webhooks WHERE enabled=1 AND alert_on_any_down=1"
         ).fetchall()
         conn.close()
-        cfg = {r["key"]: r["value"] for r in rows}
-
-        if cfg.get("webhook_enabled") != "true":
-            return
-        url = cfg.get("webhook_url", "").strip()
-        if not url:
+        if not webhooks:
             return
 
         import apprise
-        a = apprise.Apprise()
-        if not a.add(url):
-            return
-
         lines = [f"Auto-reconcile corrected {len(corrected)} service(s):"]
         lines.extend(f"  ✓ {fqdn}" for fqdn in corrected)
         if errors:
             lines.append(f"Errors ({len(errors)}):")
             lines.extend(f"  ✗ {e}" for e in errors)
+        body = "\n".join(lines)
 
-        a.notify(title="Vauxtra: Auto-Reconcile", body="\n".join(lines))
+        for wh in webhooks:
+            a = apprise.Apprise()
+            if not a.add(wh["url"]):
+                continue
+            a.notify(title="Vauxtra: Auto-Reconcile", body=body)
     except Exception:
         import traceback
         add_log("error", f"Reconcile webhook failed: {traceback.format_exc()}")
