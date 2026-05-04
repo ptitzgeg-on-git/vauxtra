@@ -320,7 +320,7 @@ Load Balancer (optional)
 - CRUD operations: add/list/delete DNS records
 - Proxy host listing and creation
 
-### **E2E Tests** (TODO)
+### **E2E Coverage (Planned Scope)**
 - Full service creation workflow
 - Import/export functionality
 - Webhook notifications
