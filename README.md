@@ -34,7 +34,7 @@
 | **MCP Server** | Expose core operations as tools for MCP-compatible clients and automation |
 | **Webhook alerts** | Apprise-compatible webhook for service down/recovery and reconcile events |
 | **Environments & Tags** | Organise services with colour-coded labels |
-| **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — community-driven |
+| **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — 8 locales |
 
 ---
 

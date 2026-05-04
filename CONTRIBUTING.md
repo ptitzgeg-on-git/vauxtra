@@ -1,6 +1,6 @@
 # Contributing to Vauxtra
 
-Thank you for your interest in contributing! This guide covers local setup, code conventions, and how to extend the project.
+This guide covers local setup, code conventions, and how to extend the project.
 
 ## Local Development Setup
 
