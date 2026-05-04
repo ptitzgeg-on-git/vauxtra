@@ -244,6 +244,23 @@ export function ProviderFormStep({
             </div>
           )}
 
+          {/* Display name — shown only on the last guided step */}
+          {guidedStepIndex === currentGuidedSteps.length - 1 && (
+            <div className="space-y-1.5 border-t border-border pt-4">
+              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Display Name
+              </label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder={selectedMeta.label || formData.type}
+                className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <p className="text-xs text-muted-foreground">Friendly name shown in Vauxtra.</p>
+            </div>
+          )}
+
           {/* Validation result inline */}
           {guidedStepIndex === currentGuidedSteps.length - 1 && validationResult && (
             <div className={`p-4 rounded-lg border ${validationResult.ok ? 'bg-green-500/5 border-green-500/30' : 'bg-destructive/5 border-destructive/30'}`}>

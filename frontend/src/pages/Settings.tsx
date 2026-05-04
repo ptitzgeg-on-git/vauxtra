@@ -1,4 +1,4 @@
-import { DownloadCloud, Database, FileTerminal, Globe, RefreshCw, Loader2, AlertTriangle, CheckCircle2, AlertCircle, Trash2, Key, Bell, Copy, Plus, Eye, EyeOff, Tag, Layers, Languages, Lock, Upload } from "lucide-react";
+import { DownloadCloud, Database, FileTerminal, Globe, RefreshCw, Loader2, AlertTriangle, CheckCircle2, AlertCircle, Trash2, Key, Bell, Copy, Plus, Eye, EyeOff, Tag, Layers, Languages, Lock, Upload, ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useI18n, SUPPORTED_LANGUAGES } from "@/i18n";
@@ -39,7 +39,6 @@ export function Settings() {
   const [apiKeySearch, setApiKeySearch] = useState("");
   const [webhookSearch, setWebhookSearch] = useState("");
   const [compactApiKeys, setCompactApiKeys] = useState(false);
-  const [compactWebhooks, setCompactWebhooks] = useState(false);
   const [logQuery, setLogQuery] = useState('');
   const [logLevelFilter, setLogLevelFilter] = useState<'all' | LogLevel>('all');
   const [logsAutoScroll, setLogsAutoScroll] = useState(true);
@@ -153,6 +152,15 @@ export function Settings() {
     addWebhook: addWebhookMutation, deleteWebhook: deleteWebhookMutation,
     testWebhookById: testWebhookMutation, toggleWebhook: toggleWebhookMutation,
   } = useWebhookActions();
+
+  const [expandedWebhook, setExpandedWebhook] = useState<number | null>(null);
+
+  const updateWebhookAlerts = useMutation({
+    mutationFn: ({ id, ...fields }: { id: number; alert_on_any_down: boolean; alert_on_any_up: boolean; alert_on_integration_down: boolean; alert_on_integration_up: boolean; min_down_minutes: number }) =>
+      api.put(`/webhooks/${id}`, fields),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['webhooks'] }); markRecentlyChanged(); },
+    onError: () => toast.error(t('settings.webhooks.update_failed')),
+  });
 
   // Tags
   interface TagItem { id: number; name: string; color: string }
@@ -1368,23 +1376,14 @@ export function Settings() {
                 </button>
               </div>
 
-              <div className="sticky top-0 z-10 -mx-1 mb-4 px-1 py-2 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-y border-border flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+              <div className="sticky top-0 z-10 -mx-1 mb-4 px-1 py-2 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-y border-border">
                 <input
                   type="text"
                   value={webhookSearch}
                   onChange={(e) => setWebhookSearch(e.target.value)}
                   placeholder={t('settings.webhooks.search_placeholder')}
-                  className="sm:w-72 px-3 py-1.5 rounded-md border border-input bg-background text-xs"
+                  className="w-full sm:w-72 px-3 py-1.5 rounded-md border border-input bg-background text-xs"
                 />
-                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={compactWebhooks}
-                    onChange={(e) => setCompactWebhooks(e.target.checked)}
-                    className="rounded"
-                  />
-                  {t('settings.list.compact_rows')}
-                </label>
               </div>
 
               {webhooks.length === 0 ? (
@@ -1393,47 +1392,165 @@ export function Settings() {
                 <p className="text-sm text-muted-foreground text-center py-6">{t('settings.webhooks.no_match')}</p>
               ) : (
                 <div className="space-y-2">
-                  {filteredWebhooks.map(wh => (
-                    <div key={wh.id} className={`flex items-center justify-between ${compactWebhooks ? 'px-3 py-2' : 'px-4 py-3'} rounded-lg border border-border bg-background`}>
-                      <div className="flex items-center gap-3 min-w-0">
-                        <Bell className="w-4 h-4 text-muted-foreground shrink-0" />
-                        <div className="min-w-0">
-                          <span className="font-medium text-sm">{wh.name}</span>
-                          <p className="text-xs text-muted-foreground font-mono truncate max-w-xs">{wh.url}</p>
+                  {filteredWebhooks.map(wh => {
+                    const isExpanded = expandedWebhook === wh.id;
+                    return (
+                      <div key={wh.id} className="rounded-lg border border-border bg-background overflow-hidden">
+                        {/* Main row */}
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <Bell className="w-4 h-4 text-muted-foreground shrink-0" />
+                            <div className="min-w-0">
+                              <span className="font-medium text-sm">{wh.name}</span>
+                              <p className="text-xs text-muted-foreground font-mono truncate max-w-xs">{wh.url}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => testWebhookMutation.mutate(wh.id)}
+                              disabled={testWebhookMutation.isPending}
+                              className="text-xs px-3 py-1.5 border border-border bg-background rounded-md hover:bg-accent transition-colors"
+                            >
+                              {t('settings.webhooks.test')}
+                            </button>
+                            <button
+                              onClick={() => setExpandedWebhook(isExpanded ? null : wh.id)}
+                              className={`flex items-center gap-1 text-xs px-3 py-1.5 border rounded-md transition-colors ${isExpanded ? 'border-primary/30 bg-primary/5 text-primary' : 'border-border bg-background text-muted-foreground hover:bg-accent'}`}
+                              title={t('settings.webhooks.alert_rules')}
+                            >
+                              {t('settings.webhooks.alert_rules')}
+                              <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                            </button>
+                            <button
+                              onClick={() => toggleWebhookMutation.mutate({ id: wh.id, enabled: !wh.enabled }, { onSuccess: () => markRecentlyChanged() })}
+                              className={`text-xs px-3 py-1.5 border rounded-md transition-colors ${wh.enabled ? 'border-primary/30 bg-primary/5 text-primary' : 'border-border bg-muted text-muted-foreground'}`}
+                            >
+                              {wh.enabled ? t('settings.webhooks.enabled') : t('settings.webhooks.disabled')}
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (await confirm({
+                                  title: t('settings.webhooks.delete_title'),
+                                  message: t('settings.webhooks.delete_message', { name: wh.name }),
+                                  confirmLabel: t('common.delete'),
+                                  variant: 'danger',
+                                }))
+                                  deleteWebhookMutation.mutate(wh.id, { onSuccess: () => markRecentlyChanged() });
+                              }}
+                              className="text-destructive hover:text-destructive/80 transition-colors p-1"
+                              title={t('common.delete')}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Alert rules (expandable) */}
+                        {isExpanded && (
+                          <div className="border-t border-border bg-muted/30 px-4 py-4 space-y-4">
+                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{t('settings.webhooks.alert_rules_desc')}</p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              {/* Service alerts */}
+                              <div className="space-y-2">
+                                <p className="text-xs font-medium text-foreground">{t('settings.webhooks.services_label')}</p>
+                                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    defaultChecked={Boolean(wh.alert_on_any_down)}
+                                    onChange={(e) => updateWebhookAlerts.mutate({
+                                      id: wh.id,
+                                      alert_on_any_down: e.target.checked,
+                                      alert_on_any_up: Boolean(wh.alert_on_any_up),
+                                      alert_on_integration_down: Boolean(wh.alert_on_integration_down),
+                                      alert_on_integration_up: Boolean(wh.alert_on_integration_up),
+                                      min_down_minutes: wh.min_down_minutes ?? 0,
+                                    })}
+                                    className="rounded border-border"
+                                  />
+                                  <span className="text-sm">{t('settings.webhooks.on_service_down')}</span>
+                                </label>
+                                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    defaultChecked={Boolean(wh.alert_on_any_up)}
+                                    onChange={(e) => updateWebhookAlerts.mutate({
+                                      id: wh.id,
+                                      alert_on_any_down: Boolean(wh.alert_on_any_down),
+                                      alert_on_any_up: e.target.checked,
+                                      alert_on_integration_down: Boolean(wh.alert_on_integration_down),
+                                      alert_on_integration_up: Boolean(wh.alert_on_integration_up),
+                                      min_down_minutes: wh.min_down_minutes ?? 0,
+                                    })}
+                                    className="rounded border-border"
+                                  />
+                                  <span className="text-sm">{t('settings.webhooks.on_service_up')}</span>
+                                </label>
+                              </div>
+
+                              {/* Integration alerts */}
+                              <div className="space-y-2">
+                                <p className="text-xs font-medium text-foreground">{t('settings.webhooks.integrations_label')}</p>
+                                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    defaultChecked={Boolean(wh.alert_on_integration_down)}
+                                    onChange={(e) => updateWebhookAlerts.mutate({
+                                      id: wh.id,
+                                      alert_on_any_down: Boolean(wh.alert_on_any_down),
+                                      alert_on_any_up: Boolean(wh.alert_on_any_up),
+                                      alert_on_integration_down: e.target.checked,
+                                      alert_on_integration_up: Boolean(wh.alert_on_integration_up),
+                                      min_down_minutes: wh.min_down_minutes ?? 0,
+                                    })}
+                                    className="rounded border-border"
+                                  />
+                                  <span className="text-sm">{t('settings.webhooks.on_integration_down')}</span>
+                                </label>
+                                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    defaultChecked={Boolean(wh.alert_on_integration_up)}
+                                    onChange={(e) => updateWebhookAlerts.mutate({
+                                      id: wh.id,
+                                      alert_on_any_down: Boolean(wh.alert_on_any_down),
+                                      alert_on_any_up: Boolean(wh.alert_on_any_up),
+                                      alert_on_integration_down: Boolean(wh.alert_on_integration_down),
+                                      alert_on_integration_up: e.target.checked,
+                                      min_down_minutes: wh.min_down_minutes ?? 0,
+                                    })}
+                                    className="rounded border-border"
+                                  />
+                                  <span className="text-sm">{t('settings.webhooks.on_integration_up')}</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {/* Min down delay */}
+                            <div className="flex items-center gap-3 pt-1">
+                              <label className="text-sm text-foreground whitespace-nowrap">{t('settings.webhooks.min_down_minutes')}</label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={60}
+                                defaultValue={wh.min_down_minutes ?? 0}
+                                onBlur={(e) => updateWebhookAlerts.mutate({
+                                  id: wh.id,
+                                  alert_on_any_down: Boolean(wh.alert_on_any_down),
+                                  alert_on_any_up: Boolean(wh.alert_on_any_up),
+                                  alert_on_integration_down: Boolean(wh.alert_on_integration_down),
+                                  alert_on_integration_up: Boolean(wh.alert_on_integration_up),
+                                  min_down_minutes: Math.max(0, Number(e.target.value) || 0),
+                                })}
+                                className="w-20 px-2 py-1 rounded-md border border-input bg-background text-sm text-center"
+                              />
+                              <span className="text-xs text-muted-foreground">{t('settings.webhooks.min_down_minutes_hint')}</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => testWebhookMutation.mutate(wh.id)}
-                          disabled={testWebhookMutation.isPending}
-                          className="text-xs px-3 py-1.5 border border-border bg-background rounded-md hover:bg-accent transition-colors"
-                        >
-                          {t('settings.webhooks.test')}
-                        </button>
-                        <button
-                          onClick={() => toggleWebhookMutation.mutate({ id: wh.id, enabled: !wh.enabled }, { onSuccess: () => markRecentlyChanged() })}
-                          className={`text-xs px-3 py-1.5 border rounded-md transition-colors ${wh.enabled ? 'border-primary/30 bg-primary/5 text-primary' : 'border-border bg-muted text-muted-foreground'}`}
-                        >
-                          {wh.enabled ? t('settings.webhooks.enabled') : t('settings.webhooks.disabled')}
-                        </button>
-                        <button
-                          onClick={async () => {
-                            if (await confirm({
-                              title: t('settings.webhooks.delete_title'),
-                              message: t('settings.webhooks.delete_message', { name: wh.name }),
-                              confirmLabel: t('common.delete'),
-                              variant: 'danger',
-                            }))
-                              deleteWebhookMutation.mutate(wh.id, { onSuccess: () => markRecentlyChanged() });
-                          }}
-                          className="text-destructive hover:text-destructive/80 transition-colors p-1"
-                          title={t('common.delete')}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
