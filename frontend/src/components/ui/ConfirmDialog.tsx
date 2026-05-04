@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useEffect, useRef, useCallback } from 'react';
 import { AlertTriangle, Info, X } from 'lucide-react';
 

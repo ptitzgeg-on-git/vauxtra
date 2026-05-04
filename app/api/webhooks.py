@@ -1,8 +1,28 @@
-from fastapi import APIRouter, Request, HTTPException
-from app.models import get_db
+from fastapi import APIRouter, HTTPException, Request
+
 from app.auth import require_auth
+from app.models import get_db
 
 router = APIRouter()
+
+
+def _validate_apprise_url(url: str) -> str:
+    """Validate and normalize an Apprise URL string."""
+    value = (url or "").strip()
+    if not value:
+        raise HTTPException(400, "URL is required")
+    try:
+        import apprise
+        a = apprise.Apprise()
+        if not a.add(value):
+            raise HTTPException(400, "Invalid or unrecognized Apprise URL")
+    except ImportError:
+        raise HTTPException(500, "Package 'apprise' not installed")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return value
 
 
 @router.get("/api/webhooks")
@@ -22,7 +42,7 @@ def add_webhook(request: Request, body: dict):
     """Create a new webhook notification target."""
     require_auth(request, scope="write")
     name = body.get("name", "").strip()
-    url  = body.get("url",  "").strip()
+    url  = _validate_apprise_url(body.get("url", ""))
     if not name or not url:
         raise HTTPException(400, "Name and URL are required")
     conn = get_db()
@@ -41,13 +61,22 @@ def add_webhook(request: Request, body: dict):
 def update_webhook(wid: int, request: Request, body: dict):
     """Update an existing webhook by ID."""
     require_auth(request, scope="write")
-    name    = body.get("name", "").strip()
-    url     = body.get("url",  "").strip()
-    enabled = int(bool(body.get("enabled", True)))
-    if not name or not url:
-        raise HTTPException(400, "Name and URL are required")
     conn = get_db()
     try:
+        existing = conn.execute("SELECT * FROM webhooks WHERE id=?", (wid,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "Webhook not found")
+
+        # Support partial updates (e.g. toggle sends only { enabled }).
+        name = body.get("name", existing["name"])
+        url = body.get("url", existing["url"])
+        enabled = int(bool(body.get("enabled", existing["enabled"])))
+
+        name = (name or "").strip()
+        url = _validate_apprise_url(url)
+        if not name or not url:
+            raise HTTPException(400, "Name and URL are required")
+
         conn.execute("UPDATE webhooks SET name=?, url=?, enabled=? WHERE id=?", (name, url, enabled, wid))
         conn.commit()
         return {"id": wid, "name": name, "url": url, "enabled": enabled}
@@ -72,14 +101,11 @@ def delete_webhook(wid: int, request: Request):
 def test_webhook_url(request: Request, body: dict):
     """Test a webhook URL without saving it (for pre-validation in setup wizard)."""
     require_auth(request, scope="write")
-    url = body.get("url", "").strip()
-    if not url:
-        raise HTTPException(400, "URL is required")
+    url = _validate_apprise_url(body.get("url", ""))
     try:
         import apprise
         a = apprise.Apprise()
-        if not a.add(url):
-            raise HTTPException(400, "Invalid or unrecognized Apprise URL")
+        a.add(url)
         ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
         if not ok:
             raise HTTPException(500, "Send failed - check your URL and try again")

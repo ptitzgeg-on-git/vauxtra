@@ -1,19 +1,20 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Layout } from './components/layout/Layout';
-import { Dashboard } from './pages/Dashboard';
-import { Services } from './pages/Services';
-import { Providers } from './pages/Providers';
-import { Settings } from './pages/Settings';
-import { Monitoring } from './pages/Monitoring';
-import { Certificates } from './pages/Certificates';
-import { Login } from './pages/Login';
-import { Setup } from './pages/Setup';
 import { ThemeProvider } from './theme';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { api } from './api/client';
+
+const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
+const Services = lazy(() => import('./pages/Services').then((m) => ({ default: m.Services })));
+const Providers = lazy(() => import('./pages/Providers').then((m) => ({ default: m.Providers })));
+const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
+const Monitoring = lazy(() => import('./pages/Monitoring').then((m) => ({ default: m.Monitoring })));
+const Certificates = lazy(() => import('./pages/Certificates').then((m) => ({ default: m.Certificates })));
+const Login = lazy(() => import('./pages/Login').then((m) => ({ default: m.Login })));
+const Setup = lazy(() => import('./pages/Setup').then((m) => ({ default: m.Setup })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -54,6 +55,11 @@ function AuthGate() {
     );
   }
 
+  // Show login if password is required and not authenticated
+  if (auth?.auth_required && !auth?.authenticated) {
+    return <Login onSuccess={() => qc.invalidateQueries({ queryKey: ['auth-status'] })} />;
+  }
+
   // Show setup wizard if server says setup is required
   if (auth?.setup_required) {
     return (
@@ -74,27 +80,30 @@ function AuthGate() {
     );
   }
 
-  // Show login if password is required and not authenticated
-  if (auth?.auth_required && !auth?.authenticated) {
-    return <Login onSuccess={() => qc.invalidateQueries({ queryKey: ['auth-status'] })} />;
-  }
-
   return <AppRoutes />;
 }
 
 function AppRoutes() {
+  const pageFallback = (
+    <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground animate-pulse">
+      Loading…
+    </div>
+  );
+
   return (
-    <Routes>
-      <Route path="/" element={<Layout />}>
-        <Route index element={<ErrorBoundary fallbackTitle="Dashboard unavailable"><Dashboard /></ErrorBoundary>} />
-        <Route path="services" element={<ErrorBoundary fallbackTitle="Services unavailable"><Services /></ErrorBoundary>} />
-        <Route path="providers" element={<ErrorBoundary fallbackTitle="Providers unavailable"><Providers /></ErrorBoundary>} />
-        <Route path="monitoring" element={<ErrorBoundary fallbackTitle="Monitoring unavailable"><Monitoring /></ErrorBoundary>} />
-        <Route path="settings" element={<ErrorBoundary fallbackTitle="Settings unavailable"><Settings /></ErrorBoundary>} />
-        <Route path="certificates" element={<ErrorBoundary fallbackTitle="Certificates unavailable"><Certificates /></ErrorBoundary>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Route>
-    </Routes>
+    <Suspense fallback={pageFallback}>
+      <Routes>
+        <Route path="/" element={<Layout />}>
+          <Route index element={<ErrorBoundary fallbackTitle="Dashboard unavailable"><Dashboard /></ErrorBoundary>} />
+          <Route path="services" element={<ErrorBoundary fallbackTitle="Services unavailable"><Services /></ErrorBoundary>} />
+          <Route path="providers" element={<ErrorBoundary fallbackTitle="Providers unavailable"><Providers /></ErrorBoundary>} />
+          <Route path="monitoring" element={<ErrorBoundary fallbackTitle="Monitoring unavailable"><Monitoring /></ErrorBoundary>} />
+          <Route path="settings" element={<ErrorBoundary fallbackTitle="Settings unavailable"><Settings /></ErrorBoundary>} />
+          <Route path="certificates" element={<ErrorBoundary fallbackTitle="Certificates unavailable"><Certificates /></ErrorBoundary>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </Suspense>
   );
 }
 

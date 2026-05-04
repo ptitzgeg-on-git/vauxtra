@@ -1,7 +1,7 @@
 """Unit tests for TechnitiumProvider — all HTTP calls are mocked."""
 
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 from app.providers.technitium import TechnitiumProvider
 
@@ -25,10 +25,11 @@ class TestTechnitiumLogin(unittest.TestCase):
     def test_login_success(self) -> None:
         self.provider.session.post = MagicMock(return_value=_response(200, {
             "status": "ok",
-            "response": {"token": "tok123"},
+            "token": "tok123",
         }))
         self.assertTrue(self.provider._login())
         self.assertEqual(self.provider._token, "tok123")
+        self.assertEqual(self.provider.session.headers["Authorization"], "Bearer tok123")
 
     def test_login_failure_wrong_status(self) -> None:
         self.provider.session.post = MagicMock(return_value=_response(401, {"status": "error"}))
@@ -52,7 +53,7 @@ class TestTechnitiumLogin(unittest.TestCase):
         self.provider.session.get = MagicMock(return_value=_response(401, {"status": "error"}))
         self.provider.session.post = MagicMock(return_value=_response(200, {
             "status": "ok",
-            "response": {"token": "fresh"},
+            "token": "fresh",
         }))
         self.assertTrue(self.provider._ensure_token())
         self.assertEqual(self.provider._token, "fresh")
@@ -132,7 +133,7 @@ class TestTechnitiumListRewrites(unittest.TestCase):
         self.provider._ensure_token = MagicMock(return_value=True)
 
     def test_list_rewrites_returns_a_records(self) -> None:
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},
@@ -151,7 +152,7 @@ class TestTechnitiumListRewrites(unittest.TestCase):
         self.assertEqual(result, [{"domain": "myapp.home.local", "answer": "192.168.1.10"}])
 
     def test_list_rewrites_skips_disabled(self) -> None:
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},
@@ -177,7 +178,7 @@ class TestTechnitiumAddRewrite(unittest.TestCase):
         self.provider._ensure_token = MagicMock(return_value=True)
 
     def test_add_rewrite_success(self) -> None:
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},
@@ -193,7 +194,7 @@ class TestTechnitiumAddRewrite(unittest.TestCase):
         """When no zone matches, falls back to last two labels."""
         captured: list[dict] = []
 
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": []}})
             if "zones/records/add" in url:
@@ -206,7 +207,7 @@ class TestTechnitiumAddRewrite(unittest.TestCase):
         self.assertEqual(captured[0]["zone"], "home.local")
 
     def test_add_rewrite_api_error(self) -> None:
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},
@@ -225,7 +226,7 @@ class TestTechnitiumDeleteRewrite(unittest.TestCase):
         self.provider._ensure_token = MagicMock(return_value=True)
 
     def test_delete_rewrite_success(self) -> None:
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},
@@ -255,7 +256,7 @@ class TestTechnitiumUpdateRewrite(unittest.TestCase):
         added: list[str] = []
         deleted: list[str] = []
 
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},
@@ -279,7 +280,7 @@ class TestTechnitiumUpdateRewrite(unittest.TestCase):
 
     def test_update_returns_true_if_add_ok_delete_fails(self) -> None:
         """New record created is preserved even if old record deletion fails."""
-        def mock_get(url: str, params: dict | None = None) -> MagicMock:
+        def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:
             if "zones/list" in url:
                 return _response(200, {"status": "ok", "response": {"zones": [
                     {"name": "home.local", "disabled": False},

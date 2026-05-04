@@ -6,6 +6,7 @@ import { api } from "@/api/client";
 import { ProviderModal } from "@/components/features/ProviderModal";
 import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ProviderLogo } from "@/components/ui/ProviderLogos";
+import { useT } from "@/i18n";
 import type { Provider, TunnelHealthResponse, TunnelHealthItem } from "@/types/api";
 
 interface ProviderDiagnostics {
@@ -15,54 +16,128 @@ interface ProviderDiagnostics {
   health?: { ok?: boolean; status?: string; error?: string };
 }
 
+interface ProviderHealthState {
+  ok?: boolean;
+  status?: string;
+  error?: string | null;
+}
+
+interface OperationalStatus {
+  labelKey: string;
+  textColor: string;
+  dotColor: string;
+}
+
 export function Providers() {
+  const t = useT();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [providerDiagnostics, setProviderDiagnostics] = useState<Record<number, ProviderDiagnostics>>({});
   const [testingId, setTestingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [validatingId, setValidatingId] = useState<number | null>(null);
 
-  const { data: providers, isLoading } = useQuery({
+  const { data: providers, isLoading, isFetching: isFetchingProviders, refetch: refetchProviders } = useQuery({
     queryKey: ['providers'],
     queryFn: () => api.get('/providers'),
   });
 
-  const { data: providerTypes } = useQuery<Record<string, Record<string, unknown>>>({
+  const { data: providerTypes, refetch: refetchProviderTypes } = useQuery<Record<string, Record<string, unknown>>>({
     queryKey: ['provider-types'],
     queryFn: () => api.get('/providers/types'),
   });
 
-  const { data: tunnelHealth } = useQuery<TunnelHealthResponse>({
+  const { data: tunnelHealth, refetch: refetchTunnelHealth } = useQuery<TunnelHealthResponse>({
     queryKey: ['providers-tunnel-health'],
     queryFn: () => api.get('/providers/tunnels/health'),
     refetchInterval: 30000,
   });
 
   // Auto-fetch health for all enabled providers on page load
-  const { data: allHealth } = useQuery<{ items: Record<number, { ok?: boolean; status?: string; error?: string }> }>({
+  const { data: allHealth, refetch: refetchAllHealth } = useQuery<Record<string, ProviderHealthState> | { items: Record<string, ProviderHealthState> }>({
     queryKey: ['providers-health'],
     queryFn: () => api.get('/providers/health'),
     refetchInterval: 60000,
   });
 
+  const allHealthItems = (
+    allHealth && typeof allHealth === 'object' && 'items' in allHealth
+      ? allHealth.items
+      : allHealth
+  ) || {};
+
+  const allHealthById = Object.fromEntries(
+    Object.entries(allHealthItems).map(([id, state]) => [Number(id), state || {}]),
+  ) as Record<number, ProviderHealthState>;
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        refetchProviders(),
+        refetchProviderTypes(),
+        refetchTunnelHealth(),
+        refetchAllHealth(),
+      ]);
+
+      const enabledProviders = providersList.filter((p: Provider) => Boolean(p.enabled));
+      if (enabledProviders.length === 0) {
+        toast.success(t('providers.refresh.success_no_enabled'));
+        return;
+      }
+
+      const diagnosticsEntries = await Promise.all(
+        enabledProviders.map(async (provider: Provider) => {
+          try {
+            const data = await (api.post(`/providers/${provider.id}/test`) as Promise<ProviderDiagnostics>);
+            return [provider.id, data] as const;
+          } catch (error: unknown) {
+            const err = error as { response?: { data?: { detail?: string } } };
+            const detail = err?.response?.data?.detail || t('providers.toast.connection_failed');
+            return [
+              provider.id,
+              {
+                ok: false,
+                provider: provider.name,
+                health: { ok: false, status: 'error', error: detail },
+              } satisfies ProviderDiagnostics,
+            ] as const;
+          }
+        }),
+      );
+
+      setProviderDiagnostics((prev) => ({
+        ...prev,
+        ...Object.fromEntries(diagnosticsEntries),
+      }));
+
+      const failed = diagnosticsEntries.filter(([, data]) => !data?.ok).length;
+      if (failed === 0) {
+        toast.success(t('providers.refresh.success_all_passed'));
+      } else {
+        toast.error(t('providers.refresh.failed_count', { failed, total: enabledProviders.length }));
+      }
+    } catch {
+      toast.error(t('providers.refresh.failed'));
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   const testConnection = useMutation({
     mutationFn: (id: number) => { setTestingId(id); return api.post(`/providers/${id}/test`) as Promise<ProviderDiagnostics>; },
-    onSuccess: (data: ProviderDiagnostics) => {
+    onSuccess: (data: ProviderDiagnostics, id) => {
       const ok = Boolean(data?.ok);
       const providerName = data?.provider ? ` (${data.provider})` : "";
 
-      if (data?.provider) {
-        const matchedProvider = providersList.find((p: Provider) => p.name === data.provider);
-        if (matchedProvider?.id) {
-          setProviderDiagnostics((prev) => ({
-            ...prev,
-            [matchedProvider.id]: data,
-          }));
-        }
-      }
+      setProviderDiagnostics((prev) => ({
+        ...prev,
+        [id]: data,
+      }));
 
       if (ok) {
         toast.success(`Connection test successful${providerName}!`);
@@ -73,9 +148,16 @@ export function Providers() {
       setTestingId(null);
       queryClient.invalidateQueries({ queryKey: ['providers'] });
     },
-    onError: (error: { response?: { data?: { detail?: string } } }) => {
+    onError: (error: { response?: { data?: { detail?: string } } }, id) => {
       const msg = error?.response?.data?.detail || "Connection failed";
       toast.error(msg);
+      setProviderDiagnostics((prev) => ({
+        ...prev,
+        [id]: {
+          ok: false,
+          health: { ok: false, status: 'error', error: msg },
+        },
+      }));
       setTestingId(null);
       queryClient.invalidateQueries({ queryKey: ['providers'] });
     }
@@ -177,7 +259,7 @@ export function Providers() {
   const getHealthScore = (provider: Provider): { score: number; label: string; color: string } => {
     const diag = providerDiagnostics[provider.id];
     const tunnelH = tunnelHealthById[provider.id];
-    const autoHealth = allHealth?.items?.[provider.id];
+    const autoHealth = allHealthById[provider.id];
     if (!diag && !tunnelH && !autoHealth) return { score: -1, label: 'Unknown', color: 'text-muted-foreground' };
 
     let score = 100;
@@ -193,7 +275,9 @@ export function Providers() {
       if (diag.health && !diag.health.ok) score -= 30;
     } else if (autoHealth) {
       // Auto-fetched health (no manual test yet)
-      if (!autoHealth.ok) score = 20;
+      const status = String(autoHealth.status || '').toLowerCase();
+      const isHealthy = autoHealth.ok ?? status === 'healthy';
+      if (!isHealthy) score = 20;
     }
     // Tunnel health
     if (tunnelH) {
@@ -208,6 +292,44 @@ export function Providers() {
     if (score >= 80) return { score, label: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
     if (score >= 50) return { score, label: 'Degraded', color: 'text-yellow-600 dark:text-yellow-400' };
     return { score, label: 'Unhealthy', color: 'text-destructive' };
+  };
+
+  const getOperationalStatus = (provider: Provider): OperationalStatus => {
+    if (!provider.enabled) {
+      return {
+        labelKey: 'providers.status.disabled',
+        textColor: 'text-muted-foreground',
+        dotColor: 'text-muted-foreground',
+      };
+    }
+
+    const health = getHealthScore(provider);
+    if (health.score < 0) {
+      return {
+        labelKey: 'providers.status.active',
+        textColor: 'text-emerald-600 dark:text-emerald-400',
+        dotColor: 'text-emerald-500',
+      };
+    }
+    if (health.score >= 80) {
+      return {
+        labelKey: 'providers.status.active',
+        textColor: 'text-emerald-600 dark:text-emerald-400',
+        dotColor: 'text-emerald-500',
+      };
+    }
+    if (health.score >= 50) {
+      return {
+        labelKey: 'providers.status.degraded',
+        textColor: 'text-yellow-600 dark:text-yellow-400',
+        dotColor: 'text-yellow-500',
+      };
+    }
+    return {
+      labelKey: 'providers.status.error',
+      textColor: 'text-destructive',
+      dotColor: 'text-destructive',
+    };
   };
 
   const cardClass = "bg-card border border-border rounded-xl shadow-sm";
@@ -274,14 +396,14 @@ export function Providers() {
         
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => {
-              queryClient.invalidateQueries({ queryKey: ['providers'] });
-              queryClient.invalidateQueries({ queryKey: ['providers-tunnel-health'] });
-              queryClient.invalidateQueries({ queryKey: ['providers-health'] });
-            }}
-            className="flex items-center justify-center gap-2 px-3 py-2.5 text-sm rounded-lg font-semibold transition-all border border-border bg-card hover:bg-accent text-foreground"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            title={t('providers.refresh.button')}
+            aria-label={t('providers.refresh.button')}
+            className="flex items-center justify-center gap-2 px-3 py-2.5 text-sm rounded-lg font-semibold transition-all border border-border bg-card hover:bg-accent text-foreground disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className={`w-4 h-4 ${isRefreshing || isFetchingProviders ? 'animate-spin' : ''}`} />
+            <span>{t('providers.refresh.button')}</span>
           </button>
           <button 
             onClick={() => setIsModalOpen(true)}
@@ -380,7 +502,7 @@ export function Providers() {
                               {(() => {
                                 const diagnostics = providerDiagnostics[Number(provider.id)];
                                 const tunnelHealthState = tunnelHealthById[Number(provider.id)];
-                                const autoHealthState = allHealth?.items?.[Number(provider.id)];
+                                const autoHealthState = allHealthById[Number(provider.id)];
                                 const health = (tunnelHealthState || diagnostics?.health || autoHealthState) as Record<string, unknown> | undefined;
                                 if (!diagnostics && !health) return null;
 
@@ -391,11 +513,6 @@ export function Providers() {
 
                                 return (
                                   <div className="rounded-md border border-border bg-muted/40 p-2 text-xs space-y-1">
-                                    {Boolean(health?.status) && (
-                                      <p className="text-muted-foreground">
-                                        Health: <span className="font-semibold text-foreground">{String(health?.status)}</span>
-                                      </p>
-                                    )}
                                     {checks.length > 0 && (
                                       <p className={blockingFailures === 0 ? 'text-primary' : 'text-destructive'}>
                                         Validation: {blockingFailures === 0 ? 'OK' : `${blockingFailures} blocking issue(s)`}
@@ -410,15 +527,22 @@ export function Providers() {
 
                             <div className="mt-auto border-t border-border bg-muted/30 px-6 py-3.5 flex items-center justify-between text-xs">
                               <div className="flex items-center gap-1.5 text-muted-foreground">
-                                <Activity className="w-3.5 h-3.5 text-muted-foreground" />
-                              <span>{provider.enabled ? 'Active' : 'Disabled'}</span>
-                            </div>
+                                {(() => {
+                                  const status = getOperationalStatus(provider);
+                                  return (
+                                    <>
+                                      <Activity className={`w-3.5 h-3.5 ${status.dotColor}`} />
+                                      <span className={`font-medium ${status.textColor}`}>{t(status.labelKey)}</span>
+                                    </>
+                                  );
+                                })()}
+                              </div>
                             <div className="flex items-center gap-2">
                               {(() => {
                                 const health = getHealthScore(provider);
                                 return (
                                   <span className={`text-xs font-semibold ${health.color}`} title={health.score >= 0 ? `Health: ${health.score}/100` : 'Not tested'}>
-                                    {health.score >= 0 ? health.label : 'Not tested'}
+                                    {health.score >= 0 ? `${health.score}/100` : 'Not tested'}
                                   </span>
                                 );
                               })()}

@@ -1,9 +1,10 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, Request, HTTPException
-from app.models import get_db, add_log
+from fastapi import APIRouter, HTTPException, Request
+
 from app.auth import require_auth
+from app.models import add_log, get_db
 
 try:
     from sse_starlette.sse import EventSourceResponse as _SSEResponse
@@ -67,7 +68,7 @@ def save_settings(request: Request, body: dict):
                 timeout = float(value)
                 if timeout < 0.5 or timeout > 10.0:
                     continue
-            except Exception:
+            except (TypeError, ValueError):
                 continue
         if key == "public_target_priority" and not _is_valid_public_target_priority(str(value)):
             continue
@@ -81,7 +82,7 @@ def save_settings(request: Request, body: dict):
         try:
             from app.scheduler import configure
             configure(int(body["check_interval"]))
-        except (ValueError, Exception):
+        except (ImportError, TypeError, ValueError):
             pass
     return {"ok": True}
 

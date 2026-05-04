@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from app.providers.base import ProxyProvider
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import ProxyProvider
 
 
 class TraefikProvider(ProxyProvider):
@@ -66,7 +66,7 @@ class TraefikProvider(ProxyProvider):
                     mw_name = mw.get("name", "")
                     # Determine middleware type by inspecting keys
                     mw_type = next(
-                        (k for k in mw.keys() if k not in ("name", "type", "status", "provider", "usedBy")),
+                        (k for k in mw if k not in ("name", "type", "status", "provider", "usedBy")),
                         mw.get("type", "unknown"),
                     )
                     mw_types[mw_name] = mw_type

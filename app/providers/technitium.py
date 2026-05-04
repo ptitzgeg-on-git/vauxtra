@@ -1,8 +1,9 @@
 """Technitium DNS Server provider — DNS rewrite management via HTTP API."""
 
 import requests
-from app.providers.base import DNSProvider
+
 from app.config import PROVIDER_TIMEOUT
+from app.providers.base import DNSProvider
 
 
 class TechnitiumProvider(DNSProvider):
@@ -20,13 +21,17 @@ class TechnitiumProvider(DNSProvider):
             r = self.session.post(
                 f"{self.url}/api/user/login",
                 data={"user": self._username, "pass": self._password},
+                timeout=PROVIDER_TIMEOUT,
             )
             if r.status_code == 200:
                 data = r.json()
                 if data.get("status") == "ok":
-                    self._token = data["response"]["token"]
-                    return True
-        except (requests.RequestException, KeyError):
+                    token = data.get("token") or data.get("response", {}).get("token")
+                    if token:
+                        self._token = token
+                        self.session.headers["Authorization"] = f"Bearer {token}"
+                        return True
+        except (requests.RequestException, KeyError, ValueError):
             pass
         return False
 
@@ -36,6 +41,7 @@ class TechnitiumProvider(DNSProvider):
                 r = self.session.get(
                     f"{self.url}/api/user/session/get",
                     params={"token": self._token},
+                    timeout=PROVIDER_TIMEOUT,
                 )
                 if r.status_code == 200 and r.json().get("status") == "ok":
                     return True
@@ -48,6 +54,7 @@ class TechnitiumProvider(DNSProvider):
             r = self.session.get(
                 f"{self.url}/api/zones/list",
                 params={"token": self._token},
+                timeout=PROVIDER_TIMEOUT,
             )
             if r.status_code == 200:
                 data = r.json()
@@ -83,7 +90,13 @@ class TechnitiumProvider(DNSProvider):
             for zone in zones:
                 r = self.session.get(
                     f"{self.url}/api/zones/records/get",
-                    params={"token": self._token, "zone": zone, "type": "A"},
+                    params={
+                        "token": self._token,
+                        "domain": zone,
+                        "zone": zone,
+                        "listZone": "true",
+                    },
+                    timeout=PROVIDER_TIMEOUT,
                 )
                 if r.status_code != 200:
                     continue
@@ -115,6 +128,7 @@ class TechnitiumProvider(DNSProvider):
                     "ttl": "3600",
                     "overwrite": "false",
                 },
+                timeout=PROVIDER_TIMEOUT,
             )
             if r.status_code == 200:
                 return r.json().get("status") == "ok"
@@ -136,6 +150,7 @@ class TechnitiumProvider(DNSProvider):
                     "type": "A",
                     "ipAddress": ip,
                 },
+                timeout=PROVIDER_TIMEOUT,
             )
             if r.status_code == 200:
                 return r.json().get("status") == "ok"
