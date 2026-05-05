@@ -13,7 +13,7 @@
     "quality": "npm run lint && npm run i18n:check && npm run i18n:quality && npm run build"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.99.0",
+    "@tanstack/react-query": "^5.100.9",
     "axios": "^1.15.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.8.0",
