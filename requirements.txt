@@ -1,5 +1,5 @@
 fastapi>=0.135
-uvicorn[standard]>=0.44
+uvicorn[standard]>=0.46.0
 python-multipart>=0.0.26
 itsdangerous>=2.2
 requests>=2.32
