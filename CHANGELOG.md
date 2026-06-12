@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+---
+
+## [1.1.0] — 2026-06-12
+
 ### Added
 - **Service Templates** (`GET/POST/PUT/DELETE /api/templates`, `GET /api/templates/{id}/apply`) — pre-configured service blueprints that pre-fill the service form with provider assignments, scheme, port, domain, and tags. Applied via `/api/templates/{id}/apply` or MCP `apply_template`. DB schema v10.
 - **Prometheus metrics** (`GET /metrics`) — no-auth endpoint exposing service counts by status, provider counts by type, log counts (24 h), uptime event counts, webhook stats, template count, and schema version in Prometheus text exposition format.
@@ -123,7 +127,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.2...v1.1.0
+[1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.2
 [1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases
 [0.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v0.1.0
