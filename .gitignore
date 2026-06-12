@@ -30,7 +30,6 @@ reports/
 *.log
 vauxtra-dev/
 lab/
-scripts/
 
 # Editor and OS
 .DS_Store
