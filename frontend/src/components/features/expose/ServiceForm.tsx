@@ -1,4 +1,5 @@
 import { Dispatch, SetStateAction } from 'react';
+import { Link } from 'react-router-dom';
 import { Loader2, RefreshCw, Server } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { FormState, Provider } from './types';
@@ -162,10 +163,14 @@ export function ServiceForm({
             <label className="block text-xs font-semibold text-muted-foreground tracking-wide">
               Base Domain
             </label>
-            <select
+            <input
+              list="domain-suggestions"
+              type="text"
+              required
+              placeholder={isLoadingDomains ? 'Loading…' : 'example.com'}
               value={formData.domain}
               onChange={(e) => {
-                const dom = e.target.value;
+                const dom = e.target.value.trim().toLowerCase();
                 setFormData((prev) => {
                   const next: FormState = { ...prev, domain: dom };
                   if (prev.expose_mode === 'tunnel' && tunnelHostnameIsDefault && prev.subdomain && dom) {
@@ -175,23 +180,23 @@ export function ServiceForm({
                 });
               }}
               className="w-full bg-card border border-border focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-lg px-4 py-2.5 text-sm text-foreground outline-none transition-all shadow-sm"
-              disabled={isLoadingDomains}
-              required
-            >
-              <option value="">Select a registered domain</option>
-              {(domains || []).map((domain) => (
-                <option key={domain} value={domain}>
-                  {domain}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground">
-              Need a new domain? Add it in{' '}
-              <a href="/settings" className="text-primary hover:text-primary">
-                Settings
-              </a>{' '}
-              first.
-            </p>
+            />
+            {domains.length > 0 && (
+              <datalist id="domain-suggestions">
+                {domains.map((domain) => (
+                  <option key={domain} value={domain} />
+                ))}
+              </datalist>
+            )}
+            {domains.length === 0 && !isLoadingDomains && (
+              <p className="text-xs text-muted-foreground">
+                Save a domain in{' '}
+                <Link to="/settings?tab=dns" className="text-primary hover:underline">
+                  Settings → DNS
+                </Link>{' '}
+                for quick access, or type any domain above.
+              </p>
+            )}
           </div>
         </div>
 
@@ -224,9 +229,9 @@ export function ServiceForm({
               {dnsProviders.length === 0 && (
                 <span className="ml-1 text-xs text-muted-foreground">
                   — No DNS provider configured.{' '}
-                  <a href="/providers" className="text-primary hover:underline">
+                  <Link to="/providers" className="text-primary hover:underline">
                     Add one in Integrations
-                  </a>
+                  </Link>
                 </span>
               )}
             </label>
@@ -279,9 +284,9 @@ export function ServiceForm({
               {!hasTunnelProvider && (
                 <span className="ml-1 text-xs text-muted-foreground">
                   — No tunnel provider configured.{' '}
-                  <a href="/providers" className="text-primary hover:underline">
+                  <Link to="/providers" className="text-primary hover:underline">
                     Add one in Integrations
-                  </a>
+                  </Link>
                 </span>
               )}
             </label>

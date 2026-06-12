@@ -25,6 +25,10 @@ _webhook_service_last_sent: dict[tuple[int, int], float] = {}
 # Circuit-breaker: track consecutive failures per service for DNS auto-update
 _dns_update_failures: dict[int, int] = {}
 _DNS_FAILURE_THRESHOLD = 3  # Disable auto-update after this many consecutive failures
+# Certificate expiry alert state: (provider_id, cert_id) → {"level", "alerted_at"}
+_cert_alert_state: dict[tuple[int, int], dict] = {}
+# Webhook retry backoff in seconds for successive failed attempts
+_WEBHOOK_RETRY_BACKOFF = [60, 300, 1800, 7200, 86400]
 
 
 def _read_retention_days(conn, key: str, default_days: int, *, min_days: int = 1, max_days: int = 365) -> int:
@@ -255,10 +259,15 @@ def run_health_checks() -> None:
 
         _run_dns_auto_updates(conn)
         changed.extend(_run_provider_health_checks(conn))
+        _run_cert_expiry_alerts(conn)
+        _run_webhook_retry(conn)
 
         # Purge old monitoring history/logs according to settings.
         monitoring_retention_days = _read_retention_days(conn, "monitoring_retention_days", 14)
         log_retention_days = _read_retention_days(conn, "log_retention_days", 30)
+        webhook_retry_retention_days = _read_retention_days(
+            conn, "webhook_retry_retention_days", 7, min_days=1, max_days=90
+        )
         conn.execute(
             "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)" ,
             (f"-{monitoring_retention_days} days",),
@@ -267,6 +276,15 @@ def run_health_checks() -> None:
             "DELETE FROM logs WHERE created_at < datetime('now', ?)",
             (f"-{log_retention_days} days",),
         )
+        try:
+            conn.execute(
+                """DELETE FROM webhook_delivery_log
+                   WHERE status IN ('delivered', 'failed')
+                     AND updated_at < datetime('now', ?)""",
+                (f"-{webhook_retry_retention_days} days",),
+            )
+        except Exception:
+            pass
         conn.commit()
         conn.close()
 
@@ -431,6 +449,186 @@ def _run_dns_auto_updates(conn) -> None:
 
     if state_changed:
         _save_scheduler_state()
+
+
+# ── Certificate expiry alerts ────────────────────────────────────────────
+
+def _run_cert_expiry_alerts(conn) -> None:
+    """Scan NPM proxy providers for certificates close to expiry and log alerts.
+
+    Alerts:  < 30 days → warn   |   < 7 days → error
+    Re-alerts after 24 h or when the severity level changes.
+    """
+    global _cert_alert_state
+    import datetime as _dt
+
+    try:
+        npm_rows = conn.execute(
+            "SELECT * FROM providers WHERE type='npm' AND enabled=1"
+        ).fetchall()
+        if not npm_rows:
+            return
+
+        now_utc = _dt.datetime.utcnow()
+        seen_keys: set[tuple[int, int]] = set()
+
+        for prow in npm_rows:
+            provider_id = int(prow["id"])
+            try:
+                provider = create_provider(prow)
+                certs = provider.get_certificates()
+            except Exception:
+                continue
+
+            for cert in certs:
+                cert_id = cert.get("id")
+                if cert_id is None:
+                    continue
+
+                expires_raw = (cert.get("expires_on") or "").strip()
+                if not expires_raw:
+                    continue
+
+                try:
+                    # Strip timezone info for naïve comparison with utcnow()
+                    normalized = expires_raw.replace("Z", "").split("+")[0].split(".")[0]
+                    expires = _dt.datetime.fromisoformat(normalized)
+                except Exception:
+                    continue
+
+                days_left = (expires - now_utc).days
+                key = (provider_id, cert_id)
+                seen_keys.add(key)
+
+                if days_left < 7:
+                    level = "error"
+                    msg = (
+                        f"[CertExpiry] CRITICAL: '{cert.get('nice_name')}' (ID {cert_id}) "
+                        f"expires in {days_left} day(s)"
+                    )
+                elif days_left < 30:
+                    level = "warn"
+                    msg = (
+                        f"[CertExpiry] WARNING: '{cert.get('nice_name')}' (ID {cert_id}) "
+                        f"expires in {days_left} day(s)"
+                    )
+                else:
+                    _cert_alert_state.pop(key, None)
+                    continue
+
+                prior = _cert_alert_state.get(key, {})
+                elapsed = time.monotonic() - prior.get("alerted_at", 0)
+                if prior.get("level") != level or elapsed > 86400:
+                    add_log(level, msg, conn)
+                    _cert_alert_state[key] = {"level": level, "alerted_at": time.monotonic()}
+
+        for key in list(_cert_alert_state):
+            if key not in seen_keys:
+                _cert_alert_state.pop(key, None)
+
+    except Exception:
+        import traceback
+        add_log("error", f"[CertExpiry] Check failed: {traceback.format_exc()}")
+
+
+# ── Webhook retry ─────────────────────────────────────────────────────────
+
+def _try_send_apprise(url: str, title: str, body: str, conn, webhook_id=None) -> bool:
+    """Send a notification via Apprise. Log failed deliveries for later retry."""
+    import apprise as _apprise
+    a = _apprise.Apprise()
+    if not a.add(url):
+        return False
+    try:
+        ok = bool(a.notify(title=title, body=body))
+        if not ok:
+            raise RuntimeError("Apprise.notify() returned False")
+        return True
+    except Exception as exc:
+        try:
+            import datetime as _dt
+            delay = _WEBHOOK_RETRY_BACKOFF[0]
+            next_retry = (_dt.datetime.utcnow() + _dt.timedelta(seconds=delay)).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            )
+            conn.execute(
+                """INSERT INTO webhook_delivery_log
+                   (webhook_id, url, title, body, status, attempt, next_retry_at, error_msg)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (webhook_id, url, title, body, "pending", 1, next_retry, str(exc)),
+            )
+        except Exception:
+            pass
+        return False
+
+
+def _run_webhook_retry(conn) -> None:
+    """Retry pending webhook deliveries that are due, applying exponential backoff."""
+    import apprise as _apprise
+    import datetime as _dt
+
+    MAX_ATTEMPTS = len(_WEBHOOK_RETRY_BACKOFF)
+    try:
+        rows = conn.execute(
+            """SELECT id, webhook_id, url, title, body, attempt
+               FROM webhook_delivery_log
+               WHERE status='pending' AND next_retry_at <= datetime('now')
+               ORDER BY next_retry_at
+               LIMIT 20"""
+        ).fetchall()
+    except Exception:
+        return
+
+    for row in rows:
+        dlid = int(row["id"])
+        attempt = int(row["attempt"] or 0)
+
+        if attempt >= MAX_ATTEMPTS:
+            conn.execute(
+                "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
+                (dlid,),
+            )
+            add_log("error", f"[Webhook] Delivery abandoned after {attempt} attempts: {row['url']}", conn)
+            continue
+
+        a = _apprise.Apprise()
+        if not a.add(row["url"]):
+            conn.execute(
+                "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
+                (dlid,),
+            )
+            continue
+
+        try:
+            result = a.notify(title=row["title"] or "", body=row["body"] or "")
+            if result:
+                conn.execute(
+                    "UPDATE webhook_delivery_log SET status='delivered', updated_at=datetime('now') WHERE id=?",
+                    (dlid,),
+                )
+            else:
+                raise RuntimeError("notify() returned falsy")
+        except Exception as exc:
+            new_attempt = attempt + 1
+            if new_attempt >= MAX_ATTEMPTS:
+                conn.execute(
+                    """UPDATE webhook_delivery_log
+                       SET status='failed', attempt=?, error_msg=?, updated_at=datetime('now')
+                       WHERE id=?""",
+                    (new_attempt, str(exc), dlid),
+                )
+                add_log("error", f"[Webhook] Delivery abandoned: {row['url']}", conn)
+            else:
+                delay = _WEBHOOK_RETRY_BACKOFF[new_attempt - 1]
+                next_retry = (_dt.datetime.utcnow() + _dt.timedelta(seconds=delay)).strftime(
+                    "%Y-%m-%dT%H:%M:%S"
+                )
+                conn.execute(
+                    """UPDATE webhook_delivery_log
+                       SET attempt=?, next_retry_at=?, error_msg=?, updated_at=datetime('now')
+                       WHERE id=?""",
+                    (new_attempt, next_retry, str(exc), dlid),
+                )
 
 
 # ── Webhook ───────────────────────────────────────────────────────────────

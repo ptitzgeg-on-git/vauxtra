@@ -7,7 +7,7 @@ from app.db import get_connection
 
 # Increment this constant whenever a new ALTER is added to _migrate().
 # The value is stored in the settings table and logged on startup.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def get_db():
@@ -157,6 +157,39 @@ def init_db() -> None:
             key        TEXT PRIMARY KEY,
             value      TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS service_templates (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            name               TEXT    NOT NULL,
+            description        TEXT    NOT NULL DEFAULT '',
+            forward_scheme     TEXT    NOT NULL DEFAULT 'http',
+            target_port        INTEGER,
+            websocket          INTEGER NOT NULL DEFAULT 0,
+            expose_mode        TEXT    NOT NULL DEFAULT 'proxy_dns',
+            proxy_provider_id  INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+            dns_provider_id    INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+            tunnel_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+            public_target_mode TEXT    NOT NULL DEFAULT 'manual',
+            domain             TEXT    NOT NULL DEFAULT '',
+            dns_ip             TEXT    NOT NULL DEFAULT '',
+            tag_ids_json       TEXT    NOT NULL DEFAULT '[]',
+            icon_url           TEXT    NOT NULL DEFAULT '',
+            created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS webhook_delivery_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            webhook_id    INTEGER,
+            url           TEXT    NOT NULL,
+            title         TEXT    NOT NULL DEFAULT '',
+            body          TEXT    NOT NULL DEFAULT '',
+            status        TEXT    NOT NULL DEFAULT 'pending',
+            attempt       INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT,
+            error_msg     TEXT    NOT NULL DEFAULT '',
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         );
     """)
     _migrate(conn)

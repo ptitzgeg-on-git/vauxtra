@@ -346,8 +346,14 @@ def push_service(sid: int, request: Request):
             for row in dns_targets:
                 try:
                     dns = create_provider(row)
-                    old_value = svc["dns_ip"] or dns_target
-                    if not dns.update_rewrite(public_host, old_value, public_host, dns_target):
+                    # Read the actual current value from the provider (not just DB) to fix drift
+                    actual_rewrites = dns.list_rewrites()
+                    actual_entry = next((e for e in actual_rewrites if e.get("domain") == public_host), None)
+                    actual_ip = (actual_entry or {}).get("ip") or (actual_entry or {}).get("answer", "")
+                    if actual_ip and actual_ip != dns_target:
+                        dns.delete_rewrite(public_host, actual_ip)
+                        dns.add_rewrite(public_host, dns_target)
+                    elif not actual_ip:
                         dns.add_rewrite(public_host, dns_target)
                     add_log("info", f"[Push] DNS synced on {row['name']}: {public_host} → {dns_target}", conn)
                 except Exception as e:

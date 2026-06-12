@@ -24,11 +24,13 @@ from app.api.certificates import router as certificates_router
 from app.api.docker import router as docker_router
 from app.api.environments import router as environments_router
 from app.api.health import router as health_router
+from app.api.metrics import router as metrics_router
 from app.api.providers import router as providers_router
 from app.api.services import router as services_router
 from app.api.settings import router as settings_router
 from app.api.sync import router as sync_router
 from app.api.tags import router as tags_router
+from app.api.templates import router as templates_router
 from app.api.webhooks import router as webhooks_router
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -110,9 +112,11 @@ async def security_headers(request: Request, call_next):
     return response
 
 app.include_router(health_router)
+app.include_router(metrics_router)
 app.include_router(providers_router)
 app.include_router(services_router)
 app.include_router(tags_router)
+app.include_router(templates_router)
 app.include_router(settings_router)
 app.include_router(backup_router)
 app.include_router(certificates_router)

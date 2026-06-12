@@ -152,16 +152,16 @@ class NPMProvider(ProxyProvider):
             return False
 
     def toggle_host(self, host_id: int, enabled: bool) -> bool:
-        """Enable or disable a proxy host."""
+        """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints."""
         if not self._ensure_auth():
             return False
+        action = "enable" if enabled else "disable"
         try:
-            r = self.session.patch(
-                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
-                json={"enabled": int(enabled)},
+            r = self.session.post(
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}/{action}",
                 timeout=PROVIDER_TIMEOUT,
             )
-            return r.status_code in (200, 201)
+            return r.status_code == 200
         except requests.RequestException:
             return False
 
@@ -216,4 +216,4 @@ class NPMProvider(ProxyProvider):
             if fallback is None:
                 fallback = cid
 
-        return preferred
+        return preferred or fallback

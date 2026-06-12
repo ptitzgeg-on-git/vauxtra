@@ -13,8 +13,10 @@
 9. [WAN Auto-Target Policy](#9-wan-auto-target-policy)
 10. [DNS-Only vs Reverse Proxy](#10-dns-only-vs-reverse-proxy)
 11. [MCP Integration](#11-mcp-integration)
-12. [API Reference](#12-api-reference)
-13. [Troubleshooting](#13-troubleshooting)
+12. [Service Templates](#12-service-templates)
+13. [Prometheus Metrics](#13-prometheus-metrics)
+14. [API Reference](#14-api-reference)
+15. [Troubleshooting](#15-troubleshooting)
 
 ---
 
@@ -373,7 +375,153 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 ---
 
-## 12) API Reference
+## 12) Service Templates
+
+Service Templates are pre-configured blueprints that pre-fill the service creation form. Instead of filling in provider assignments, scheme, port, domain, and tags every time, you save those defaults once and apply them in one click.
+
+### What a template stores
+
+| Field | Description |
+|---|---|
+| `name` | Template display name (unique) |
+| `description` | Optional notes |
+| `forward_scheme` | `http` or `https` |
+| `target_port` | Default backend port (1–65535) |
+| `websocket` | Enable WebSocket support |
+| `expose_mode` | `proxy_dns`, `dns_only`, or `tunnel` |
+| `proxy_provider_id` | Pre-selected reverse proxy |
+| `dns_provider_id` | Pre-selected DNS provider |
+| `tunnel_provider_id` | Pre-selected Cloudflare Tunnel |
+| `public_target_mode` | `manual` or `auto` |
+| `domain` | Default base domain |
+| `dns_ip` | Default DNS record target |
+| `tag_ids` | Default tags to attach |
+| `icon_url` | Service icon URL |
+
+### Using templates from the UI
+
+1. Go to **Settings → Templates → New Template**
+2. Fill in the defaults you want
+3. Save the template
+4. When creating a service, click **Apply Template** and choose a template — the form pre-fills with the stored defaults
+5. Adjust any fields as needed and save
+
+### Using templates via API
+
+```bash
+# List templates
+GET /api/templates
+
+# Create a template
+POST /api/templates
+{
+  "name": "Internal HTTPS App",
+  "forward_scheme": "https",
+  "target_port": 443,
+  "websocket": false,
+  "expose_mode": "proxy_dns",
+  "domain": "home.local",
+  "dns_ip": "192.168.1.10"
+}
+
+# Apply a template (get pre-filled service defaults)
+GET /api/templates/{id}/apply
+# Returns: forward_scheme, target_port, websocket, expose_mode,
+#          proxy_provider_id, dns_provider_id, tunnel_provider_id,
+#          public_target_mode, domain, dns_ip, tag_ids, icon_url,
+#          _template_id, _template_name
+```
+
+Apply returns the template fields merged as service-creation defaults. You can POST those directly to `/api/services` (add `name`, `subdomain`, and `internal_target` to complete the service).
+
+### Using templates via MCP
+
+```
+list_templates          → list all templates
+get_template(id)        → get a single template
+create_template(...)    → create a template
+delete_template(id)     → delete a template
+apply_template(id, ...) → apply defaults + create the service
+```
+
+`apply_template` is the power tool: it fetches defaults from the template, merges any overrides you supply, and creates the service in one call.
+
+---
+
+## 13) Prometheus Metrics
+
+Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication required — designed to be scraped directly by a Prometheus server.
+
+### Endpoint
+
+```
+GET /metrics
+```
+
+No `Authorization` header required. Response is `text/plain` in Prometheus text exposition format.
+
+### Available metrics
+
+| Metric | Labels | Description |
+|---|---|---|
+| `vauxtra_services_total` | `status` (`ok`, `error`, `unknown`) | Services by health status |
+| `vauxtra_providers_total` | `type`, `state` (`enabled`, `disabled`) | Providers by type and enabled state |
+| `vauxtra_logs_24h` | `level` (`info`, `warn`, `error`, `debug`) | Log entries in the last 24 hours |
+| `vauxtra_uptime_events_24h` | `event` (`up`, `down`) | Service uptime events in the last 24 hours |
+| `vauxtra_webhooks_total` | `state` (`enabled`, `disabled`) | Configured webhooks |
+| `vauxtra_webhook_deliveries_total` | `status` (`pending`, `delivered`, `failed`) | Webhook delivery log entries |
+| `vauxtra_templates_total` | *(none)* | Number of service templates |
+| `vauxtra_schema_version` | *(none)* | Current database schema version |
+
+### Example output
+
+```
+# HELP vauxtra_services_total Services by status
+# TYPE vauxtra_services_total gauge
+vauxtra_services_total{status="ok"} 5
+vauxtra_services_total{status="error"} 1
+vauxtra_services_total{status="unknown"} 2
+# HELP vauxtra_providers_total Providers by type and state
+# TYPE vauxtra_providers_total gauge
+vauxtra_providers_total{type="npm",state="enabled"} 1
+vauxtra_providers_total{type="cloudflare",state="enabled"} 1
+vauxtra_schema_version 10
+```
+
+### Prometheus scrape config
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: vauxtra
+    static_configs:
+      - targets: ['vauxtra:8888']
+    metrics_path: /metrics
+    scrape_interval: 60s
+```
+
+### Alerting examples
+
+```yaml
+# alert.rules.yml
+groups:
+  - name: vauxtra
+    rules:
+      - alert: VauxtraServiceDown
+        expr: vauxtra_services_total{status="error"} > 0
+        for: 5m
+        annotations:
+          summary: "{{ $value }} service(s) in error state"
+      - alert: VauxtraCertExpiringSoon
+        expr: vauxtra_logs_24h{level="error"} > 0
+        for: 1m
+        annotations:
+          summary: "Check Vauxtra logs — certificate may be expiring"
+```
+
+---
+
+## 14) API Reference
 
 When `DEBUG=true`, interactive docs are available at `/api/docs`.
 
@@ -467,6 +615,23 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/backup/secure` | Export with encrypted credentials |
 | `POST` | `/api/restore` | Restore from backup |
 
+### Service Templates
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/templates` | List all templates |
+| `POST` | `/api/templates` | Create a template |
+| `GET` | `/api/templates/{id}` | Get a template |
+| `PUT` | `/api/templates/{id}` | Update a template |
+| `DELETE` | `/api/templates/{id}` | Delete a template |
+| `GET` | `/api/templates/{id}/apply` | Get pre-filled service defaults from template |
+
+### Metrics
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/metrics` | Prometheus metrics (no auth required) |
+
 ### Tags & Environments
 
 | Method | Endpoint | Description |
@@ -511,7 +676,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 ---
 
-## 13) Troubleshooting
+## 15) Troubleshooting
 
 ### "Invalid password" but password is correct
 

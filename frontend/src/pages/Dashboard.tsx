@@ -342,7 +342,7 @@ export function Dashboard() {
             <div className="bg-card border border-border rounded-lg overflow-hidden">
               <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-foreground">Recent activity</h3>
-                <Link to="/monitoring" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
+                <Link to="/settings?tab=logs" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
                   Logs <ArrowRight className="w-3 h-3" />
                 </Link>
               </div>

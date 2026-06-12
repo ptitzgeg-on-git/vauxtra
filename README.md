@@ -30,10 +30,13 @@
 | **Preflight & dry-run** | Validate routing config before pushing; preview changes without committing |
 | **Drift detection** | Detect when live provider state diverges from expected and reconcile automatically |
 | **Auto-reconcile scheduler** | Periodic background reconciliation with webhook notifications |
-| **Certificate monitoring** | Track NPM certificates, flag those expiring within 30 days |
+| **Service Templates** | Pre-configured blueprints that pre-fill the service form — one click to deploy a standard HTTPS app, internal tool, or tunnel service |
+| **Certificate monitoring** | Track NPM certificates; alerts at < 30 days (warn) and < 7 days (error) |
+| **Webhook retry** | Failed Apprise notifications are retried with exponential backoff (1 min → 24 h); delivery log visible in metrics |
+| **Prometheus metrics** | `/metrics` endpoint in Prometheus text format — scrape service health, provider counts, logs, webhooks, templates |
 | **API Keys** | Bearer token auth for CI/CD pipelines and MCP server access |
 | **MCP Server** | Expose core operations as tools for MCP-compatible clients and automation |
-| **Webhook alerts** | Apprise-compatible webhook for service down/recovery and reconcile events |
+| **Webhook alerts** | Apprise-compatible webhooks for service down/recovery, provider state changes, and reconcile events |
 | **Environments & Tags** | Organise services with colour-coded labels |
 | **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — 8 locales |
 
@@ -215,6 +218,8 @@ Add an equivalent server block to your MCP client configuration:
 See [docs/HOWTO.md](docs/HOWTO.md#10-mcp-integration) for the full list. Summary:
 
 **Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
+
+**Templates** — `list_templates`, `get_template`, `create_template`, `delete_template`, `apply_template`
 
 **Operations** — `run_preflight`, `dry_run_push`, `push_service`, `check_drift`, `reconcile_service`
 

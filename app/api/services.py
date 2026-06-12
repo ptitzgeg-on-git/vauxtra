@@ -681,6 +681,13 @@ def add_service(request: Request, body: ServiceIn):
                 current_value="",
             )
             if not dns_target:
+                if npm_host_id and body.proxy_provider_id:
+                    try:
+                        proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
+                        if proxy_row:
+                            create_provider(proxy_row).delete_host(npm_host_id)
+                    except Exception:
+                        pass
                 conn.close()
                 raise HTTPException(400, "Unable to resolve DNS public target")
 
@@ -837,7 +844,12 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                 except Exception as e:
                     add_log("warn", f"Could not clean up old tunnel during mode switch: {e}")
 
-        if body.proxy_provider_id:
+        # Skip proxy ops if service stays disabled and host was already removed from provider
+        # (host will be re-deployed when the service is enabled again)
+        _staying_disabled = not bool(body.enabled) and not bool(old["enabled"])
+        _proxy_already_removed = old["npm_host_id"] is None
+
+        if body.proxy_provider_id and not (_staying_disabled and _proxy_already_removed):
             proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
             if not proxy_row:
                 errors.append("Proxy provider not found")
@@ -963,20 +975,61 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     set_tags(conn, sid, body.tag_ids)
     set_environments(conn, sid, body.environment_ids)
     
-    # Toggle NPM host enable/disable if status changed
-    if bool(old["enabled"]) != bool(body.enabled) and new_mode == "proxy_dns" and body.proxy_provider_id and old["npm_host_id"]:
-        try:
-            proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
-            if proxy_row:
-                proxy = create_provider(proxy_row)
-                success = proxy.toggle_host(old["npm_host_id"], bool(body.enabled))
-                status = "enabled" if body.enabled else "disabled"
-                if success:
-                    add_log("info", f"NPM host {old['npm_host_id']} {status} during service update", conn)
-                else:
-                    add_log("warn", f"Failed to toggle NPM host {old['npm_host_id']} to {status} during service update", conn)
-        except Exception as e:
-            add_log("warn", f"Could not toggle NPM host status: {e}", conn)
+    # Generalized enable/disable: manage providers when enabled state changes
+    if bool(old["enabled"]) != bool(body.enabled) and new_mode == "proxy_dns":
+        enable = bool(body.enabled)
+
+        # Proxy provider
+        if body.proxy_provider_id:
+            try:
+                proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
+                if proxy_row:
+                    proxy = create_provider(proxy_row)
+                    if enable:
+                        if next_npm_host_id:
+                            # Host exists in provider (was suspended via toggle) — un-suspend it
+                            if proxy.toggle_host(next_npm_host_id, True):
+                                add_log("info", f"Proxy enabled: {new_public_host}", conn)
+                            else:
+                                add_log("info", f"Proxy active (toggle not supported, host already present): {new_public_host}", conn)
+                        else:
+                            # Host was removed from provider when disabled — re-deploy it
+                            cert_id = proxy.find_best_certificate(body.domain)
+                            created = proxy.create_host(
+                                new_public_host, body.target_ip, body.target_port,
+                                body.forward_scheme, body.websocket, cert_id,
+                            )
+                            if created:
+                                conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (created.get("id"), sid))
+                                add_log("info", f"Proxy re-deployed on enable: {new_public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}", conn)
+                            else:
+                                errors.append("Failed to re-deploy proxy host on enable")
+                    else:
+                        # Disable: try to suspend; if not supported, delete from provider
+                        if next_npm_host_id:
+                            if proxy.toggle_host(next_npm_host_id, False):
+                                add_log("info", f"Proxy suspended: {new_public_host}", conn)
+                            else:
+                                proxy.delete_host(next_npm_host_id)
+                                conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
+                                add_log("info", f"Proxy removed (suspend not supported, config kept in Vauxtra): {new_public_host}", conn)
+            except Exception as e:
+                add_log("warn", f"Could not manage proxy enabled state: {e}", conn)
+
+        # DNS provider: always remove on disable, re-add on enable
+        if body.dns_provider_id and stored_dns_ip:
+            try:
+                dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
+                if dns_row:
+                    dns = create_provider(dns_row)
+                    if enable:
+                        dns.add_rewrite(new_public_host, stored_dns_ip)
+                        add_log("info", f"DNS re-added on enable: {new_public_host} → {stored_dns_ip}", conn)
+                    else:
+                        dns.delete_rewrite(new_public_host, stored_dns_ip)
+                        add_log("info", f"DNS removed on disable: {new_public_host}", conn)
+            except Exception as e:
+                add_log("warn", f"Could not manage DNS enabled state: {e}", conn)
     
     conn.commit()
     add_log("info", f"Service updated: {new_public_host}")
@@ -1184,37 +1237,78 @@ def bulk_action(body: _BulkActionBody, request: Request):
     affected = 0
 
     if body.action in ("enable", "disable"):
-        enabled_val = 1 if body.action == "enable" else 0
+        enable = body.action == "enable"
+        enabled_val = 1 if enable else 0
         placeholders = ",".join(["?"] * len(body.ids))
-        
-        # Get affected services before updating
+
+        # Fetch full service rows before updating enabled state
         services = conn.execute(
-            f"SELECT id, proxy_provider_id, npm_host_id, expose_mode FROM services WHERE id IN ({placeholders})",
-            body.ids
+            f"SELECT * FROM services WHERE id IN ({placeholders})",
+            body.ids,
         ).fetchall()
-        
+
         conn.execute(
             f"UPDATE services SET enabled=? WHERE id IN ({placeholders})",
             [enabled_val, *body.ids],
         )
-        
-        # Toggle NPM hosts for affected services
+
+        # Generalized enable/disable: manage each provider
         for svc in services:
-            if svc["expose_mode"] == "proxy_dns" and svc["npm_host_id"] and svc["proxy_provider_id"]:
+            if (svc["expose_mode"] or "").strip().lower() != "proxy_dns":
+                continue
+            sid_b = svc["id"]
+            pub = _service_public_hostname("proxy_dns", "", svc["subdomain"], svc["domain"])
+
+            # Proxy provider
+            if svc["proxy_provider_id"]:
                 try:
                     proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["proxy_provider_id"],)).fetchone()
                     if proxy_row:
                         proxy = create_provider(proxy_row)
-                        success = proxy.toggle_host(svc["npm_host_id"], bool(enabled_val))
-                        status = "enabled" if enabled_val else "disabled"
-                        if success:
-                            add_log("info", f"NPM host {svc['npm_host_id']} {status} for service {svc['id']}", conn)
+                        if enable:
+                            if svc["npm_host_id"]:
+                                if proxy.toggle_host(svc["npm_host_id"], True):
+                                    add_log("info", f"Proxy enabled: {pub}", conn)
+                                else:
+                                    add_log("info", f"Proxy active (toggle not supported): {pub}", conn)
+                            else:
+                                # Was deleted — re-deploy
+                                cert_id = proxy.find_best_certificate(svc["domain"])
+                                created = proxy.create_host(
+                                    pub, svc["target_ip"], svc["target_port"],
+                                    svc["forward_scheme"], bool(svc["websocket"]), cert_id,
+                                )
+                                if created:
+                                    conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (created.get("id"), sid_b))
+                                    add_log("info", f"Proxy re-deployed on enable: {pub}", conn)
+                                else:
+                                    errors.append(f"Service {sid_b}: failed to re-deploy proxy")
                         else:
-                            add_log("warn", f"Failed to toggle NPM host {svc['npm_host_id']} for service {svc['id']}", conn)
+                            if svc["npm_host_id"]:
+                                if proxy.toggle_host(svc["npm_host_id"], False):
+                                    add_log("info", f"Proxy suspended: {pub}", conn)
+                                else:
+                                    proxy.delete_host(svc["npm_host_id"])
+                                    conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid_b,))
+                                    add_log("info", f"Proxy removed (suspend not supported): {pub}", conn)
                 except Exception as e:
-                    errors.append(f"Could not toggle NPM host for service {svc['id']}: {e}")
-                    add_log("error", f"Toggle NPM host error for service {svc['id']}: {e}", conn)
-        
+                    errors.append(f"Service {sid_b}: proxy state error — {e}")
+
+            # DNS provider: remove on disable, re-add on enable
+            if svc["dns_provider_id"] and svc["dns_ip"]:
+                try:
+                    dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["dns_provider_id"],)).fetchone()
+                    if dns_row:
+                        dns = create_provider(dns_row)
+                        if enable:
+                            dns.add_rewrite(pub, svc["dns_ip"])
+                            add_log("info", f"DNS re-added on enable: {pub} → {svc['dns_ip']}", conn)
+                        else:
+                            dns.delete_rewrite(pub, svc["dns_ip"])
+                            add_log("info", f"DNS removed on disable: {pub}", conn)
+                except Exception as e:
+                    errors.append(f"Service {sid_b}: DNS state error — {e}")
+
         affected = conn.execute(
             f"SELECT COUNT(*) FROM services WHERE id IN ({placeholders})",
             body.ids,
