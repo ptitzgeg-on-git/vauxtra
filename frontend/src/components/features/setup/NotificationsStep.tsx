@@ -95,7 +95,7 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
               Test notification
             </button>
             <button
-              onClick={() => addWebhook.mutate()}
+              onClick={() => addWebhook.mutate(undefined)}
               disabled={addWebhook.isPending || !name.trim() || !url.trim()}
               className="flex-1 flex items-center justify-center gap-2 bg-primary text-primary-foreground hover:opacity-90 rounded-xl py-3 text-sm font-semibold transition-all disabled:opacity-50"
             >

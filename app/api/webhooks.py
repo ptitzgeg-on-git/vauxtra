@@ -5,6 +5,30 @@ from app.models import get_db
 
 router = APIRouter()
 
+_WEBHOOK_SCOPE_TYPES = {"all", "provider", "service"}
+
+
+def _normalize_scope(body: dict, existing: dict | None = None) -> tuple[str, int | None]:
+    current_scope_type = (existing or {}).get("scope_type", "all")
+    current_scope_ref_id = (existing or {}).get("scope_ref_id")
+
+    scope_type = str(body.get("scope_type", current_scope_type) or "all").strip().lower()
+    if scope_type not in _WEBHOOK_SCOPE_TYPES:
+        raise HTTPException(400, "Invalid scope type")
+
+    scope_ref_raw = body.get("scope_ref_id", current_scope_ref_id)
+    if scope_type == "all":
+        return "all", None
+    if scope_ref_raw in (None, "", 0, "0"):
+        raise HTTPException(400, "A provider or service target is required for this scope")
+    try:
+        scope_ref_id = int(scope_ref_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Invalid scope target")
+    if scope_ref_id <= 0:
+        raise HTTPException(400, "Invalid scope target")
+    return scope_type, scope_ref_id
+
 
 def _validate_apprise_url(url: str) -> str:
     """Validate and normalize an Apprise URL string."""
@@ -50,19 +74,34 @@ def add_webhook(request: Request, body: dict):
     alert_on_integration_down = int(bool(body.get("alert_on_integration_down", False)))
     alert_on_integration_up  = int(bool(body.get("alert_on_integration_up", False)))
     min_down_minutes         = max(0, int(body.get("min_down_minutes", 0) or 0))
+    repeat_interval_minutes  = max(0, int(body.get("repeat_interval_minutes", 0) or 0))
+    scope_type, scope_ref_id = _normalize_scope(body)
     conn = get_db()
     try:
         cur = conn.execute(
             """INSERT INTO webhooks
-               (name, url, enabled, alert_on_any_down, alert_on_any_up,
-                alert_on_integration_down, alert_on_integration_up, min_down_minutes)
-               VALUES (?,?,1,?,?,?,?,?)""",
-            (name, url, alert_on_any_down, alert_on_any_up,
-             alert_on_integration_down, alert_on_integration_up, min_down_minutes),
+               (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
+                alert_on_any_down, alert_on_any_up, alert_on_integration_down,
+                alert_on_integration_up, min_down_minutes)
+               VALUES (?,?,1,?,?,?,?,?,?,?,?)""",
+            (
+                name,
+                url,
+                scope_type,
+                scope_ref_id,
+                repeat_interval_minutes,
+                alert_on_any_down,
+                alert_on_any_up,
+                alert_on_integration_down,
+                alert_on_integration_up,
+                min_down_minutes,
+            ),
         )
         wid = cur.lastrowid
         conn.commit()
         return {"id": wid, "name": name, "url": url, "enabled": 1,
+                "scope_type": scope_type, "scope_ref_id": scope_ref_id,
+                "repeat_interval_minutes": repeat_interval_minutes,
                 "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,
                 "alert_on_integration_down": alert_on_integration_down,
                 "alert_on_integration_up": alert_on_integration_up,
@@ -85,11 +124,13 @@ def update_webhook(wid: int, request: Request, body: dict):
         name    = body.get("name", existing["name"])
         url     = body.get("url", existing["url"])
         enabled = int(bool(body.get("enabled", existing["enabled"])))
+        scope_type, scope_ref_id = _normalize_scope(body, dict(existing))
         alert_on_any_down         = int(bool(body.get("alert_on_any_down",        existing["alert_on_any_down"])))
         alert_on_any_up           = int(bool(body.get("alert_on_any_up",          existing["alert_on_any_up"])))
         alert_on_integration_down = int(bool(body.get("alert_on_integration_down", existing["alert_on_integration_down"])))
         alert_on_integration_up   = int(bool(body.get("alert_on_integration_up",   existing["alert_on_integration_up"])))
         min_down_minutes          = max(0, int(body.get("min_down_minutes", existing["min_down_minutes"]) or 0))
+        repeat_interval_minutes   = max(0, int(body.get("repeat_interval_minutes", existing["repeat_interval_minutes"]) or 0))
 
         name = (name or "").strip()
         url  = _validate_apprise_url(url)
@@ -97,16 +138,30 @@ def update_webhook(wid: int, request: Request, body: dict):
             raise HTTPException(400, "Name and URL are required")
 
         conn.execute(
-            """UPDATE webhooks SET name=?, url=?, enabled=?,
-               alert_on_any_down=?, alert_on_any_up=?,
+            """UPDATE webhooks SET name=?, url=?, enabled=?, scope_type=?, scope_ref_id=?,
+               repeat_interval_minutes=?, alert_on_any_down=?, alert_on_any_up=?,
                alert_on_integration_down=?, alert_on_integration_up=?,
                min_down_minutes=?
                WHERE id=?""",
-            (name, url, enabled, alert_on_any_down, alert_on_any_up,
-             alert_on_integration_down, alert_on_integration_up, min_down_minutes, wid),
+            (
+                name,
+                url,
+                enabled,
+                scope_type,
+                scope_ref_id,
+                repeat_interval_minutes,
+                alert_on_any_down,
+                alert_on_any_up,
+                alert_on_integration_down,
+                alert_on_integration_up,
+                min_down_minutes,
+                wid,
+            ),
         )
         conn.commit()
         return {"id": wid, "name": name, "url": url, "enabled": enabled,
+                "scope_type": scope_type, "scope_ref_id": scope_ref_id,
+                "repeat_interval_minutes": repeat_interval_minutes,
                 "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,
                 "alert_on_integration_down": alert_on_integration_down,
                 "alert_on_integration_up": alert_on_integration_up,

@@ -7,6 +7,7 @@ from pydantic import BaseModel, field_validator
 from app.auth import require_auth
 from app.models import add_log, get_db, get_db_ctx
 from app.services.docker_analyzer import analyze_container
+from app.validators import is_valid_domain, normalize_domain
 
 router = APIRouter()
 
@@ -324,8 +325,8 @@ def list_docker_containers(request: Request, endpoint_id: int | None = Query(def
 def import_docker_containers(request: Request, data: dict = Body(...)):
     require_auth(request, scope="write")
 
-    domain = (data.get("domain") or "").strip().lower()
-    if not domain or "." not in domain:
+    domain = normalize_domain(data.get("domain") or "")
+    if not is_valid_domain(domain):
         raise HTTPException(400, "A valid domain is required")
 
     containers = data.get("containers") or []
@@ -391,7 +392,7 @@ def import_docker_containers(request: Request, data: dict = Body(...)):
                     )
                     conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
                     imported += 1
-                    add_log("ok", f"Docker [{endpoint_name}] imported: {subdomain}.{domain} → {target_ip}:{target_port}", conn)
+                    add_log("info", f"Docker [{endpoint_name}] imported: {subdomain}.{domain} → {target_ip}:{target_port}", conn)
                 except Exception as e:
                     errors.append(str(e))
 

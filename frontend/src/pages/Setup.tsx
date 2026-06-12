@@ -186,6 +186,39 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     setStep('done');
   };
 
+  const handleRestorePrepared = async () => {
+    ['step', 'skipPassword', 'formData', 'wizardMode', 'guidedStepIndex'].forEach((key) => {
+      sessionStorage.removeItem(`vauxtra.setup.${key}`);
+    });
+  };
+
+  const handleRestoreFinish = async (summary: { secretsIncluded: boolean }) => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['auth-status'] }),
+      queryClient.invalidateQueries({ queryKey: ['providers'] }),
+      queryClient.invalidateQueries({ queryKey: ['services'] }),
+      queryClient.invalidateQueries({ queryKey: ['domains'] }),
+      queryClient.invalidateQueries({ queryKey: ['logs'] }),
+      queryClient.invalidateQueries(),
+    ]);
+    // The setup wizard may cache an empty services list before restore.
+    // Drop it so the first dashboard paint reflects restored data.
+    queryClient.removeQueries({ queryKey: ['services'], exact: true });
+    await Promise.all([
+      queryClient.fetchQuery({ queryKey: ['auth-status'], queryFn: () => api.get('/auth/me') }),
+      queryClient.fetchQuery({ queryKey: ['providers'], queryFn: () => api.get('/providers') }),
+      queryClient.fetchQuery({ queryKey: ['services'], queryFn: () => api.get('/services'), staleTime: 0 }),
+      queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),
+    ]);
+
+    if (summary.secretsIncluded) {
+      toast.success('Backup restored successfully with encrypted secrets.');
+    } else {
+      toast.success('Backup restored. Re-enter provider credentials before running health checks.');
+    }
+    navigate('/');
+  };
+
   /* ─────────────────── Provider Form Logic ─────────────────── */
 
   const resetProviderForm = () => {
@@ -238,7 +271,8 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
           {step === 'restore' && (
             <RestoreStep
               onBack={() => setStep('welcome')}
-              onSuccess={() => { toast.success('Backup restored successfully!'); navigate('/'); }}
+              onPrepared={handleRestorePrepared}
+              onFinish={handleRestoreFinish}
             />
           )}
 

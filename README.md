@@ -24,6 +24,7 @@
 | Category | What you get |
 |---|---|
 | **Multi-provider routing** | Manage proxy hosts (NPM, Traefik) and DNS rewrites (Cloudflare, Pi-hole, AdGuard) from a single service record |
+| **Exposure modes** | Choose DNS-only, DNS + Reverse Proxy, or Tunnel with capability-aware guidance |
 | **Cloudflare Tunnel** | Expose services without port-forwarding via Cloudflare Tunnel integration |
 | **Docker discovery** | Auto-detect running containers with Traefik label parsing and confidence scoring |
 | **Preflight & dry-run** | Validate routing config before pushing; preview changes without committing |

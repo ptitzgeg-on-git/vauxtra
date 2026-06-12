@@ -231,8 +231,26 @@ def import_backup(request: Request, body: RestoreRequest):
 
         for wh in data.get("webhooks", []):
             conn.execute(
-                "INSERT OR REPLACE INTO webhooks (id, name, url, enabled, created_at) VALUES (?,?,?,?,?)",
-                (wh.get("id"), wh.get("name"), wh.get("url"), wh.get("enabled", 1), wh.get("created_at")),
+                """INSERT OR REPLACE INTO webhooks
+                   (id, name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
+                    alert_on_any_down, alert_on_any_up, alert_on_integration_down,
+                    alert_on_integration_up, min_down_minutes, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    wh.get("id"),
+                    wh.get("name"),
+                    wh.get("url"),
+                    wh.get("enabled", 1),
+                    wh.get("scope_type", "all"),
+                    wh.get("scope_ref_id"),
+                    wh.get("repeat_interval_minutes", 0),
+                    wh.get("alert_on_any_down", 0),
+                    wh.get("alert_on_any_up", 0),
+                    wh.get("alert_on_integration_down", 0),
+                    wh.get("alert_on_integration_up", 0),
+                    wh.get("min_down_minutes", 0),
+                    wh.get("created_at"),
+                ),
             )
 
         for svc in data.get("services", []):

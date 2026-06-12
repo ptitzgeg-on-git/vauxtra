@@ -90,17 +90,14 @@ app.add_middleware(
 @app.middleware("http")
 async def request_cache_middleware(request: Request, call_next):
     """Create per-request cache to avoid N+1 queries."""
-    from app.cache import RequestCache
+    from app.cache import RequestCache, _request_cache_var
 
-    # Create fresh cache for this request
-    cache_module._request_cache = RequestCache()
-
+    token = _request_cache_var.set(RequestCache())
     try:
         response = await call_next(request)
         return response
     finally:
-        # Clear cache after request completes
-        cache_module._request_cache = None
+        _request_cache_var.reset(token)
 
 
 @app.middleware("http")

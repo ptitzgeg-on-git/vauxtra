@@ -9,6 +9,20 @@ import type { Service, Provider, Tag, Environment } from "@/types/api";
 
 type ModeFilter = 'all' | 'tunnel' | 'proxy' | 'dns' | 'disabled';
 
+function toErrorMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as Record<string, unknown> | undefined;
+    const msg = typeof first?.msg === 'string' ? first.msg : '';
+    if (msg) return msg;
+  }
+  if (detail && typeof detail === 'object') {
+    const msg = (detail as Record<string, unknown>).msg;
+    if (typeof msg === 'string' && msg.trim()) return msg;
+  }
+  return fallback;
+}
+
 function useLocalStorage<T>(key: string, fallback: T): [T, (v: T | ((prev: T) => T)) => void] {
   const [value, setValue] = useState<T>(() => {
     try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; }
@@ -54,6 +68,8 @@ export function Services() {
 
   const getProvider = (id: number | string | null | undefined) =>
     Array.isArray(providers) ? providers.find((p: Provider) => String(p.id) === String(id ?? '')) : null;
+
+  const isNavigablePublicHost = (host: string) => !!host && !host.includes('*');
 
   const buildServicePayload = (service: Service | null, overrides: Record<string, unknown> = {}) => {
     const tagIds = Array.isArray(service?.tags)
@@ -107,8 +123,16 @@ export function Services() {
       _startAction(data.service.id);
       return api.put(`/services/${data.service.id}`, buildServicePayload(data.service, { enabled: data.enabled }));
     },
-    onSuccess: (_d, vars) => { _endAction(vars.service.id); queryClient.invalidateQueries({ queryKey: ['services'] }); },
-    onError: (_e, vars) => { _endAction(vars.service.id); toast.error('Unable to update service status'); },
+    onSuccess: (_d, vars) => {
+      _endAction(vars.service.id);
+      queryClient.invalidateQueries({ queryKey: ['services'] });
+      const host = vars.service.subdomain ? `${vars.service.subdomain}.${vars.service.domain}` : vars.service.domain;
+      toast.success(`${host} ${vars.enabled ? 'enabled' : 'disabled'}`);
+    },
+    onError: (err: { response?: { data?: { detail?: unknown } } }, vars) => {
+      _endAction(vars.service.id);
+      toast.error(toErrorMessage(err?.response?.data?.detail, 'Unable to update service status'));
+    },
   });
 
   const deleteService = useMutation({
@@ -132,9 +156,9 @@ export function Services() {
         toast.error(`${issues.length} drift issue(s) detected`);
       }
     },
-    onError: (err: { response?: { data?: { detail?: string } } }, id) => {
+    onError: (err: { response?: { data?: { detail?: unknown } } }, id) => {
       _endAction(id);
-      toast.error(err?.response?.data?.detail || 'Drift check failed');
+      toast.error(toErrorMessage(err?.response?.data?.detail, 'Drift check failed'));
     },
   });
 
@@ -155,9 +179,9 @@ export function Services() {
         toast.error('Reconcile finished with issues');
       }
     },
-    onError: (err: { response?: { data?: { detail?: string } } }, id) => {
+    onError: (err: { response?: { data?: { detail?: unknown } } }, id) => {
       _endAction(id);
-      toast.error(err?.response?.data?.detail || 'Reconcile failed');
+      toast.error(toErrorMessage(err?.response?.data?.detail, 'Reconcile failed'));
     },
   });
 
@@ -177,8 +201,8 @@ export function Services() {
         toast(`${data.affected} service(s) ${labels[variables.action] || variables.action} with warnings: ${errorSummary}${moreCount}`, { icon: '⚠️', duration: 8000 });
       }
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(err?.response?.data?.detail || 'Bulk action failed');
+    onError: (err: { response?: { data?: { detail?: unknown } } }) => {
+      toast.error(toErrorMessage(err?.response?.data?.detail, 'Bulk action failed'));
     },
   });
 
@@ -203,7 +227,7 @@ export function Services() {
       if (modeFilter === 'disabled') return !s.enabled;
       if (modeFilter === 'tunnel') return Boolean(s.enabled) && s.expose_mode === 'tunnel';
       if (modeFilter === 'proxy') return Boolean(s.enabled) && s.expose_mode !== 'tunnel' && Boolean(s.proxy_provider_id);
-      if (modeFilter === 'dns') return Boolean(s.enabled) && s.expose_mode !== 'tunnel' && !s.proxy_provider_id;
+      if (modeFilter === 'dns') return Boolean(s.enabled) && s.expose_mode !== 'tunnel' && !s.proxy_provider_id && Boolean(s.dns_provider_id);
       return true; // 'all'
     });
   }, [allServices, search, modeFilter]);
@@ -292,7 +316,7 @@ export function Services() {
       if (dns.isLocal) return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"><Globe className="w-2.5 h-2.5" />{dns.label}</span>;
       return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20"><Globe className="w-2.5 h-2.5" />{dns.label}</span>;
     }
-    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-muted text-muted-foreground border border-border"><Globe className="w-2.5 h-2.5" />Manual</span>;
+    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20"><AlertTriangle className="w-2.5 h-2.5" />No provider target</span>;
   };
 
   if (isLoading) {
@@ -433,6 +457,7 @@ export function Services() {
               {filteredServices.map((srv: Service) => {
                 const fullUrl = srv.subdomain ? `${srv.subdomain}.${srv.domain}` : srv.domain;
                 const publicHost = srv.expose_mode === 'tunnel' && srv.tunnel_hostname ? srv.tunnel_hostname : fullUrl;
+                const canOpenPublicHost = isNavigablePublicHost(publicHost);
                 const proxyProvider = getProvider(srv.expose_mode === 'tunnel' ? srv.tunnel_provider_id : srv.proxy_provider_id);
                 const dnsProvider = srv.expose_mode !== 'tunnel' ? getProvider(srv.dns_provider_id) : null;
                 const drift = driftByService[Number(srv.id)];
@@ -448,10 +473,14 @@ export function Services() {
                     <td className="px-4 py-3.5 text-center">
                       <button 
                         onClick={() => toggleStatus.mutate({ service: srv, enabled: !srv.enabled })}
-                        className="inline-flex items-center justify-center p-1 rounded-md transition-colors hover:bg-muted"
-                        title={srv.enabled ? "Disable" : "Enable"}
+                        disabled={toggleStatus.isPending}
+                        className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md transition-colors text-xs font-semibold hover:bg-muted/50 disabled:opacity-50"
+                        title={srv.enabled ? "Click to disable" : "Click to enable"}
                       >
-                        <div className={`w-2 h-2 rounded-full ${srv.enabled ? 'bg-emerald-500' : 'border-2 border-muted-foreground/40 bg-transparent'}`} />
+                        <div className={`w-2.5 h-2.5 rounded-full ${srv.enabled ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' : 'bg-muted-foreground/30'}`} />
+                        <span className={srv.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}>
+                          {srv.enabled ? 'Enabled' : 'Disabled'}
+                        </span>
                       </button>
                     </td>
                     <td className="px-4 py-3.5">{modeBadge(srv)}</td>
@@ -463,9 +492,15 @@ export function Services() {
                             <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
                           )}
                         </p>
-                        <a href={`https://${publicHost}`} target="_blank" rel="noreferrer" className="text-xs font-mono text-muted-foreground hover:text-primary transition-colors hover:underline truncate block max-w-[220px]">
-                          {publicHost}
-                        </a>
+                        {canOpenPublicHost ? (
+                          <a href={`https://${publicHost}`} target="_blank" rel="noreferrer" className="text-xs font-mono text-muted-foreground hover:text-primary transition-colors hover:underline truncate block max-w-[220px]">
+                            {publicHost}
+                          </a>
+                        ) : (
+                          <span className="text-xs font-mono text-muted-foreground/80 truncate block max-w-[220px]" title="Wildcard host (not directly navigable)">
+                            {publicHost}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3.5">
@@ -524,6 +559,7 @@ export function Services() {
           {filteredServices.map((srv: Service) => {
             const fullUrl = srv.subdomain ? `${srv.subdomain}.${srv.domain}` : srv.domain;
             const publicHost = srv.expose_mode === 'tunnel' && srv.tunnel_hostname ? srv.tunnel_hostname : fullUrl;
+            const canOpenPublicHost = isNavigablePublicHost(publicHost);
             const proxyProvider = getProvider(srv.expose_mode === 'tunnel' ? srv.tunnel_provider_id : srv.proxy_provider_id);
             const dnsProvider = srv.expose_mode !== 'tunnel' ? getProvider(srv.dns_provider_id) : null;
             const provider = proxyProvider || dnsProvider;
@@ -588,9 +624,15 @@ export function Services() {
                   )}
                 </div>
                 <div className="mb-1">{modeBadge(srv)}</div>
-                <a href={`https://${publicHost}`} target="_blank" rel="noreferrer" className="text-sm font-mono text-muted-foreground hover:text-primary transition-colors hover:underline mb-1 truncate block w-full">
-                  {publicHost}
-                </a>
+                {canOpenPublicHost ? (
+                  <a href={`https://${publicHost}`} target="_blank" rel="noreferrer" className="text-sm font-mono text-muted-foreground hover:text-primary transition-colors hover:underline mb-1 truncate block w-full">
+                    {publicHost}
+                  </a>
+                ) : (
+                  <span className="text-sm font-mono text-muted-foreground/80 mb-1 truncate block w-full" title="Wildcard host (not directly navigable)">
+                    {publicHost}
+                  </span>
+                )}
                 
                 {provider && (
                   <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mt-1 mb-6">
@@ -615,7 +657,7 @@ export function Services() {
 
       {/* Bulk Action Bar */}
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-card border border-border shadow-xl rounded-xl px-5 py-3 animate-in slide-in-from-bottom-4 duration-200">
+        <div className="sticky top-0 z-50 flex items-center gap-3 bg-card border border-b border-border shadow-lg px-4 py-3 animate-in slide-in-from-top-2 duration-200">
           <span className="text-sm font-semibold text-foreground whitespace-nowrap">
             {selectedIds.size} selected
           </span>

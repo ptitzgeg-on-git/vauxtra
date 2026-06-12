@@ -7,7 +7,7 @@ from app.db import get_connection
 
 # Increment this constant whenever a new ALTER is added to _migrate().
 # The value is stored in the settings table and logged on startup.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def get_db():
@@ -128,6 +128,9 @@ def init_db() -> None:
             name       TEXT    NOT NULL,
             url        TEXT    NOT NULL,
             enabled    INTEGER NOT NULL DEFAULT 1,
+            scope_type TEXT    NOT NULL DEFAULT 'all',
+            scope_ref_id INTEGER,
+            repeat_interval_minutes INTEGER NOT NULL DEFAULT 0,
             created_at TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
@@ -179,6 +182,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE webhooks ADD COLUMN alert_on_integration_down INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE webhooks ADD COLUMN alert_on_integration_up INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE webhooks ADD COLUMN min_down_minutes INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
+        "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
+        "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             conn.execute(sql)

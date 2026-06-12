@@ -11,9 +11,10 @@
 7. [Notifications](#7-notifications)
 8. [Theme: Light / Dark / Auto](#8-theme-light--dark--auto)
 9. [WAN Auto-Target Policy](#9-wan-auto-target-policy)
-10. [MCP Integration](#10-mcp-integration)
-11. [API Reference](#11-api-reference)
-12. [Troubleshooting](#12-troubleshooting)
+10. [DNS-Only vs Reverse Proxy](#10-dns-only-vs-reverse-proxy)
+11. [MCP Integration](#11-mcp-integration)
+12. [API Reference](#12-api-reference)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -245,7 +246,50 @@ This is used for:
 
 ---
 
-## 10) MCP Integration
+## 10) DNS-Only vs Reverse Proxy
+
+Vauxtra supports both patterns:
+
+1. **DNS + Reverse Proxy** (common for web apps)
+2. **DNS-only** (no reverse proxy), useful for LAN-only routes
+
+### Provider capability model (scalable)
+
+Vauxtra UI/logic uses provider capabilities instead of hardcoded provider names.
+
+- `dns=true`: provider can receive DNS records
+- `public_dns=true`: provider publishes records on the public internet (WAN scope)
+- `supports_auto_public_target=true`: provider can use WAN auto-target mode
+
+This keeps behavior stable when new providers are added later.
+
+### DNS-only with local DNS providers (Pi-hole / AdGuard / local authoritative DNS)
+
+- Scope: local network clients
+- Recommended target: LAN IP/FQDN of the service endpoint clients should reach
+- In DNS-only mode, no separate DNS target field is shown in the UI
+- Vauxtra uses the internal target host/IP as the DNS record target for local DNS providers
+
+### DNS + Reverse Proxy with local DNS providers
+
+- DNS must point to the reverse proxy endpoint, not directly to the backend service
+- Use the **Reverse proxy LAN IP** field (LAN IP/FQDN of NPM/Traefik)
+- When available, Vauxtra pre-fills this field from the selected proxy provider URL host
+
+### DNS with external providers (Cloudflare, etc.)
+
+- Scope: public internet
+- Recommended target: WAN IP/FQDN
+- Auto target detection uses WAN policy (section 9)
+- Ensure router forwarding is aligned for exposed protocols (typically 80/443)
+
+### Why this distinction matters
+
+Using a WAN target for local DNS, or a LAN target for external DNS, creates confusing incidents that look like provider failures while DNS data itself is valid. The capability model reduces this class of configuration drift.
+
+---
+
+## 11) MCP Integration
 
 Vauxtra includes an MCP (Model Context Protocol) server for MCP-compatible clients.
 
@@ -329,7 +373,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 ---
 
-## 11) API Reference
+## 12) API Reference
 
 When `DEBUG=true`, interactive docs are available at `/api/docs`.
 
@@ -467,7 +511,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 ---
 
-## 12) Troubleshooting
+## 13) Troubleshooting
 
 ### "Invalid password" but password is correct
 

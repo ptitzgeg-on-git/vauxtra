@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -89,19 +90,19 @@ class RequestCache:
         }
 
 
-# Global request cache (will be created per request in middleware)
-_request_cache: RequestCache | None = None
+# Per-coroutine request cache — isolated per async task, safe under concurrent requests
+_request_cache_var: ContextVar[RequestCache | None] = ContextVar("_request_cache", default=None)
 
 
 def get_request_cache() -> RequestCache:
-    """Get the current request's cache."""
-    global _request_cache
-    if _request_cache is None:
-        _request_cache = RequestCache()
-    return _request_cache
+    """Get the current request's cache, creating one if needed."""
+    cache = _request_cache_var.get()
+    if cache is None:
+        cache = RequestCache()
+        _request_cache_var.set(cache)
+    return cache
 
 
 def reset_request_cache() -> None:
-    """Reset the global request cache (call after each request)."""
-    global _request_cache
-    _request_cache = None
+    """Reset the request cache for the current coroutine."""
+    _request_cache_var.set(None)

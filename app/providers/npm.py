@@ -71,6 +71,7 @@ class NPMProvider(ProxyProvider):
                     "ssl": h.get("ssl_forced", False),
                     "websocket": h.get("allow_websocket_upgrade", False),
                     "cert_id": h.get("certificate_id"),
+                    "enabled": bool(h.get("enabled", True)),
                 }
                 for h in hosts
             ]
@@ -147,6 +148,20 @@ class NPMProvider(ProxyProvider):
                 timeout=PROVIDER_TIMEOUT,
             )
             return r.status_code == 200
+        except requests.RequestException:
+            return False
+
+    def toggle_host(self, host_id: int, enabled: bool) -> bool:
+        """Enable or disable a proxy host."""
+        if not self._ensure_auth():
+            return False
+        try:
+            r = self.session.patch(
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
+                json={"enabled": int(enabled)},
+                timeout=PROVIDER_TIMEOUT,
+            )
+            return r.status_code in (200, 201)
         except requests.RequestException:
             return False
 

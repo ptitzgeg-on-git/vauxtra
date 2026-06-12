@@ -18,15 +18,73 @@ _scheduler = BackgroundScheduler(daemon=True)
 _lock      = threading.Lock()
 _alert_down_since: dict[tuple[int, int], float] = {}
 _alert_down_sent: set[tuple[int, int]] = set()
-_tunnel_last_status: dict[int, str] = {}
+_provider_last_status: dict[int, str] = {}
+_tunnel_last_status = _provider_last_status
+_webhook_service_down_since: dict[tuple[int, int], float] = {}
+_webhook_service_last_sent: dict[tuple[int, int], float] = {}
 # Circuit-breaker: track consecutive failures per service for DNS auto-update
 _dns_update_failures: dict[int, int] = {}
 _DNS_FAILURE_THRESHOLD = 3  # Disable auto-update after this many consecutive failures
 
 
+def _read_retention_days(conn, key: str, default_days: int, *, min_days: int = 1, max_days: int = 365) -> int:
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if not row:
+        return default_days
+    try:
+        value = int(str(row["value"]).strip())
+    except Exception:
+        return default_days
+    return max(min_days, min(max_days, value))
+
+
+def _decode_tuple_key(raw_key) -> tuple[int, int] | None:
+    if isinstance(raw_key, list) and len(raw_key) == 2:
+        return int(raw_key[0]), int(raw_key[1])
+    if isinstance(raw_key, str):
+        try:
+            data = json.loads(raw_key)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, list) and len(data) == 2:
+            return int(data[0]), int(data[1])
+    return None
+
+
+def _load_tuple_value_map(data) -> dict[tuple[int, int], float]:
+    if not isinstance(data, dict):
+        return {}
+    result: dict[tuple[int, int], float] = {}
+    for raw_key, value in data.items():
+        key = _decode_tuple_key(raw_key)
+        if key is not None:
+            result[key] = float(value)
+    return result
+
+
+def _load_tuple_set(data) -> set[tuple[int, int]]:
+    if not isinstance(data, list):
+        return set()
+    result: set[tuple[int, int]] = set()
+    for raw_key in data:
+        key = _decode_tuple_key(raw_key)
+        if key is not None:
+            result.add(key)
+    return result
+
+
+def _dump_tuple_value_map(data: dict[tuple[int, int], float]) -> str:
+    return json.dumps({json.dumps(list(k)): v for k, v in data.items()})
+
+
+def _dump_tuple_set(data: set[tuple[int, int]]) -> str:
+    return json.dumps([list(k) for k in data])
+
+
 def _load_scheduler_state() -> None:
     """Load persisted alert state from database on startup."""
-    global _alert_down_since, _alert_down_sent, _tunnel_last_status, _dns_update_failures
+    global _alert_down_since, _alert_down_sent, _provider_last_status
+    global _webhook_service_down_since, _webhook_service_last_sent, _dns_update_failures
     try:
         conn = get_db()
         rows = conn.execute("SELECT key, value FROM scheduler_state").fetchall()
@@ -35,12 +93,15 @@ def _load_scheduler_state() -> None:
             key, val = row["key"], row["value"]
             data = json.loads(val)
             if key == "alert_down_since":
-                # Convert list keys back to tuples
-                _alert_down_since = {tuple(k): v for k, v in data.items()} if isinstance(data, dict) else {}
+                _alert_down_since = _load_tuple_value_map(data)
             elif key == "alert_down_sent":
-                _alert_down_sent = {tuple(k) for k in data} if isinstance(data, list) else set()
-            elif key == "tunnel_last_status":
-                _tunnel_last_status = {int(k): v for k, v in data.items()} if isinstance(data, dict) else {}
+                _alert_down_sent = _load_tuple_set(data)
+            elif key in {"provider_last_status", "tunnel_last_status"}:
+                _provider_last_status = {int(k): v for k, v in data.items()} if isinstance(data, dict) else {}
+            elif key == "webhook_service_down_since":
+                _webhook_service_down_since = _load_tuple_value_map(data)
+            elif key == "webhook_service_last_sent":
+                _webhook_service_last_sent = _load_tuple_value_map(data)
             elif key == "dns_update_failures":
                 _dns_update_failures = {int(k): v for k, v in data.items()} if isinstance(data, dict) else {}
     except Exception:
@@ -54,9 +115,11 @@ def _save_scheduler_state() -> None:
         conn = get_db()
         # Convert tuples to lists for JSON serialization
         state_items = [
-            ("alert_down_since", json.dumps({str(list(k)): v for k, v in _alert_down_since.items()})),
-            ("alert_down_sent", json.dumps([list(k) for k in _alert_down_sent])),
-            ("tunnel_last_status", json.dumps(_tunnel_last_status)),
+            ("alert_down_since", _dump_tuple_value_map(_alert_down_since)),
+            ("alert_down_sent", _dump_tuple_set(_alert_down_sent)),
+            ("provider_last_status", json.dumps(_provider_last_status)),
+            ("webhook_service_down_since", _dump_tuple_value_map(_webhook_service_down_since)),
+            ("webhook_service_last_sent", _dump_tuple_value_map(_webhook_service_last_sent)),
             ("dns_update_failures", json.dumps(_dns_update_failures)),
         ]
         for key, value in state_items:
@@ -112,7 +175,7 @@ def run_auto_reconcile() -> None:
             result = _execute_push(svc, sid)
             if result.get("ok"):
                 corrected.append(fqdn)
-                add_log("ok", f"[AutoReconcile] Corrected drift for {fqdn}")
+                add_log("info", f"[AutoReconcile] Corrected drift for {fqdn}")
             else:
                 err_detail = "; ".join(result.get("errors", []))
                 errors.append(f"{fqdn}: {err_detail}")
@@ -141,6 +204,15 @@ def run_health_checks() -> None:
     """Check all services, record uptime events, and dispatch alerts."""
     with _lock:
         conn = get_db()
+
+        # Sync NPM enable/disable state once per cycle (not on every API call)
+        try:
+            from app.api.services import _sync_npm_statuses  # noqa: PLC0415
+            _sync_npm_statuses(conn)
+            conn.commit()
+        except Exception:
+            pass
+
         services = conn.execute(
             "SELECT id, target_ip, target_port, subdomain, domain, status, expose_mode FROM services WHERE enabled=1"
         ).fetchall()
@@ -182,10 +254,19 @@ def run_health_checks() -> None:
                 )
 
         _run_dns_auto_updates(conn)
-        changed.extend(_run_tunnel_health_checks(conn))
+        changed.extend(_run_provider_health_checks(conn))
 
-        # Purge events older than 7 days
-        conn.execute("DELETE FROM uptime_events WHERE created_at < datetime('now', '-7 days')")
+        # Purge old monitoring history/logs according to settings.
+        monitoring_retention_days = _read_retention_days(conn, "monitoring_retention_days", 14)
+        log_retention_days = _read_retention_days(conn, "log_retention_days", 30)
+        conn.execute(
+            "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)" ,
+            (f"-{monitoring_retention_days} days",),
+        )
+        conn.execute(
+            "DELETE FROM logs WHERE created_at < datetime('now', ?)",
+            (f"-{log_retention_days} days",),
+        )
         conn.commit()
         conn.close()
 
@@ -193,21 +274,21 @@ def run_health_checks() -> None:
         _save_scheduler_state()
 
         if changed:
-            _fire_global_webhook(changed)
+            _fire_global_webhook()
         if any("provider_id" in c for c in changed):
             _fire_integration_webhook(changed)
         _fire_service_webhooks()
 
 
-def _run_tunnel_health_checks(conn) -> list[dict]:
-    """Check cloudflare_tunnel providers and return status transitions for notifications."""
-    global _tunnel_last_status
+def _run_provider_health_checks(conn) -> list[dict]:
+    """Check enabled providers and return status transitions for notifications."""
+    global _provider_last_status
 
     rows = conn.execute(
-        "SELECT id, name, type, enabled FROM providers WHERE type='cloudflare_tunnel' AND enabled=1"
+        "SELECT id, name, type, url, username, password, extra, enabled FROM providers WHERE enabled=1"
     ).fetchall()
     if not rows:
-        _tunnel_last_status.clear()
+        _provider_last_status.clear()
         return []
 
     changed: list[dict] = []
@@ -233,30 +314,36 @@ def _run_tunnel_health_checks(conn) -> list[dict]:
             new_status = "error"
             detail = str(e)
 
-        old_status = _tunnel_last_status.get(provider_id, "unknown")
-        _tunnel_last_status[provider_id] = new_status
+        old_status = _provider_last_status.get(provider_id, "unknown")
+        _provider_last_status[provider_id] = new_status
 
         if old_status != new_status and old_status != "unknown":
-            label = f"tunnel:{row['name']}"
+            label = f"provider:{row['name']}"
             changed.append(
                 {
                     "provider_id": provider_id,
+                    "provider_type": row["type"],
                     "fqdn": label,
                     "old": old_status,
                     "new": new_status,
                 }
             )
             add_log(
-                "ok" if new_status == "ok" else "error",
-                f"[Tunnel] {row['name']} : {old_status} → {new_status} ({detail})",
+                "info" if new_status == "ok" else "error",
+                f"[Provider] {row['name']} : {old_status} → {new_status} ({detail})",
                 conn,
             )
 
-    for pid in list(_tunnel_last_status.keys()):
+    for pid in list(_provider_last_status.keys()):
         if pid not in seen_ids:
-            _tunnel_last_status.pop(pid, None)
+            _provider_last_status.pop(pid, None)
 
     return changed
+
+
+def _run_tunnel_health_checks(conn) -> list[dict]:
+    """Backward-compatible wrapper for older callers/tests."""
+    return _run_provider_health_checks(conn)
 
 
 def _run_dns_auto_updates(conn) -> None:
@@ -348,36 +435,126 @@ def _run_dns_auto_updates(conn) -> None:
 
 # ── Webhook ───────────────────────────────────────────────────────────────
 
-def _fire_global_webhook(changed: list[dict]) -> None:
-    """Fire service-status alerts to all webhooks that opted into global alerts."""
-    try:
-        down = [s for s in changed if s["new"] == "error"]
-        up   = [s for s in changed if s["new"] == "ok"]
-        if not down and not up:
-            return
+def _service_matches_scope(row, extra_target_map: dict[int, set[int]]) -> bool:
+    scope_type = (row["scope_type"] or "all").lower()
+    scope_ref_id = row["scope_ref_id"]
+    if scope_type == "all":
+        return True
+    if scope_type == "service":
+        return scope_ref_id == row["service_id"]
+    if scope_type == "provider":
+        provider_ids = {
+            row["dns_provider_id"],
+            row["proxy_provider_id"],
+            row["tunnel_provider_id"],
+        }
+        provider_ids.update(extra_target_map.get(int(row["service_id"]), set()))
+        return scope_ref_id in {pid for pid in provider_ids if pid is not None}
+    return False
 
+
+def _fire_global_webhook() -> None:
+    """Fire scoped service-status alerts with optional repeat reminders."""
+    global _webhook_service_down_since, _webhook_service_last_sent
+    try:
         conn = get_db()
-        webhooks = conn.execute(
-            """SELECT url, alert_on_any_down, alert_on_any_up, min_down_minutes
-               FROM webhooks WHERE enabled=1
-               AND (alert_on_any_down=1 OR alert_on_any_up=1)"""
+        rows = conn.execute(
+            """
+            SELECT w.id AS webhook_id,
+                   w.url,
+                   w.scope_type,
+                   w.scope_ref_id,
+                   w.alert_on_any_down,
+                   w.alert_on_any_up,
+                   w.min_down_minutes,
+                   w.repeat_interval_minutes,
+                   s.id AS service_id,
+                   s.subdomain,
+                   s.domain,
+                   s.status,
+                   s.dns_provider_id,
+                   s.proxy_provider_id,
+                   s.tunnel_provider_id
+            FROM webhooks w
+            JOIN services s ON s.enabled=1
+            WHERE w.enabled=1
+              AND (w.alert_on_any_down=1 OR w.alert_on_any_up=1)
+            """
+        ).fetchall()
+        extra_target_rows = conn.execute(
+            "SELECT service_id, provider_id FROM service_push_targets"
         ).fetchall()
         conn.close()
 
+        if not rows:
+            _webhook_service_down_since.clear()
+            _webhook_service_last_sent.clear()
+            return
+
+        extra_target_map: dict[int, set[int]] = {}
+        for extra in extra_target_rows:
+            extra_target_map.setdefault(int(extra["service_id"]), set()).add(int(extra["provider_id"]))
+
+        now = time.monotonic()
+        messages_by_url: dict[str, list[str]] = {}
+        valid_keys: set[tuple[int, int]] = set()
+
         import apprise
 
-        for wh in webhooks:
-            lines = []
-            if wh["alert_on_any_down"] and down:
-                lines.append("Down: " + ", ".join(s["fqdn"] for s in down))
-            if wh["alert_on_any_up"] and up:
-                lines.append("Recovered: " + ", ".join(s["fqdn"] for s in up))
-            if not lines:
+        for row in rows:
+            if not _service_matches_scope(row, extra_target_map):
                 continue
+            key = (int(row["webhook_id"]), int(row["service_id"]))
+            valid_keys.add(key)
+            fqdn = f"{row['subdomain']}.{row['domain']}"
+            status = (row["status"] or "unknown").lower()
+            min_down = max(0, int(row["min_down_minutes"] or 0))
+            repeat_interval = max(0, int(row["repeat_interval_minutes"] or 0))
+
+            if status == "error":
+                if not bool(row["alert_on_any_down"]):
+                    continue
+                since = _webhook_service_down_since.get(key)
+                if since is None:
+                    _webhook_service_down_since[key] = now
+                    since = now
+                elapsed_minutes = (now - since) / 60.0
+                last_sent = _webhook_service_last_sent.get(key)
+                should_send = False
+                message = f"DOWN: {fqdn} ({elapsed_minutes:.1f}m)"
+                if elapsed_minutes >= min_down and last_sent is None:
+                    should_send = True
+                elif last_sent is not None and repeat_interval > 0 and (now - last_sent) >= repeat_interval * 60:
+                    should_send = True
+                    message = f"REMINDER: {fqdn} still down ({elapsed_minutes:.1f}m)"
+
+                if should_send:
+                    messages_by_url.setdefault(row["url"], []).append(message)
+                    _webhook_service_last_sent[key] = now
+            else:
+                had_down = key in _webhook_service_down_since or key in _webhook_service_last_sent
+                if had_down and status == "ok" and bool(row["alert_on_any_up"]):
+                    messages_by_url.setdefault(row["url"], []).append(f"RECOVERED: {fqdn}")
+                _webhook_service_down_since.pop(key, None)
+                _webhook_service_last_sent.pop(key, None)
+
+        for key in list(_webhook_service_down_since):
+            if key not in valid_keys:
+                _webhook_service_down_since.pop(key, None)
+        for key in list(_webhook_service_last_sent):
+            if key not in valid_keys:
+                _webhook_service_last_sent.pop(key, None)
+
+        if not messages_by_url:
+            return
+
+        _save_scheduler_state()
+
+        for url, lines in messages_by_url.items():
             a = apprise.Apprise()
-            if not a.add(wh["url"]):
+            if not a.add(url):
                 continue
-            a.notify(title="Vauxtra - Status change", body="\n".join(lines))
+            a.notify(title="Vauxtra - Service alert", body="\n".join(lines))
     except Exception:
         import traceback
         add_log("error", f"Global webhook failed: {traceback.format_exc()}")
@@ -491,7 +668,8 @@ def _fire_integration_webhook(changed: list[dict]) -> None:
 
         conn = get_db()
         webhooks = conn.execute(
-            """SELECT url, alert_on_integration_down, alert_on_integration_up
+            """SELECT url, alert_on_integration_down, alert_on_integration_up,
+                      scope_type, scope_ref_id
                FROM webhooks WHERE enabled=1
                AND (alert_on_integration_down=1 OR alert_on_integration_up=1)"""
         ).fetchall()
@@ -500,11 +678,22 @@ def _fire_integration_webhook(changed: list[dict]) -> None:
         import apprise
 
         for wh in webhooks:
+            scope_type = (wh["scope_type"] or "all").lower()
+            scope_ref_id = wh["scope_ref_id"]
+            scoped_down = down
+            scoped_up = up
+            if scope_type == "provider" and scope_ref_id:
+                scoped_down = [c for c in down if c.get("provider_id") == scope_ref_id]
+                scoped_up = [c for c in up if c.get("provider_id") == scope_ref_id]
+            elif scope_type == "service":
+                scoped_down = []
+                scoped_up = []
+
             lines = []
-            if wh["alert_on_integration_down"] and down:
-                lines.append("Integration down: " + ", ".join(c["fqdn"] for c in down))
-            if wh["alert_on_integration_up"] and up:
-                lines.append("Integration recovered: " + ", ".join(c["fqdn"] for c in up))
+            if wh["alert_on_integration_down"] and scoped_down:
+                lines.append("Integration down: " + ", ".join(c["fqdn"] for c in scoped_down))
+            if wh["alert_on_integration_up"] and scoped_up:
+                lines.append("Integration recovered: " + ", ".join(c["fqdn"] for c in scoped_up))
             if not lines:
                 continue
             a = apprise.Apprise()
