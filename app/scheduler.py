@@ -564,8 +564,9 @@ def _try_send_apprise(url: str, title: str, body: str, conn, webhook_id=None) ->
 
 def _run_webhook_retry(conn) -> None:
     """Retry pending webhook deliveries that are due, applying exponential backoff."""
-    import apprise as _apprise
     import datetime as _dt
+
+    import apprise as _apprise
 
     MAX_ATTEMPTS = len(_WEBHOOK_RETRY_BACKOFF)
     try:
