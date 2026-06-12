@@ -1,0 +1,32 @@
+# Normalize line endings to LF in the repo, checkout as-is on all platforms
+* text=auto eol=lf
+
+# Binaries — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+
+# Lock files — generated, excluded from language stats
+package-lock.json linguist-generated=true
+*.lock linguist-generated=true
+
+# Build artifacts — generated
+*.tsbuildinfo linguist-generated=true
+frontend/dist/** linguist-generated=true
+
+# Locale / translation files — data, not application logic
+frontend/src/locales/*.json linguist-generated=true
+
+# Frontend config boilerplate — not counted as primary language
+frontend/postcss.config.cjs linguist-documentation=true
+frontend/tailwind.config.js linguist-documentation=true
+
+# Scripts in other languages — exclude from primary language calculation
+frontend/scripts/*.mjs linguist-language=JavaScript

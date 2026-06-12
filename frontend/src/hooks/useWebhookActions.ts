@@ -11,7 +11,13 @@ import { useI18n } from '@/i18n';
 
 export type { Webhook };
 
-export function useWebhookActions() {
+type WebhookPayload = Partial<Webhook> & {
+  name?: string;
+  url?: string;
+  enabled?: boolean;
+};
+
+export function useWebhookActions(enabled = true) {
   const queryClient = useQueryClient();
   const { t } = useI18n();
 
@@ -22,10 +28,23 @@ export function useWebhookActions() {
   const { data: webhooks = [], refetch } = useQuery<Webhook[]>({
     queryKey: ['webhooks'],
     queryFn: () => api.get('/webhooks'),
+    enabled,
   });
 
   const addWebhook = useMutation({
-    mutationFn: () => api.post('/webhooks', { name: name.trim(), url: url.trim(), enabled: true }),
+    mutationFn: (payload?: WebhookPayload) => api.post('/webhooks', {
+      name: payload?.name?.trim() || name.trim(),
+      url: payload?.url?.trim() || url.trim(),
+      enabled: payload?.enabled ?? true,
+      scope_type: payload?.scope_type ?? 'all',
+      scope_ref_id: payload?.scope_ref_id ?? null,
+      repeat_interval_minutes: payload?.repeat_interval_minutes ?? 0,
+      alert_on_any_down: payload?.alert_on_any_down ?? false,
+      alert_on_any_up: payload?.alert_on_any_up ?? false,
+      alert_on_integration_down: payload?.alert_on_integration_down ?? false,
+      alert_on_integration_up: payload?.alert_on_integration_up ?? false,
+      min_down_minutes: payload?.min_down_minutes ?? 0,
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['webhooks'] });
       toast.success(t('settings.webhooks.added'));

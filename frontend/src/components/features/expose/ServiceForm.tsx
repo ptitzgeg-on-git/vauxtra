@@ -1,4 +1,5 @@
 import { Dispatch, SetStateAction } from 'react';
+import { Link } from 'react-router-dom';
 import { Loader2, RefreshCw, Server } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { FormState, Provider } from './types';
@@ -55,10 +56,11 @@ export function ServiceForm({
     ? hasCapability(selectedDns, 'supports_auto_public_target', providerTypeMap)
     : false;
 
-  // Local DNS providers resolve internally (LAN IP); external ones resolve publicly (WAN IP)
-  const LOCAL_DNS_TYPES = ['pihole', 'adguard'];
-  const isLocalDns = selectedDns ? LOCAL_DNS_TYPES.includes((selectedDns.type || '').toLowerCase()) : false;
-  const isExternalDns = selectedDns && !isLocalDns;
+  // Use provider capabilities instead of hardcoded types for long-term extensibility.
+  const isExternalDns = selectedDns
+    ? hasCapability(selectedDns, 'public_dns', providerTypeMap)
+    : false;
+  const isLocalDns = Boolean(selectedDns) && !isExternalDns;
 
   const effectivePublicTargetMode =
     formData.public_target_mode === 'auto' && formData.dns_provider_id && !selectedDnsSupportsAuto
@@ -103,6 +105,7 @@ export function ServiceForm({
       setFormData((prev) => ({ ...prev, target_ip: value }));
     }
   };
+
 
   const toggleExtra = (role: 'proxy' | 'dns', providerId: string, checked: boolean) => {
     if (role === 'proxy') {
@@ -160,10 +163,14 @@ export function ServiceForm({
             <label className="block text-xs font-semibold text-muted-foreground tracking-wide">
               Base Domain
             </label>
-            <select
+            <input
+              list="domain-suggestions"
+              type="text"
+              required
+              placeholder={isLoadingDomains ? 'Loading…' : 'example.com'}
               value={formData.domain}
               onChange={(e) => {
-                const dom = e.target.value;
+                const dom = e.target.value.trim().toLowerCase();
                 setFormData((prev) => {
                   const next: FormState = { ...prev, domain: dom };
                   if (prev.expose_mode === 'tunnel' && tunnelHostnameIsDefault && prev.subdomain && dom) {
@@ -173,67 +180,113 @@ export function ServiceForm({
                 });
               }}
               className="w-full bg-card border border-border focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-lg px-4 py-2.5 text-sm text-foreground outline-none transition-all shadow-sm"
-              disabled={isLoadingDomains}
-              required
-            >
-              <option value="">Select a registered domain</option>
-              {(domains || []).map((domain) => (
-                <option key={domain} value={domain}>
-                  {domain}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground">
-              Need a new domain? Add it in{' '}
-              <a href="/settings" className="text-primary hover:text-primary">
-                Settings
-              </a>{' '}
-              first.
-            </p>
+            />
+            {domains.length > 0 && (
+              <datalist id="domain-suggestions">
+                {domains.map((domain) => (
+                  <option key={domain} value={domain} />
+                ))}
+              </datalist>
+            )}
+            {domains.length === 0 && !isLoadingDomains && (
+              <p className="text-xs text-muted-foreground">
+                Save a domain in{' '}
+                <Link to="/settings?tab=dns" className="text-primary hover:underline">
+                  Settings → DNS
+                </Link>{' '}
+                for quick access, or type any domain above.
+              </p>
+            )}
           </div>
         </div>
 
         <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3">
           <p className="text-xs font-semibold text-muted-foreground mb-2">Exposure mode</p>
           <div className="flex flex-wrap gap-4">
-            <label className="flex items-center gap-2 text-sm text-foreground">
+            {/* ── Option 1: DNS only ── */}
+            <label
+              className={`flex items-center gap-2 text-sm ${
+                dnsProviders.length > 0 ? 'text-foreground' : 'text-muted-foreground cursor-not-allowed'
+              }`}
+            >
               <input
                 type="radio"
-                checked={formData.expose_mode === 'proxy_dns'}
+                disabled={dnsProviders.length === 0}
+                checked={formData.ui_expose_mode === 'dns_only'}
                 onChange={() =>
                   setFormData((prev) => ({
                     ...prev,
+                    ui_expose_mode: 'dns_only',
                     expose_mode: 'proxy_dns',
+                    proxy_provider_id: '',
+                    extra_proxy_provider_ids: [],
                     tunnel_provider_id: '',
                     tunnel_hostname: '',
-                    extra_proxy_provider_ids: [],
                   }))
                 }
               />
-              DNS + reverse proxy
+              DNS only
+              {dnsProviders.length === 0 && (
+                <span className="ml-1 text-xs text-muted-foreground">
+                  — No DNS provider configured.{' '}
+                  <Link to="/providers" className="text-primary hover:underline">
+                    Add one in Integrations
+                  </Link>
+                </span>
+              )}
             </label>
-            <label className={`flex items-center gap-2 text-sm ${hasTunnelProvider ? 'text-foreground' : 'text-muted-foreground cursor-not-allowed'}`}>
+
+            {/* ── Option 2: DNS + Reverse Proxy ── */}
+            <label className="flex items-center gap-2 text-sm text-foreground">
               <input
                 type="radio"
-                checked={formData.expose_mode === 'tunnel'}
-                disabled={!hasTunnelProvider}
+                checked={formData.ui_expose_mode === 'dns_proxy'}
                 onChange={() =>
                   setFormData((prev) => ({
                     ...prev,
+                    ui_expose_mode: 'dns_proxy',
+                    expose_mode: 'proxy_dns',
+                    tunnel_provider_id: '',
+                    tunnel_hostname: '',
+                    extra_proxy_provider_ids: prev.expose_mode === 'tunnel' ? [] : prev.extra_proxy_provider_ids,
+                  }))
+                }
+              />
+              DNS + Reverse Proxy
+            </label>
+
+            {/* ── Option 3: Tunnel ── */}
+            <label
+              className={`flex items-center gap-2 text-sm ${
+                hasTunnelProvider ? 'text-foreground' : 'text-muted-foreground cursor-not-allowed'
+              }`}
+            >
+              <input
+                type="radio"
+                disabled={!hasTunnelProvider}
+                checked={formData.ui_expose_mode === 'tunnel'}
+                onChange={() =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    ui_expose_mode: 'tunnel',
                     expose_mode: 'tunnel',
                     public_target_mode: 'manual',
                     auto_update_dns: false,
+                    proxy_provider_id: '',
                     dns_provider_id: '',
                     dns_ip: '',
+                    extra_proxy_provider_ids: [],
                     tunnel_hostname: prev.tunnel_hostname || fqdnPreview,
                   }))
                 }
               />
-              Cloudflare Tunnel
+              Tunnel
               {!hasTunnelProvider && (
                 <span className="ml-1 text-xs text-muted-foreground">
                   — No tunnel provider configured.{' '}
-                  <a href="/providers" className="text-primary hover:underline">Add one in Integrations</a>
+                  <Link to="/providers" className="text-primary hover:underline">
+                    Add one in Integrations
+                  </Link>
                 </span>
               )}
             </label>
@@ -416,47 +469,55 @@ export function ServiceForm({
 
             {formData.expose_mode === 'proxy_dns' && (
               <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-semibold text-muted-foreground">
-                      Primary reverse proxy
-                    </label>
-                    <select
-                      value={formData.proxy_provider_id}
-                      onChange={(e) => {
-                        const nextProxyId = e.target.value;
-                        const selectedProvider = standardProxyProviders.find(
-                          (p) => String(p.id) === nextProxyId,
-                        );
-                        let inferredDnsTarget = '';
-                        if (selectedProvider?.url) {
-                          try {
-                            inferredDnsTarget = new URL(selectedProvider.url).hostname;
-                          } catch {
-                            inferredDnsTarget = '';
+                {/* ── Provider selectors: top row ── */}
+                <div className={`grid grid-cols-1 ${formData.ui_expose_mode !== 'dns_only' ? 'md:grid-cols-2' : ''} gap-5`}>
+                  {/* Primary reverse proxy — hidden in DNS-only mode */}
+                  {formData.ui_expose_mode !== 'dns_only' && (
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-semibold text-muted-foreground">
+                        Primary reverse proxy
+                      </label>
+                      <select
+                        value={formData.proxy_provider_id}
+                        onChange={(e) => {
+                          const nextProxyId = e.target.value;
+                          const selectedProvider = standardProxyProviders.find(
+                            (p) => String(p.id) === nextProxyId,
+                          );
+                          let inferredDnsTarget = '';
+                          if (selectedProvider?.url) {
+                            try {
+                              inferredDnsTarget = new URL(selectedProvider.url).hostname;
+                            } catch {
+                              inferredDnsTarget = '';
+                            }
                           }
-                        }
-                        setFormData((prev) => ({
-                          ...prev,
-                          proxy_provider_id: nextProxyId,
-                          dns_ip: prev.dns_ip.trim() ? prev.dns_ip : inferredDnsTarget,
-                          extra_proxy_provider_ids: prev.extra_proxy_provider_ids.filter(
-                            (id) => id !== nextProxyId,
-                          ),
-                        }));
-                      }}
-                      className="w-full bg-card border border-border focus:border-primary rounded-lg px-3 py-2.5 text-sm shadow-sm"
-                      disabled={standardProxyProviders.length === 0}
-                    >
-                      <option value="">None</option>
-                      {standardProxyProviders.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.type})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                          setFormData((prev) => ({
+                            ...prev,
+                            proxy_provider_id: nextProxyId,
+                            dns_ip:
+                              prev.dns_ip.trim() || !isLocalDns
+                                ? prev.dns_ip
+                                : inferredDnsTarget,
+                            extra_proxy_provider_ids: prev.extra_proxy_provider_ids.filter(
+                              (id) => id !== nextProxyId,
+                            ),
+                          }));
+                        }}
+                        className="w-full bg-card border border-border focus:border-primary rounded-lg px-3 py-2.5 text-sm shadow-sm"
+                        disabled={standardProxyProviders.length === 0}
+                      >
+                        <option value="">None</option>
+                        {standardProxyProviders.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({p.type})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
+                  {/* Primary DNS provider — always shown */}
                   <div className="space-y-1.5">
                     <label className="block text-xs font-semibold text-muted-foreground">
                       Primary DNS provider
@@ -478,24 +539,32 @@ export function ServiceForm({
 
                         // Clear dns_ip when scope changes (local ↔ external) to avoid a stale
                         // LAN IP sitting in a field now labelled "Public WAN IP" and vice-versa.
-                        const prevIsLocal = LOCAL_DNS_TYPES.includes((selectedDns?.type || '').toLowerCase());
-                        const nextIsLocal = LOCAL_DNS_TYPES.includes(((nextDnsProvider?.type) || '').toLowerCase());
-                        const scopeChanged = nextDnsProviderId && prevIsLocal !== nextIsLocal;
+                        const prevIsExternal = selectedDns
+                          ? hasCapability(selectedDns, 'public_dns', providerTypeMap)
+                          : false;
+                        const nextIsExternal = nextDnsProvider
+                          ? hasCapability(nextDnsProvider, 'public_dns', providerTypeMap)
+                          : false;
+                        const scopeChanged = nextDnsProviderId && prevIsExternal !== nextIsExternal;
 
-                        setFormData((prev) => ({
-                          ...prev,
-                          dns_provider_id: nextDnsProviderId,
-                          dns_ip: scopeChanged ? '' : prev.dns_ip,
-                          public_target_mode:
-                            nextDnsProviderId && !nextSupportsAuto
-                              ? 'manual'
-                              : prev.public_target_mode,
-                          auto_update_dns:
-                            nextDnsProviderId && !nextSupportsAuto ? false : prev.auto_update_dns,
-                          extra_dns_provider_ids: prev.extra_dns_provider_ids.filter(
-                            (id) => id !== nextDnsProviderId,
-                          ),
-                        }));
+                        setFormData((prev) => {
+                          const baseDnsIp = scopeChanged ? '' : prev.dns_ip;
+
+                          return {
+                            ...prev,
+                            dns_provider_id: nextDnsProviderId,
+                            dns_ip: baseDnsIp,
+                            public_target_mode:
+                              nextDnsProviderId && !nextSupportsAuto
+                                ? 'manual'
+                                : prev.public_target_mode,
+                            auto_update_dns:
+                              nextDnsProviderId && !nextSupportsAuto ? false : prev.auto_update_dns,
+                            extra_dns_provider_ids: prev.extra_dns_provider_ids.filter(
+                              (id) => id !== nextDnsProviderId,
+                            ),
+                          };
+                        });
                       }}
                       className="w-full bg-card border border-border focus:border-primary rounded-lg px-3 py-2.5 text-sm shadow-sm"
                       disabled={dnsProviders.length === 0}
@@ -507,52 +576,74 @@ export function ServiceForm({
                         </option>
                       ))}
                     </select>
-                    {!formData.proxy_provider_id && !formData.dns_provider_id && (
+                    {/* Validation hint */}
+                    {formData.ui_expose_mode === 'dns_only' && !formData.dns_provider_id && (
                       <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
-                        At least one provider (proxy or DNS) is required.
+                        A DNS provider is required for DNS-only mode.
                       </p>
                     )}
-                    {/* Scope badge — shown once a DNS provider is selected */}
+                    {formData.ui_expose_mode !== 'dns_only' &&
+                      !formData.proxy_provider_id &&
+                      !formData.dns_provider_id && (
+                        <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+                          At least one provider (proxy or DNS) is required.
+                        </p>
+                      )}
+                    {/* Scope badge */}
                     {selectedDns && (
-                      <p className={`text-xs font-semibold mt-1 ${isLocalDns ? 'text-teal-600 dark:text-teal-400' : 'text-orange-600 dark:text-orange-400'}`}>
+                      <p
+                        className={`text-xs font-semibold mt-1 ${
+                          isLocalDns
+                            ? 'text-teal-600 dark:text-teal-400'
+                            : 'text-orange-600 dark:text-orange-400'
+                        }`}
+                      >
                         {isLocalDns
-                          ? 'Local DNS — resolves on your LAN only (Pi-hole / AdGuard). Use your reverse proxy\'s LAN IP as the target.'
-                          : 'External DNS — resolves on the public internet (Cloudflare, etc.). Use your public WAN IP as the target. Ensure ports 80/443 are forwarded to your reverse proxy.'}
+                          ? formData.ui_expose_mode === 'dns_only'
+                            ? 'Local DNS — points directly to your service IP on the LAN (no proxy involved).'
+                            : 'Local DNS — resolves on your LAN only (Pi-hole / AdGuard). Use the LAN IP of your reverse proxy.'
+                          : 'External DNS — resolves on the public internet (Cloudflare, etc.). Use your public WAN IP. Ensure ports 80/443 are forwarded to your reverse proxy.'}
                       </p>
                     )}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div className="space-y-2">
-                    <label className="block text-xs font-semibold text-muted-foreground">
-                      Push to additional reverse proxy providers
-                    </label>
-                    <div className="max-h-36 overflow-auto border border-border rounded-lg p-3 space-y-2">
-                      {standardProxyProviders
-                        .filter((p) => String(p.id) !== formData.proxy_provider_id)
-                        .map((p) => (
-                          <label
-                            key={p.id}
-                            className="flex items-center gap-2 text-sm text-foreground"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={formData.extra_proxy_provider_ids.includes(String(p.id))}
-                              onChange={(e) => toggleExtra('proxy', String(p.id), e.target.checked)}
-                            />
-                            {p.name} ({p.type})
-                          </label>
-                        ))}
-                      {standardProxyProviders.filter((p) => String(p.id) !== formData.proxy_provider_id)
-                        .length === 0 && (
-                        <p className="text-xs text-muted-foreground">
-                          No additional proxy provider available.
-                        </p>
-                      )}
+                {/* ── Additional providers ── */}
+                <div className={`grid grid-cols-1 ${formData.ui_expose_mode !== 'dns_only' ? 'md:grid-cols-2' : ''} gap-5`}>
+                  {/* Additional proxy providers — hidden in DNS-only mode */}
+                  {formData.ui_expose_mode !== 'dns_only' && (
+                    <div className="space-y-2">
+                      <label className="block text-xs font-semibold text-muted-foreground">
+                        Push to additional reverse proxy providers
+                      </label>
+                      <div className="max-h-36 overflow-auto border border-border rounded-lg p-3 space-y-2">
+                        {standardProxyProviders
+                          .filter((p) => String(p.id) !== formData.proxy_provider_id)
+                          .map((p) => (
+                            <label
+                              key={p.id}
+                              className="flex items-center gap-2 text-sm text-foreground"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={formData.extra_proxy_provider_ids.includes(String(p.id))}
+                                onChange={(e) => toggleExtra('proxy', String(p.id), e.target.checked)}
+                              />
+                              {p.name} ({p.type})
+                            </label>
+                          ))}
+                        {standardProxyProviders.filter(
+                          (p) => String(p.id) !== formData.proxy_provider_id,
+                        ).length === 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            No additional proxy provider available.
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
+                  {/* Additional DNS providers — always shown */}
                   <div className="space-y-2">
                     <label className="block text-xs font-semibold text-muted-foreground">
                       Push to additional DNS providers
@@ -583,23 +674,27 @@ export function ServiceForm({
                   </div>
                 </div>
 
-                {formData.dns_provider_id && (
+                {formData.dns_provider_id && formData.ui_expose_mode !== 'dns_only' && (
                   <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
-                    {/* Target IP field — label and hint adapt to local vs external */}
+                    {/* Target IP field — label and hint adapt to mode + local vs external */}
                     <div className="space-y-1.5">
                       <label className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-                        {isLocalDns ? 'Reverse proxy LAN IP' : 'DNS public target (WAN IP)'}
-                        <FieldHint text={
-                          isLocalDns
-                            ? 'The LAN IP of your reverse proxy (e.g. 192.168.1.10). Pi-hole / AdGuard will create a local DNS record pointing to it.'
-                            : 'Your public WAN IP. Cloudflare will create an A record pointing to it. Your router must forward ports 80/443 to your reverse proxy.'
-                        } />
+                        {isLocalDns ? 'Reverse proxy LAN IP' : 'DNS target IP (WAN)'}
+                        <FieldHint
+                          text={
+                            isLocalDns
+                              ? 'The LAN IP of your reverse proxy (e.g. 192.168.1.10). Pi-hole / AdGuard will create a local DNS record pointing to it.'
+                              : 'Your public WAN IP. Cloudflare will create an A record pointing to it. Your router must forward ports 80/443 to your reverse proxy.'
+                          }
+                        />
                       </label>
                       <div className="flex gap-2">
                         <input
                           type="text"
                           value={formData.dns_ip}
-                          onChange={(e) => setFormData((prev) => ({ ...prev, dns_ip: e.target.value }))}
+                          onChange={(e) =>
+                            setFormData((prev) => ({ ...prev, dns_ip: e.target.value }))
+                          }
                           placeholder={isLocalDns ? '192.168.1.10 (LAN IP of your proxy)' : '203.0.113.1'}
                           className="flex-1 bg-card border border-border focus:border-primary rounded-lg px-4 py-2.5 text-sm shadow-sm font-mono"
                         />
@@ -609,22 +704,35 @@ export function ServiceForm({
                             onClick={() => {
                               refetchTargetSuggestion();
                               if (targetSuggestion?.recommended) {
-                                setFormData((prev) => ({ ...prev, dns_ip: String(targetSuggestion.recommended) }));
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  dns_ip: String(targetSuggestion.recommended),
+                                }));
                               }
                             }}
                             className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs rounded-lg border border-border hover:bg-accent whitespace-nowrap"
                           >
-                            <RefreshCw className={`w-3.5 h-3.5 ${isFetchingTargetSuggestion ? 'animate-spin' : ''}`} />
+                            <RefreshCw
+                              className={`w-3.5 h-3.5 ${isFetchingTargetSuggestion ? 'animate-spin' : ''}`}
+                            />
                             Detect
                           </button>
                         )}
                       </div>
                       {isExternalDns && targetSuggestion?.recommended && !formData.dns_ip && (
                         <p className="text-xs text-muted-foreground">
-                          Detected: <span className="font-mono text-foreground">{targetSuggestion.recommended}</span>
+                          Detected:{' '}
+                          <span className="font-mono text-foreground">
+                            {targetSuggestion.recommended}
+                          </span>
                           <button
                             type="button"
-                            onClick={() => setFormData((prev) => ({ ...prev, dns_ip: String(targetSuggestion.recommended) }))}
+                            onClick={() =>
+                              setFormData((prev) => ({
+                                ...prev,
+                                dns_ip: String(targetSuggestion.recommended),
+                              }))
+                            }
                             className="ml-2 text-primary hover:underline"
                           >
                             Use this
@@ -633,7 +741,7 @@ export function ServiceForm({
                       )}
                     </div>
 
-                    {/* Auto-update DNS option for external DNS */}
+                    {/* Auto-update DNS — only for external DNS with auto capability */}
                     {isExternalDns && selectedDnsSupportsAuto && (
                       <label className="flex items-center gap-2 text-sm text-foreground">
                         <input

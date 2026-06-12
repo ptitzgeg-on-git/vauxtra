@@ -5,9 +5,6 @@ import {
   Settings,
   Languages,
   Tag,
-  Layers,
-  RefreshCw,
-  Database,
   Key,
   Bell,
   FileTerminal,
@@ -56,6 +53,7 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
 
   const { data: authStatus } = useQuery<{ authenticated: boolean; auth_required: boolean }>({
     queryKey: ['auth-status'],
+    queryFn: () => api.get<{ authenticated: boolean; auth_required: boolean }>('/auth/me'),
     staleTime: 120_000,
   });
 
@@ -134,10 +132,7 @@ export function Sidebar({ isMobile = false, collapsed = false, onToggleCollapse:
         { icon: <Settings size={18} />, label: t('settings.tab.general'), href: '/settings?tab=general' },
         { icon: <Languages size={18} />, label: t('settings.language.title'), href: '/settings?tab=language' },
         { icon: <Globe size={18} />, label: t('settings.tab.dns'), href: '/settings?tab=dns' },
-        { icon: <Tag size={18} />, label: t('settings.tab.tags'), href: '/settings?tab=tags' },
-        { icon: <Layers size={18} />, label: t('settings.tab.environments'), href: '/settings?tab=environments' },
-        { icon: <RefreshCw size={18} />, label: t('settings.tab.migration'), href: '/settings?tab=migration' },
-        { icon: <Database size={18} />, label: t('settings.tab.backup'), href: '/settings?tab=backup' },
+        { icon: <Tag size={18} />, label: `${t('settings.tab.tags')} & ${t('settings.tab.environments')}`, href: '/settings?tab=taxonomy' },
         { icon: <Key size={18} />, label: t('settings.tab.apikeys'), href: '/settings?tab=apikeys' },
         { icon: <Bell size={18} />, label: t('settings.tab.webhooks'), href: '/settings?tab=webhooks' },
         { icon: <FileTerminal size={18} />, label: t('settings.tab.logs'), href: '/settings?tab=logs' },

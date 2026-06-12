@@ -36,6 +36,7 @@ import vauxtra_mcp.tools.providers  # noqa: F401
 
 # Register all tool modules (decorators fire at import time)
 import vauxtra_mcp.tools.services  # noqa: F401
+import vauxtra_mcp.tools.templates  # noqa: F401
 
 # Import the shared mcp instance first
 from vauxtra_mcp.app import mcp  # noqa: F401

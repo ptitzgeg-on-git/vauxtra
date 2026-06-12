@@ -1,7 +1,4 @@
 # Runtime data and secrets
-data/
-data.backup-*/
-data.reset-*/
 .env
 .env.*
 !.env.example
@@ -9,6 +6,9 @@ data.reset-*/
 *.secret_key
 *.db
 *.sqlite
+
+# Application data (DB, uploaded files)
+data/
 
 # Python
 __pycache__/
@@ -29,22 +29,9 @@ tmp/
 reports/
 *.log
 vauxtra-dev/
-lab/providers/state/
+lab/
 
 # Editor and OS
 .DS_Store
 *.swp
 .idea/
-.vscode/
-
-# Generated notes
-SESSION_SUMMARY.md
-QA_REPORT.md
-DOCUMENTATION_INDEX.md
-
-# Internal-only docs (keep local, do not publish)
-docs/UX_BUG_TRACKER.md
-TESTING_GUIDE.md
-docs/ARCHITECTURE.md
-docs/OPEN_SOURCE_HYGIENE.md
-lab/providers/README.md

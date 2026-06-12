@@ -29,14 +29,7 @@ export interface Environment {
 // Providers
 // ---------------------------------------------------------------------------
 
-export type ProviderType =
-  | 'npm'
-  | 'adguard'
-  | 'pihole'
-  | 'cloudflare'
-  | 'cloudflare_tunnel'
-  | 'traefik'
-  | 'technitium';
+export type ProviderType = string;
 
 export interface Provider {
   id: number;
@@ -55,7 +48,7 @@ export interface Provider {
 export interface ProviderTypeMeta {
   label: string;
   category: 'proxy' | 'dns';
-  capabilities: string[];
+  capabilities: Record<string, boolean>;
   requires_username?: boolean;
   requires_password?: boolean;
 }
@@ -247,6 +240,9 @@ export interface Webhook {
   url: string;
   enabled: boolean | number;
   created_at: string;
+  scope_type: 'all' | 'provider' | 'service';
+  scope_ref_id: number | null;
+  repeat_interval_minutes: number;
   alert_on_any_down: boolean | number;
   alert_on_any_up: boolean | number;
   alert_on_integration_down: boolean | number;
