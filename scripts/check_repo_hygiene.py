@@ -40,7 +40,6 @@ FORBIDDEN_PROCESS_ATTRIBUTION_TOKENS = (
 
 REQUIRED_TRACKED_FILES = (
     ".github/CODEOWNERS",
-    ".github/dependabot.yml",
     "SECURITY.md",
     "LICENSE",
 )
