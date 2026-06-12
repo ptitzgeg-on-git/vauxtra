@@ -10,7 +10,6 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
 
-import app.cache as cache_module
 from app.config import DEBUG, HTTPS_ONLY, SECRET_KEY
 from app.limiter import limiter
 from app.models import init_db
