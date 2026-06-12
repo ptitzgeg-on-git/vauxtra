@@ -5,7 +5,7 @@ import { useI18n, SUPPORTED_LANGUAGES } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
-import type { Service, LogsResponse, SyncResult, SyncProxyHost, SyncDnsRewrite, ApiKey, ApiKeyCreated, LogLevel } from "@/types/api";
+import type { Service, LogsResponse, SyncResult, SyncProxyHost, SyncDnsRewrite, ApiKey, ApiKeyCreated, LogLevel, Provider, Webhook } from "@/types/api";
 import { useTheme } from "@/theme";
 import { toast } from "react-hot-toast";
 import { GeneralTab } from "@/components/features/settings";
@@ -17,10 +17,26 @@ function isLocalDomain(domain: string) {
   return LOCAL_TLDS.some((tld) => domain.endsWith(tld));
 }
 
+type WebhookRuleUpdate = {
+  scope_type: 'all' | 'provider' | 'service';
+  scope_ref_id: number | null;
+  repeat_interval_minutes: number;
+  alert_on_any_down: boolean;
+  alert_on_any_up: boolean;
+  alert_on_integration_down: boolean;
+  alert_on_integration_up: boolean;
+  min_down_minutes: number;
+};
+
 export function Settings() {
-  const VALID_TABS = ["general", "language", "dns", "tags", "environments", "apikeys", "webhooks", "migration", "backup", "logs"];
+  const VALID_TABS = ["general", "language", "dns", "taxonomy", "tags", "environments", "apikeys", "webhooks", "dataops", "migration", "backup", "logs"];
   const [searchParams] = useSearchParams();
-  const activeTab = VALID_TABS.includes(searchParams.get("tab") || "") ? searchParams.get("tab")! : "general";
+  const rawTab = VALID_TABS.includes(searchParams.get("tab") || "") ? searchParams.get("tab")! : "general";
+  const activeTab = (rawTab === 'tags' || rawTab === 'environments')
+    ? 'taxonomy'
+    : (rawTab === 'migration' || rawTab === 'backup' || rawTab === 'dataops')
+      ? 'general'
+      : rawTab;
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const { theme, resolvedTheme, setTheme } = useTheme();
@@ -38,6 +54,9 @@ export function Settings() {
   const [newEnvColor, setNewEnvColor] = useState("green");
   const [apiKeySearch, setApiKeySearch] = useState("");
   const [webhookSearch, setWebhookSearch] = useState("");
+  const [newWebhookScopeType, setNewWebhookScopeType] = useState<'all' | 'provider' | 'service'>('all');
+  const [newWebhookScopeRefId, setNewWebhookScopeRefId] = useState<number | null>(null);
+  const [newWebhookRepeatMinutes, setNewWebhookRepeatMinutes] = useState(0);
   const [compactApiKeys, setCompactApiKeys] = useState(false);
   const [logQuery, setLogQuery] = useState('');
   const [logLevelFilter, setLogLevelFilter] = useState<'all' | LogLevel>('all');
@@ -94,7 +113,19 @@ export function Settings() {
   const { data: existingServices = [] } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get('/services'),
-    enabled: activeTab === 'migration' || activeTab === 'dns',
+    enabled: activeTab === 'dataops' || activeTab === 'dns',
+  });
+
+  const { data: notificationProviders = [] } = useQuery<Provider[]>({
+    queryKey: ['providers'],
+    queryFn: () => api.get('/providers'),
+    enabled: activeTab === 'webhooks',
+  });
+
+  const { data: notificationServices = [] } = useQuery<Service[]>({
+    queryKey: ['services'],
+    queryFn: () => api.get('/services'),
+    enabled: activeTab === 'webhooks',
   });
 
   // API Keys
@@ -151,12 +182,44 @@ export function Settings() {
     url: newWebhookUrl, setUrl: setNewWebhookUrl,
     addWebhook: addWebhookMutation, deleteWebhook: deleteWebhookMutation,
     testWebhookById: testWebhookMutation, toggleWebhook: toggleWebhookMutation,
-  } = useWebhookActions();
+  } = useWebhookActions(activeTab === 'webhooks');
 
   const [expandedWebhook, setExpandedWebhook] = useState<number | null>(null);
 
+  const webhookScopeOptions = useMemo(() => ({
+    providers: notificationProviders.filter((provider) => Boolean(provider.enabled)),
+    services: notificationServices.filter((service) => Boolean(service.enabled)),
+  }), [notificationProviders, notificationServices]);
+
+  const updateWebhookRule = (webhook: Webhook, patch: Partial<WebhookRuleUpdate>) => {
+    const nextPayload: WebhookRuleUpdate = {
+      scope_type: webhook.scope_type,
+      scope_ref_id: webhook.scope_ref_id,
+      repeat_interval_minutes: webhook.repeat_interval_minutes ?? 0,
+      alert_on_any_down: !!webhook.alert_on_any_down,
+      alert_on_any_up: !!webhook.alert_on_any_up,
+      alert_on_integration_down: !!webhook.alert_on_integration_down,
+      alert_on_integration_up: !!webhook.alert_on_integration_up,
+      min_down_minutes: webhook.min_down_minutes ?? 0,
+      ...patch,
+    };
+    updateWebhookAlerts.mutate({ id: webhook.id, ...nextPayload });
+  };
+
+  const getWebhookScopeSummary = (webhook: Webhook) => {
+    if (webhook.scope_type === 'provider') {
+      const provider = webhookScopeOptions.providers.find((item) => item.id === webhook.scope_ref_id);
+      return provider ? `${t('settings.webhooks.scope_provider')}: ${provider.name}` : t('settings.webhooks.choose_provider');
+    }
+    if (webhook.scope_type === 'service') {
+      const service = webhookScopeOptions.services.find((item) => item.id === webhook.scope_ref_id);
+      return service ? `${t('settings.webhooks.scope_service')}: ${service.subdomain}.${service.domain}` : t('settings.webhooks.choose_service');
+    }
+    return t('settings.webhooks.scope_all');
+  };
+
   const updateWebhookAlerts = useMutation({
-    mutationFn: ({ id, ...fields }: { id: number; alert_on_any_down: boolean; alert_on_any_up: boolean; alert_on_integration_down: boolean; alert_on_integration_up: boolean; min_down_minutes: number }) =>
+    mutationFn: ({ id, ...fields }: { id: number } & WebhookRuleUpdate) =>
       api.put(`/webhooks/${id}`, fields),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['webhooks'] }); markRecentlyChanged(); },
     onError: () => toast.error(t('settings.webhooks.update_failed')),
@@ -167,7 +230,7 @@ export function Settings() {
   const { data: tags = [] } = useQuery<TagItem[]>({
     queryKey: ['tags'],
     queryFn: () => api.get('/tags'),
-    enabled: activeTab === 'tags',
+    enabled: activeTab === 'taxonomy',
   });
   const createTagMutation = useMutation({
     mutationFn: (body: { name: string; color: string }) => api.post('/tags', body),
@@ -184,7 +247,7 @@ export function Settings() {
   const { data: environments = [] } = useQuery<EnvItem[]>({
     queryKey: ['environments'],
     queryFn: () => api.get('/environments'),
-    enabled: activeTab === 'environments',
+    enabled: activeTab === 'taxonomy',
   });
   const createEnvMutation = useMutation({
     mutationFn: (body: { name: string; color: string }) => api.post('/environments', body),
@@ -329,14 +392,27 @@ export function Settings() {
   const restoreBackupMutation = useMutation({
     mutationFn: (payload: { backup: Record<string, unknown>; passphrase: string }) =>
       api.post('/restore', payload),
-    onSuccess: () => {
+    onSuccess: async () => {
       setImportPending(null);
       setImportPassphrase('');
-      queryClient.invalidateQueries({ queryKey: ['services'] });
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['domains'] });
-      queryClient.invalidateQueries({ queryKey: ['logs'] });
-      queryClient.invalidateQueries();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['services'] }),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['domains'] }),
+        queryClient.invalidateQueries({ queryKey: ['tags'] }),
+        queryClient.invalidateQueries({ queryKey: ['environments'] }),
+        queryClient.invalidateQueries({ queryKey: ['webhooks'] }),
+        queryClient.invalidateQueries({ queryKey: ['logs'] }),
+        queryClient.invalidateQueries({ queryKey: ['certificates-expiry'] }),
+        queryClient.invalidateQueries({ queryKey: ['health'] }),
+      ]);
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['services'], type: 'active' }),
+        queryClient.refetchQueries({ queryKey: ['providers'], type: 'active' }),
+        queryClient.refetchQueries({ queryKey: ['domains'], type: 'active' }),
+        queryClient.refetchQueries({ queryKey: ['tags'], type: 'active' }),
+        queryClient.refetchQueries({ queryKey: ['environments'], type: 'active' }),
+      ]);
       markRecentlyChanged();
       toast.success(t('settings.backup.restore_success'));
     },
@@ -454,12 +530,10 @@ export function Settings() {
     general: t('settings.tab.general'),
     language: t('settings.language.title'),
     dns: t('settings.tab.dns'),
-    tags: t('settings.tab.tags'),
-    environments: t('settings.tab.environments'),
+    taxonomy: `${t('settings.tab.tags')} & ${t('settings.tab.environments')}`,
     apikeys: t('settings.tab.apikeys'),
     webhooks: t('settings.tab.webhooks'),
-    migration: t('settings.tab.migration'),
-    backup: t('settings.tab.backup'),
+    dataops: `${t('settings.tab.migration')} & ${t('settings.tab.backup')}`,
     logs: t('settings.tab.logs'),
   };
 
@@ -595,7 +669,7 @@ export function Settings() {
           </div>
         )}
 
-        {activeTab === "tags" && (
+        {activeTab === "taxonomy" && (
           <div className="space-y-6">
             <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
@@ -663,11 +737,6 @@ export function Settings() {
                 </div>
               )}
             </div>
-          </div>
-        )}
-
-        {activeTab === "environments" && (
-          <div className="space-y-6">
             <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <Layers className="w-5 h-5 text-muted-foreground" />
@@ -737,22 +806,46 @@ export function Settings() {
           </div>
         )}
 
-        {activeTab === "migration" && (
-          <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
-            <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-              <RefreshCw className="w-5 h-5 text-muted-foreground" />
-              {t('settings.migration.title')}
-            </h3>
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                {t('settings.migration.desc')}
-              </p>
+        {activeTab === "general" && (
+          <div className="space-y-6">
+            <div className="hidden relative overflow-hidden rounded-xl border border-border bg-card p-6 shadow-sm">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_120%_at_100%_0%,rgba(59,130,246,0.08),transparent_60%)]" />
+              <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="space-y-2">
+                  <h3 className="font-semibold text-lg flex items-center gap-2">
+                    <RefreshCw className="w-5 h-5 text-muted-foreground" />
+                    DataOps
+                  </h3>
+                  <p className="text-sm text-muted-foreground max-w-2xl">
+                    Scan existing routes, import what is missing, then export or restore your full configuration from one place.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs font-medium">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1">
+                    Discovered {syncRows.length}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 text-primary px-2.5 py-1">
+                    New {allNewKeys.length}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-muted-foreground">
+                    Selected {selectedRows.size}
+                  </span>
+                </div>
+              </div>
+            </div>
 
-              <div className="flex flex-wrap gap-3 pt-2">
+            <div className="hidden bg-card border border-border rounded-xl p-6 shadow-sm space-y-4">
+              <h4 className="font-semibold text-base flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-muted-foreground" />
+                {t('settings.migration.title')}
+              </h4>
+              <p className="text-sm text-muted-foreground">{t('settings.migration.desc')}</p>
+
+              <div className="flex flex-wrap gap-3 pt-1">
                 <button
                   onClick={() => syncMutation.mutate()}
                   disabled={syncMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:opacity-90 rounded-md transition-colors font-medium text-sm shadow-sm"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:opacity-90 rounded-lg transition-colors font-medium text-sm shadow-sm disabled:opacity-60"
                 >
                   <RefreshCw className={`w-4 h-4 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
                   {syncMutation.isPending ? t('settings.migration.scanning') : t('settings.migration.scan')}
@@ -764,11 +857,11 @@ export function Settings() {
                       const newCount = allNewKeys.length;
                       const existsCount = syncRows.filter(r => r.status === 'exists').length;
                       const localCount = syncRows.filter(r => r.isLocal && r.status === 'new').length;
-                      
+
                       let message = t('settings.migration.quick_import_message', { count: newCount });
                       if (existsCount > 0) message += `\n${t('settings.migration.quick_import_skipped', { count: existsCount })}`;
                       if (localCount > 0) message += `\n\n${t('settings.migration.quick_import_local_warn', { count: localCount })}`;
-                      
+
                       const confirmed = await confirm({
                         title: t('settings.migration.quick_import_title'),
                         message,
@@ -779,7 +872,7 @@ export function Settings() {
                       importMutation.mutate(syncResult);
                     }}
                     disabled={importMutation.isPending || allNewKeys.length === 0}
-                    className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md transition-colors font-medium text-sm shadow-sm border border-border"
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-lg transition-colors font-medium text-sm shadow-sm border border-border disabled:opacity-60"
                   >
                     {importMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                     {importMutation.isPending ? t('settings.migration.importing') : t('settings.migration.quick_import_cta', { count: allNewKeys.length })}
@@ -787,9 +880,8 @@ export function Settings() {
                 )}
               </div>
 
-              {/* Preview table */}
               {syncRows.length > 0 && (
-                <div className="mt-4 space-y-3">
+                <div className="mt-2 space-y-3">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       {t('settings.migration.discovered', { count: syncRows.length })}
@@ -807,7 +899,7 @@ export function Settings() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-border overflow-hidden">
+                  <div className="rounded-lg border border-border overflow-hidden bg-background">
                     <table className="w-full text-xs">
                       <thead className="bg-muted/50 border-b border-border">
                         <tr>
@@ -861,8 +953,7 @@ export function Settings() {
                                     <CheckCircle2 className="w-3 h-3" /> {t('settings.migration.status_tracked')}
                                   </span>
                                 ) : row.isLocal ? (
-                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border border-yellow-500/30"
-                                    title={t('settings.migration.local_tld_title')}>
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border border-yellow-500/30" title={t('settings.migration.local_tld_title')}>
                                     <AlertTriangle className="w-3 h-3" /> {t('settings.migration.status_local')}
                                   </span>
                                 ) : (
@@ -878,7 +969,6 @@ export function Settings() {
                     </table>
                   </div>
 
-                  {/* Import selected */}
                   <div className="flex items-center gap-3">
                     <button
                       onClick={() => {
@@ -900,7 +990,7 @@ export function Settings() {
                         importMutation.mutate(partialPayload);
                       }}
                       disabled={importMutation.isPending || selectedRows.size === 0}
-                      className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-60 font-medium"
+                      className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-60 font-medium"
                     >
                       {importMutation.isPending ? t('settings.migration.importing') : t('settings.migration.import_selected', { count: selectedRows.size })}
                     </button>
@@ -918,19 +1008,14 @@ export function Settings() {
               )}
 
               {syncResult && syncRows.length === 0 && (
-                <div className="mt-4 p-4 rounded-lg border border-border bg-muted/30 text-sm text-muted-foreground">
+                <div className="mt-2 p-4 rounded-lg border border-border bg-muted/30 text-sm text-muted-foreground">
                   {t('settings.migration.no_routes')}
                 </div>
               )}
-
             </div>
-          </div>
-        )}
 
-        {activeTab === "backup" && (
-          <div className="space-y-6">
-            {/* ── Export ── */}
-            <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <div className="bg-card border border-border rounded-xl p-6 shadow-sm h-full">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <DownloadCloud className="w-5 h-5 text-muted-foreground" />
                 {t('settings.backup.export_title')}
@@ -1013,10 +1098,9 @@ export function Settings() {
                 <strong>{t('settings.backup.no_credentials')}</strong> — {t('settings.backup.no_credentials_desc')}<br />
                 <strong>{t('settings.backup.with_credentials')}</strong> — {t('settings.backup.with_credentials_desc')}
               </p>
-            </div>
+              </div>
 
-            {/* ── Import ── */}
-            <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
+              <div className="bg-card border border-border rounded-xl p-6 shadow-sm h-full">
               <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                 <Upload className="w-5 h-5 text-muted-foreground" />
                 {t('settings.backup.import_title')}
@@ -1135,6 +1219,7 @@ export function Settings() {
                   </div>
                 </div>
               )}
+              </div>
             </div>
           </div>
         )}
@@ -1351,29 +1436,112 @@ export function Settings() {
                 {t('settings.webhooks.desc')} <a href="https://github.com/caronc/apprise" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Apprise</a>.
               </p>
 
-              <div className="flex flex-col sm:flex-row gap-3 mb-6">
-                <input
-                  type="text"
-                  placeholder={t('settings.webhooks.name_placeholder')}
-                  value={newWebhookName}
-                  onChange={e => setNewWebhookName(e.target.value)}
-                  className="sm:w-48 px-3 py-2 rounded-lg border border-input bg-background text-sm"
-                />
-                <input
-                  type="text"
-                  placeholder={t('settings.webhooks.url_placeholder')}
-                  value={newWebhookUrl}
-                  onChange={e => setNewWebhookUrl(e.target.value)}
-                  className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-sm font-mono"
-                />
-                <button
-                  onClick={() => addWebhookMutation.mutate(undefined, { onSuccess: () => markRecentlyChanged() })}
-                  disabled={addWebhookMutation.isPending || !newWebhookName.trim() || !newWebhookUrl.trim()}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
-                >
-                  <Plus className="w-4 h-4" />
-                  {t('settings.webhooks.add')}
-                </button>
+              <div className="space-y-3 mb-6">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <input
+                    type="text"
+                    placeholder={t('settings.webhooks.name_placeholder')}
+                    value={newWebhookName}
+                    onChange={e => setNewWebhookName(e.target.value)}
+                    className="sm:w-48 px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder={t('settings.webhooks.url_placeholder')}
+                    value={newWebhookUrl}
+                    onChange={e => setNewWebhookUrl(e.target.value)}
+                    className="flex-1 px-3 py-2 rounded-lg border border-input bg-background text-sm font-mono"
+                  />
+                  <button
+                    onClick={() => addWebhookMutation.mutate({
+                      scope_type: newWebhookScopeType,
+                      scope_ref_id: newWebhookScopeType === 'all' ? null : newWebhookScopeRefId,
+                      repeat_interval_minutes: newWebhookRepeatMinutes,
+                      alert_on_any_down: true,
+                      alert_on_any_up: true,
+                      alert_on_integration_down: newWebhookScopeType !== 'service',
+                      alert_on_integration_up: newWebhookScopeType !== 'service',
+                      min_down_minutes: 0,
+                    }, {
+                      onSuccess: () => {
+                        setNewWebhookScopeType('all');
+                        setNewWebhookScopeRefId(null);
+                        setNewWebhookRepeatMinutes(0);
+                        markRecentlyChanged();
+                      },
+                    })}
+                    disabled={
+                      addWebhookMutation.isPending ||
+                      !newWebhookName.trim() ||
+                      !newWebhookUrl.trim() ||
+                      (newWebhookScopeType !== 'all' && !newWebhookScopeRefId)
+                    }
+                    className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
+                  >
+                    <Plus className="w-4 h-4" />
+                    {t('settings.webhooks.add')}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">{t('settings.webhooks.scope')}</span>
+                    <select
+                      value={newWebhookScopeType}
+                      onChange={(e) => {
+                        const nextScope = e.target.value as 'all' | 'provider' | 'service';
+                        setNewWebhookScopeType(nextScope);
+                        if (nextScope === 'provider') {
+                          setNewWebhookScopeRefId(webhookScopeOptions.providers[0]?.id ?? null);
+                        } else if (nextScope === 'service') {
+                          setNewWebhookScopeRefId(webhookScopeOptions.services[0]?.id ?? null);
+                        } else {
+                          setNewWebhookScopeRefId(null);
+                        }
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    >
+                      <option value="all">{t('settings.webhooks.scope_all')}</option>
+                      <option value="provider">{t('settings.webhooks.scope_provider')}</option>
+                      <option value="service">{t('settings.webhooks.scope_service')}</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">{t('settings.webhooks.scope_target')}</span>
+                    <select
+                      value={newWebhookScopeRefId ?? ''}
+                      onChange={(e) => setNewWebhookScopeRefId(e.target.value ? Number(e.target.value) : null)}
+                      disabled={newWebhookScopeType === 'all'}
+                      className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm disabled:opacity-60"
+                    >
+                      <option value="">
+                        {newWebhookScopeType === 'provider'
+                          ? t('settings.webhooks.choose_provider')
+                          : newWebhookScopeType === 'service'
+                            ? t('settings.webhooks.choose_service')
+                            : t('settings.webhooks.scope_target_hint')}
+                      </option>
+                      {(newWebhookScopeType === 'provider' ? webhookScopeOptions.providers : webhookScopeOptions.services).map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {'subdomain' in item ? `${item.subdomain}.${item.domain}` : item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">{t('settings.webhooks.repeat_interval')}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={720}
+                      value={newWebhookRepeatMinutes}
+                      onChange={(e) => setNewWebhookRepeatMinutes(Math.max(0, Number(e.target.value) || 0))}
+                      className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    />
+                  </label>
+                </div>
               </div>
 
               <div className="sticky top-0 z-10 -mx-1 mb-4 px-1 py-2 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-y border-border">
@@ -1402,6 +1570,7 @@ export function Settings() {
                             <Bell className="w-4 h-4 text-muted-foreground shrink-0" />
                             <div className="min-w-0">
                               <span className="font-medium text-sm">{wh.name}</span>
+                              <p className="text-xs text-muted-foreground">{getWebhookScopeSummary(wh)}</p>
                               <p className="text-xs text-muted-foreground font-mono truncate max-w-xs">{wh.url}</p>
                             </div>
                           </div>
@@ -1450,6 +1619,65 @@ export function Settings() {
                           <div className="border-t border-border bg-muted/30 px-4 py-4 space-y-4">
                             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{t('settings.webhooks.alert_rules_desc')}</p>
 
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                              <label className="space-y-1 text-sm">
+                                <span className="text-muted-foreground">{t('settings.webhooks.scope')}</span>
+                                <select
+                                  value={wh.scope_type}
+                                  onChange={(e) => updateWebhookRule(wh, {
+                                    scope_type: e.target.value as 'all' | 'provider' | 'service',
+                                    scope_ref_id: e.target.value === 'provider'
+                                      ? (webhookScopeOptions.providers[0]?.id ?? wh.scope_ref_id)
+                                      : e.target.value === 'service'
+                                        ? (webhookScopeOptions.services[0]?.id ?? wh.scope_ref_id)
+                                        : null,
+                                    alert_on_integration_down: e.target.value === 'service' ? false : Boolean(wh.alert_on_integration_down),
+                                    alert_on_integration_up: e.target.value === 'service' ? false : Boolean(wh.alert_on_integration_up),
+                                  })}
+                                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm"
+                                >
+                                  <option value="all">{t('settings.webhooks.scope_all')}</option>
+                                  <option value="provider">{t('settings.webhooks.scope_provider')}</option>
+                                  <option value="service">{t('settings.webhooks.scope_service')}</option>
+                                </select>
+                              </label>
+
+                              <label className="space-y-1 text-sm">
+                                <span className="text-muted-foreground">{t('settings.webhooks.scope_target')}</span>
+                                <select
+                                  value={wh.scope_ref_id ?? ''}
+                                  disabled={wh.scope_type === 'all'}
+                                  onChange={(e) => updateWebhookRule(wh, { scope_ref_id: e.target.value ? Number(e.target.value) : null })}
+                                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm disabled:opacity-60"
+                                >
+                                  <option value="">
+                                    {wh.scope_type === 'provider'
+                                      ? t('settings.webhooks.choose_provider')
+                                      : wh.scope_type === 'service'
+                                        ? t('settings.webhooks.choose_service')
+                                        : t('settings.webhooks.scope_target_hint')}
+                                  </option>
+                                  {(wh.scope_type === 'provider' ? webhookScopeOptions.providers : webhookScopeOptions.services).map((item) => (
+                                    <option key={item.id} value={item.id}>
+                                      {'subdomain' in item ? `${item.subdomain}.${item.domain}` : item.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+
+                              <label className="space-y-1 text-sm">
+                                <span className="text-muted-foreground">{t('settings.webhooks.repeat_interval')}</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={720}
+                                  value={wh.repeat_interval_minutes ?? 0}
+                                  onChange={(e) => updateWebhookRule(wh, { repeat_interval_minutes: Math.max(0, Number(e.target.value) || 0) })}
+                                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm"
+                                />
+                              </label>
+                            </div>
+
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               {/* Service alerts */}
                               <div className="space-y-2">
@@ -1457,15 +1685,8 @@ export function Settings() {
                                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    defaultChecked={Boolean(wh.alert_on_any_down)}
-                                    onChange={(e) => updateWebhookAlerts.mutate({
-                                      id: wh.id,
-                                      alert_on_any_down: e.target.checked,
-                                      alert_on_any_up: Boolean(wh.alert_on_any_up),
-                                      alert_on_integration_down: Boolean(wh.alert_on_integration_down),
-                                      alert_on_integration_up: Boolean(wh.alert_on_integration_up),
-                                      min_down_minutes: wh.min_down_minutes ?? 0,
-                                    })}
+                                    checked={Boolean(wh.alert_on_any_down)}
+                                    onChange={(e) => updateWebhookRule(wh, { alert_on_any_down: e.target.checked })}
                                     className="rounded border-border"
                                   />
                                   <span className="text-sm">{t('settings.webhooks.on_service_down')}</span>
@@ -1473,15 +1694,8 @@ export function Settings() {
                                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    defaultChecked={Boolean(wh.alert_on_any_up)}
-                                    onChange={(e) => updateWebhookAlerts.mutate({
-                                      id: wh.id,
-                                      alert_on_any_down: Boolean(wh.alert_on_any_down),
-                                      alert_on_any_up: e.target.checked,
-                                      alert_on_integration_down: Boolean(wh.alert_on_integration_down),
-                                      alert_on_integration_up: Boolean(wh.alert_on_integration_up),
-                                      min_down_minutes: wh.min_down_minutes ?? 0,
-                                    })}
+                                    checked={Boolean(wh.alert_on_any_up)}
+                                    onChange={(e) => updateWebhookRule(wh, { alert_on_any_up: e.target.checked })}
                                     className="rounded border-border"
                                   />
                                   <span className="text-sm">{t('settings.webhooks.on_service_up')}</span>
@@ -1494,15 +1708,9 @@ export function Settings() {
                                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    defaultChecked={Boolean(wh.alert_on_integration_down)}
-                                    onChange={(e) => updateWebhookAlerts.mutate({
-                                      id: wh.id,
-                                      alert_on_any_down: Boolean(wh.alert_on_any_down),
-                                      alert_on_any_up: Boolean(wh.alert_on_any_up),
-                                      alert_on_integration_down: e.target.checked,
-                                      alert_on_integration_up: Boolean(wh.alert_on_integration_up),
-                                      min_down_minutes: wh.min_down_minutes ?? 0,
-                                    })}
+                                    checked={Boolean(wh.alert_on_integration_down)}
+                                    onChange={(e) => updateWebhookRule(wh, { alert_on_integration_down: e.target.checked })}
+                                    disabled={wh.scope_type === 'service'}
                                     className="rounded border-border"
                                   />
                                   <span className="text-sm">{t('settings.webhooks.on_integration_down')}</span>
@@ -1510,15 +1718,9 @@ export function Settings() {
                                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                                   <input
                                     type="checkbox"
-                                    defaultChecked={Boolean(wh.alert_on_integration_up)}
-                                    onChange={(e) => updateWebhookAlerts.mutate({
-                                      id: wh.id,
-                                      alert_on_any_down: Boolean(wh.alert_on_any_down),
-                                      alert_on_any_up: Boolean(wh.alert_on_any_up),
-                                      alert_on_integration_down: Boolean(wh.alert_on_integration_down),
-                                      alert_on_integration_up: e.target.checked,
-                                      min_down_minutes: wh.min_down_minutes ?? 0,
-                                    })}
+                                    checked={Boolean(wh.alert_on_integration_up)}
+                                    onChange={(e) => updateWebhookRule(wh, { alert_on_integration_up: e.target.checked })}
+                                    disabled={wh.scope_type === 'service'}
                                     className="rounded border-border"
                                   />
                                   <span className="text-sm">{t('settings.webhooks.on_integration_up')}</span>
@@ -1533,15 +1735,8 @@ export function Settings() {
                                 type="number"
                                 min={0}
                                 max={60}
-                                defaultValue={wh.min_down_minutes ?? 0}
-                                onBlur={(e) => updateWebhookAlerts.mutate({
-                                  id: wh.id,
-                                  alert_on_any_down: Boolean(wh.alert_on_any_down),
-                                  alert_on_any_up: Boolean(wh.alert_on_any_up),
-                                  alert_on_integration_down: Boolean(wh.alert_on_integration_down),
-                                  alert_on_integration_up: Boolean(wh.alert_on_integration_up),
-                                  min_down_minutes: Math.max(0, Number(e.target.value) || 0),
-                                })}
+                                value={wh.min_down_minutes ?? 0}
+                                onChange={(e) => updateWebhookRule(wh, { min_down_minutes: Math.max(0, Number(e.target.value) || 0) })}
                                 className="w-20 px-2 py-1 rounded-md border border-input bg-background text-sm text-center"
                               />
                               <span className="text-xs text-muted-foreground">{t('settings.webhooks.min_down_minutes_hint')}</span>

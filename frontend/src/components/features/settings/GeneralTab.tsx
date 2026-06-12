@@ -117,7 +117,13 @@ export function GeneralTab({ theme, resolvedTheme, setTheme, settingsData, saveP
           const fd = new FormData(e.currentTarget);
           const enabled = (fd.get('auto_check') as string) === 'on';
           const interval = Number(fd.get('check_interval') || 5);
-          savePolicyMutation.mutate({ check_interval: enabled ? String(Math.max(1, interval)) : '0' });
+          const monitoringRetentionDays = Number(fd.get('monitoring_retention_days') || 14);
+          const logRetentionDays = Number(fd.get('log_retention_days') || 30);
+          savePolicyMutation.mutate({
+            check_interval: enabled ? String(Math.max(1, interval)) : '0',
+            monitoring_retention_days: String(Math.max(1, monitoringRetentionDays)),
+            log_retention_days: String(Math.max(1, logRetentionDays)),
+          });
         }}
       >
         <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
@@ -139,6 +145,20 @@ export function GeneralTab({ theme, resolvedTheme, setTheme, settingsData, saveP
             <input type="number" name="check_interval" min="1" max="60"
               defaultValue={settingsData?.check_interval && settingsData.check_interval !== '0' ? settingsData.check_interval : '5'}
               className="w-20 bg-input border border-border rounded-md px-3 py-1.5 text-sm" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+          <div>
+            <label className="text-xs text-muted-foreground">Monitoring history retention (days)</label>
+            <input type="number" name="monitoring_retention_days" min="1" max="365"
+              defaultValue={settingsData?.monitoring_retention_days || '14'}
+              className="mt-1 w-full bg-input border border-border rounded-md px-3 py-1.5 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Logs retention (days)</label>
+            <input type="number" name="log_retention_days" min="1" max="365"
+              defaultValue={settingsData?.log_retention_days || '30'}
+              className="mt-1 w-full bg-input border border-border rounded-md px-3 py-1.5 text-sm" />
           </div>
         </div>
         <div className="pt-1">

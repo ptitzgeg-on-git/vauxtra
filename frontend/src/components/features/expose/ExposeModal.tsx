@@ -19,6 +19,20 @@ interface TargetSuggestion {
   recommended: string;
 }
 
+function toErrorMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as Record<string, unknown> | undefined;
+    const msg = typeof first?.msg === 'string' ? first.msg : '';
+    if (msg) return msg;
+  }
+  if (detail && typeof detail === 'object') {
+    const msg = (detail as Record<string, unknown>).msg;
+    if (typeof msg === 'string' && msg.trim()) return msg;
+  }
+  return fallback;
+}
+
 export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }: ExposeModalProps) {
   const queryClient = useQueryClient();
   const [formData, setFormData] = useState<FormState>(() => toFormState(service));
@@ -72,6 +86,10 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
     : '/services/public-target/suggest';
 
   const selectedDnsProvider = dnsProviders.find((p) => String(p.id) === formData.dns_provider_id);
+  const selectedDnsIsExternal = selectedDnsProvider
+    ? hasCapability(selectedDnsProvider, 'public_dns', providerTypeMap)
+    : false;
+  const selectedDnsIsLocal = Boolean(selectedDnsProvider) && !selectedDnsIsExternal;
   const shouldSuggestTarget =
     isOpen &&
     formData.expose_mode === 'proxy_dns' &&
@@ -101,6 +119,12 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
     const tunnelHostname = (formData.tunnel_hostname.trim() || fqdnPreview).toLowerCase();
     const manualDnsTarget = formData.dns_ip.trim();
     const suggestedDnsTarget = String(targetSuggestion?.recommended || '').trim();
+    const localDnsFallback =
+      formData.expose_mode === 'proxy_dns' &&
+      formData.ui_expose_mode === 'dns_only' &&
+      selectedDnsIsLocal
+        ? formData.target_ip.trim()
+        : '';
 
     const effectivePublicTargetMode =
       formData.public_target_mode === 'auto' &&
@@ -139,7 +163,9 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
           ? Number(formData.dns_provider_id)
           : null,
       dns_ip:
-        formData.expose_mode === 'proxy_dns' ? manualDnsTarget || suggestedDnsTarget : '',
+        formData.expose_mode === 'proxy_dns'
+          ? manualDnsTarget || suggestedDnsTarget || localDnsFallback
+          : '',
       tag_ids:
         isEditMode && Array.isArray(service?.tags)
           ? (service.tags as Array<Record<string, unknown>>)
@@ -218,12 +244,9 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
       setFormData(isEditMode ? toFormState(service) : initialForm);
       onClose();
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(
-        err?.response?.data?.detail ||
-          (isEditMode ? 'Failed to update route' : 'Failed to create route'),
-        { duration: 5000 },
-      );
+    onError: (err: { response?: { data?: { detail?: unknown } } }) => {
+      const fallback = isEditMode ? 'Failed to update route' : 'Failed to create route';
+      toast.error(toErrorMessage(err?.response?.data?.detail, fallback), { duration: 5000 });
     },
   });
 
@@ -236,6 +259,20 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
     }
     if (formData.expose_mode === 'tunnel' && !formData.tunnel_provider_id) {
       toast.error('Please select a tunnel provider.');
+      return;
+    }
+    if (
+      formData.expose_mode === 'proxy_dns' &&
+      !formData.proxy_provider_id &&
+      !formData.dns_provider_id &&
+      formData.extra_proxy_provider_ids.length === 0 &&
+      formData.extra_dns_provider_ids.length === 0
+    ) {
+      if (formData.ui_expose_mode === 'dns_only') {
+        toast.error('Please select a DNS provider for DNS-only mode.');
+      } else {
+        toast.error('Select at least one proxy or DNS provider target.');
+      }
       return;
     }
 
@@ -251,8 +288,19 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
 
     if (formData.expose_mode === 'proxy_dns' && formData.dns_provider_id) {
       if (effectiveMode === 'manual' && !manualDnsTarget) {
-        toast.error('Please enter the DNS public target (reverse proxy IP/FQDN).');
-        return;
+        // DNS-only: target_ip is used automatically — no need to block
+        if (formData.ui_expose_mode === 'dns_only') {
+          if (!formData.target_ip.trim()) {
+            toast.error('Please enter an internal target IP for DNS-only mode.');
+            return;
+          }
+        } else if (selectedDnsIsExternal) {
+          toast.error('Please enter the DNS public target (WAN IP/FQDN).');
+          return;
+        } else if (selectedDnsIsLocal) {
+          toast.error('Please enter the LAN IP of your reverse proxy.');
+          return;
+        }
       }
       if (effectiveMode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
         toast.error('No public target detected automatically. Enter one manually.');

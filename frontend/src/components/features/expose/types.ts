@@ -6,6 +6,8 @@ export type Provider = {
   enabled: boolean | number;
 };
 
+export type UiExposeMode = 'dns_only' | 'dns_proxy' | 'tunnel';
+
 export type FormState = {
   domain: string;
   subdomain: string;
@@ -14,6 +16,12 @@ export type FormState = {
   forward_scheme: 'http' | 'https';
   websocket: boolean;
   expose_mode: 'proxy_dns' | 'tunnel';
+  /** UI-level selection that maps to expose_mode + visible fields.
+   *  dns_only → proxy_dns with no proxy provider (DNS record only)
+   *  dns_proxy → proxy_dns with both proxy + DNS providers
+   *  tunnel → tunnel mode
+   */
+  ui_expose_mode: UiExposeMode;
   public_target_mode: 'manual' | 'auto';
   auto_update_dns: boolean;
   tunnel_provider_id: string;
@@ -33,6 +41,7 @@ export const initialForm: FormState = {
   forward_scheme: 'http',
   websocket: false,
   expose_mode: 'proxy_dns',
+  ui_expose_mode: 'dns_proxy',
   public_target_mode: 'manual',
   auto_update_dns: false,
   tunnel_provider_id: '',
@@ -46,6 +55,19 @@ export const initialForm: FormState = {
 
 export const toFormState = (service?: Record<string, unknown> | null): FormState => {
   if (!service) return initialForm;
+  const exposeMode = service.expose_mode === 'tunnel' ? 'tunnel' : 'proxy_dns';
+  const proxyId = service.proxy_provider_id ? String(service.proxy_provider_id) : '';
+  const dnsId = service.dns_provider_id ? String(service.dns_provider_id) : '';
+  let uiExposeMode: UiExposeMode;
+  if (exposeMode === 'tunnel') {
+    uiExposeMode = 'tunnel';
+  } else if (proxyId) {
+    uiExposeMode = 'dns_proxy';
+  } else if (dnsId) {
+    uiExposeMode = 'dns_only';
+  } else {
+    uiExposeMode = 'dns_proxy'; // default for legacy / empty records
+  }
   return {
     domain: String(service.domain || ''),
     subdomain: String(service.subdomain || ''),
@@ -53,13 +75,14 @@ export const toFormState = (service?: Record<string, unknown> | null): FormState
     target_port: Number(service.target_port || 80),
     forward_scheme: service.forward_scheme === 'https' ? 'https' : 'http',
     websocket: Boolean(service.websocket),
-    expose_mode: service.expose_mode === 'tunnel' ? 'tunnel' : 'proxy_dns',
+    expose_mode: exposeMode,
+    ui_expose_mode: uiExposeMode,
     public_target_mode: service.public_target_mode === 'auto' ? 'auto' : 'manual',
     auto_update_dns: Boolean(service.auto_update_dns),
     tunnel_provider_id: service.tunnel_provider_id ? String(service.tunnel_provider_id) : '',
     tunnel_hostname: String(service.tunnel_hostname || ''),
-    proxy_provider_id: service.proxy_provider_id ? String(service.proxy_provider_id) : '',
-    dns_provider_id: service.dns_provider_id ? String(service.dns_provider_id) : '',
+    proxy_provider_id: proxyId,
+    dns_provider_id: dnsId,
     dns_ip: String(service.dns_ip || ''),
     extra_proxy_provider_ids: Array.isArray(service.extra_proxy_provider_ids)
       ? (service.extra_proxy_provider_ids as unknown[]).map((id) => String(id))
@@ -72,7 +95,7 @@ export const toFormState = (service?: Record<string, unknown> | null): FormState
 
 export const hasCapability = (
   provider: Provider,
-  capability: 'proxy' | 'dns' | 'supports_auto_public_target' | 'supports_tunnel',
+  capability: 'proxy' | 'dns' | 'public_dns' | 'supports_auto_public_target' | 'supports_tunnel',
   providerTypeMap: Record<string, Record<string, unknown>>,
 ): boolean => {
   const typeKey = (provider.type || '').toLowerCase();
@@ -82,5 +105,6 @@ export const hasCapability = (
   if (Object.prototype.hasOwnProperty.call(caps, capability)) return Boolean(caps[capability]);
   if (capability === 'proxy') return meta?.category === 'proxy' || ['npm', 'traefik'].includes(typeKey);
   if (capability === 'dns') return meta?.category === 'dns' || ['cloudflare', 'pihole', 'adguard'].includes(typeKey);
+  if (capability === 'public_dns') return ['cloudflare'].includes(typeKey);
   return false;
 };

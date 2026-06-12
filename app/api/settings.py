@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.auth import require_auth
 from app.models import add_log, get_db
+from app.validators import is_valid_domain, normalize_domain
 
 try:
     from sse_starlette.sse import EventSourceResponse as _SSEResponse
@@ -21,6 +22,8 @@ _VALID_SETTINGS = {
     "webhook_url",
     "webhook_enabled",
     "check_interval",
+    "log_retention_days",
+    "monitoring_retention_days",
     "public_target_sources",
     "public_target_timeout",
     "public_target_priority",
@@ -212,8 +215,8 @@ def list_domains(request: Request):
 @router.post("/api/domains", status_code=201)
 def add_domain(request: Request, body: dict):
     require_auth(request, scope="write")
-    name = body.get("name", "").strip().lower()
-    if not name or "." not in name:
+    name = normalize_domain(body.get("name", ""))
+    if not is_valid_domain(name, require_dot=True):
         raise HTTPException(400, "Invalid domain name")
     conn = get_db()
     conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (name,))

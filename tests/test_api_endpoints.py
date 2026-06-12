@@ -113,6 +113,10 @@ class DomainsApiTests(IsolatedDBTestCase):
                 settings_api.add_domain(_request("POST", "/api/domains"), {"name": "invalid"})
             self.assertEqual(exc.exception.status_code, 400)
 
+            with self.assertRaises(HTTPException) as exc:
+                settings_api.add_domain(_request("POST", "/api/domains"), {"name": "https://vauxtra.magicgg.fr/"})
+            self.assertEqual(exc.exception.status_code, 400)
+
             created = settings_api.add_domain(
                 _request("POST", "/api/domains"),
                 {"name": "Example.COM"},
@@ -312,6 +316,82 @@ class ServicesApiTests(IsolatedDBTestCase):
             reconcile = sync_api.reconcile_service(service_id, _request("POST", f"/api/services/{service_id}/reconcile"))
             self.assertIn("before", reconcile)
             self.assertIn("after", reconcile)
+
+    def test_service_domain_rejects_url_format(self) -> None:
+        import pydantic
+
+        with self.assertRaises(pydantic.ValidationError):
+            services_api.ServiceIn(
+                subdomain="app",
+                domain="https://vauxtra.magicgg.fr/",
+                target_ip="127.0.0.1",
+                target_port=8080,
+            )
+
+    def test_service_subdomain_allows_wildcard(self) -> None:
+        with patch.object(services_api, "require_auth", lambda _req, scope=None: None):
+            conn = models.get_db()
+            conn.execute(
+                """INSERT OR IGNORE INTO providers (id, name, type, url, username, password, extra, enabled)
+                   VALUES (101, 'DnsExtra', 'cloudflare', 'https://api.cloudflare.com', '', 'token', '{}', 1)"""
+            )
+            conn.commit()
+            conn.close()
+
+            service_payload = services_api.ServiceIn(
+                subdomain="*",
+                domain="example.com",
+                target_ip="127.0.0.1",
+                target_port=8080,
+                forward_scheme="http",
+                expose_mode="proxy_dns",
+                dns_provider_id=None,
+                proxy_provider_id=None,
+                dns_ip="",
+                websocket=False,
+                enabled=True,
+                public_target_mode="manual",
+                auto_update_dns=False,
+                tunnel_provider_id=None,
+                tunnel_hostname="",
+                extra_proxy_provider_ids=[],
+                extra_dns_provider_ids=[101],
+            )
+
+            created = services_api.add_service(_request("POST", "/api/services"), service_payload)
+            created_payload = json.loads(created.body.decode("utf-8"))
+            self.assertEqual(created_payload["fqdn"], "*.example.com")
+
+            listed = services_api.list_services(_request("GET", "/api/services"))
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["subdomain"], "*")
+            self.assertEqual(f"{listed[0]['subdomain']}.{listed[0]['domain']}", "*.example.com")
+
+    def test_service_creation_rejects_without_provider_targets(self) -> None:
+        with patch.object(services_api, "require_auth", lambda _req, scope=None: None):
+            service_payload = services_api.ServiceIn(
+                subdomain="app",
+                domain="example.com",
+                target_ip="127.0.0.1",
+                target_port=8080,
+                forward_scheme="http",
+                expose_mode="proxy_dns",
+                dns_provider_id=None,
+                proxy_provider_id=None,
+                dns_ip="",
+                websocket=False,
+                enabled=True,
+                public_target_mode="manual",
+                auto_update_dns=False,
+                tunnel_provider_id=None,
+                tunnel_hostname="",
+                extra_proxy_provider_ids=[],
+                extra_dns_provider_ids=[],
+            )
+
+            with self.assertRaises(HTTPException) as exc:
+                services_api.add_service(_request("POST", "/api/services"), service_payload)
+            self.assertEqual(exc.exception.status_code, 400)
 
 
 class WebhooksApiTests(IsolatedDBTestCase):

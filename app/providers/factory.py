@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+from importlib import import_module
 from urllib.parse import urlsplit, urlunsplit
 
 from app.config import decrypt_secret
@@ -10,6 +12,8 @@ from app.providers.npm import NPMProvider
 from app.providers.pihole import PiholeProvider
 from app.providers.technitium import TechnitiumProvider
 from app.providers.traefik import TraefikProvider
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_TYPES = {
     "npm": {
@@ -287,6 +291,72 @@ _PROVIDER_REGISTRY: dict[str, tuple[type, bool]] = {
     "cloudflare_tunnel": (CloudflareTunnelProvider,   True),
     "technitium":        (TechnitiumProvider,         False),
 }
+
+
+def register_provider_type(
+    provider_type: str,
+    provider_class: type,
+    meta: dict,
+    *,
+    needs_extra: bool = False,
+) -> None:
+    normalized_type = (provider_type or "").strip()
+    if not normalized_type:
+        raise ValueError("Provider type is required")
+    if not isinstance(meta, dict):
+        raise ValueError("Provider metadata must be a dict")
+
+    PROVIDER_TYPES[normalized_type] = {
+        "available": True,
+        **meta,
+    }
+    _PROVIDER_REGISTRY[normalized_type] = (provider_class, needs_extra)
+
+
+def _resolve_provider_class(class_or_path):
+    if isinstance(class_or_path, type):
+        return class_or_path
+    if not isinstance(class_or_path, str) or "." not in class_or_path:
+        raise ValueError("Provider class must be a class object or import path")
+
+    module_name, _, attr_name = class_or_path.rpartition(".")
+    module = import_module(module_name)
+    return getattr(module, attr_name)
+
+
+def _register_plugin_spec(spec: dict) -> None:
+    provider_type = str(spec.get("type", "")).strip()
+    provider_class = _resolve_provider_class(spec.get("class"))
+    meta = spec.get("meta") or {}
+    needs_extra = bool(spec.get("needs_extra", False))
+    register_provider_type(provider_type, provider_class, meta, needs_extra=needs_extra)
+
+
+def _load_external_provider_plugins() -> None:
+    raw = os.environ.get("VAUXTRA_PROVIDER_PLUGINS", "")
+    modules = [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+    for module_name in modules:
+        try:
+            module = import_module(module_name)
+            if hasattr(module, "register"):
+                payload = module.register()
+            elif hasattr(module, "PROVIDER_PLUGINS"):
+                payload = module.PROVIDER_PLUGINS
+            elif hasattr(module, "PROVIDER_PLUGIN"):
+                payload = module.PROVIDER_PLUGIN
+            else:
+                raise ValueError(
+                    f"Provider plugin module '{module_name}' does not expose register(), PROVIDER_PLUGIN, or PROVIDER_PLUGINS"
+                )
+
+            specs = payload if isinstance(payload, list) else [payload]
+            for spec in specs:
+                _register_plugin_spec(spec)
+        except Exception as exc:
+            logger.warning("Failed to load provider plugin '%s': %s", module_name, exc)
+
+
+_load_external_provider_plugins()
 
 
 def _is_container_runtime() -> bool:

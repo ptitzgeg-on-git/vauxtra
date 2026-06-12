@@ -58,6 +58,10 @@ class ProxyProvider(ABC):
         created = self.create_host(domain, ip, port, scheme, websocket, cert_id)
         return bool(created)
 
+    def toggle_host(self, host_id: int, enabled: bool) -> bool:
+        """Enable or disable a proxy host (optional, some providers may not support)."""
+        return False  # Default: not supported
+
     @abstractmethod
     def delete_host(self, host_id: int) -> bool:
         """Delete a proxy host by its ID."""
