@@ -323,7 +323,7 @@ def push_service(sid: int, request: Request):
                 if result and expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
                     conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (result.get("id"), sid))
 
-            add_log("ok", f"[Push] Proxy synced on {row['name']}: {public_host}", conn)
+            add_log("info", f"[Push] Proxy synced on {row['name']}: {public_host}", conn)
         except Exception as e:
             errors.append(f"Proxy ({row['name']}): {e}")
 
@@ -346,10 +346,16 @@ def push_service(sid: int, request: Request):
             for row in dns_targets:
                 try:
                     dns = create_provider(row)
-                    old_value = svc["dns_ip"] or dns_target
-                    if not dns.update_rewrite(public_host, old_value, public_host, dns_target):
+                    # Read the actual current value from the provider (not just DB) to fix drift
+                    actual_rewrites = dns.list_rewrites()
+                    actual_entry = next((e for e in actual_rewrites if e.get("domain") == public_host), None)
+                    actual_ip = (actual_entry or {}).get("ip") or (actual_entry or {}).get("answer", "")
+                    if actual_ip and actual_ip != dns_target:
+                        dns.delete_rewrite(public_host, actual_ip)
                         dns.add_rewrite(public_host, dns_target)
-                    add_log("ok", f"[Push] DNS synced on {row['name']}: {public_host} → {dns_target}", conn)
+                    elif not actual_ip:
+                        dns.add_rewrite(public_host, dns_target)
+                    add_log("info", f"[Push] DNS synced on {row['name']}: {public_host} → {dns_target}", conn)
                 except Exception as e:
                     errors.append(f"DNS ({row['name']}): {e}")
 
@@ -549,7 +555,7 @@ def import_services(request: Request, data: dict = Body(...)):
             conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
             imported += 1
             dns_by_fqdn.pop(fqdn, None)
-            add_log("ok", f"Imported: {fqdn}" + (" (proxy + DNS)" if dns_match else ""), conn)
+            add_log("info", f"Imported: {fqdn}" + (" (proxy + DNS)" if dns_match else ""), conn)
         except Exception as e:
             errors.append(str(e))
 
@@ -568,7 +574,7 @@ def import_services(request: Request, data: dict = Body(...)):
                     "UPDATE services SET dns_provider_id=?, dns_ip=? WHERE id=?",
                     (r.get("_provider_id"), ip, existing["id"]),
                 )
-                add_log("ok", f"DNS linked: {fqdn} → {ip}", conn)
+                add_log("info", f"DNS linked: {fqdn} → {ip}", conn)
             else:
                 conn.execute(
                     """INSERT INTO services
@@ -578,7 +584,7 @@ def import_services(request: Request, data: dict = Body(...)):
                 )
                 conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
                 imported += 1
-                add_log("ok", f"Imported from DNS: {fqdn} → {ip}", conn)
+                add_log("info", f"Imported from DNS: {fqdn} → {ip}", conn)
         except Exception as e:
             errors.append(str(e))
 

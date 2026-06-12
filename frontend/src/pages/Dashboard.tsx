@@ -1,3 +1,4 @@
+import React from 'react';
 import {
   Globe,
   Server,
@@ -12,25 +13,57 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { Link } from 'react-router-dom';
-import { useT } from '@/i18n';
+import { ExposeModal } from '@/components/features/expose/ExposeModal';
+import { ProviderModal } from '@/components/features/ProviderModal';
 import type { Service, Provider, CertificateExpiryResponse, CertificateExpiry } from '@/types/api';
 
 type LogItem = { id: number; level: string; message: string; created_at: string };
 type LogsResponse = { items: LogItem[]; total: number };
 
 export function Dashboard() {
-  const t = useT();
+  const [isCreateServiceOpen, setIsCreateServiceOpen] = React.useState(false);
+  const [isCreateProviderOpen, setIsCreateProviderOpen] = React.useState(false);
+  const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
+  const PROVIDERS_CACHE_KEY = 'vauxtra.cache.providers';
+
+  const parseBackendTimestamp = (dateRaw: string | null): number | null => {
+    if (!dateRaw) return null;
+    const normalized = dateRaw.includes('T') ? dateRaw : dateRaw.replace(' ', 'T');
+    const utcLike = /(?:Z|[+-]\d\d:\d\d)$/.test(normalized) ? normalized : `${normalized}Z`;
+    const ts = Date.parse(utcLike);
+    return Number.isFinite(ts) ? ts : null;
+  };
 
   const { data: services, isError: servicesError, refetch: refetchServices } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
     refetchInterval: 30000,
+    initialData: () => {
+      try {
+        const raw = sessionStorage.getItem(SERVICES_CACHE_KEY);
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? (parsed as Service[]) : undefined;
+      } catch {
+        return undefined;
+      }
+    },
   });
 
   const { data: providers, isError: providersError, refetch: refetchProviders } = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     refetchInterval: 60000,
+    initialData: () => {
+      try {
+        const raw = sessionStorage.getItem(PROVIDERS_CACHE_KEY);
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? (parsed as Provider[]) : undefined;
+      } catch {
+        return undefined;
+      }
+    },
   });
 
   const { data: certExpiry } = useQuery<CertificateExpiryResponse>({
@@ -54,15 +87,34 @@ export function Dashboard() {
     refetchProviders();
   };
 
-  const allServices = services ?? [];
+  const servicesReady = Array.isArray(services);
+  const providersReady = Array.isArray(providers);
+
+  const allServices = React.useMemo(() => services ?? [], [services]);
   const enabledServices = allServices.filter((s) => s.enabled);
   const errorServicesCount = enabledServices.filter((s) => s.status === 'error').length;
   const okServicesCount = enabledServices.filter((s) => s.status === 'ok').length;
   const activeProvidersCount = providers?.filter((p) => p.enabled).length ?? 0;
   const totalProvidersCount = providers?.length ?? 0;
   const expiringSoonCount = certExpiry?.expiring_soon_count ?? 0;
-  const totalCerts = certExpiry?.certificates.length ?? 0;
+  const totalCerts = certExpiry?.certificates?.length ?? 0;
   const logs = Array.isArray(logsResp?.items) ? logsResp.items : [];
+
+  React.useEffect(() => {
+    try {
+      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(allServices));
+    } catch {
+      // Ignore storage errors in private mode/quota limits.
+    }
+  }, [allServices]);
+
+  React.useEffect(() => {
+    try {
+      sessionStorage.setItem(PROVIDERS_CACHE_KEY, JSON.stringify(providers ?? []));
+    } catch {
+      // Ignore storage errors in private mode/quota limits.
+    }
+  }, [providers]);
 
   // Certs sorted by urgency (lowest days_remaining first)
   const urgentCerts: CertificateExpiry[] = (certExpiry?.certificates ?? [])
@@ -77,8 +129,8 @@ export function Dashboard() {
   };
 
   const formatAge = (dateRaw: string): string => {
-    const ts = Date.parse(dateRaw.replace(' ', 'T'));
-    if (!Number.isFinite(ts)) return dateRaw;
+    const ts = parseBackendTimestamp(dateRaw);
+    if (ts === null) return dateRaw;
     const deltaSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
     if (deltaSec < 60) return `${deltaSec}s ago`;
     if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`;
@@ -88,9 +140,9 @@ export function Dashboard() {
 
   const logDot = (level: string) => {
     if (level === 'error') return 'bg-destructive';
-    if (level === 'ok') return 'bg-emerald-500';
+    if (level === 'info') return 'bg-blue-500';
     if (level === 'warning') return 'bg-yellow-500';
-    return 'bg-blue-500';
+    return 'bg-emerald-500';
   };
 
   return (
@@ -98,32 +150,6 @@ export function Dashboard() {
       {/* Header row */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight text-foreground">Overview</h1>
-      </div>
-
-      {/* Quick actions */}
-      <div className="bg-card border border-border rounded-lg p-4">
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <h2 className="text-sm font-semibold text-foreground">{t('dashboard.quick_actions.title')}</h2>
-          <span className="text-[11px] text-muted-foreground">{t('dashboard.quick_actions.shortcuts')}</span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-          <Link to="/services" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
-            <span className="font-medium">{t('dashboard.quick_actions.create_endpoint')}</span>
-            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
-          </Link>
-          <Link to="/providers" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
-            <span className="font-medium">{t('dashboard.quick_actions.add_integration')}</span>
-            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
-          </Link>
-          <Link to="/settings?tab=backup" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
-            <span className="font-medium">{t('dashboard.quick_actions.export_backup')}</span>
-            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
-          </Link>
-          <Link to="/settings?tab=general" className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent transition-colors">
-            <span className="font-medium">{t('dashboard.quick_actions.open_settings')}</span>
-            <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
-          </Link>
-        </div>
       </div>
 
       {/* Backend connectivity error */}
@@ -141,7 +167,7 @@ export function Dashboard() {
       {(errorServicesCount > 0 || expiringSoonCount > 0) && (
         <div className="flex flex-wrap gap-2">
           {errorServicesCount > 0 && (
-            <Link to="/monitoring" className="flex items-center gap-2 px-3 py-2 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors">
+            <Link to="/monitoring?status=error" className="flex items-center gap-2 px-3 py-2 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors">
               <AlertTriangle className="w-3.5 h-3.5" />
               {errorServicesCount} route{errorServicesCount > 1 ? 's' : ''} in error
             </Link>
@@ -160,9 +186,17 @@ export function Dashboard() {
         <Link to="/services" className="bg-card border border-border rounded-lg p-4 hover:border-foreground/20 transition-colors group">
           <div className="flex items-center justify-between mb-2">
             <Globe className="w-4 h-4 text-muted-foreground" />
-            {errorServicesCount > 0 && <span className="w-2 h-2 rounded-full bg-destructive" />}
+            {servicesReady && errorServicesCount > 0 && <span className="w-2 h-2 rounded-full bg-destructive" />}
           </div>
-          <p className="text-2xl font-bold text-foreground">{enabledServices.length}<span className="text-sm font-normal text-muted-foreground ml-1">/ {allServices.length}</span></p>
+          <p className="text-2xl font-bold text-foreground">
+            {servicesReady ? (
+              <>
+                {enabledServices.length}<span className="text-sm font-normal text-muted-foreground ml-1">/ {allServices.length}</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">--</span>
+            )}
+          </p>
           <p className="text-xs text-muted-foreground mt-0.5">Active endpoints</p>
         </Link>
 
@@ -170,10 +204,18 @@ export function Dashboard() {
           <div className="flex items-center justify-between mb-2">
             <Activity className="w-4 h-4 text-muted-foreground" />
             <span className={`text-xs font-mono font-semibold ${okServicesCount === enabledServices.length && enabledServices.length > 0 ? 'text-emerald-600 dark:text-emerald-400' : errorServicesCount > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
-              {enabledServices.length > 0 ? `${Math.round((okServicesCount / enabledServices.length) * 100)}%` : '—'}
+              {servicesReady && enabledServices.length > 0 ? `${Math.round((okServicesCount / enabledServices.length) * 100)}%` : '—'}
             </span>
           </div>
-          <p className="text-2xl font-bold text-foreground">{okServicesCount}<span className="text-sm font-normal text-muted-foreground ml-1">ok</span></p>
+          <p className="text-2xl font-bold text-foreground">
+            {servicesReady ? (
+              <>
+                {okServicesCount}<span className="text-sm font-normal text-muted-foreground ml-1">ok</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">--</span>
+            )}
+          </p>
           <p className="text-xs text-muted-foreground mt-0.5">Route health</p>
         </Link>
 
@@ -181,7 +223,15 @@ export function Dashboard() {
           <div className="flex items-center justify-between mb-2">
             <Server className="w-4 h-4 text-muted-foreground" />
           </div>
-          <p className="text-2xl font-bold text-foreground">{activeProvidersCount}<span className="text-sm font-normal text-muted-foreground ml-1">/ {totalProvidersCount}</span></p>
+          <p className="text-2xl font-bold text-foreground">
+            {providersReady ? (
+              <>
+                {activeProvidersCount}<span className="text-sm font-normal text-muted-foreground ml-1">/ {totalProvidersCount}</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">--</span>
+            )}
+          </p>
           <p className="text-xs text-muted-foreground mt-0.5">Integrations</p>
         </Link>
 
@@ -205,7 +255,9 @@ export function Dashboard() {
               All <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
-          {allServices.length > 0 ? (
+          {!servicesReady ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">Loading endpoints...</div>
+          ) : allServices.length > 0 ? (
             <div className="divide-y divide-border/60">
               {allServices.slice(0, 8).map((srv) => {
                 const fqdn = srv.subdomain ? `${srv.subdomain}.${srv.domain}` : srv.domain;
@@ -290,7 +342,7 @@ export function Dashboard() {
             <div className="bg-card border border-border rounded-lg overflow-hidden">
               <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-foreground">Recent activity</h3>
-                <Link to="/monitoring" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
+                <Link to="/settings?tab=logs" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
                   Logs <ArrowRight className="w-3 h-3" />
                 </Link>
               </div>
@@ -307,6 +359,19 @@ export function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Service creation modal */}
+      <ExposeModal
+        isOpen={isCreateServiceOpen}
+        onClose={() => setIsCreateServiceOpen(false)}
+        mode="create"
+      />
+
+      {/* Provider creation modal */}
+      <ProviderModal
+        isOpen={isCreateProviderOpen}
+        onClose={() => setIsCreateProviderOpen(false)}
+      />
     </div>
   );
 }

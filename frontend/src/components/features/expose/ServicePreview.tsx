@@ -60,9 +60,11 @@ export function ServicePreview({
               ? selectedTunnel
                 ? selectedTunnel.name
                 : 'none'
-              : selectedProxy
-                ? selectedProxy.name
-                : 'none (direct/manual)'}
+              : formData.ui_expose_mode === 'dns_only'
+                ? 'none (DNS-only route)'
+                : selectedProxy
+                  ? selectedProxy.name
+                  : 'none'}
             {selectedExtraProxies.length > 0 ? ` +${selectedExtraProxies.length}` : ''}
           </span>
           <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />

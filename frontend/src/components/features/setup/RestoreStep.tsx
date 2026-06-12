@@ -1,8 +1,22 @@
 import { useState, useRef } from 'react';
-import { ArrowLeft, ArrowRight, Loader2, Eye, EyeOff, AlertTriangle, Upload, Key } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Loader2, Eye, EyeOff, AlertTriangle, Upload, Key, CheckCircle2 } from 'lucide-react';
 import { api } from '@/api/client';
 
-export function RestoreStep({ onBack, onSuccess }: { onBack: () => void; onSuccess: () => void }) {
+type RestoreSummary = {
+  providers: number;
+  services: number;
+  secretsIncluded: boolean;
+};
+
+export function RestoreStep({
+  onBack,
+  onPrepared,
+  onFinish,
+}: {
+  onBack: () => void;
+  onPrepared: () => void | Promise<void>;
+  onFinish: (summary: RestoreSummary) => void | Promise<void>;
+}) {
   const [backupFile, setBackupFile] = useState<File | null>(null);
   const [backupData, setBackupData] = useState<{
     version?: string;
@@ -15,6 +29,7 @@ export function RestoreStep({ onBack, onSuccess }: { onBack: () => void; onSucce
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState('');
+  const [restoreSummary, setRestoreSummary] = useState<RestoreSummary | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -53,11 +68,16 @@ export function RestoreStep({ onBack, onSuccess }: { onBack: () => void; onSucce
     setError('');
     
     try {
-      await api.post('/restore', {
+      const result = await api.post<{ ok: boolean; services?: number; providers?: number }>('/restore', {
         backup: backupData,
         passphrase: passphrase,
       });
-      onSuccess();
+      await onPrepared();
+      setRestoreSummary({
+        providers: result?.providers ?? backupData.providers?.length ?? 0,
+        services: result?.services ?? backupData.services?.length ?? 0,
+        secretsIncluded: Boolean(backupData.secrets_included),
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Restore failed';
       setError(msg);
@@ -65,6 +85,49 @@ export function RestoreStep({ onBack, onSuccess }: { onBack: () => void; onSucce
       setRestoring(false);
     }
   };
+
+  if (restoreSummary) {
+    return (
+      <div className="space-y-6 animate-in fade-in duration-300">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-green-500/10 text-green-600 dark:text-green-400 grid place-items-center">
+            <CheckCircle2 size={20} />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-foreground">Restore completed</h2>
+            <p className="text-sm text-muted-foreground">Your configuration has been restored successfully.</p>
+          </div>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+          <ul className="text-sm text-muted-foreground space-y-1">
+            <li>Providers restored: {restoreSummary.providers}</li>
+            <li>Services restored: {restoreSummary.services}</li>
+          </ul>
+
+          {restoreSummary.secretsIncluded ? (
+            <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-xs text-green-700 dark:text-green-300">
+              Secure backup detected: provider secrets were restored from encrypted data.
+            </div>
+          ) : (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
+              Secrets were not included in this backup. Re-enter provider passwords and tokens before running health checks.
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            onClick={() => onFinish(restoreSummary)}
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
+          >
+            Open dashboard
+            <ArrowRight size={16} />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -154,6 +217,15 @@ export function RestoreStep({ onBack, onSuccess }: { onBack: () => void; onSucce
           </div>
         )}
 
+        {restoring && (
+          <div className="flex items-start gap-2 bg-primary/10 border border-primary/30 rounded-lg p-3">
+            <Loader2 size={16} className="text-primary shrink-0 mt-0.5 animate-spin" />
+            <p className="text-xs text-primary">
+              Restore in progress. Do not close this page. Large backups can take a little time to finish.
+            </p>
+          </div>
+        )}
+
         {error && (
           <div className="flex items-start gap-2 bg-destructive/10 border border-destructive/30 rounded-lg p-3">
             <AlertTriangle size={16} className="text-destructive shrink-0 mt-0.5" />
@@ -165,6 +237,7 @@ export function RestoreStep({ onBack, onSuccess }: { onBack: () => void; onSucce
       <div className="flex justify-between">
         <button
           onClick={onBack}
+          disabled={restoring}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft size={14} />

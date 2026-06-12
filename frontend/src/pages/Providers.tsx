@@ -1,18 +1,21 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "react-hot-toast";
-import { Settings, Activity, KeySquare, Plus, AlertCircle, RefreshCw, X, ShieldAlert, Trash2, Loader2, PlayCircle } from "lucide-react";
+import { Settings, Activity, KeySquare, Plus, AlertCircle, RefreshCw, X, ShieldAlert, Trash2, Loader2, PlayCircle, Database } from "lucide-react";
 import { api } from "@/api/client";
 import { ProviderModal } from "@/components/features/ProviderModal";
 import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ProviderLogo } from "@/components/ui/ProviderLogos";
 import { useT } from "@/i18n";
-import type { Provider, TunnelHealthResponse, TunnelHealthItem } from "@/types/api";
+import type { Provider, TunnelHealthResponse, TunnelHealthItem, SyncResult } from "@/types/api";
 
 interface ProviderDiagnostics {
   ok?: boolean;
   provider?: string;
-  validation?: { checks?: Array<{ name: string; ok: boolean; blocking: boolean; detail?: string }> };
+  validation?: {
+    checks?: Array<{ name: string; ok: boolean; blocking: boolean; detail?: string }>;
+    warnings?: string[];
+  };
   health?: { ok?: boolean; status?: string; error?: string };
   testedAt?: number;
 }
@@ -33,33 +36,18 @@ export function Providers() {
   const t = useT();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
+  const DIAGNOSTIC_TTL_MS = 30 * 60 * 1000;
+  const DIAGNOSTICS_STORAGE_KEY = "vauxtra.providers.manual-diagnostics.v1";
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [providerDiagnostics, setProviderDiagnosticsRaw] = useState<Record<number, ProviderDiagnostics>>(() => {
-    try {
-      const stored = localStorage.getItem('vauxtra:providerDiagnostics');
-      return stored ? JSON.parse(stored) : {};
-    } catch { return {}; }
-  });
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [focusFilter, setFocusFilter] = useState<'all' | 'issues' | 'healthy'>('all');
+  const [providerDiagnostics, setProviderDiagnosticsRaw] = useState<Record<number, ProviderDiagnostics>>({});
 
   const setProviderDiagnostics = (updater: (prev: Record<number, ProviderDiagnostics>) => Record<number, ProviderDiagnostics>) => {
-    setProviderDiagnosticsRaw(prev => {
-      const next = updater(prev);
-      try { localStorage.setItem('vauxtra:providerDiagnostics', JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
+    setProviderDiagnosticsRaw((prev) => updater(prev));
   };
-
-  // Clear stale diagnostics for providers no longer in the list on unmount
-  useEffect(() => {
-    return () => {
-      try {
-        const stored = localStorage.getItem('vauxtra:providerDiagnostics');
-        if (stored) localStorage.setItem('vauxtra:providerDiagnostics', stored);
-      } catch { /* ignore */ }
-    };
-  }, []);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [validatingId, setValidatingId] = useState<number | null>(null);
@@ -96,6 +84,32 @@ export function Providers() {
   const allHealthById = Object.fromEntries(
     Object.entries(allHealthItems).map(([id, state]) => [Number(id), state || {}]),
   ) as Record<number, ProviderHealthState>;
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, ProviderDiagnostics>;
+      const now = Date.now();
+      const restored = Object.fromEntries(
+        Object.entries(parsed || {}).filter(([, diag]) => {
+          const testedAt = Number(diag?.testedAt || 0);
+          return testedAt > 0 && now - testedAt <= DIAGNOSTIC_TTL_MS;
+        }).map(([id, diag]) => [Number(id), diag]),
+      ) as Record<number, ProviderDiagnostics>;
+      setProviderDiagnosticsRaw(restored);
+    } catch {
+      localStorage.removeItem(DIAGNOSTICS_STORAGE_KEY);
+    }
+  }, [DIAGNOSTIC_TTL_MS, DIAGNOSTICS_STORAGE_KEY]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DIAGNOSTICS_STORAGE_KEY, JSON.stringify(providerDiagnostics));
+    } catch {
+      // Ignore storage errors (private mode/quota).
+    }
+  }, [providerDiagnostics]);
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
@@ -195,7 +209,7 @@ export function Providers() {
       setValidatingId(null);
       setProviderDiagnostics((prev) => ({
         ...prev,
-        [id]: data,
+        [id]: { ...data, testedAt: Date.now() },
       }));
       if (data?.ok) {
         toast.success('Provider validation OK');
@@ -225,6 +239,37 @@ export function Providers() {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       queryClient.invalidateQueries({ queryKey: ['services'] });
       toast.success('Provider deleted');
+    },
+  });
+
+  const syncProviders = useMutation({
+    mutationFn: () => api.post<SyncResult>('/services/sync'),
+    onSuccess: (data) => {
+      setSyncResult(data);
+      const discovered = (data.proxy_hosts?.length || 0) + (data.dns_rewrites?.length || 0);
+      toast.success(`Scan complete: ${discovered} route(s) discovered`);
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => {
+      toast.error(err?.response?.data?.detail || 'Provider scan failed');
+    },
+  });
+
+  const importFromScan = useMutation({
+    mutationFn: (payload: SyncResult) => api.post<{ imported: number; errors: string[] }>('/services/import', payload),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['services'] });
+      queryClient.invalidateQueries({ queryKey: ['logs'] });
+      if ((data.imported || 0) > 0) {
+        toast.success(`Imported ${data.imported} service(s)`);
+      } else {
+        toast.success('No new services to import');
+      }
+      if ((data.errors || []).length > 0) {
+        toast.error(`${data.errors.length} service(s) skipped or failed`);
+      }
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => {
+      toast.error(err?.response?.data?.detail || 'Import failed');
     },
   });
 
@@ -283,7 +328,9 @@ export function Providers() {
   };
 
   const getHealthScore = (provider: Provider): { score: number; label: string; color: string; reason?: string } => {
-    const diag = providerDiagnostics[provider.id];
+    const diagRaw = providerDiagnostics[provider.id];
+    const diagFresh = Boolean(diagRaw?.testedAt) && Date.now() - Number(diagRaw?.testedAt || 0) <= DIAGNOSTIC_TTL_MS;
+    const diag = diagFresh ? diagRaw : undefined;
     const tunnelH = tunnelHealthById[provider.id];
     const autoHealth = allHealthById[provider.id];
     if (!diag && !tunnelH && !autoHealth) return { score: -1, label: 'Unknown', color: 'text-muted-foreground' };
@@ -359,9 +406,35 @@ export function Providers() {
     };
   };
 
+  const getProviderSeverity = (provider: Provider): 'healthy' | 'degraded' | 'error' | 'disabled' | 'unknown' => {
+    if (!provider.enabled) return 'disabled';
+    const health = getHealthScore(provider);
+    if (health.score < 0) return 'unknown';
+    if (health.score >= 80) return 'healthy';
+    if (health.score >= 50) return 'degraded';
+    return 'error';
+  };
+
+  const matchesFocusFilter = (provider: Provider): boolean => {
+    const severity = getProviderSeverity(provider);
+    if (focusFilter === 'issues') return severity === 'degraded' || severity === 'error';
+    if (focusFilter === 'healthy') return severity === 'healthy';
+    return true;
+  };
+
   const cardClass = "bg-card border border-border rounded-xl shadow-sm";
 
-  const providersList = Array.isArray(providers) ? providers : [];
+  const providersList = useMemo(() => (Array.isArray(providers) ? providers : []), [providers]);
+  useEffect(() => {
+    if (providersList.length === 0) return;
+    const ids = new Set(providersList.map((p: Provider) => Number(p.id)));
+    setProviderDiagnostics((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).filter(([id]) => ids.has(Number(id))),
+      ) as Record<number, ProviderDiagnostics>,
+    );
+  }, [providersList]);
+
   const tunnelHealthItems = Array.isArray(tunnelHealth?.items) ? tunnelHealth.items : [];
   const tunnelHealthById = Object.fromEntries(
     tunnelHealthItems.map((item: TunnelHealthItem) => [Number(item.id), item.health || {}]),
@@ -386,13 +459,15 @@ export function Providers() {
     return meta?.category === 'dns';
   };
 
-  const reverseProviders = providersList.filter((p: Provider) => hasCapability(p, 'proxy'));
+  const isTunnelProvider = (provider: Provider): boolean => String(provider.type || '').toLowerCase() === 'cloudflare_tunnel';
+
+  const reverseProviders = providersList.filter((p: Provider) => hasCapability(p, 'proxy') && !isTunnelProvider(p));
   const dnsProviders = providersList.filter((p: Provider) => hasCapability(p, 'dns'));
-  const tunnelProviders = providersList.filter((p: Provider) => String(p.type || '').toLowerCase() === 'cloudflare_tunnel');
+  const tunnelProviders = providersList.filter((p: Provider) => isTunnelProvider(p));
   const otherProviders = providersList.filter((p: Provider) => 
     !hasCapability(p, 'proxy') && 
     !hasCapability(p, 'dns') && 
-    String(p.type || '').toLowerCase() !== 'cloudflare_tunnel'
+    !isTunnelProvider(p)
   );
 
   const providerSections = [
@@ -401,6 +476,25 @@ export function Providers() {
     { id: 'dns', title: 'DNS Providers', items: dnsProviders },
     { id: 'other', title: 'Other', items: otherProviders },
   ].filter((section) => section.items.length > 0);
+  const visibleProviderSections = providerSections
+    .map((section) => ({ ...section, items: section.items.filter(matchesFocusFilter) }))
+    .filter((section) => section.items.length > 0);
+  const issueCount = providersList.filter((p: Provider) => {
+    const severity = getProviderSeverity(p);
+    return severity === 'degraded' || severity === 'error';
+  }).length;
+  const healthyCount = providersList.filter((p: Provider) => getProviderSeverity(p) === 'healthy').length;
+  const lastManualCheckAt = Object.values(providerDiagnostics)
+    .map((diag) => Number(diag?.testedAt || 0))
+    .filter((ts) => ts > 0)
+    .reduce((max, ts) => Math.max(max, ts), 0);
+  const hasFreshManualCheck = lastManualCheckAt > 0 && (Date.now() - lastManualCheckAt <= DIAGNOSTIC_TTL_MS);
+  const secondaryBtnClass = "inline-flex items-center gap-2 h-9 px-3.5 text-xs rounded-lg font-semibold border border-border bg-background hover:bg-accent text-foreground disabled:opacity-60 disabled:cursor-not-allowed";
+  const primaryBtnClass = "inline-flex items-center gap-2 h-9 px-3.5 text-xs rounded-lg font-semibold bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed";
+  const iconBtnClass = "inline-flex items-center justify-center h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors border border-transparent hover:border-border disabled:opacity-60 disabled:cursor-not-allowed";
+  const discoveredCount = (syncResult?.proxy_hosts?.length || 0) + (syncResult?.dns_rewrites?.length || 0);
+  const discoveredProxyCount = syncResult?.proxy_hosts?.length || 0;
+  const discoveredDnsCount = syncResult?.dns_rewrites?.length || 0;
 
   if (isLoading) {
     return (
@@ -419,7 +513,23 @@ export function Providers() {
       
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">Integrations</h1>
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Integrations</h1>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            {hasFreshManualCheck ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5">
+                Last check {new Date(lastManualCheckAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5">
+                Last check: none
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5">
+              Issues {issueCount}
+            </span>
+          </div>
+        </div>
         
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -427,14 +537,14 @@ export function Providers() {
             disabled={isRefreshing}
             title={t('providers.refresh.button')}
             aria-label={t('providers.refresh.button')}
-            className="flex items-center justify-center gap-2 px-3 py-2.5 text-sm rounded-lg font-semibold transition-all border border-border bg-card hover:bg-accent text-foreground disabled:opacity-60 disabled:cursor-not-allowed"
+            className={secondaryBtnClass}
           >
             <PlayCircle className={`w-4 h-4 ${isRefreshing || isFetchingProviders ? 'animate-pulse' : ''}`} />
             <span>{t('providers.refresh.button')}</span>
           </button>
           <button 
             onClick={() => setIsModalOpen(true)}
-            className="flex items-center justify-center gap-2 bg-primary hover:opacity-90 text-primary-foreground px-5 py-2.5 text-sm rounded-lg font-semibold transition-all shadow-sm focus:ring-2 focus:ring-primary/30 outline-none"
+            className={`${primaryBtnClass} shadow-sm focus:ring-2 focus:ring-primary/30 outline-none`}
           >
             <Plus className="w-4 h-4" />
             Add connection
@@ -442,7 +552,78 @@ export function Providers() {
         </div>
       </div>
 
-      {providersList.length === 0 ? (
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setFocusFilter('all')}
+          className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${focusFilter === 'all' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+        >
+          All <span className="opacity-60">{providersList.length}</span>
+        </button>
+        <button
+          onClick={() => setFocusFilter('issues')}
+          className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${focusFilter === 'issues' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+        >
+          Focus issues <span className="opacity-60">{issueCount}</span>
+        </button>
+        <button
+          onClick={() => setFocusFilter('healthy')}
+          className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${focusFilter === 'healthy' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+        >
+          Healthy <span className="opacity-60">{healthyCount}</span>
+        </button>
+      </div>
+
+      <div className="relative overflow-hidden rounded-xl border border-border bg-card p-5 shadow-sm">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(65%_110%_at_100%_0%,rgba(37,99,235,0.08),transparent_60%)]" />
+        <div className="relative flex flex-col gap-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-1.5">
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Database className="w-4 h-4 text-muted-foreground" />
+                Provider scan & import
+              </h2>
+              <p className="text-xs text-muted-foreground max-w-2xl">
+                Discover routes from active providers and import only what is missing.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs font-medium">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-muted-foreground">
+                Total {discoveredCount}
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-muted-foreground">
+                Proxy {discoveredProxyCount}
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-muted-foreground">
+                DNS {discoveredDnsCount}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              onClick={() => syncProviders.mutate()}
+              disabled={syncProviders.isPending}
+              className={secondaryBtnClass}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncProviders.isPending ? 'animate-spin' : ''}`} />
+              {syncProviders.isPending ? 'Scanning providers...' : 'Scan providers'}
+            </button>
+            <button
+              onClick={() => syncResult && importFromScan.mutate(syncResult)}
+              disabled={!syncResult || discoveredCount === 0 || importFromScan.isPending}
+              className={primaryBtnClass}
+            >
+              {importFromScan.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+              {importFromScan.isPending ? 'Importing discovered routes...' : `Import discovered (${discoveredCount})`}
+            </button>
+            {!syncProviders.isPending && discoveredCount === 0 && (
+              <span className="text-[11px] text-muted-foreground">Run a scan to load import candidates.</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+        {providersList.length === 0 ? (
           <div className={`${cardClass} flex flex-col items-center justify-center py-24 bg-muted/30`}>
              <div className="w-12 h-12 rounded-2xl bg-card border border-border shadow-sm flex items-center justify-center mb-5">
                <KeySquare className="w-6 h-6 text-muted-foreground" />
@@ -453,15 +634,34 @@ export function Providers() {
            </p>
              <button onClick={() => setIsModalOpen(true)} className="text-sm text-primary font-semibold hover:opacity-90 transition-colors bg-card border border-border shadow-sm rounded-lg px-4 py-2">Connect Provider</button>
         </div>
+      ) : visibleProviderSections.length === 0 ? (
+        <div className={`${cardClass} flex flex-col items-center justify-center py-16 bg-muted/20`}>
+          <h3 className="text-base font-semibold text-foreground">No integrations match this filter</h3>
+          <p className="text-muted-foreground text-sm mt-1.5 mb-4 text-center max-w-sm">
+            Switch filter to view all providers or run a fresh check.
+          </p>
+          <div className="flex items-center gap-2">
+            <button className={secondaryBtnClass} onClick={() => setFocusFilter('all')}>Show all</button>
+            <button className={secondaryBtnClass} onClick={handleRefresh} disabled={isRefreshing}>
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+              Recheck
+            </button>
+          </div>
+        </div>
       ) : (
         <div className="space-y-6">
-          {providerSections.map((section) => (
+          {visibleProviderSections.map((section) => (
             <section key={section.id} className="space-y-3">
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{section.title}</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{section.title}</h2>
+                <span className="text-[11px] text-muted-foreground border border-border rounded-full px-2 py-0.5 bg-muted/40">
+                  {section.items.length}
+                </span>
+              </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {section.items.map((provider: Provider) => (
-                  <div key={provider.id} className={`${cardClass} flex flex-col hover:shadow-md transition-shadow group relative overflow-hidden`}>
+                  <div key={provider.id} className={`${cardClass} flex flex-col hover:shadow-md hover:border-foreground/20 transition-all group relative overflow-hidden`}>
                     {(() => {
                       const providerState = provider.status || (provider.enabled ? 'online' : 'disabled');
                       return (
@@ -483,11 +683,11 @@ export function Providers() {
                                 </div>
                               </div>
 
-                              <div className="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="flex gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                                 <button
                                   onClick={() => testConnection.mutate(provider.id)}
                                   disabled={testConnection.isPending}
-                                  className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-lg transition-colors border border-transparent hover:border-primary/20"
+                                  className={`${iconBtnClass} hover:text-primary hover:bg-primary/10 hover:border-primary/20`}
                                   title="Test connection"
                                 >
                                   <RefreshCw className={`w-4 h-4 ${testingId === provider.id && testConnection.isPending ? 'animate-spin text-primary' : ''}`} />
@@ -495,14 +695,14 @@ export function Providers() {
                                 <button
                                   onClick={() => validateProvider.mutate(Number(provider.id))}
                                   disabled={validatingId === provider.id}
-                                  className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors border border-transparent hover:border-border"
+                                  className={iconBtnClass}
                                   title="Validate permissions"
                                 >
                                   <ShieldAlert className={`w-4 h-4 ${validatingId === provider.id ? 'animate-pulse text-primary' : ''}`} />
                                 </button>
                                 <button
                                   onClick={() => setEditingProvider(provider)}
-                                    className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors border border-transparent hover:border-border"
+                                  className={iconBtnClass}
                                   title="Edit integration"
                                 >
                                   <Settings className="w-4 h-4" />
@@ -510,7 +710,7 @@ export function Providers() {
                                 <button
                                   onClick={() => handleDeleteProvider(Number(provider.id), provider.name)}
                                   disabled={deletingId === provider.id}
-                                  className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors border border-transparent hover:border-destructive/20"
+                                  className={`${iconBtnClass} hover:text-destructive hover:bg-destructive/10 hover:border-destructive/20`}
                                   title="Delete integration"
                                 >
                                   {deletingId === provider.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
@@ -527,25 +727,82 @@ export function Providers() {
                               </div>
 
                               {(() => {
-                                const diagnostics = providerDiagnostics[Number(provider.id)];
+                                const diagnosticsRaw = providerDiagnostics[Number(provider.id)];
+                                const diagnostics = diagnosticsRaw?.testedAt && (Date.now() - diagnosticsRaw.testedAt <= DIAGNOSTIC_TTL_MS)
+                                  ? diagnosticsRaw
+                                  : undefined;
                                 const tunnelHealthState = tunnelHealthById[Number(provider.id)];
                                 const autoHealthState = allHealthById[Number(provider.id)];
-                                const health = (tunnelHealthState || diagnostics?.health || autoHealthState) as Record<string, unknown> | undefined;
-                                if (!diagnostics && !health) return null;
+                                const tunnelStatus = String(tunnelHealthState?.status || '').toLowerCase();
+                                const autoStatus = String(autoHealthState?.status || '').toLowerCase();
+                                const autoIsHealthy = autoHealthState
+                                  ? (autoHealthState.ok ?? autoStatus === 'healthy')
+                                  : true;
+                                const showAutoFailure = !diagnostics && (
+                                  (Boolean(tunnelHealthState) && ['down', 'degraded', 'error'].includes(tunnelStatus)) ||
+                                  (Boolean(autoHealthState) && !autoIsHealthy)
+                                );
+                                if (!diagnostics && !showAutoFailure) return null;
+
+                                const health = (diagnostics?.health || tunnelHealthState || autoHealthState) as Record<string, unknown> | undefined;
 
                                 const checks = Array.isArray(diagnostics?.validation?.checks)
                                   ? diagnostics.validation.checks
                                   : [];
                                 const blockingFailures = checks.filter((c: { blocking?: boolean; ok?: boolean }) => c?.blocking && !c?.ok).length;
+                                const warningFailures = checks.filter((c: { blocking?: boolean; ok?: boolean }) => !c?.blocking && !c?.ok).length;
+                                const firstBlockingDetail = checks.find(
+                                  (c: { blocking?: boolean; ok?: boolean; detail?: string }) => c?.blocking && !c?.ok,
+                                )?.detail;
+                                const failedDetailsRaw = checks
+                                  .filter((c: { ok?: boolean; detail?: string }) => !c?.ok && Boolean(c?.detail))
+                                  .map((c: { detail?: string }) => String(c.detail))
+                                  .slice(0, 3);
+                                const failedDetails = Array.from(new Set(failedDetailsRaw))
+                                  .filter((detail) => !firstBlockingDetail || detail !== firstBlockingDetail)
+                                  .slice(0, 3);
+                                const warningDetailsRaw = Array.isArray(diagnostics?.validation?.warnings)
+                                  ? diagnostics.validation.warnings
+                                  : [];
+                                const warningDetails = Array.from(new Set(warningDetailsRaw))
+                                  .filter((warning) => !failedDetails.includes(warning) && (!firstBlockingDetail || warning !== firstBlockingDetail))
+                                  .slice(0, 3);
+                                const healthError = String(health?.error || '');
+                                const showHealthError = Boolean(healthError) && !failedDetails.includes(healthError) && !warningDetails.includes(healthError);
+                                const testedAtLabel = diagnostics?.testedAt
+                                  ? new Date(diagnostics.testedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  : null;
 
                                 return (
                                   <div className="rounded-md border border-border bg-muted/40 p-2 text-xs space-y-1">
                                     {checks.length > 0 && (
                                       <p className={blockingFailures === 0 ? 'text-primary' : 'text-destructive'}>
-                                        Validation: {blockingFailures === 0 ? 'OK' : `${blockingFailures} blocking issue(s)`}
+                                        Validation: {blockingFailures > 0
+                                          ? `Action required: ${blockingFailures} blocking check(s) failed`
+                                          : warningFailures > 0
+                                            ? `Passed with ${warningFailures} warning(s)`
+                                            : 'Passed'}
                                       </p>
                                     )}
-                                    {Boolean(health?.error) && <p className="text-destructive truncate">{String(health?.error)}</p>}
+                                    {firstBlockingDetail && (
+                                      <p className="text-muted-foreground truncate" title={firstBlockingDetail}>
+                                        Next step: {firstBlockingDetail}
+                                      </p>
+                                    )}
+                                    {failedDetails.map((detail, index) => (
+                                      <p key={`${provider.id}-fail-${index}`} className="text-muted-foreground truncate" title={detail}>
+                                        - {detail}
+                                      </p>
+                                    ))}
+                                    {warningDetails.map((warning: string, index: number) => (
+                                      <p key={`${provider.id}-warn-${index}`} className="text-yellow-600 dark:text-yellow-400 truncate" title={warning}>
+                                        - {warning}
+                                      </p>
+                                    ))}
+                                    {testedAtLabel && (
+                                      <p className="text-[10px] text-muted-foreground/70">Last manual check: {testedAtLabel}</p>
+                                    )}
+                                    {showHealthError && <p className="text-destructive truncate">{healthError}</p>}
                                   </div>
                                 );
                               })()}
