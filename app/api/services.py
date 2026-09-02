@@ -630,6 +630,11 @@ def add_service(request: Request, body: ServiceIn):
         row = conn.execute("SELECT * FROM providers WHERE id=?", (body.tunnel_provider_id,)).fetchone()
         if not row:
             errors.append("Tunnel provider not found")
+        elif not body.enabled:
+            # Created disabled: publishing the ingress rule now would make the hostname
+            # publicly reachable while the UI shows the service as off. It is published
+            # when the service is enabled.
+            add_log("info", f"Tunnel route not published (service created disabled): {public_host}")
         else:
             try:
                 proxy = create_provider(row)
@@ -649,7 +654,11 @@ def add_service(request: Request, body: ServiceIn):
             except Exception as e:
                 errors.append(str(e))
     else:
-        if body.proxy_provider_id:
+        if body.proxy_provider_id and not body.enabled:
+            # Same reasoning as the tunnel branch. `npm_host_id` stays NULL, which is exactly
+            # the state the enable path already knows how to re-deploy from.
+            add_log("info", f"Proxy host not created (service created disabled): {public_host}")
+        elif body.proxy_provider_id:
             row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
             if row:
                 try:
@@ -692,7 +701,11 @@ def add_service(request: Request, body: ServiceIn):
                 raise HTTPException(400, "Unable to resolve DNS public target")
 
             row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
-            if row:
+            if row and not body.enabled:
+                # The resolved target is still stored, so the enable path can re-add the
+                # record; only the push is withheld.
+                add_log("info", f"DNS record not added (service created disabled): {public_host}")
+            elif row:
                 try:
                     dns = create_provider(row)
                     if dns.add_rewrite(public_host, dns_target):
@@ -793,6 +806,29 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.tunnel_provider_id,)).fetchone()
         if not tunnel_row:
             errors.append("Tunnel provider not found")
+        elif not body.enabled:
+            # A disabled service must stop being reachable. In tunnel mode the ingress rule
+            # is the only thing that exposes it, and the publish path below runs on every
+            # PUT without ever reading `enabled`: a request that disabled a service used to
+            # re-publish the very route it was meant to cut. The configuration stays in
+            # Vauxtra and is published again on re-enable.
+            try:
+                create_provider(tunnel_row).delete_host(new_public_host)
+                add_log("info", f"Tunnel route withdrawn (service disabled): {new_public_host}")
+            except Exception as e:
+                errors.append(str(e))
+            if old_mode == "tunnel" and old["tunnel_provider_id"] and (
+                old["tunnel_provider_id"] != body.tunnel_provider_id
+                or old_public_host != new_public_host
+            ):
+                # The hostname or the tunnel changed in the same request: the previous route
+                # lives elsewhere and would survive the withdrawal above.
+                old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
+                if old_tunnel_row:
+                    try:
+                        create_provider(old_tunnel_row).delete_host(old_public_host)
+                    except Exception as e:
+                        add_log("warn", f"Could not withdraw the previous tunnel route: {e}")
         else:
             try:
                 tunnel = create_provider(tunnel_row)
@@ -908,21 +944,50 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         if not dns_ip:
             dns_ip = old["dns_ip"] or ""
 
-        if body.dns_provider_id and dns_ip:
+        if body.dns_provider_id and dns_ip and not body.enabled:
+            # Publishing the record here and letting the enable/disable block below undo it
+            # only worked on a transition. Editing a service that was *already* disabled ran
+            # this branch with nothing to undo it, so the record came back and stayed:
+            # the host resolved publicly while the UI showed the service as off.
             dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
             if dns_row:
                 try:
                     dns = create_provider(dns_row)
                     old_dns_ip = old["dns_ip"] or ""
+                    # The hostname or the address may have changed in the same request; both
+                    # the previous record and the new one have to go.
+                    targets = {(new_public_host, dns_ip)}
                     if old_mode == "proxy_dns" and old["dns_provider_id"] == body.dns_provider_id and old_dns_ip:
-                        if old_public_host != new_public_host or old_dns_ip != dns_ip:
+                        targets.add((old_public_host, old_dns_ip))
+                    for record_host, record_ip in sorted(targets):
+                        dns.delete_rewrite(record_host, record_ip)
+                    add_log("info", f"DNS record withheld (service disabled): {new_public_host}")
+                except Exception as e:
+                    add_log("warn", f"Could not withdraw the DNS record of a disabled service: {e}")
+        elif body.dns_provider_id and dns_ip:
+            dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
+            if dns_row:
+                try:
+                    dns = create_provider(dns_row)
+                    old_dns_ip = old["dns_ip"] or ""
+                    same_provider = old_mode == "proxy_dns" and old["dns_provider_id"] == body.dns_provider_id
+                    # A disabled service has no record left to move: it was withdrawn when it
+                    # was disabled. Treating "nothing changed" as "nothing to do" would leave
+                    # the host unresolvable while the UI reported it back on.
+                    published = same_provider and bool(old_dns_ip) and bool(old["enabled"])
+                    moved = (old_public_host, old_dns_ip) != (new_public_host, dns_ip)
+
+                    if published:
+                        if moved:
                             if dns.update_rewrite(old_public_host, old_dns_ip, new_public_host, dns_ip):
                                 add_log("info", f"DNS updated: {new_public_host} → {dns_ip} ({dns_target_source})")
                             else:
                                 errors.append("Failed to update DNS rewrite")
                     else:
                         if dns.add_rewrite(new_public_host, dns_ip):
-                            if old_mode == "proxy_dns" and old["dns_provider_id"] and old_dns_ip:
+                            # Only clean up a previous record that is genuinely a different
+                            # one -- otherwise this deletes what was just added.
+                            if old_mode == "proxy_dns" and old["dns_provider_id"] and old_dns_ip and moved:
                                 old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["dns_provider_id"],)).fetchone()
                                 if old_dns_row:
                                     try:
@@ -975,7 +1040,10 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     set_tags(conn, sid, body.tag_ids)
     set_environments(conn, sid, body.environment_ids)
     
-    # Generalized enable/disable: manage providers when enabled state changes
+    # Generalized enable/disable: manage providers when enabled state changes.
+    # Tunnel mode is deliberately absent here: it is handled in the `new_mode == "tunnel"`
+    # branch above, which runs on every PUT rather than only on a transition, so an already
+    # disabled tunnel service converges back to "withdrawn" instead of staying published.
     if bool(old["enabled"]) != bool(body.enabled) and new_mode == "proxy_dns":
         enable = bool(body.enabled)
 
@@ -1016,20 +1084,10 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             except Exception as e:
                 add_log("warn", f"Could not manage proxy enabled state: {e}", conn)
 
-        # DNS provider: always remove on disable, re-add on enable
-        if body.dns_provider_id and stored_dns_ip:
-            try:
-                dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
-                if dns_row:
-                    dns = create_provider(dns_row)
-                    if enable:
-                        dns.add_rewrite(new_public_host, stored_dns_ip)
-                        add_log("info", f"DNS re-added on enable: {new_public_host} → {stored_dns_ip}", conn)
-                    else:
-                        dns.delete_rewrite(new_public_host, stored_dns_ip)
-                        add_log("info", f"DNS removed on disable: {new_public_host}", conn)
-            except Exception as e:
-                add_log("warn", f"Could not manage DNS enabled state: {e}", conn)
+        # DNS is deliberately not handled here any more. The block above now branches on
+        # `body.enabled` and runs on every PUT, not only on a transition, so it already adds
+        # the record on enable and withdraws it on disable. Repeating it here would push the
+        # same change twice and log it twice.
     
     conn.commit()
     add_log("info", f"Service updated: {new_public_host}")
@@ -1254,10 +1312,41 @@ def bulk_action(body: _BulkActionBody, request: Request):
 
         # Generalized enable/disable: manage each provider
         for svc in services:
-            if (svc["expose_mode"] or "").strip().lower() != "proxy_dns":
-                continue
             sid_b = svc["id"]
-            pub = _service_public_hostname("proxy_dns", "", svc["subdomain"], svc["domain"])
+            mode = (svc["expose_mode"] or "proxy_dns").strip().lower()
+            pub = _service_public_hostname(
+                mode, svc["tunnel_hostname"] or "", svc["subdomain"], svc["domain"]
+            )
+
+            if mode == "tunnel":
+                # These rows used to be skipped entirely: the `enabled` flag was written and
+                # nothing else happened, so a bulk disable left every hostname publicly
+                # reachable while Vauxtra merely stopped monitoring it.
+                if svc["tunnel_provider_id"]:
+                    try:
+                        tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["tunnel_provider_id"],)).fetchone()
+                        if tunnel_row:
+                            tunnel = create_provider(tunnel_row)
+                            if enable:
+                                created = tunnel.create_host(
+                                    pub, svc["target_ip"], svc["target_port"],
+                                    svc["forward_scheme"], bool(svc["websocket"]), None,
+                                )
+                                if created:
+                                    add_log("info", f"Tunnel route re-published on enable: {pub}", conn)
+                                else:
+                                    errors.append(f"Service {sid_b}: failed to re-publish the tunnel route")
+                            else:
+                                if tunnel.delete_host(pub):
+                                    add_log("info", f"Tunnel route withdrawn on disable: {pub}", conn)
+                                else:
+                                    errors.append(f"Service {sid_b}: failed to withdraw the tunnel route")
+                    except Exception as e:
+                        errors.append(f"Service {sid_b}: tunnel state error — {e}")
+                continue
+
+            if mode != "proxy_dns":
+                continue
 
             # Proxy provider
             if svc["proxy_provider_id"]:
