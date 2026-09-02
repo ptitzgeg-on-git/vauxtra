@@ -49,13 +49,30 @@ Vauxtra uses a password to protect access to the panel.
 ### Setting a password
 
 - **Setup wizard**: On first launch, the wizard prompts you to choose a password.
-- **Environment variable**: Set `APP_PASSWORD` in your `.env` file (takes priority over UI-configured password).
+- **Environment variable**: Set `APP_PASSWORD` in your `.env` file to a **PBKDF2 hash** (takes priority over the UI-configured password).
 - **No password**: Leave both empty for open access (anyone on your network can access the panel).
+
+Generate the hash with the same function the wizard uses:
+
+```bash
+docker compose exec vauxtra \
+  python -c "from app.auth import hash_password; print(hash_password('your-password'))"
+# pbkdf2:sha256:600000$<salt>$<hash>   ← this is what goes in APP_PASSWORD
+```
 
 ### Password storage
 
-Passwords set via the Setup wizard are stored as PBKDF2-HMAC-SHA256 hashes (600k iterations) in the database.  
-Passwords set via `APP_PASSWORD` env var are compared in plaintext (not hashed).
+Passwords set via the Setup wizard are stored as PBKDF2-HMAC-SHA256 hashes (600k iterations) in the database.
+
+`APP_PASSWORD` is expected to hold a hash in that same format. A value that is **not** a
+hash is refused: the login returns 401 and the setup wizard stays closed, because a
+non-empty `APP_PASSWORD` counts as "a password is configured". The server logs an explicit
+error when this happens — check the container logs if a password you are sure about is
+rejected.
+
+To keep a plaintext value anyway — a lab instance, a migration you have not finished — set
+`ALLOW_PLAINTEXT_APP_PASSWORD=true`. It is off by default, and it means the password sits
+in clear text in your `.env`, your shell history and `docker inspect`.
 
 ### Forgot your password?
 

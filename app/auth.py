@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import sqlite3
@@ -7,6 +8,8 @@ import sqlite3
 from fastapi import HTTPException, Request
 
 from app.config import APP_PASSWORD
+
+_logger = logging.getLogger(__name__)
 
 _ALLOW_PLAINTEXT_APP_PASSWORD = os.environ.get(
     "ALLOW_PLAINTEXT_APP_PASSWORD",
@@ -136,6 +139,17 @@ def check_password(candidate: str) -> bool:
             return verify_password_hash(candidate, APP_PASSWORD)
         if _ALLOW_PLAINTEXT_APP_PASSWORD:
             return hmac.compare_digest(candidate, APP_PASSWORD)
+        # Say so. An operator who sets a plaintext APP_PASSWORD gets a 401 on a password
+        # that is, from their point of view, exactly the one they configured -- and the
+        # setup wizard refuses to run because `has_password_configured()` sees the variable
+        # is not empty. Without this line the whole failure is invisible.
+        _logger.error(
+            "APP_PASSWORD is set but is not a PBKDF2 hash, and ALLOW_PLAINTEXT_APP_PASSWORD "
+            "is not enabled: this login cannot succeed. Generate a hash with "
+            "`python -c \"from app.auth import hash_password; print(hash_password('...'))\"` "
+            "and put that value in APP_PASSWORD, or set ALLOW_PLAINTEXT_APP_PASSWORD=true "
+            "to accept the plaintext one."
+        )
     db_hash = _get_db_password_hash()
     if db_hash:
         return verify_password_hash(candidate, db_hash)
