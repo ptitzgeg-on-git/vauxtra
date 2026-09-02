@@ -366,7 +366,8 @@ def push_service(sid: int, request: Request):
 
 @router.post("/api/services/{sid}/push/dry-run")
 def dry_run_push_service(sid: int, request: Request):
-    require_auth(request)
+    # Explicitly `read`: no scope at all also lets through a key granted nothing.
+    require_auth(request, scope="read")
     conn = get_db()
     svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not svc:
@@ -427,7 +428,8 @@ def reconcile_service(sid: int, request: Request):
 
 @router.post("/api/services/sync")
 def sync_services(request: Request):
-    require_auth_or_setup(request)
+    # Explicitly `read`: this only lists what the providers already hold.
+    require_auth_or_setup(request, scope="read")
     conn = get_db()
     providers = conn.execute("SELECT * FROM providers WHERE enabled=1").fetchall()
     existing_fqdns = {

@@ -440,7 +440,10 @@ def suggest_public_target(
 
 @router.post("/api/services/preflight")
 def preflight_service(request: Request, body: ServicePreflightIn):
-    require_auth(request)
+    # `write`: the body carries an arbitrary target host and port that the server then
+    # connects to. Left at "any authenticated caller", a read-only key was a port scanner
+    # pointed at whatever the Vauxtra container can reach.
+    require_auth(request, scope="write")
     conn = get_db()
     try:
         return _run_preflight(conn, body, service_id=body.service_id)
@@ -1246,7 +1249,8 @@ def check_service(sid: int, request: Request):
 
 @router.post("/api/services/check-all")
 def check_all(request: Request):
-    require_auth(request)
+    # `write`: this rewrites `status` and `last_checked` on every enabled service.
+    require_auth(request, scope="write")
     conn     = get_db()
     services = conn.execute(
         "SELECT id, target_ip, target_port, subdomain, domain, expose_mode FROM services WHERE enabled=1"
