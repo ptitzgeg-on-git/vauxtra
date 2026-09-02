@@ -75,6 +75,131 @@ def _find_host_id(proxy, public_host: str):
     return None
 
 
+def _all_route_holders(conn, svc, sid: int) -> tuple[str, str, list, list]:
+    """Every provider that may still hold a route for this service, enabled or not.
+
+    `_collect_push_targets` skips disabled providers on purpose: republishing to a target
+    the operator turned off would be wrong. Withdrawing is the mirror case -- disabling a
+    provider inside Vauxtra does not take the route it published off the internet -- so a
+    removal has to try all of them.
+    """
+    public_host = _service_public_host(svc)
+    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in svc else "proxy_dns"
+
+    proxy_rows: list = []
+    dns_rows: list = []
+    seen_proxy: set = set()
+    seen_dns: set = set()
+
+    def _add_proxy(provider_id) -> None:
+        if not provider_id or provider_id in seen_proxy:
+            return
+        row = conn.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
+        if row:
+            proxy_rows.append(row)
+            seen_proxy.add(row["id"])
+
+    # Both columns, whichever mode the service is in now. A service switched from proxy to
+    # tunnel keeps its `proxy_provider_id`, and the host it published there is still live.
+    _add_proxy(svc["tunnel_provider_id"] if expose_mode == "tunnel" else svc["proxy_provider_id"])
+    _add_proxy(svc["proxy_provider_id"] if expose_mode == "tunnel" else svc["tunnel_provider_id"])
+
+    if svc["dns_provider_id"]:
+        row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["dns_provider_id"],)).fetchone()
+        if row:
+            dns_rows.append(row)
+            seen_dns.add(row["id"])
+
+    extras = conn.execute(
+        """
+        SELECT spt.role, p.*
+        FROM service_push_targets spt
+        JOIN providers p ON p.id = spt.provider_id
+        WHERE spt.service_id=?
+        """,
+        (sid,),
+    ).fetchall()
+    for t in extras:
+        if t["role"] == "proxy" and t["id"] not in seen_proxy:
+            proxy_rows.append(t)
+            seen_proxy.add(t["id"])
+        elif t["role"] == "dns" and t["id"] not in seen_dns:
+            dns_rows.append(t)
+            seen_dns.add(t["id"])
+
+    return expose_mode, public_host, proxy_rows, dns_rows
+
+
+def withdraw_service_routes(conn, svc, sid: int) -> list[str]:
+    """Take a service's public route off every provider that may still serve it.
+
+    Deleting a service walked `proxy_provider_id` and `dns_provider_id` and stopped there.
+    The extra targets in `service_push_targets` -- the second proxy, the second DNS server,
+    the ones a push writes to on every cycle -- were never told: their routes outlived the
+    deletion, the hostname stayed resolvable, the proxy kept forwarding, and nothing was
+    left in Vauxtra to show for it.
+
+    Returns one message per failure; an empty list means everything is withdrawn.
+    """
+    expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
+    errors: list[str] = []
+
+    for row in proxy_rows:
+        if PROVIDER_TYPES.get(row["type"], {}).get("read_only"):
+            continue  # nothing was ever pushed there
+        try:
+            proxy = create_provider(row)
+            host_id = None
+            if row["type"] == "cloudflare_tunnel":
+                # This one addresses its ingress rules by hostname, not by numeric id.
+                host_id = public_host
+            elif row["id"] == svc["proxy_provider_id"]:
+                host_id = svc["npm_host_id"]
+            if not host_id:
+                # The id is only ever stored for the primary proxy; anywhere else the route
+                # is found by the hostname it serves, exactly as the push finds it.
+                host_id = _find_host_id(proxy, public_host)
+            if not host_id:
+                continue  # nothing there under this hostname
+
+            if proxy.delete_host(host_id):
+                add_log("info", f"[Delete] Proxy route removed on {row['name']}: {public_host}", conn)
+            else:
+                errors.append(f"Failed to delete proxy host on {row['name']}")
+        except Exception as e:
+            errors.append(f"Proxy ({row['name']}): {e}")
+
+    for row in dns_rows:
+        try:
+            dns = create_provider(row)
+            actual_ip = ""
+            try:
+                entry = next(
+                    (e for e in dns.list_rewrites() or [] if e.get("domain") == public_host),
+                    None,
+                )
+                actual_ip = (entry or {}).get("ip") or (entry or {}).get("answer") or ""
+            except Exception:
+                actual_ip = ""
+            # The record on the server is what has to go, and it may have drifted away from
+            # the address Vauxtra last stored; `dns_ip` is the fallback, not the reference.
+            ip = actual_ip or (svc["dns_ip"] or "")
+            if not ip:
+                continue
+
+            if dns.delete_rewrite(public_host, ip):
+                add_log("info", f"[Delete] DNS record removed on {row['name']}: {public_host}", conn)
+            else:
+                errors.append(f"Failed to delete DNS rewrite on {row['name']}")
+        except Exception as e:
+            errors.append(f"DNS ({row['name']}): {e}")
+
+    if expose_mode == "tunnel" and not proxy_rows:
+        errors.append("No tunnel provider left to remove the route from")
+
+    return errors
+
+
 def _build_push_plan(conn, svc, sid: int) -> dict:
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
 
