@@ -214,9 +214,47 @@ class ResetRegressionTests(IsolatedDBTestCase):
             "environments",
             "domains",
             "logs",
-            "settings",
         ]:
             self.assertEqual(self._count(table), 0, f"Table should be empty after reset: {table}")
+
+        # `settings` is deliberately NOT wiped wholesale: it also holds the admin password
+        # hash, and deleting it would leave the instance answering anonymously with admin
+        # scope (has_password_configured() -> False -> implicit admin context). Business
+        # settings go, credentials and bookkeeping stay.
+        conn = models.get_db()
+        try:
+            remaining = {r["key"] for r in conn.execute("SELECT key FROM settings").fetchall()}
+        finally:
+            conn.close()
+        self.assertNotIn("check_interval", remaining, "Business settings must be cleared by reset")
+        self.assertTrue(
+            remaining <= set(settings_api._PROTECTED_SETTINGS),
+            f"Only protected keys may survive a reset, found: {remaining}",
+        )
+
+    def test_reset_preserves_admin_password_hash(self) -> None:
+        """A reset must never drop the instance back to anonymous-admin."""
+        conn = models.get_db()
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_password_hash', 'pbkdf2:test')"
+        )
+        conn.commit()
+        conn.close()
+
+        # Setting a hash turns auth on; this test is about data preservation, not about the
+        # auth gate (covered by the dedicated auth tests), so the gate is neutralised here.
+        with patch.object(settings_api, "require_auth", lambda _req, scope=None: None):
+            settings_api.reset_all(_request("POST", "/api/reset"))
+
+        conn = models.get_db()
+        try:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key='app_password_hash'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row, "reset must not delete the admin password hash")
+        self.assertEqual(row["value"], "pbkdf2:test")
 
 
 class MigrationRegressionTests(IsolatedDBTestCase):

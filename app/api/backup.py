@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app.auth import require_auth, require_auth_or_setup
+from app.api.settings import _PROTECTED_SETTINGS, _VALID_SETTINGS
+from app.auth import require_auth
 from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, encrypt_secret
 from app.limiter import limiter
 from app.models import add_log, get_db
@@ -39,7 +40,9 @@ class RestoreRequest(BaseModel):
 @router.get("/api/backup")
 def export_backup(request: Request):
     """Export backup WITHOUT sensitive data (passwords cleared)."""
-    require_auth(request)
+    # Same scope as /api/backup/secure: this file still carries the full topology,
+    # provider URLs and usernames.
+    require_auth(request, scope="admin")
     conn = get_db()
     try:
         data = {
@@ -61,7 +64,9 @@ def export_backup(request: Request):
             "domains":             [dict(r) for r in conn.execute("SELECT * FROM domains").fetchall()],
             "webhooks":            [dict(r) for r in conn.execute("SELECT * FROM webhooks").fetchall()],
             "service_alerts":      [dict(r) for r in conn.execute("SELECT * FROM service_alerts").fetchall()],
-            "settings":            [dict(r) for r in conn.execute("SELECT * FROM settings").fetchall()],
+            "settings":            [dict(r) for r in conn.execute(
+                "SELECT key, value FROM settings WHERE key NOT IN ('app_password_hash')"
+            ).fetchall()],
             "docker_endpoints":    [dict(r) for r in conn.execute("SELECT * FROM docker_endpoints").fetchall()],
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
@@ -125,7 +130,9 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             "domains":             [dict(r) for r in conn.execute("SELECT * FROM domains").fetchall()],
             "webhooks":            [dict(r) for r in conn.execute("SELECT * FROM webhooks").fetchall()],
             "service_alerts":      [dict(r) for r in conn.execute("SELECT * FROM service_alerts").fetchall()],
-            "settings":            [dict(r) for r in conn.execute("SELECT * FROM settings").fetchall()],
+            "settings":            [dict(r) for r in conn.execute(
+                "SELECT key, value FROM settings WHERE key NOT IN ('app_password_hash')"
+            ).fetchall()],
             "docker_endpoints":    docker_endpoints,
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
@@ -148,7 +155,9 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
 @limiter.limit("3/minute")
 def import_backup(request: Request, body: RestoreRequest):
     """Restore from backup. If backup contains encrypted secrets, passphrase is required."""
-    require_auth_or_setup(request, scope="admin")
+    # Never behind the setup bypass: a restore wipes and rewrites the whole database,
+    # including the admin password hash. It always requires a real admin credential.
+    require_auth(request, scope="admin")
 
     data = body.backup
     if not isinstance(data, dict) or "version" not in data:
@@ -165,24 +174,47 @@ def import_backup(request: Request, body: RestoreRequest):
 
     salt = base64.urlsafe_b64decode(salt_b64) if salt_b64 else b""
 
+    # Dry run BEFORE destroying anything: a wrong passphrase must fail with the database
+    # untouched. Decryption is the only expensive validation, so it runs first.
+    if secrets_included and body.passphrase:
+        for p in data.get("providers", []):
+            pwd = p.get("password", "")
+            if not pwd:
+                continue
+            try:
+                decrypt_from_backup(pwd, body.passphrase, salt)
+            except Exception as e:
+                raise HTTPException(
+                    400, f"Failed to decrypt provider secrets. Wrong passphrase? ({e})"
+                )
+
     conn = get_db()
     try:
         conn.execute("BEGIN EXCLUSIVE")
-        conn.executescript("""
-            DELETE FROM service_alerts;
-            DELETE FROM service_tags;
-            DELETE FROM service_push_targets;
-            DELETE FROM service_environments;
-            DELETE FROM services;
-            DELETE FROM providers;
-            DELETE FROM tags;
-            DELETE FROM environments;
-            DELETE FROM webhooks;
-            DELETE FROM domains;
-            DELETE FROM docker_endpoints;
-            DELETE FROM logs;
-            DELETE FROM settings;
-        """)
+        # One execute() per table, NOT executescript(): executescript() issues an implicit
+        # COMMIT before running, which would close the transaction opened above and make the
+        # rollback handlers below no-ops on an already-destroyed database.
+        for table in (
+            "service_alerts",
+            "service_tags",
+            "service_push_targets",
+            "service_environments",
+            "services",
+            "providers",
+            "tags",
+            "environments",
+            "webhooks",
+            "domains",
+            "docker_endpoints",
+            "logs",
+        ):
+            conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed literal table names
+        # Never wipe the credentials: a restore must not be able to drop the instance
+        # back to anonymous-admin.
+        conn.execute(
+            "DELETE FROM settings WHERE key NOT IN (?,?,?)",
+            _PROTECTED_SETTINGS,
+        )
 
         # Restore providers - decrypt from backup passphrase, re-encrypt with instance key
         for p in data.get("providers", []):
@@ -330,6 +362,11 @@ def import_backup(request: Request, body: RestoreRequest):
             )
 
         for setting in data.get("settings", []):
+            # Whitelist: an imported file must not be able to set `app_password_hash`
+            # (choosing the admin password) nor `public_target_sources` (URLs this
+            # instance would then query).
+            if setting.get("key") not in _VALID_SETTINGS:
+                continue
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
                 (setting.get("key"), setting.get("value")),
