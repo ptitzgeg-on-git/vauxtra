@@ -7,6 +7,122 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+Security audit of v1.1.0 and the fixes it produced. Everything below is on
+`fix/audit-securite-v1.1.0`; the test suite went from 284 to 386.
+
+### Security
+- **Path traversal in the SPA catch-all route.** `/{full_path:path}` does not strip `..`
+  segments and uvicorn does not normalize the path, so the raw URL segment was joined to
+  the build directory unchecked: `GET /%2e%2e/%2e%2e/data/vauxtra.db` served the SQLite
+  database, and `data/.secret_key` after it — decryptable provider passwords and a
+  forgeable admin session. Paths are now confined with `realpath`.
+- **An abandoned setup wizard left ten routes anonymous for good.** `is_setup_incomplete()`
+  read only the `setup_completed` flag, written at the wizard's very last click;
+  `POST /api/restore` was among the routes it left open. The condition now turns False as
+  soon as a password or a provider exists, and the flag is set when either is created.
+- **`POST /api/restore` destroyed the instance before validating the passphrase.**
+  `executescript()` issues an implicit COMMIT, so the `BEGIN EXCLUSIVE` closed over an
+  empty transaction, the thirteen DELETEs committed in autocommit, and the rollbacks
+  undid nothing. A dry decryption pass now runs before anything is destroyed.
+- **The admin password hash was treated as business data.** The `settings` table was
+  readable with a `read` scope, exported in backups, wiped by `/api/reset` and
+  `/api/restore` (which dropped the instance back to anonymous admin), and re-injectable
+  from an imported file. Read allow-list, protected keys on wipe, import filter, and the
+  cleartext export moved to the `admin` scope.
+- **Ten routes accepted any authenticated key, scope or not.** `require_auth(request)`
+  without `scope=` never consults the scope hierarchy. The preflight probe was the worst
+  of them: host and port come from the request body, so a read-only key was a port scanner
+  aimed at whatever the container can reach. Also check-all, provider test / validate /
+  validate-draft, test-webhook (now `write`), change-password and setup-complete (now
+  `admin`), push/dry-run and services/sync (now explicitly `read`). A static test rejects
+  any POST/PUT/DELETE/PATCH route that calls `require_auth*` without a scope.
+- **The MCP bridge's `--http` mode listened on 0.0.0.0 with no authentication of its own**,
+  while holding an API key that reaches every route. It now binds `127.0.0.1` by default;
+  `VAUXTRA_MCP_HOST` publishes it, with a warning on stderr.
+- **The setup wizard mirrored the provider password into `sessionStorage`** so the form
+  would survive a reload — including the proxy admin password or Cloudflare API token.
+  Everything else in the form still comes back; that field is typed again.
+
+### Fixed
+- **Deleting a service left its routes serving.** `delete_service` walked only
+  `proxy_provider_id` and `dns_provider_id`; the extra targets in `service_push_targets`
+  were never told, so the hostname stayed resolvable and the proxy kept forwarding with
+  nothing left in Vauxtra to show for it. Withdrawal now covers every provider that may
+  hold a route, disabled ones included — turning a provider off in Vauxtra does not take
+  its published route off the internet. `bulk_action` had the same gap.
+- **Deleting a service purged its neighbours' logs.** v1.1.0 narrowed the log cleanup to
+  `LIKE '%service <id>%'`, which still matches "service 12", "service 100" and every id
+  that merely starts with this one: deleting service 1 wiped the monitoring history of
+  nine other services. Now a bounded GLOB. `bulk_action` never purged logs at all.
+- **Disabling a service did not cut its public exposure.** In tunnel mode the publish
+  branch of `update_service` never read `body.enabled` and republished the ingress rule it
+  was meant to remove; `bulk_action` skipped tunnel-mode rows outright. The operator had
+  only stopped monitoring the host, not closed it. Editing an already-disabled service
+  replayed `add_rewrite`, and a service created disabled was published immediately.
+- **A failed Cloudflare Tunnel read looked exactly like an empty tunnel.**
+  `_get_configuration()` turned any error into `{}`, and the PUT replaces the whole
+  ingress: adding a service during a transient 502 silently deleted every other route in
+  the tunnel. It now returns `None` on failure and the writers refuse to act on it.
+  `_delete_dns_record` no longer claims success when the zone could not be resolved.
+- **No read timeout on any provider call.** `session.timeout` does not exist in `requests`
+  — the attribute was set and never read. A provider that accepts the connection then goes
+  quiet blocked the scheduler's single thread, stopping all monitoring without a message.
+- **The health-check cycle deadlocked itself.** `_run_dns_auto_updates()` ran inside the
+  write transaction opened by `run_health_checks()` and opened a second connection; SQLite
+  allows one writer, so it waited out its busy timeout, raised "database is locked", and
+  every status of that round was lost before the commit.
+- **A DOWN alert that failed to send was silenced for good.** `_alert_down_sent` was set
+  before `notify()` was even called, and its return value was neither checked nor logged.
+  All four notification paths now go through `_try_send_apprise()` — which existed but was
+  called nowhere — and a failed send releases the lock instead of keeping it.
+- **`_alert_down_since` persisted `time.monotonic()` values**, whose origin changes with
+  every process: after a restart, every computed duration was nonsense. Retries were
+  stamped in ISO while the queue compares with `next_retry_at <= datetime('now')`, a
+  string comparison where "T" sorts above " ": a retry due today only came due tomorrow.
+- **NPM forced HTTPS on a certificate that did not cover the host.**
+  `find_best_certificate` fell back to the first certificate it found, and `create_host`
+  sets `ssl_forced` as soon as an id exists — a wall of errors on every visit. Matching
+  now follows the TLS rule (a wildcard covers exactly one label).
+- **A toggle from the MCP bridge stripped a service's tags and environments.** The GET
+  serializes relations as `tags`/`environments` while the PUT expects
+  `tag_ids`/`environment_ids`: pydantic ignored the unknown keys, applied empty defaults,
+  and `set_tags` starts with a DELETE.
+- **The docs told operators to set `APP_PASSWORD` in cleartext; the code refused it in
+  silence.** `check_password` only compares cleartext when `ALLOW_PLAINTEXT_APP_PASSWORD`
+  is true (default false), and that variable appeared nowhere outside `app/auth.py`. The
+  operator got a 401 on the password they had just configured, a closed setup wizard, and
+  not one line in the logs.
+- **A half-failed delete said nothing in the UI.** The mutation dropped the response, so
+  the row vanished from the table while the hostname went on answering from the internet.
+  Provider failures are now reported, and `onError` shows the API's own message.
+- **Five French strings carried a `?` where the accent belonged** ("?chec de v?rification
+  des services"), and `Settings.tsx` asked for `settings.api_keys.create_failed`, which no
+  locale defined — `t()` falls back to printing the key, so the error toast read
+  `settings.api_keys.create_failed`.
+- **The three big modals were plain divs stacked over the page**: no `role="dialog"`, no
+  `aria-modal`, no Escape, and Tab walked out of the box into the form underneath.
+
+### Changed
+- `ServiceIn` now rejects unknown keys (`extra="forbid"`). **Breaking** for any client that
+  echoed a GET body straight back into a PUT — it gets a 422 instead of a service stripped
+  of its relations.
+- The MCP bridge's default request timeout is 120 s instead of 30 s (`VAUXTRA_TIMEOUT`);
+  30 s cut off a push that walks the providers in series.
+- `DELETE /api/services/{id}` returns `{"ok": true, "errors": [...]}` even when a provider
+  refused to withdraw the route: the service is gone from Vauxtra either way, and `false`
+  would push a client into retrying a delete that can only answer 404.
+- Docs follow the code: a Scopes section in HOWTO, `APP_PASSWORD` /
+  `ALLOW_PLAINTEXT_APP_PASSWORD` documented in `.env.example` and DEPLOYMENT, and
+  `vauxtra_mcp/README.md` no longer advertises an "all" scope that does not exist.
+
+### Added
+- `useModalDialog` — Escape to close, a focus trap, and focus restored to whatever opened
+  the dialog. Applied to the expose, provider and connection-editor modals.
+- Static guards that need neither a browser nor Node: locale key parity, placeholder
+  parity, no accent lost to a `?`, every `t('…')` key defined, and every full-screen
+  overlay declaring itself a dialog. CI runs `i18n:quality` but never `i18n:check`, so
+  key parity was ungated until now.
+
 ---
 
 ## [1.1.0] — 2026-06-12
