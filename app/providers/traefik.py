@@ -15,16 +15,14 @@ from urllib.parse import urlparse
 
 import requests
 
-from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider
+from app.providers.base import ProxyProvider, TimeoutSession
 
 
 class TraefikProvider(ProxyProvider):
 
     def __init__(self, url: str, username: str, password: str):
         self.url     = url.rstrip("/")
-        self.session = requests.Session()
-        self.session.timeout = PROVIDER_TIMEOUT
+        self.session = TimeoutSession()
         if username and password:
             self.session.auth = (username, password)
 

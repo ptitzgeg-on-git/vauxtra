@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-import requests
-
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider
+from app.providers.base import ProxyProvider, TimeoutSession
 
 
 class CloudflareTunnelProvider(ProxyProvider):
@@ -29,14 +27,13 @@ class CloudflareTunnelProvider(ProxyProvider):
             base = f"{base}/client/v4"
         self.api_url = base
 
-        self.session = requests.Session()
+        self.session = TimeoutSession()
         self.session.headers.update(
             {
                 "Authorization": f"Bearer {api_token}",
                 "Content-Type": "application/json",
             }
         )
-        self.session.timeout = PROVIDER_TIMEOUT
 
     def _request_detailed(self, method: str, path: str, **kwargs) -> dict:
         try:
@@ -107,13 +104,21 @@ class CloudflareTunnelProvider(ProxyProvider):
                     return zone_id
         return ""
 
-    def _get_configuration(self) -> dict:
+    def _get_configuration(self) -> dict | None:
+        """Return the tunnel config, or None when it could not be read.
+
+        The distinction matters: `_request` swallows every error into None, and an
+        empty dict here is indistinguishable from a genuinely empty tunnel. Callers
+        that rewrite the whole ingress list would then PUT a config containing only
+        their own rule -- a transient 502 or a timeout would silently delete every
+        other route of the tunnel.
+        """
         tunnel_id = self._resolve_tunnel_id()
         if not tunnel_id:
-            return {}
+            return None
         result = self._request("GET", f"/accounts/{self.account_id}/cfd_tunnel/{tunnel_id}/configurations")
         if not isinstance(result, dict):
-            return {}
+            return None
         config = result.get("config")
         if isinstance(config, dict):
             return config
@@ -138,6 +143,9 @@ class CloudflareTunnelProvider(ProxyProvider):
 
     def _upsert_ingress_rule(self, hostname: str, service_url: str) -> bool:
         config = self._get_configuration()
+        if config is None:
+            # Never rewrite an ingress list we failed to read: the PUT replaces it whole.
+            return False
         ingress = self._normalize_ingress(config.get("ingress"))
 
         updated: list[dict] = []
@@ -157,6 +165,8 @@ class CloudflareTunnelProvider(ProxyProvider):
 
     def _delete_ingress_rule(self, hostname: str) -> bool:
         config = self._get_configuration()
+        if config is None:
+            return False
         ingress = self._normalize_ingress(config.get("ingress"))
 
         updated: list[dict] = []
@@ -169,10 +179,15 @@ class CloudflareTunnelProvider(ProxyProvider):
                 continue
             updated.append(rule)
 
+        if not removed:
+            # The config WAS read (see the guard above) and the route is genuinely
+            # absent: nothing to write, and a delete of an already-absent route is a
+            # success. Before the guard, this branch also caught read failures and
+            # reported them as successful deletions.
+            return True
+
         updated.append({"service": "http_status:404"})
         config["ingress"] = updated
-        if not removed:
-            return True
         return self._put_configuration(config)
 
     def _ensure_dns_record(self, hostname: str) -> bool:
@@ -230,7 +245,9 @@ class CloudflareTunnelProvider(ProxyProvider):
     def _delete_dns_record(self, hostname: str) -> bool:
         zone_id = self._find_zone(hostname)
         if not zone_id:
-            return True
+            # `_find_zone` returns "" both for "no such zone" and for an API failure;
+            # in neither case has the record been removed.
+            return False
 
         tunnel_id = self._resolve_tunnel_id()
         tunnel_target = f"{tunnel_id}.cfargotunnel.com" if tunnel_id else ""
@@ -269,6 +286,8 @@ class CloudflareTunnelProvider(ProxyProvider):
 
     def list_hosts(self) -> list[dict]:
         config = self._get_configuration()
+        if config is None:
+            return []
         ingress = self._normalize_ingress(config.get("ingress"))
 
         hosts: list[dict] = []
@@ -430,7 +449,7 @@ class CloudflareTunnelProvider(ProxyProvider):
 
             if write_probe and config_get["ok"]:
                 current_cfg = self._get_configuration()
-                write_ok = bool(current_cfg) and self._put_configuration(current_cfg)
+                write_ok = current_cfg is not None and self._put_configuration(current_cfg)
                 _add(
                     "tunnel_config_write",
                     write_ok,
