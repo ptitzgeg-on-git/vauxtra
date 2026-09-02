@@ -330,16 +330,16 @@ class SchedulerRegressionTests(IsolatedDBTestCase):
         fake_apprise_module = types.SimpleNamespace(Apprise=FakeApprise)
 
         with patch.dict(sys.modules, {"apprise": fake_apprise_module}):
-            with patch.object(scheduler.time, "monotonic", return_value=0.0):
+            with patch.object(scheduler.time, "time", return_value=1700000000.0):
                 scheduler._fire_service_webhooks()
             self.assertEqual(len(sent_messages), 0)
 
-            with patch.object(scheduler.time, "monotonic", return_value=61.0):
+            with patch.object(scheduler.time, "time", return_value=1700000061.0):
                 scheduler._fire_service_webhooks()
             self.assertEqual(len(sent_messages), 1)
             self.assertIn("DOWN: app.example.com", sent_messages[-1]["body"])
 
-            with patch.object(scheduler.time, "monotonic", return_value=120.0):
+            with patch.object(scheduler.time, "time", return_value=1700000120.0):
                 scheduler._fire_service_webhooks()
             self.assertEqual(len(sent_messages), 1)
 
@@ -348,12 +348,12 @@ class SchedulerRegressionTests(IsolatedDBTestCase):
             conn.commit()
             conn.close()
 
-            with patch.object(scheduler.time, "monotonic", return_value=130.0):
+            with patch.object(scheduler.time, "time", return_value=1700000130.0):
                 scheduler._fire_service_webhooks()
             self.assertEqual(len(sent_messages), 2)
             self.assertIn("RECOVERED: app.example.com", sent_messages[-1]["body"])
 
-            with patch.object(scheduler.time, "monotonic", return_value=140.0):
+            with patch.object(scheduler.time, "time", return_value=1700000140.0):
                 scheduler._fire_service_webhooks()
             self.assertEqual(len(sent_messages), 2)
 
