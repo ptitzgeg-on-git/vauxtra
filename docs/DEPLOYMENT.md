@@ -29,7 +29,7 @@ services:
       DEBUG: "false"
       # Optional but recommended in production:
       # SECRET_KEY: "set-a-long-random-value-and-keep-it-stable"
-      # APP_PASSWORD: "set-a-strong-password"
+      # APP_PASSWORD: "pbkdf2:sha256:600000$...$..."   # a hash, not the password itself
       # CORS_ORIGINS: "https://vauxtra.example.com"
     volumes:
       - ./data:/app/data
@@ -50,6 +50,9 @@ Open: `http://<host>:8888`
 1. Keep `SECRET_KEY` stable for the lifetime of the instance.
 2. Never rotate `SECRET_KEY` casually: provider credentials are encrypted with it.
 3. Use `APP_PASSWORD` or complete password setup in wizard before exposing publicly.
+   `APP_PASSWORD` must hold a PBKDF2 hash — generate it with
+   `python -c "from app.auth import hash_password; print(hash_password('...'))"`.
+   A plaintext value is refused unless `ALLOW_PLAINTEXT_APP_PASSWORD=true`.
 4. Set `DEBUG=false` in production to disable `/api/docs`.
 5. Restrict inbound access with reverse proxy/firewall if Internet-exposed.
 
@@ -121,7 +124,8 @@ Recovery rule:
 | Variable | Default | Production note |
 |---|---|---|
 | `SECRET_KEY` | auto-generated | Set explicitly for predictable recovery and keep stable |
-| `APP_PASSWORD` | empty | Set for non-wizard bootstrap or leave empty for setup flow |
+| `APP_PASSWORD` | empty | PBKDF2 hash for non-wizard bootstrap, or leave empty for the setup flow |
+| `ALLOW_PLAINTEXT_APP_PASSWORD` | `false` | Accept a plaintext `APP_PASSWORD`. Leave off outside a lab. |
 | `TZ` | `UTC` | Set to your timezone |
 | `HTTPS_ONLY` | `false` | Use `true` only when app itself is served over HTTPS |
 | `DEBUG` | `false` | Keep `false` in production |
@@ -131,7 +135,7 @@ Recovery rule:
 
 - [ ] `DEBUG=false`
 - [ ] Stable `SECRET_KEY` configured and backed up
-- [ ] `APP_PASSWORD` set or setup wizard completed securely
+- [ ] `APP_PASSWORD` set to a PBKDF2 hash, or setup wizard completed securely
 - [ ] `/app/data` persisted on durable storage
 - [ ] Access restricted by firewall or reverse proxy auth/TLS
 - [ ] Backup and restore test completed once
