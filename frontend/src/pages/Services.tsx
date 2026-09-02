@@ -136,9 +136,30 @@ export function Services() {
   });
 
   const deleteService = useMutation({
-    mutationFn: (id: number) => { _startAction(id); return api.delete(`/services/${id}`); },
-    onSuccess: (_d, id) => { _endAction(id); queryClient.invalidateQueries({ queryKey: ['services'] }); },
-    onError: (_e, id) => { _endAction(id); toast.error('Delete failed'); },
+    mutationFn: (id: number) => {
+      _startAction(id);
+      return api.delete(`/services/${id}`) as Promise<{ ok: boolean; errors?: string[] }>;
+    },
+    onSuccess: (data, id) => {
+      _endAction(id);
+      queryClient.invalidateQueries({ queryKey: ['services'] });
+      queryClient.invalidateQueries({ queryKey: ['logs'] });
+      // A 200 does not mean the exposure is gone. The row is removed either way, and any
+      // provider that refused to withdraw the route is listed in `errors`; dropping them
+      // left a hostname answering from the internet with nothing on screen to say so.
+      const errors = data?.errors || [];
+      if (errors.length === 0) {
+        toast.success('Service deleted');
+      } else {
+        const summary = errors.slice(0, 2).join('; ');
+        const moreCount = errors.length > 2 ? ` (+${errors.length - 2} more)` : '';
+        toast(`Service deleted, but its route is still up somewhere: ${summary}${moreCount}`, { icon: '\u26a0\ufe0f', duration: 8000 });
+      }
+    },
+    onError: (err: { response?: { data?: { detail?: unknown } } }, id) => {
+      _endAction(id);
+      toast.error(toErrorMessage(err?.response?.data?.detail, 'Delete failed'));
+    },
   });
 
   const checkDrift = useMutation({
