@@ -128,8 +128,22 @@ app.include_router(api_keys_router)
 app.include_router(auth_router)
 
 frontend_dist = os.path.join(_DIR, "..", "frontend", "dist")
+# Racine canonique du build. Tout chemin servi doit y etre confine : le motif
+# `/{full_path:path}` ne retire pas les segments `..`, et uvicorn ne normalise
+# pas le chemin, il se contente de le decoder.
+_FRONTEND_ROOT = os.path.realpath(frontend_dist)
 if os.path.exists(frontend_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+
+
+def _resolve_frontend_file(full_path: str) -> str | None:
+    """Resolve a request path inside the frontend build, or None if it escapes it."""
+    if not full_path:
+        return None
+    candidate = os.path.realpath(os.path.join(_FRONTEND_ROOT, full_path))
+    if candidate != _FRONTEND_ROOT and not candidate.startswith(_FRONTEND_ROOT + os.sep):
+        return None
+    return candidate if os.path.isfile(candidate) else None
 
 
 @app.get("/{full_path:path}")
@@ -137,8 +151,8 @@ async def serve_frontend(full_path: str):
     if full_path.startswith("api/"):
         return JSONResponse(status_code=404, content={"message": "API route not found"})
 
-    file_path = os.path.join(frontend_dist, full_path)
-    if full_path and os.path.isfile(file_path):
+    file_path = _resolve_frontend_file(full_path)
+    if file_path is not None:
         return FileResponse(file_path)
 
     index_path = os.path.join(frontend_dist, "index.html")

@@ -114,6 +114,11 @@ def setup_password(request: Request, body: SetPasswordBody):
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_password_hash', ?)",
             (password_hash,),
         )
+        # Close the setup bypass here, not at the final click of the wizard: an abandoned
+        # wizard must never leave the API anonymous.
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')"
+        )
         conn.commit()
     finally:
         conn.close()
