@@ -150,6 +150,7 @@
   "settings.auth.confirm_mismatch": "两次输入的新密码不一致",
   "settings.auth.changed_success": "密码修改成功",
   "settings.api_keys.created": "API 密钥已创建",
+  "settings.api_keys.create_failed": "无法创建 API 密钥",
   "settings.api_keys.revoked": "API 密钥已吊销",
   "settings.api_keys.created_once": "新 API 密钥已创建 - 请立即复制，之后将不再显示：",
   "settings.api_keys.hide": "隐藏",

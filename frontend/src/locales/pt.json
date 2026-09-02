@@ -150,6 +150,7 @@
   "settings.auth.confirm_mismatch": "Novas senhas não coincidem",
   "settings.auth.changed_success": "Senha alterada com sucesso",
   "settings.api_keys.created": "Chave de API criada",
+  "settings.api_keys.create_failed": "Não foi possível criar a chave de API",
   "settings.api_keys.revoked": "Chave de API revogada",
   "settings.api_keys.created_once": "Nova chave de API criada – copie-a agora, ela não será mostrada novamente:",
   "settings.api_keys.hide": "Esconder",

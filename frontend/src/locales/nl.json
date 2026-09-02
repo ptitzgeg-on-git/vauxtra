@@ -150,6 +150,7 @@
   "settings.auth.confirm_mismatch": "Nieuwe wachtwoorden komen niet overeen",
   "settings.auth.changed_success": "Wachtwoord succesvol gewijzigd",
   "settings.api_keys.created": "API-sleutel gemaakt",
+  "settings.api_keys.create_failed": "Kan de API-sleutel niet aanmaken",
   "settings.api_keys.revoked": "API-sleutel ingetrokken",
   "settings.api_keys.created_once": "Nieuwe API-sleutel gemaakt - kopieer deze nu, deze wordt niet meer weergegeven:",
   "settings.api_keys.hide": "Verbergen",

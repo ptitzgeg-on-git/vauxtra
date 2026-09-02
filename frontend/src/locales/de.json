@@ -150,6 +150,7 @@
   "settings.auth.confirm_mismatch": "Neue Passwörter stimmen nicht überein",
   "settings.auth.changed_success": "Passwort erfolgreich geändert",
   "settings.api_keys.created": "API-Schlüssel erstellt",
+  "settings.api_keys.create_failed": "API-Schlüssel konnte nicht erstellt werden",
   "settings.api_keys.revoked": "API-Schlüssel widerrufen",
   "settings.api_keys.created_once": "Neuer API-Schlüssel erstellt – jetzt kopieren, er wird nicht mehr angezeigt:",
   "settings.api_keys.hide": "Verstecken",
