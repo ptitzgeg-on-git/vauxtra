@@ -170,6 +170,7 @@
   "settings.auth.changed_success": "Password changed successfully",
   "settings.auth.change_failed": "Failed to change password",
   "settings.api_keys.created": "API key created",
+  "settings.api_keys.create_failed": "Could not create the API key",
   "settings.api_keys.revoked": "API key revoked",
   "settings.api_keys.created_once": "New API key created - copy it now, it won't be shown again:",
   "settings.api_keys.hide": "Hide",
