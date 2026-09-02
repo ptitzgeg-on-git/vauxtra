@@ -150,6 +150,7 @@
   "settings.auth.confirm_mismatch": "新しいパスワードが一致しません",
   "settings.auth.changed_success": "パスワードが正常に変更されました",
   "settings.api_keys.created": "APIキーが作成されました",
+  "settings.api_keys.create_failed": "APIキーを作成できませんでした",
   "settings.api_keys.revoked": "APIキーが取り消されました",
   "settings.api_keys.created_once": "新しい API キーが作成されました - 今すぐコピーします。再度表示されません。",
   "settings.api_keys.hide": "隠す",
