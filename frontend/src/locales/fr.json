@@ -150,6 +150,7 @@
   "settings.auth.confirm_mismatch": "Les nouveaux mots de passe ne correspondent pas",
   "settings.auth.changed_success": "Mot de passe changé avec succès",
   "settings.api_keys.created": "Clé API créée",
+  "settings.api_keys.create_failed": "Impossible de créer la clé API",
   "settings.api_keys.revoked": "Clé API révoquée",
   "settings.api_keys.created_once": "Nouvelle clé API créée - copiez-la maintenant, elle ne sera plus affichée :",
   "settings.api_keys.hide": "Masquer",
@@ -260,10 +261,10 @@
   "settings.webhooks.choose_provider": "Choisir un provider",
   "settings.webhooks.choose_service": "Choisir un endpoint",
   "settings.webhooks.repeat_interval": "Intervalle de rappel (minutes)",
-  "monitoring.toast.check_failed": "?chec de v?rification des services",
-  "monitoring.auto_checks_every": "V?rifications auto : toutes les {minutes} min",
-  "monitoring.auto_checks_waiting": "V?rifications auto : en attente du premier cycle",
-  "monitoring.check_all": "V?rifier tous les services",
+  "monitoring.toast.check_failed": "Échec de vérification des services",
+  "monitoring.auto_checks_every": "Vérifications auto : toutes les {minutes} min",
+  "monitoring.auto_checks_waiting": "Vérifications auto : en attente du premier cycle",
+  "monitoring.check_all": "Vérifier tous les services",
   "monitoring.tunnels_down": "{count} tunnel(s) down",
   "monitoring.route_health": "Route Health",
   "monitoring.filter_routes_placeholder": "Filter routes...",
@@ -288,5 +289,5 @@
   "monitoring.timeline_empty": "No timeline data yet for this host.",
   "monitoring.related_logs_title": "Related Logs",
   "monitoring.related_logs_empty": "No recent logs linked to this hostname.",
-  "monitoring.toast.checked_count": "{count} service(s) v?rifi?(s)"
+  "monitoring.toast.checked_count": "{count} service(s) vérifié(s)"
 }
