@@ -29,12 +29,21 @@ import type { StepName, ProviderItem, ImportableService } from '@/components/fea
    Helper: persist wizard state in sessionStorage
    ──────────────────────────────────────────────────────────────── */
 
-function useSessionState<T>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+function useSessionState<T>(
+  key: string,
+  initial: T,
+  /** Applied on the way in and on the way out, to keep secrets out of the store. Must be a
+   *  stable reference — an inline arrow would re-run the effect on every render. */
+  sanitize?: (value: T) => T,
+): [T, React.Dispatch<React.SetStateAction<T>>] {
   const storageKey = `vauxtra.setup.${key}`;
   const [value, setValue] = useState<T>(() => {
     try {
       const stored = sessionStorage.getItem(storageKey);
-      return stored ? JSON.parse(stored) : initial;
+      if (!stored) return initial;
+      const parsed = JSON.parse(stored) as T;
+      // Also on read: a value written by an older build may still carry a password.
+      return sanitize ? sanitize(parsed) : parsed;
     } catch {
       return initial;
     }
@@ -42,12 +51,23 @@ function useSessionState<T>(key: string, initial: T): [T, React.Dispatch<React.S
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(storageKey, JSON.stringify(value));
+      sessionStorage.setItem(storageKey, JSON.stringify(sanitize ? sanitize(value) : value));
     } catch { /* ignore */ }
-  }, [storageKey, value]);
+  }, [storageKey, value, sanitize]);
 
   return [value, setValue];
 }
+
+/** The wizard survives a reload; the credential typed into it must not.
+ *
+ *  `sessionStorage` outlives a refresh, comes back with the tab through the browser's
+ *  session restore, and is readable by anything running in the page. A proxy admin
+ *  password or a Cloudflare API token has no business sitting there: everything else in
+ *  the form comes back, that one field is typed again.
+ */
+const withoutProviderSecrets = (form: ProviderFormState): ProviderFormState => (
+  form.password ? { ...form, password: '' } : form
+);
 
 /* ────────────────────────────────────────────────────────────────
    Main Setup Component
@@ -66,7 +86,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   // Providers step
   const [providers, setProviders] = useState<ProviderItem[]>([]);
-  const [formData, setFormData] = useSessionState<ProviderFormState>('formData', emptyForm);
+  const [formData, setFormData] = useSessionState<ProviderFormState>('formData', emptyForm, withoutProviderSecrets);
   const [wizardMode, setWizardMode] = useSessionState<'guided' | 'expert' | null>('wizardMode', null);
   const [guidedStepIndex, setGuidedStepIndex] = useSessionState('guidedStepIndex', 0);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
