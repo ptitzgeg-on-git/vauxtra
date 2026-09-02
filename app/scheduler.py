@@ -31,6 +31,19 @@ _cert_alert_state: dict[tuple[int, int], dict] = {}
 _WEBHOOK_RETRY_BACKOFF = [60, 300, 1800, 7200, 86400]
 
 
+def _utc_stamp(delay_seconds: int = 0) -> str:
+    """UTC timestamp in SQLite's own format.
+
+    `datetime('now')` renders "YYYY-MM-DD HH:MM:SS" with a space. The retry queue is
+    polled with `next_retry_at <= datetime('now')`, a plain string comparison: an ISO
+    "T" separator sorts above the space, so a due retry only ever became due the day
+    after.
+    """
+    import datetime as _dt
+    stamp = _dt.datetime.now(_dt.UTC) + _dt.timedelta(seconds=delay_seconds)
+    return stamp.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _read_retention_days(conn, key: str, default_days: int, *, min_days: int = 1, max_days: int = 365) -> int:
     row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     if not row:
@@ -55,14 +68,28 @@ def _decode_tuple_key(raw_key) -> tuple[int, int] | None:
     return None
 
 
+# Anything below this is not a wall-clock timestamp. Vauxtra <= 1.1.0 persisted
+# `time.monotonic()` values, whose origin is arbitrary per process: reloaded after a
+# restart they made every elapsed time nonsensical, and the DOWN alerts never fired
+# again. Such leftovers are dropped rather than trusted.
+_EPOCH_SANITY_FLOOR = 1_000_000_000.0  # 2001-09-09
+
+
 def _load_tuple_value_map(data) -> dict[tuple[int, int], float]:
     if not isinstance(data, dict):
         return {}
     result: dict[tuple[int, int], float] = {}
     for raw_key, value in data.items():
         key = _decode_tuple_key(raw_key)
-        if key is not None:
-            result[key] = float(value)
+        if key is None:
+            continue
+        try:
+            stamp = float(value)
+        except (TypeError, ValueError):
+            continue
+        if stamp < _EPOCH_SANITY_FLOOR:
+            continue
+        result[key] = stamp
     return result
 
 
@@ -364,7 +391,7 @@ def _run_tunnel_health_checks(conn) -> list[dict]:
     return _run_provider_health_checks(conn)
 
 
-def _run_dns_auto_updates(conn) -> None:
+def _run_dns_auto_updates(conn) -> bool:
     """Refresh DNS targets for services configured with auto public target updates.
     
     Implements a circuit-breaker: after 3 consecutive failures per service,
@@ -447,8 +474,12 @@ def _run_dns_auto_updates(conn) -> None:
             else:
                 add_log("error", f"[AutoDNS] {fqdn}: {e} (failure {_dns_update_failures[sid]}/{_DNS_FAILURE_THRESHOLD})", conn)
 
-    if state_changed:
-        _save_scheduler_state()
+    # No _save_scheduler_state() here, the flag is returned instead. This function runs
+    # inside the write transaction opened by run_health_checks(); opening a second
+    # connection to persist state makes SQLite wait out its busy_timeout and raise
+    # "database is locked". The cycle's commit is then never reached and every status of
+    # the round is lost. run_health_checks() persists once the connection is closed.
+    return state_changed
 
 
 # ── Certificate expiry alerts ────────────────────────────────────────────
@@ -533,11 +564,21 @@ def _run_cert_expiry_alerts(conn) -> None:
 
 # ── Webhook retry ─────────────────────────────────────────────────────────
 
-def _try_send_apprise(url: str, title: str, body: str, conn, webhook_id=None) -> bool:
-    """Send a notification via Apprise. Log failed deliveries for later retry."""
+def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=None) -> bool:
+    """Send a notification via Apprise, queueing it for retry when the send fails.
+
+    Returns True when the notification was delivered **or** safely queued in
+    `webhook_delivery_log`, and False only when the URL itself is unusable, in which
+    case nothing was sent and nothing will ever be retried. Callers that hold a
+    "already alerted" flag must clear it on False, or the alert stays silent forever.
+
+    `conn` is optional: the callers that notify run outside the health-check
+    transaction and hold no connection.
+    """
     import apprise as _apprise
     a = _apprise.Apprise()
     if not a.add(url):
+        add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {url}")
         return False
     try:
         ok = bool(a.notify(title=title, body=body))
@@ -545,30 +586,39 @@ def _try_send_apprise(url: str, title: str, body: str, conn, webhook_id=None) ->
             raise RuntimeError("Apprise.notify() returned False")
         return True
     except Exception as exc:
+        queued = False
         try:
-            import datetime as _dt
             delay = _WEBHOOK_RETRY_BACKOFF[0]
-            next_retry = (_dt.datetime.utcnow() + _dt.timedelta(seconds=delay)).strftime(
-                "%Y-%m-%dT%H:%M:%S"
-            )
-            conn.execute(
-                """INSERT INTO webhook_delivery_log
-                   (webhook_id, url, title, body, status, attempt, next_retry_at, error_msg)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (webhook_id, url, title, body, "pending", 1, next_retry, str(exc)),
-            )
+            next_retry = _utc_stamp(delay)
+            sql = """INSERT INTO webhook_delivery_log
+                     (webhook_id, url, title, body, status, attempt, next_retry_at, error_msg)
+                     VALUES (?,?,?,?,?,?,?,?)"""
+            params = (webhook_id, url, title, body, "pending", 1, next_retry, str(exc))
+            if conn is not None:
+                conn.execute(sql, params)
+            else:
+                own = get_db()
+                try:
+                    own.execute(sql, params)
+                    own.commit()
+                finally:
+                    own.close()
+            queued = True
         except Exception:
-            pass
-        return False
+            import traceback
+            add_log("error", f"[Webhook] Could not queue a retry: {traceback.format_exc()}")
+        add_log("warning", f"[Webhook] Delivery failed for {url}: {exc}")
+        return queued
 
 
 def _run_webhook_retry(conn) -> None:
     """Retry pending webhook deliveries that are due, applying exponential backoff."""
-    import datetime as _dt
 
     import apprise as _apprise
 
-    MAX_ATTEMPTS = len(_WEBHOOK_RETRY_BACKOFF)
+    # +1 because attempt 1 is the original send, already counted when the row was
+    # queued: without it the last backoff tier (24 h) was never reachable.
+    MAX_ATTEMPTS = len(_WEBHOOK_RETRY_BACKOFF) + 1
     try:
         rows = conn.execute(
             """SELECT id, webhook_id, url, title, body, attempt
@@ -621,9 +671,7 @@ def _run_webhook_retry(conn) -> None:
                 add_log("error", f"[Webhook] Delivery abandoned: {row['url']}", conn)
             else:
                 delay = _WEBHOOK_RETRY_BACKOFF[new_attempt - 1]
-                next_retry = (_dt.datetime.utcnow() + _dt.timedelta(seconds=delay)).strftime(
-                    "%Y-%m-%dT%H:%M:%S"
-                )
+                next_retry = _utc_stamp(delay)
                 conn.execute(
                     """UPDATE webhook_delivery_log
                        SET attempt=?, next_retry_at=?, error_msg=?, updated_at=datetime('now')
@@ -694,11 +742,14 @@ def _fire_global_webhook() -> None:
         for extra in extra_target_rows:
             extra_target_map.setdefault(int(extra["service_id"]), set()).add(int(extra["provider_id"]))
 
-        now = time.monotonic()
+        # Wall clock, not monotonic: this map is persisted and reloaded across restarts.
+        now = time.time()
         messages_by_url: dict[str, list[str]] = {}
+        # Which "already alerted" flags each URL carries, so they can be released if the
+        # URL turns out to be unusable.
+        keys_by_url: dict[str, list[tuple[int, int]]] = {}
+        webhook_id_by_url: dict[str, int] = {}
         valid_keys: set[tuple[int, int]] = set()
-
-        import apprise
 
         for row in rows:
             if not _service_matches_scope(row, extra_target_map):
@@ -729,6 +780,8 @@ def _fire_global_webhook() -> None:
 
                 if should_send:
                     messages_by_url.setdefault(row["url"], []).append(message)
+                    keys_by_url.setdefault(row["url"], []).append(key)
+                    webhook_id_by_url.setdefault(row["url"], int(row["webhook_id"]))
                     _webhook_service_last_sent[key] = now
             else:
                 had_down = key in _webhook_service_down_since or key in _webhook_service_last_sent
@@ -745,15 +798,22 @@ def _fire_global_webhook() -> None:
                 _webhook_service_last_sent.pop(key, None)
 
         if not messages_by_url:
+            _save_scheduler_state()
             return
 
-        _save_scheduler_state()
-
         for url, lines in messages_by_url.items():
-            a = apprise.Apprise()
-            if not a.add(url):
-                continue
-            a.notify(title="Vauxtra - Service alert", body="\n".join(lines))
+            handled = _try_send_apprise(
+                url, "Vauxtra - Service alert", "\n".join(lines),
+                webhook_id=webhook_id_by_url.get(url),
+            )
+            if not handled:
+                # Unusable URL: nothing left and nothing is queued for retry. Releasing
+                # the flags lets the next cycle try again instead of staying silent.
+                for key in keys_by_url.get(url, ()):
+                    _webhook_service_last_sent.pop(key, None)
+
+        # Persisted after sending, so the flags describe what actually went out.
+        _save_scheduler_state()
     except Exception:
         import traceback
         add_log("error", f"Global webhook failed: {traceback.format_exc()}")
@@ -789,9 +849,12 @@ def _fire_service_webhooks() -> None:
             _alert_down_sent.clear()
             return
 
-        now = time.monotonic()
+        # Wall clock, not monotonic: see _load_tuple_value_map.
+        now = time.time()
         valid_keys: set[tuple[int, int]] = set()
         messages_by_url: dict[str, list[str]] = {}
+        keys_by_url: dict[str, list[tuple[int, int]]] = {}
+        webhook_id_by_url: dict[str, int] = {}
 
         for row in rows:
             key = (int(row["service_id"]), int(row["webhook_id"]))
@@ -817,6 +880,8 @@ def _fire_service_webhooks() -> None:
                     messages_by_url.setdefault(row["webhook_url"], []).append(
                         f"DOWN: {fqdn} ({elapsed_minutes:.1f}m)"
                     )
+                    keys_by_url.setdefault(row["webhook_url"], []).append(key)
+                    webhook_id_by_url.setdefault(row["webhook_url"], int(row["webhook_id"]))
                     _alert_down_sent.add(key)
             else:
                 had_down = key in _alert_down_since or key in _alert_down_sent
@@ -835,19 +900,25 @@ def _fire_service_webhooks() -> None:
             if key not in valid_keys:
                 _alert_down_sent.discard(key)
 
-        # Persist state to database to survive restarts
-        _save_scheduler_state()
-
         if not messages_by_url:
+            _save_scheduler_state()
             return
 
-        import apprise
-
         for url, lines in messages_by_url.items():
-            a = apprise.Apprise()
-            if not a.add(url):
-                continue
-            a.notify(title="Vauxtra - Service alert", body="\n".join(lines))
+            handled = _try_send_apprise(
+                url, "Vauxtra - Service alert", "\n".join(lines),
+                webhook_id=webhook_id_by_url.get(url),
+            )
+            if not handled:
+                # `_alert_down_sent` is a one-shot latch: leaving a key in it after a
+                # send that never happened and is not queued silences that service for
+                # good.
+                for key in keys_by_url.get(url, ()):
+                    _alert_down_sent.discard(key)
+
+        # Persist state to database to survive restarts -- after sending, so the latch
+        # reflects what actually went out.
+        _save_scheduler_state()
     except Exception:
         import traceback
         add_log("error", f"Service webhook failed: {traceback.format_exc()}")
@@ -867,14 +938,12 @@ def _fire_integration_webhook(changed: list[dict]) -> None:
 
         conn = get_db()
         webhooks = conn.execute(
-            """SELECT url, alert_on_integration_down, alert_on_integration_up,
+            """SELECT id, url, alert_on_integration_down, alert_on_integration_up,
                       scope_type, scope_ref_id
                FROM webhooks WHERE enabled=1
                AND (alert_on_integration_down=1 OR alert_on_integration_up=1)"""
         ).fetchall()
         conn.close()
-
-        import apprise
 
         for wh in webhooks:
             scope_type = (wh["scope_type"] or "all").lower()
@@ -895,10 +964,10 @@ def _fire_integration_webhook(changed: list[dict]) -> None:
                 lines.append("Integration recovered: " + ", ".join(c["fqdn"] for c in scoped_up))
             if not lines:
                 continue
-            a = apprise.Apprise()
-            if not a.add(wh["url"]):
-                continue
-            a.notify(title="Vauxtra - Integration alert", body="\n".join(lines))
+            _try_send_apprise(
+                wh["url"], "Vauxtra - Integration alert", "\n".join(lines),
+                webhook_id=wh["id"],
+            )
     except Exception:
         import traceback
         add_log("error", f"Integration webhook failed: {traceback.format_exc()}")
@@ -908,13 +977,12 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
     try:
         conn = get_db()
         webhooks = conn.execute(
-            "SELECT url FROM webhooks WHERE enabled=1 AND alert_on_any_down=1"
+            "SELECT id, url FROM webhooks WHERE enabled=1 AND alert_on_any_down=1"
         ).fetchall()
         conn.close()
         if not webhooks:
             return
 
-        import apprise
         lines = [f"Auto-reconcile corrected {len(corrected)} service(s):"]
         lines.extend(f"  ✓ {fqdn}" for fqdn in corrected)
         if errors:
@@ -923,10 +991,9 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
         body = "\n".join(lines)
 
         for wh in webhooks:
-            a = apprise.Apprise()
-            if not a.add(wh["url"]):
-                continue
-            a.notify(title="Vauxtra: Auto-Reconcile", body=body)
+            _try_send_apprise(
+                wh["url"], "Vauxtra: Auto-Reconcile", body, webhook_id=wh["id"]
+            )
     except Exception:
         import traceback
         add_log("error", f"Reconcile webhook failed: {traceback.format_exc()}")
