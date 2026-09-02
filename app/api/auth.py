@@ -55,7 +55,9 @@ def auth_me(request: Request):
 @router.post("/api/auth/setup-complete")
 def mark_setup_complete(request: Request):
     """Mark the setup wizard as completed (stored server-side)."""
-    require_auth_or_setup(request)
+    # Open while the wizard is running, `admin` afterwards: `setup_completed` is the flag
+    # that decides whether the setup routes stay open at all.
+    require_auth_or_setup(request, scope="admin")
     conn = get_db()
     try:
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')")
@@ -133,7 +135,10 @@ def setup_password(request: Request, body: SetPasswordBody):
 @limiter.limit("3/minute")
 def change_password(request: Request, body: ChangePasswordBody):
     """Change the admin password (requires current password verification)."""
-    require_auth(request)
+    # `admin`, not merely "authenticated": an API key minted for a monitoring dashboard
+    # has no business attempting the admin password, even though the current password is
+    # still required below -- each attempt also burns the shared 3/minute rate limit.
+    require_auth(request, scope="admin")
 
     if not check_password(body.current_password):
         raise HTTPException(401, "Current password is incorrect")

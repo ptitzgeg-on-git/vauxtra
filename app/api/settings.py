@@ -159,7 +159,9 @@ def clear_logs(request: Request):
 
 @router.post("/api/settings/test-webhook")
 def test_webhook(request: Request):
-    require_auth(request)
+    # `write`, like every other test-send route: this delivers a real notification to
+    # whatever the operator configured, which is a side effect outside Vauxtra.
+    require_auth(request, scope="write")
     conn = get_db()
     rows = conn.execute(
         "SELECT key, value FROM settings WHERE key IN ('webhook_url', 'webhook_enabled')"
