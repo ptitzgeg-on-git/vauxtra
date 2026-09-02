@@ -2,7 +2,7 @@ import socket
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.auth import require_auth
 from app.models import (
@@ -323,6 +323,13 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
 
 
 class ServiceIn(BaseModel):
+    # Unknown keys are rejected rather than ignored. A client that reads a service back and
+    # PUTs it again sends `tags`/`environments` (the serialized relations), not the
+    # `tag_ids`/`environment_ids` this model expects: pydantic's default would drop them
+    # silently and apply the empty defaults, and `set_tags` starts with a DELETE. A 422 is
+    # the only outcome that does not quietly wipe a service's tags.
+    model_config = ConfigDict(extra="forbid")
+
     subdomain:         str
     domain:            str
     target_ip:         str

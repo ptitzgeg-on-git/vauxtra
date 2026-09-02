@@ -81,7 +81,7 @@ export function Services() {
       : [];
 
     return {
-      id: Number(overrides.id ?? service?.id ?? 0),
+      // No `id`: it is already in the URL, and the API rejects unknown keys.
       subdomain: String(overrides.subdomain ?? service?.subdomain ?? '').trim().toLowerCase(),
       domain: String(overrides.domain ?? service?.domain ?? '').trim().toLowerCase(),
       target_ip: String(overrides.target_ip ?? service?.target_ip ?? '').trim(),

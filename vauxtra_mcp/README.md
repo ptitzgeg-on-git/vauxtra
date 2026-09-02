@@ -67,10 +67,16 @@ For remote instances or browser-based clients, run the server in HTTP mode:
 
 ```bash
 VAUXTRA_URL=http://vauxtra:8888 VAUXTRA_API_KEY=vx_... python -m vauxtra_mcp.server --http
-# Listens on http://0.0.0.0:9000
+# Listens on http://127.0.0.1:9000
 ```
 
-Then point your MCP client at `http://your-server:9000`.
+Then point your MCP client at `http://127.0.0.1:9000`.
+
+The HTTP transport has **no authentication of its own** while holding an API key that can
+reach every Vauxtra route, so it binds to loopback only. To expose it, set
+`VAUXTRA_MCP_HOST` explicitly — and put an authenticating reverse proxy in front of it, or
+tunnel to the loopback port instead. The server prints a warning whenever it binds
+anything other than `127.0.0.1`.
 
 ---
 
@@ -80,6 +86,9 @@ Then point your MCP client at `http://your-server:9000`.
 |---|---|---|
 | `VAUXTRA_URL` | `http://localhost:8888` | Base URL of your Vauxtra instance |
 | `VAUXTRA_API_KEY` | *(required)* | Bearer API key created in Vauxtra settings |
+| `VAUXTRA_TIMEOUT` | `120` | Seconds to wait for a Vauxtra call. A push walks every provider in series. |
+| `VAUXTRA_MCP_HOST` | `127.0.0.1` | Interface `--http` binds to. Anything else is published without authentication. |
+| `VAUXTRA_MCP_PORT` | `9000` | Port `--http` binds to |
 
 ---
 

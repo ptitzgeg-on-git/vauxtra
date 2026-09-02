@@ -4,6 +4,34 @@ from typing import Any
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
 
+# Exactly the keys `ServiceIn` accepts. An allowlist, not a blocklist: a GET also returns
+# computed columns, provider names and monitoring state, and a new column added to the
+# table would otherwise start leaking into every PUT.
+_SERVICE_WRITABLE_KEYS = (
+    "subdomain", "domain", "target_ip", "target_port", "forward_scheme", "websocket",
+    "enabled", "dns_provider_id", "proxy_provider_id", "tunnel_provider_id",
+    "expose_mode", "public_target_mode", "auto_update_dns", "tunnel_hostname", "dns_ip",
+    "icon_url", "extra_proxy_provider_ids", "extra_dns_provider_ids",
+)
+
+
+def _service_to_payload(current: dict[str, Any]) -> dict[str, Any]:
+    """Turn a GET /services/{id} body into a valid PUT body.
+
+    The GET serializes tags and environments as objects under `tags`/`environments`; the
+    PUT expects `tag_ids`/`environment_ids` and treats an omitted list as "remove them
+    all". Feeding the GET straight back therefore used to erase every tag and every
+    environment on each update or toggle.
+    """
+    payload = {k: current[k] for k in _SERVICE_WRITABLE_KEYS if k in current}
+    payload["tag_ids"] = [
+        int(t["id"]) for t in current.get("tags") or [] if isinstance(t, dict) and "id" in t
+    ]
+    payload["environment_ids"] = [
+        int(e["id"]) for e in current.get("environments") or [] if isinstance(e, dict) and "id" in e
+    ]
+    return payload
+
 
 @mcp.tool()
 def list_services() -> list[dict[str, Any]]:
@@ -90,7 +118,7 @@ def update_service(
     """
     current = client.get(f"/services/{service_id}")
     current.raise_for_status()
-    payload: dict[str, Any] = current.json()
+    payload: dict[str, Any] = _service_to_payload(current.json())
     for key, value in {
         "target_ip": target_ip,
         "target_port": target_port,
@@ -123,7 +151,7 @@ def toggle_service(service_id: int, enabled: bool) -> dict[str, Any]:
     """Enable or disable a service without removing its provider routes."""
     current = client.get(f"/services/{service_id}")
     current.raise_for_status()
-    payload: dict[str, Any] = {**current.json(), "enabled": enabled}
+    payload: dict[str, Any] = {**_service_to_payload(current.json()), "enabled": enabled}
     r = client.put(f"/services/{service_id}", json=payload)
     r.raise_for_status()
     return r.json()
