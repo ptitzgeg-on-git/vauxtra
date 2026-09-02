@@ -233,5 +233,55 @@ class TestCFTunnelIngressRules(unittest.TestCase):
         self.p._put_configuration.assert_not_called()
 
 
+class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
+    """A failed read of the tunnel config must never trigger a write.
+
+    `_put_configuration` replaces the ingress list wholesale. If a failed GET were
+    read as an empty tunnel, adding a single service during a transient 502 would
+    delete every other route of the tunnel.
+    """
+
+    def setUp(self):
+        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+
+    def test_get_configuration_returns_none_on_read_failure(self):
+        self.p.session = MagicMock()
+        self.p.session.request.return_value = _response(500)
+        self.assertIsNone(self.p._get_configuration())
+
+    def test_get_configuration_returns_empty_dict_for_empty_tunnel(self):
+        self.p.session = MagicMock()
+        self.p.session.request.return_value = _response(200, _cf_ok({"config": {}}))
+        self.assertEqual(self.p._get_configuration(), {})
+
+    def test_upsert_emits_no_put_when_config_unreadable(self):
+        self.p._get_configuration = MagicMock(return_value=None)
+        self.p._put_configuration = MagicMock(return_value=True)
+        self.assertFalse(self.p._upsert_ingress_rule("app.example.com", "http://b:80"))
+        self.p._put_configuration.assert_not_called()
+
+    def test_delete_emits_no_put_when_config_unreadable(self):
+        self.p._get_configuration = MagicMock(return_value=None)
+        self.p._put_configuration = MagicMock(return_value=True)
+        self.assertFalse(self.p._delete_ingress_rule("app.example.com"))
+        self.p._put_configuration.assert_not_called()
+
+    def test_no_put_reaches_the_api_when_the_get_fails(self):
+        """End to end on the HTTP layer: a failing GET must leave zero PUT behind."""
+        self.p.session = MagicMock()
+        self.p.session.request.return_value = _response(502)
+        self.assertFalse(self.p._upsert_ingress_rule("app.example.com", "http://b:80"))
+        methods = [c.args[0] for c in self.p.session.request.call_args_list]
+        self.assertNotIn("PUT", methods)
+
+    def test_list_hosts_is_empty_but_does_not_pretend_on_read_failure(self):
+        self.p._get_configuration = MagicMock(return_value=None)
+        self.assertEqual(self.p.list_hosts(), [])
+
+    def test_delete_dns_record_fails_when_zone_cannot_be_resolved(self):
+        self.p._find_zone = MagicMock(return_value="")
+        self.assertFalse(self.p._delete_dns_record("app.example.com"))
+
+
 if __name__ == "__main__":
     unittest.main()

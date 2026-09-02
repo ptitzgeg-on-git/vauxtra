@@ -3,7 +3,7 @@
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import DNSProvider
+from app.providers.base import DNSProvider, TimeoutSession
 
 
 class TechnitiumProvider(DNSProvider):
@@ -13,8 +13,7 @@ class TechnitiumProvider(DNSProvider):
         self._username = username
         self._password = password
         self._token: str | None = None
-        self.session = requests.Session()
-        self.session.timeout = PROVIDER_TIMEOUT
+        self.session = TimeoutSession()
 
     def _login(self) -> bool:
         try:

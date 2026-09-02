@@ -2,8 +2,7 @@ from urllib.parse import quote
 
 import requests
 
-from app.config import PROVIDER_TIMEOUT
-from app.providers.base import DNSProvider
+from app.providers.base import DNSProvider, TimeoutSession
 
 
 class PiholeProvider(DNSProvider):
@@ -12,8 +11,7 @@ class PiholeProvider(DNSProvider):
         self.url      = url.rstrip("/")
         self.api_key  = password
         self.password = password
-        self.session  = requests.Session()
-        self.session.timeout = PROVIDER_TIMEOUT
+        self.session  = TimeoutSession()
         self._v6_sid  = None
         self._v6_csrf = None
         self._version = None
