@@ -2,6 +2,31 @@
 
 from abc import ABC, abstractmethod
 
+import requests
+
+from app.config import PROVIDER_TIMEOUT
+
+
+class TimeoutSession(requests.Session):
+    """A `requests.Session` that carries a default timeout on every call.
+
+    `requests` reads the timeout from the call arguments, never from the session:
+    assigning `session.timeout` sets an attribute nobody looks at, and the request
+    goes out with no read timeout at all. A provider that accepts the connection
+    then stops answering therefore blocks its caller forever -- and the scheduler
+    runs checks in a single thread, so one frozen provider silently stops all
+    monitoring. Passing `timeout=` explicitly still wins over this default.
+    """
+
+    def __init__(self, timeout: float = PROVIDER_TIMEOUT):
+        super().__init__()
+        self.timeout = timeout
+
+    def request(self, method, url, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self.timeout
+        return super().request(method, url, **kwargs)
+
 
 class DNSProvider(ABC):
     """Common interface for all DNS providers (AdGuard, Pi-hole, etc.)."""

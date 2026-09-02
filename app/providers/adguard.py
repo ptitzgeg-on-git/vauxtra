@@ -2,18 +2,16 @@
 
 import requests
 
-from app.config import PROVIDER_TIMEOUT
-from app.providers.base import DNSProvider
+from app.providers.base import DNSProvider, TimeoutSession
 
 
 class AdGuardProvider(DNSProvider):
 
     def __init__(self, url: str, username: str, password: str):
         self.url = url.rstrip("/")
-        self.session = requests.Session()
+        self.session = TimeoutSession()
         self.session.auth = (username, password)
         self.session.headers["Content-Type"] = "application/json"
-        self.session.timeout = PROVIDER_TIMEOUT
 
     def test_connection(self) -> bool:
         try:
