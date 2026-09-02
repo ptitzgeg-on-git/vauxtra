@@ -5,6 +5,7 @@ import { Settings, Activity, KeySquare, Plus, AlertCircle, RefreshCw, X, ShieldA
 import { api } from "@/api/client";
 import { ProviderModal } from "@/components/features/ProviderModal";
 import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useModalDialog } from "@/hooks/useModalDialog";
 import { ProviderLogo } from "@/components/ui/ProviderLogos";
 import { useT } from "@/i18n";
 import type { Provider, TunnelHealthResponse, TunnelHealthItem, SyncResult } from "@/types/api";
@@ -441,6 +442,11 @@ export function Providers() {
   ) as Record<number, Record<string, unknown>>;
   const providerTypeMap = providerTypes || {};
   const editingTypeKey = String(editingProvider?.type || '').toLowerCase();
+  // Escape closes it, Tab stays inside it, and focus goes back to whatever opened it.
+  const editorRef = useModalDialog<HTMLFormElement>(
+    Boolean(editingProvider),
+    () => setEditingProvider(null),
+  );
   const editingTypeMeta = providerTypeMap[editingTypeKey] || {};
   const editingUserLabel = String(editingTypeMeta?.user_label || 'Username');
   const editingPassLabel = String(editingTypeMeta?.pass_label || 'Secret');
@@ -871,7 +877,11 @@ export function Providers() {
       {/* Basic Editor Stub to match Stripe style */}
       {editingProvider && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <form 
+            <form
+              ref={editorRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="provider-editor-title"
               onSubmit={(e) => {
                 e.preventDefault();
                 const fd = new FormData(e.currentTarget);
@@ -898,13 +908,14 @@ export function Providers() {
                         <Settings className="w-5 h-5 text-primary" />
                     </div>
                     <div>
-                      <h2 className="text-lg font-bold text-foreground">Connection Settings</h2>
+                      <h2 id="provider-editor-title" className="text-lg font-bold text-foreground">Connection Settings</h2>
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mt-0.5">Edit {editingProvider.name}</p>
                     </div>
                  </div>
                  <button 
                    type="button"
                    onClick={() => setEditingProvider(null)}
+                   aria-label="Close"
                    className="p-2 text-muted-foreground hover:text-foreground bg-muted hover:bg-accent rounded-lg transition-colors border border-transparent hover:border-border"
                  >
                    <X className="w-4 h-4" />

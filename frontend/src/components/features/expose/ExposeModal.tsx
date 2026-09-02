@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { type FormState, type Provider, initialForm, toFormState, hasCapability } from './types';
 import { ServiceForm } from './ServiceForm';
 import { ServicePreview } from './ServicePreview';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
 interface ExposeModalProps {
   isOpen: boolean;
@@ -317,11 +318,20 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
     onClose();
   };
 
+  // Escape closes it, Tab stays inside it, and focus goes back to whatever opened it.
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, handleClose);
+
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/70 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto pt-20">
-      <div className="bg-card border border-border rounded-xl shadow-2xl max-w-4xl w-full flex flex-col font-sans animate-in zoom-in-95 duration-200 my-auto">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="expose-modal-title"
+        className="bg-card border border-border rounded-xl shadow-2xl max-w-4xl w-full flex flex-col font-sans animate-in zoom-in-95 duration-200 my-auto"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-border pb-4">
           <div className="flex items-center gap-3">
@@ -329,7 +339,7 @@ export function ExposeModal({ isOpen, onClose, mode = 'create', service = null }
               <Network className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-foreground leading-tight">
+              <h2 id="expose-modal-title" className="text-lg font-bold text-foreground leading-tight">
                 {isEditMode ? 'Edit Route' : 'Route New Service'}
               </h2>
               <p className="text-xs font-medium text-muted-foreground mt-0.5">
