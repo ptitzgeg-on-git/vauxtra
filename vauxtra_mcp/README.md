@@ -7,7 +7,7 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 ## Prerequisites
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
-2. An API key — create one in **Vauxtra → Settings → API Keys** (scope: `all` for full access)
+2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`; `write` covers every tool except the admin ones (`change_password`, backup/restore, factory reset, API key management).
 3. Python 3.12+ with dependencies installed:
 
 ```bash
@@ -154,7 +154,12 @@ Once connected to Claude Desktop or Cursor:
 
 ## Security notes
 
-- The API key has the same access level as a logged-in admin. Treat it like a password.
+- A key grants exactly the scopes it was created with — a session login is always `admin`,
+  a key is not. Give each integration the lowest scope that works, and treat the key
+  itself like a password.
+- Scopes are hierarchical: `admin` satisfies `write`, `write` satisfies `read`. A `read`
+  key is refused with `403 Insufficient scope` on anything that changes state or sends
+  something outward, including the test-send and preflight tools.
 - Never commit the key to git — pass it via environment variable only.
 - The MCP server runs locally (stdio) by default, so the key never leaves your machine.
 - For HTTP mode, secure the endpoint (reverse proxy + TLS + IP allowlist).

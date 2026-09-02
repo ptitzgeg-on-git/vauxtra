@@ -674,6 +674,29 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/settings/api-keys` | Create an API key |
 | `DELETE` | `/api/settings/api-keys/{key_id}` | Revoke an API key |
 
+### Scopes
+
+A key carries one or more of `read`, `write`, `admin`. They are hierarchical: `admin`
+satisfies `write`, `write` satisfies `read`. A UI session is always `admin`; a key is only
+what it was created with. A request that falls short is refused with
+`403 Insufficient scope: '<scope>' required`.
+
+| Scope | Covers |
+|---|---|
+| `read` | Every `GET`, plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
+| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
+| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`. |
+
+A `read` key is deliberately refused on the test and preflight routes. They take a target
+host and port from the request and make the server connect to it, or deliver a real
+notification — side effects, not reads, even though nothing in Vauxtra's own database
+changes.
+
+The setup routes are the one exception to the table: while the installation wizard has not
+been completed they answer without any authentication at all, because there is nobody to
+authenticate yet. As soon as `setup-complete` has been stored they fall back to the scope
+listed above.
+
 ---
 
 ## 15) Troubleshooting

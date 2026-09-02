@@ -189,7 +189,9 @@ def list_types(request: Request):
 
 @router.post("/api/providers/validate-draft")
 def validate_provider_draft(request: Request, body: ProviderDraftValidationIn):
-    require_auth_or_setup(request)
+    # `write` once setup is done: the body carries an arbitrary URL that the server then
+    # connects to, credentials included.
+    require_auth_or_setup(request, scope="write")
 
     if not PROVIDER_TYPES.get(body.type, {}).get("available"):
         raise HTTPException(400, f"Provider type '{body.type}' not yet available")
@@ -355,7 +357,8 @@ def delete_provider(pid: int, request: Request):
 
 @router.post("/api/providers/{pid}/validate")
 def validate_provider(pid: int, request: Request, body: ProviderValidationOptions | None = None):
-    require_auth(request)
+    # `write`: the options carry `write_probe`, which really does write to the provider.
+    require_auth(request, scope="write")
     conn = get_db()
     row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
@@ -416,7 +419,9 @@ def provider_health(pid: int, request: Request):
 
 @router.post("/api/providers/{pid}/test")
 def test_provider(pid: int, request: Request):
-    require_auth(request)
+    # `write`, to match /api/docker/endpoints/{id}/test: it makes the server open an
+    # outbound connection on demand, which a read-only key should not be able to drive.
+    require_auth(request, scope="write")
     conn = get_db()
     row  = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
     conn.close()
