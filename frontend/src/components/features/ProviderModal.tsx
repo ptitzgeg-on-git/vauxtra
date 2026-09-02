@@ -17,6 +17,7 @@ import {
 import { StepTypeSelector, StepCredentials } from '@/components/features/provider-modal';
 import { useProviderMutations } from '@/hooks/useProviderMutations';
 import { useDockerEndpoints } from '@/hooks/useDockerEndpoints';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
 interface ProviderModalProps {
   isOpen: boolean;
@@ -126,18 +127,27 @@ export function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
   const currentGuidedSteps = getGuidedSteps(formData.type, selectedMeta);
   const totalSteps = isDockerMode ? 2 : (currentGuidedSteps.length > 0 ? 3 : 2);
 
+  // Escape closes it, Tab stays inside it, and focus goes back to whatever opened it.
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, resetAndClose);
+
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/70 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-card border border-border rounded-xl shadow-2xl max-w-xl w-full flex flex-col font-sans animate-in zoom-in-95 duration-200">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="provider-modal-title"
+        className="bg-card border border-border rounded-xl shadow-2xl max-w-xl w-full flex flex-col font-sans animate-in zoom-in-95 duration-200"
+      >
         <div className="flex items-center justify-between px-6 py-5 border-b border-border">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg">
               <Settings className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-foreground">Add Integration</h2>
+              <h2 id="provider-modal-title" className="text-lg font-bold text-foreground">Add Integration</h2>
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mt-0.5">Step {step} of {totalSteps}</p>
             </div>
           </div>
