@@ -4,6 +4,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from app.api.sync import withdraw_service_routes
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -1167,47 +1168,27 @@ def delete_service(sid: int, request: Request):
 
     mode = (svc["expose_mode"] or "proxy_dns").strip().lower()
     public_host = _service_public_hostname(mode, svc["tunnel_hostname"] or "", svc["subdomain"], svc["domain"])
-    errors = []
 
-    if mode == "tunnel":
-        if svc["tunnel_provider_id"]:
-            row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["tunnel_provider_id"],)).fetchone()
-            if row:
-                try:
-                    if create_provider(row).delete_host(public_host):
-                        add_log("info", f"Tunnel route deleted: {public_host}")
-                    else:
-                        errors.append("Failed to delete tunnel route")
-                except Exception as e:
-                    errors.append(str(e))
-    else:
-        if svc["proxy_provider_id"] and svc["npm_host_id"]:
-            row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["proxy_provider_id"],)).fetchone()
-            if row:
-                try:
-                    if create_provider(row).delete_host(svc["npm_host_id"]):
-                        add_log("info", f"Proxy deleted: {public_host}")
-                    else:
-                        errors.append("Failed to delete proxy host")
-                except Exception as e:
-                    errors.append(str(e))
+    # Every provider that may hold a route, not just the two columns on the service row:
+    # the extra proxies and DNS servers listed in `service_push_targets` went on serving a
+    # deleted service, and nothing in Vauxtra was left to point at them.
+    errors = withdraw_service_routes(conn, svc, sid)
 
-        if svc["dns_provider_id"] and svc["dns_ip"]:
-            row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["dns_provider_id"],)).fetchone()
-            if row:
-                try:
-                    if create_provider(row).delete_rewrite(public_host, svc["dns_ip"]):
-                        add_log("info", f"DNS deleted: {public_host}")
-                    else:
-                        errors.append("Failed to delete DNS rewrite")
-                except Exception as e:
-                    errors.append(str(e))
-
-    conn.execute("DELETE FROM logs WHERE message LIKE ?", (f"%service {sid}%",))
+    # Boundary-aware, and lowercased so it keeps matching whatever case a message used.
+    # `LIKE '%service 1%'` also matched "service 12", "service 100" and every other id that
+    # merely starts with this one: deleting service 1 silently purged the monitoring
+    # history of nine of its neighbours. The second pattern is the id at end of message.
+    conn.execute(
+        "DELETE FROM logs WHERE lower(message) GLOB ? OR lower(message) GLOB ?",
+        (f"*service {sid}[^0-9]*", f"*service {sid}"),
+    )
     conn.execute("DELETE FROM services WHERE id=?", (sid,))
     conn.commit()
     conn.close()
     add_log("info", f"Service deleted: {public_host}")
+    # `ok` stays true even with errors: the service is gone from Vauxtra either way, and a
+    # false would push a client into retrying a delete that can only answer 404 now. The
+    # provider failures are in `errors`, and the caller has to show them.
     return {"ok": True, "errors": errors}
 
 
@@ -1428,33 +1409,17 @@ def bulk_action(body: _BulkActionBody, request: Request):
                 mode, svc["tunnel_hostname"] or "", svc["subdomain"], svc["domain"]
             )
 
-            # Remove from proxy provider
-            if mode != "tunnel" and svc["proxy_provider_id"] and svc["npm_host_id"]:
-                row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["proxy_provider_id"],)).fetchone()
-                if row:
-                    try:
-                        create_provider(row).delete_host(svc["npm_host_id"])
-                    except Exception as e:
-                        errors.append(f"{public_host}: proxy delete failed — {e}")
+            # The same walk as the single delete, extra push targets included: selecting
+            # ten services in the table has to withdraw exactly what deleting them one by
+            # one would.
+            errors.extend(f"{public_host}: {e}" for e in withdraw_service_routes(conn, svc, sid))
 
-            # Remove from DNS provider
-            if mode != "tunnel" and svc["dns_provider_id"] and svc["dns_ip"]:
-                row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["dns_provider_id"],)).fetchone()
-                if row:
-                    try:
-                        create_provider(row).delete_rewrite(public_host, svc["dns_ip"])
-                    except Exception as e:
-                        errors.append(f"{public_host}: DNS delete failed — {e}")
-
-            # Remove tunnel route
-            if mode == "tunnel" and svc["tunnel_provider_id"]:
-                row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["tunnel_provider_id"],)).fetchone()
-                if row:
-                    try:
-                        create_provider(row).delete_host(public_host)
-                    except Exception as e:
-                        errors.append(f"{public_host}: tunnel delete failed — {e}")
-
+            # And the logs, which the bulk path never purged: a deleted service left its
+            # monitoring history behind, attached to an id nothing could resolve any more.
+            conn.execute(
+                "DELETE FROM logs WHERE lower(message) GLOB ? OR lower(message) GLOB ?",
+                (f"*service {sid}[^0-9]*", f"*service {sid}"),
+            )
             conn.execute("DELETE FROM services WHERE id=?", (sid,))
             affected += 1
 
