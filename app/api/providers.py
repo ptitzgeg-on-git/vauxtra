@@ -289,6 +289,9 @@ def add_provider(request: Request, body: ProviderIn):
             json.dumps(body.extra or {}),
         ),
     )
+    # A configured instance is no longer an empty install: close the setup bypass even if
+    # the operator never reaches the last screen of the wizard.
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')")
     conn.commit()
     pid = cur.lastrowid
     conn.close()

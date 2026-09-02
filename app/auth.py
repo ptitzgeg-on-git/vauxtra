@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import sqlite3
 
 from fastapi import HTTPException, Request
 
@@ -92,16 +93,33 @@ def has_password_configured() -> bool:
 
 
 def is_setup_incomplete() -> bool:
-    """True when setup wizard has not been marked as completed yet."""
+    """True while the instance is still an empty install that may be configured anonymously.
+
+    The `setup_completed` flag alone cannot decide this: it is only written at the very last
+    step of the wizard, so an abandoned wizard (closed tab, refresh, configuration done over
+    REST or through the MCP bridge) would leave the setup bypass open forever. An instance
+    that already has a password or a provider is configured, whatever the flag says.
+
+    This mirrors the `setup_required` condition already exposed by GET /api/auth/me, which
+    previously disagreed with the server-side check: the UI showed a login screen while the
+    API stayed anonymous.
+
+    Fails closed: any error means auth is enforced.
+    """
     try:
+        if has_password_configured():
+            return False
         from app.models import get_db
         conn = get_db()
         try:
             row = conn.execute("SELECT value FROM settings WHERE key='setup_completed'").fetchone()
-            return not (row and row["value"] == "1")
+            if row and row["value"] == "1":
+                return False
+            provider_count = conn.execute("SELECT COUNT(*) as c FROM providers").fetchone()["c"]
+            return provider_count == 0
         finally:
             conn.close()
-    except (KeyError, ValueError, OSError):
+    except (KeyError, ValueError, OSError, sqlite3.Error):
         return False
 
 

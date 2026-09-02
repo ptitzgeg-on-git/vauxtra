@@ -31,6 +31,15 @@ _VALID_SETTINGS = {
 _VALID_THEMES   = {"light", "dark"}
 _VALID_PUBLIC_TARGET_PRIORITY = {"server_public_ip", "proxy_provider_host", "current"}
 
+# The `settings` table also stores a server-side secret (the admin password hash) and internal
+# bookkeeping. Reads must go through this whitelist so an API key -- `read` by default -- never
+# walks away with a hash it can crack offline.
+_READABLE_SETTINGS = _VALID_SETTINGS | {"schema_version", "setup_completed"}
+
+# Keys that must survive a reset or a restore: wiping the password hash would drop the instance
+# back to anonymous-admin, and importing one would let a backup file pick the admin password.
+_PROTECTED_SETTINGS = ("app_password_hash", "setup_completed", "schema_version")
+
 
 def _is_valid_public_target_sources(value: str) -> bool:
     entries = [line.strip() for line in str(value).replace(",", "\n").splitlines() if line.strip()]
@@ -52,7 +61,7 @@ def get_settings(request: Request):
     conn = get_db()
     rows = conn.execute("SELECT key, value FROM settings").fetchall()
     conn.close()
-    return {r["key"]: r["value"] for r in rows}
+    return {r["key"]: r["value"] for r in rows if r["key"] in _READABLE_SETTINGS}
 
 
 @router.post("/api/settings")
@@ -196,8 +205,14 @@ def reset_all(request: Request):
         DELETE FROM environments;
         DELETE FROM domains;
         DELETE FROM logs;
-        DELETE FROM settings;
     """)
+    # Reset the business data, never the credentials: deleting `app_password_hash` would leave
+    # the instance answering anonymously with admin scope, and nothing in the {"ok": true}
+    # response would say so.
+    conn.execute(
+        "DELETE FROM settings WHERE key NOT IN (?,?,?)",
+        _PROTECTED_SETTINGS,
+    )
     conn.commit()
     conn.close()
     return {"ok": True}
