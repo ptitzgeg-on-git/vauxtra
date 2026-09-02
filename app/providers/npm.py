@@ -196,24 +196,39 @@ class NPMProvider(ProxyProvider):
         return result
 
     def find_best_certificate(self, domain_suffix: str) -> int | None:
-        """Select the best certificate: wildcard first, then subdomain match, then fallback."""
-        certs = self.get_certificates()
-        suffix = domain_suffix.lower()
-        preferred = None
-        fallback = None
+        """Return a certificate that actually covers the host, or None.
 
-        for cert in certs:
+        Callers pass the full service hostname. A certificate qualifies only when one
+        of its names covers that host: the exact name, or the wildcard of its parent
+        zone -- TLS wildcards cover exactly one label, so `*.example.com` covers
+        `vault.example.com` but not `a.b.example.com`. `*.host` is also accepted for
+        the case where the caller passes a bare zone.
+
+        There is deliberately no last-resort fallback. `create_host` sets
+        `"ssl_forced": cert_id is not None`: handing back an unrelated certificate
+        forces HTTPS on a host it does not cover, and every visitor is met with
+        ERR_CERT_COMMON_NAME_INVALID. No certificate is the honest answer.
+        """
+        host = (domain_suffix or "").strip().lower().rstrip(".")
+        if not host:
+            return None
+        parent = host.split(".", 1)[1] if "." in host else ""
+
+        exact: int | None = None
+        wildcard: int | None = None
+
+        for cert in self.get_certificates():
             cid = cert["id"]
-            names = [n.lower() for n in cert["domains"]]
-            names.append(cert["nice_name"].lower())
-            # Exact wildcard or exact domain match
-            if any(n in (f"*.{suffix}", suffix) for n in names):
-                return cid
-            # Subdomain of the target domain
-            if any(n.endswith(f".{suffix}") for n in names):
-                preferred = cid
-            # Last resort
-            if fallback is None:
-                fallback = cid
+            names = {str(n).strip().lower().rstrip(".") for n in cert["domains"] if n}
+            nice = str(cert.get("nice_name") or "").strip().lower().rstrip(".")
+            if nice:
+                names.add(nice)
 
-        return preferred or fallback
+            if exact is None and host in names:
+                exact = cid
+            if wildcard is None and (
+                (parent and f"*.{parent}" in names) or f"*.{host}" in names
+            ):
+                wildcard = cid
+
+        return exact if exact is not None else wildcard

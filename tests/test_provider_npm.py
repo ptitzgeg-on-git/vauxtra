@@ -267,10 +267,26 @@ class TestNPMCertificates(unittest.TestCase):
         # Wildcard (*) is preferred, should return wildcard cert
         self.assertEqual(cert_id, 1)
 
-    def test_find_best_certificate_returns_fallback(self):
-        # No cert matching "unknown.org" — should return fallback (any cert)
-        cert_id = self.npm.find_best_certificate("unknown.org")
-        self.assertIsNotNone(cert_id)  # fallback returned, not None
+    def test_find_best_certificate_returns_none_when_nothing_covers_the_host(self):
+        # Historically this returned "any certificate" as a last resort. That id then
+        # reached `create_host`, which sets `ssl_forced: cert_id is not None` — HTTPS
+        # forced on a host the certificate does not cover, i.e. a browser error wall
+        # on every visit. No certificate is the correct answer.
+        self.assertIsNone(self.npm.find_best_certificate("unknown.org"))
+
+    def test_find_best_certificate_matches_parent_wildcard(self):
+        # Real-world shape: callers pass the full hostname, and `*.example.com` is the
+        # certificate that covers it. The old suffix logic never matched here and fell
+        # through to the arbitrary fallback.
+        self.assertEqual(self.npm.find_best_certificate("vault.example.com"), 1)
+
+    def test_find_best_certificate_prefers_exact_over_wildcard(self):
+        self.assertEqual(self.npm.find_best_certificate("sub.example.com"), 2)
+
+    def test_find_best_certificate_rejects_deeper_label_for_a_wildcard(self):
+        # A TLS wildcard covers exactly one label: `*.example.com` does not cover
+        # `a.b.example.com`.
+        self.assertIsNone(self.npm.find_best_certificate("a.b.example.com"))
 
     def test_find_best_certificate_returns_none_when_no_certs(self):
         self.npm.session.get = MagicMock(return_value=_response(200, []))

@@ -163,10 +163,27 @@ class TestProviderHealthChecks(unittest.TestCase):
 class TestSchedulerStatePersistence(unittest.TestCase):
 
     def test_dump_and_load_tuple_value_map(self):
-        original = {(1, 2): 100.5, (3, 4): 200.0}
+        original = {(1, 2): 1700000000.5, (3, 4): 1700000200.0}
         dumped = sched._dump_tuple_value_map(original)
         restored = sched._load_tuple_value_map(__import__("json").loads(dumped))
         self.assertEqual(restored, original)
+
+    def test_load_drops_legacy_monotonic_timestamps(self):
+        """Vauxtra <= 1.1.0 persisted time.monotonic() values.
+
+        Their origin is arbitrary per process: reloaded after a restart they made every
+        elapsed time nonsensical and the DOWN alerts stayed silent forever. They must be
+        dropped, not trusted.
+        """
+        legacy = {(1, 2): 100.5, (3, 4): 200.0}
+        dumped = sched._dump_tuple_value_map(legacy)
+        self.assertEqual(sched._load_tuple_value_map(__import__("json").loads(dumped)), {})
+
+    def test_load_keeps_wall_clock_and_drops_monotonic_in_the_same_payload(self):
+        mixed = {(1, 2): 42.0, (3, 4): 1700000000.0}
+        dumped = sched._dump_tuple_value_map(mixed)
+        restored = sched._load_tuple_value_map(__import__("json").loads(dumped))
+        self.assertEqual(restored, {(3, 4): 1700000000.0})
 
     def test_dump_and_load_tuple_set(self):
         original = {(1, 2), (3, 4), (5, 6)}
