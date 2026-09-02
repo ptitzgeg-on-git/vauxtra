@@ -3,7 +3,7 @@
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider
+from app.providers.base import ProxyProvider, TimeoutSession
 
 
 class NPMProvider(ProxyProvider):
@@ -14,7 +14,7 @@ class NPMProvider(ProxyProvider):
             self.api_url += "/api"
         self.email = email
         self.password = password
-        self.session = requests.Session()
+        self.session = TimeoutSession()
         self.session.headers["Content-Type"] = "application/json"
         self._token = None
 
