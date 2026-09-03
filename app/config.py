@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import logging
 import os
 import secrets
 
@@ -44,6 +45,8 @@ _raw_key    = hashlib.sha256(SECRET_KEY.encode()).digest()
 _fernet_key = base64.urlsafe_b64encode(_raw_key)
 fernet      = Fernet(_fernet_key)
 
+logger = logging.getLogger(__name__)
+
 
 def encrypt_secret(s: str) -> str:
     """Encrypt a string with Fernet."""
@@ -52,13 +55,36 @@ def encrypt_secret(s: str) -> str:
     return fernet.encrypt(s.encode()).decode()
 
 
+# A Fernet token starts with a 0x80 version byte, which always yields this prefix once
+# base64url-encoded. It is what separates "this field was never encrypted" from "this field
+# is encrypted under a different key".
+_FERNET_PREFIX = "gAAAAA"
+
+
 def decrypt_secret(s: str) -> str:
-    """Decrypt a Fernet string, or return it as-is if not encrypted (legacy)."""
+    """Decrypt a Fernet string, or return it as-is if it was never encrypted (legacy).
+
+    Both possible failures used to leave here the same way: as the value itself. For a
+    password stored in clear before encryption existed, that is the right answer. For a
+    token encrypted under a `SECRET_KEY` that is no longer there -- variable lost, file not
+    mounted, a fresh key generated at boot -- it handed the *ciphertext* to the provider as
+    the password. What the operator saw was every provider failing authentication at once,
+    with nothing anywhere naming the cause, and the ciphertext going out over the network
+    to a third party.
+
+    That case now yields an empty string and says why in the log.
+    """
     if not s:
         return s
     try:
         return fernet.decrypt(s.encode()).decode()
     except Exception:
+        if s.startswith(_FERNET_PREFIX):
+            logger.error(
+                "Cannot decrypt a stored secret: SECRET_KEY does not match the one that "
+                "wrote it. Restore the same SECRET_KEY, or re-enter the provider passwords."
+            )
+            return ""
         return s
 
 

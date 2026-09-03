@@ -10,6 +10,12 @@ services:
       - "8888:8888"
     volumes:
       - ./data:/app/data
+      # Container discovery. `:ro` applies to the socket *file*, not to the Docker API:
+      # anything that can talk to this socket can start a privileged container and is
+      # therefore root on the host. Vauxtra only ever lists and inspects, but the grant is
+      # not what Vauxtra does with it. Remove this line if you do not use the Docker
+      # features -- everything else keeps working, the Docker screens answer 503 -- or put
+      # a read-only socket proxy in front of it and point DOCKER_HOST at that instead.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - .env
