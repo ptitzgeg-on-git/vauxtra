@@ -44,8 +44,12 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
     
     Supports PBKDF2 format: pbkdf2:sha256:iterations$salt$hash
     
-    Note: Legacy SHA-256 format removed in v2.0 — users with old hashes
-    must reset their password via `vauxtra reset-password` CLI or re-run setup.
+    Note: Legacy SHA-256 format removed in v2.0. A stored hash in any other format
+    verifies as False, which reads as a wrong password. There is no `vauxtra
+    reset-password` command -- this docstring named one for a while and nothing in the
+    repository has ever provided it. The way back in is to clear both `app_password_hash`
+    and `auth_mode` from `settings` and re-run the wizard, or to set `APP_PASSWORD` to a
+    `pbkdf2:`-prefixed hash.
     """
     if not stored_hash:
         return False

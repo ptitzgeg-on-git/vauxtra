@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from app.validators import is_valid_hostname
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PUBLIC_IP_SOURCES = [
     "https://api.ipify.org",
@@ -98,6 +101,18 @@ def load_public_target_policy(conn) -> dict:
     }
 
 
+def _is_publicly_routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether this is an address the outside world could route back to us."""
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def detect_server_public_ip(
     sources: list[str] | None = None,
     timeout_seconds: float = 2.0,
@@ -110,9 +125,22 @@ def detect_server_public_ip(
                 raw = resp.read(96).decode("utf-8", "ignore").strip()
             candidate = raw.split()[0].strip()
             ip = ipaddress.ip_address(candidate)
-            return str(ip)
         except Exception:
             continue
+        if not _is_publicly_routable(ip):
+            # Whatever comes back here is written into public DNS for every service left in
+            # `public_target_mode='auto'`. `127.0.0.1` used to be accepted verbatim -- from
+            # a captive portal answering for the resolver, from a source chosen badly, from
+            # a source that was compromised -- and every name on this instance would then
+            # resolve to the visitor's own machine. Named out loud rather than skipped in
+            # silence: a resolver that answers with a LAN address is broken, not empty.
+            logger.warning(
+                "Ignoring %s from WAN resolver %s: not a publicly routable address",
+                ip,
+                source,
+            )
+            continue
+        return str(ip)
     return ""
 
 
