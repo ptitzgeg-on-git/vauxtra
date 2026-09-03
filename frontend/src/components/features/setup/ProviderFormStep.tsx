@@ -10,9 +10,9 @@ import {
   type ProviderTypeMeta,
   type GuidedStep,
   fallbackIconByType as iconByType,
-  descByType,
-  categoryByType,
-  providerColor,
+  getDescription,
+  getCategory,
+  getProviderColor,
   getGuidedSteps,
   canSubmitProvider as canSubmitProviderFn,
 } from '@/components/features/providers/providerConstants';
@@ -134,15 +134,15 @@ export function ProviderFormStep({
                         onClick={() => chooseProviderType(type, String(meta.label || type))}
                         className="flex items-start gap-4 p-4 rounded-xl text-left border border-border bg-background hover:border-primary/40 hover:bg-primary/5 transition-all"
                       >
-                        <div className={`p-2.5 rounded-lg border ${providerColor[type] || 'bg-primary/10 text-primary border-primary/20'}`}>
+                        <div className={`p-2.5 rounded-lg border ${getProviderColor(type, meta)}`}>
                           <ProviderLogo type={type} className="w-6 h-6" fallback={<FallbackIcon className="w-6 h-6" />} />
                         </div>
                         <div className="min-w-0">
                           <div className="font-semibold text-sm text-foreground">{meta.label || type}</div>
-                          <div className="text-xs text-muted-foreground mt-0.5">{descByType[type]}</div>
-                          {categoryByType[type] && (
-                            <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${categoryByType[type].color}`}>
-                              {categoryByType[type].label}
+                          <div className="text-xs text-muted-foreground mt-0.5">{getDescription(type, meta)}</div>
+                          {getCategory(type, meta) && (
+                            <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${getCategory(type, meta)!.color}`}>
+                              {getCategory(type, meta)!.label}
                             </span>
                           )}
                         </div>

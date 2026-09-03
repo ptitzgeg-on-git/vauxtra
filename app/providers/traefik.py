@@ -45,7 +45,6 @@ class TraefikProvider(ProxyProvider):
         try:
             r_routers    = self.session.get(f"{self.url}/api/http/routers")
             r_services   = self.session.get(f"{self.url}/api/http/services")
-            r_middlewares = self.session.get(f"{self.url}/api/http/middlewares")
             r_routers.raise_for_status()
             r_services.raise_for_status()
 
@@ -57,17 +56,10 @@ class TraefikProvider(ProxyProvider):
                 if servers:
                     svc_map[name] = servers[0].get("url", "")
 
-            # middleware name → type (for display)
-            mw_types: dict[str, str] = {}
-            if r_middlewares.ok:
-                for mw in r_middlewares.json():
-                    mw_name = mw.get("name", "")
-                    # Determine middleware type by inspecting keys
-                    mw_type = next(
-                        (k for k in mw if k not in ("name", "type", "status", "provider", "usedBy")),
-                        mw.get("type", "unknown"),
-                    )
-                    mw_types[mw_name] = mw_type
+            # `/api/http/middlewares` used to be fetched here to build a name -> type map
+            # that nothing read: a third round-trip to Traefik on every listing, and its
+            # answer discarded. The `middlewares` each host reports are the names the router
+            # itself carries, which come from the routers call.
 
             hosts = []
             for idx, router in enumerate(r_routers.json()):

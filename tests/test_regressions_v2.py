@@ -361,7 +361,7 @@ class ChangePasswordTests(IsolatedDBTestCase):
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_change_password_new_too_short(self) -> None:
-        """New password shorter than 8 chars → 400."""
+        """New password below the shared 12-character floor → 400."""
         self._set_db_password("MyPassword1")
 
         with patch.object(auth_api, "require_auth", lambda _req, scope=None: None), \

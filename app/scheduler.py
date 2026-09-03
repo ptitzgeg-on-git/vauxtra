@@ -20,7 +20,6 @@ _lock      = threading.Lock()
 _alert_down_since: dict[tuple[int, int], float] = {}
 _alert_down_sent: set[tuple[int, int]] = set()
 _provider_last_status: dict[int, str] = {}
-_tunnel_last_status = _provider_last_status
 _webhook_service_down_since: dict[tuple[int, int], float] = {}
 _webhook_service_last_sent: dict[tuple[int, int], float] = {}
 # Circuit-breaker: track consecutive failures per service for DNS auto-update

@@ -146,7 +146,7 @@
   "settings.backup.export_secure_success": "Copia de seguridad segura exportada con credenciales",
   "settings.backup.restore_success": "Copia de seguridad restaurada exitosamente",
   "settings.auth.current_required": "Ingrese su contraseña actual",
-  "settings.auth.new_min": "La nueva contraseña debe tener al menos 8 caracteres",
+  "settings.auth.new_min": "La nueva contraseña debe tener al menos 12 caracteres",
   "settings.auth.confirm_mismatch": "Las nuevas contraseñas no coinciden",
   "settings.auth.changed_success": "La contraseña se cambió correctamente",
   "settings.api_keys.created": "Clave API creada",

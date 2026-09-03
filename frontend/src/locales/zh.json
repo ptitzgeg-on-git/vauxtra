@@ -146,7 +146,7 @@
   "settings.backup.export_secure_success": "已成功导出含凭据的安全备份",
   "settings.backup.restore_success": "备份恢复成功",
   "settings.auth.current_required": "请输入当前密码",
-  "settings.auth.new_min": "新密码至少需要 8 个字符",
+  "settings.auth.new_min": "新密码至少需要 12 个字符",
   "settings.auth.confirm_mismatch": "两次输入的新密码不一致",
   "settings.auth.changed_success": "密码修改成功",
   "settings.api_keys.created": "API 密钥已创建",

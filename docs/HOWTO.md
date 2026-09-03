@@ -292,8 +292,11 @@ scope, to anyone:
 - `GET /api/webhooks` and `GET /api/services/{sid}/alerts` return `url_masked` /
   `webhook_url_masked` (`discord://***`) and no `url` field at all. The create and update
   responses answer the same way.
-- `GET /api/settings` masks the legacy global `webhook_url` the same way. The key stays, so
-  you can tell one is configured.
+- The legacy global `webhook_url` no longer exists as a setting. It could be written, it
+  was masked on the way out, and it delivered nothing -- alerting reads the `webhooks`
+  table. Any value already stored is moved into that table on the next start, as a target
+  named *Global notifications (migrated)*; writing the key now returns 400 and points at
+  `POST /api/webhooks`.
 - The `[Webhook]` log lines are masked too. Before this, one failed delivery wrote the token
   into the `logs` table, which every `read` key can read; the migration deletes those rows
   once, on the next start.
@@ -694,9 +697,9 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/settings` | Get settings (`webhook_url` masked) |
+| `GET` | `/api/settings` | Get settings |
 | `POST` | `/api/settings` | Update settings — send only the keys you change; 400 (and nothing written) on an invalid value |
-| `POST` | `/api/settings/test-webhook` | Test webhook notification |
+| `POST` | `/api/settings/test-webhook` | Send a test notification to every enabled webhook; answers `{ok, results[]}` with one entry per target |
 | `GET` | `/api/logs` | Get logs (supports `?level=` filter) |
 | `GET` | `/api/logs/stream` | SSE log stream |
 | `POST` | `/api/logs/clear` | Clear logs |
