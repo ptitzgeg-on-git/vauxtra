@@ -35,12 +35,16 @@ dev:
 test:
 	$(PYTHON) -m pytest tests/ -v
 
+# `ruff check .` like the CI does: `app/ vauxtra_mcp/` left `tests/` and `scripts/` out.
+# And `tsc --noEmit` type-checked *nothing* -- the root tsconfig.json is a solver file with
+# `"files": []`, so the whole source tree lives behind the two references. Only `-b` walks
+# them, which is why `npm run build` caught an error this target reported as clean.
 lint:
-	ruff check app/ vauxtra_mcp/
-	cd frontend && ./node_modules/.bin/tsc --noEmit
+	ruff check .
+	cd frontend && ./node_modules/.bin/tsc -b --noEmit
 
 lint-fix:
-	ruff check app/ vauxtra_mcp/ --fix
+	ruff check . --fix
 
 ## Docker
 
