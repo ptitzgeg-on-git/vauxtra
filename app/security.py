@@ -110,6 +110,31 @@ def validate_password_strength(password: str, min_length: int = 12) -> tuple[boo
     return True, ""
 
 
+def mask_secret_url(url: str) -> str:
+    """Reduce a credential-bearing URL to what is safe to show and to log.
+
+    An Apprise URL *is* the credential: `discord://<id>/<token>`, `tgram://<bot
+    token>/<chat id>`, `slack://<tokens>/<channel>`. There is no separate password
+    field to clear -- masking is the only way to name a webhook without handing over
+    the ability to post to it.
+
+    The authority is kept only when a `@` proves it is a server address and the
+    credential sits in front of it (`ntfy://user:pass@ntfy.home.lan/topic` ->
+    `ntfy://***@ntfy.home.lan`). Without a `@` the authority is opaque and is itself
+    half the secret, so it goes too. The scheme always survives: it is what tells the
+    operator which of their webhooks a line is about.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        return "***"
+    authority = rest.split("?", 1)[0].split("#", 1)[0].split("/", 1)[0]
+    host = authority.split("@")[-1] if "@" in authority else ""
+    return f"{scheme}://***@{host}" if host else f"{scheme}://***"
+
+
 def sanitize_domain(domain: str) -> str:
     """
     Sanitize domain name to prevent injection attacks.

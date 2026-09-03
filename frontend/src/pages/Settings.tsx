@@ -391,8 +391,8 @@ export function Settings() {
 
   const restoreBackupMutation = useMutation({
     mutationFn: (payload: { backup: Record<string, unknown>; passphrase: string }) =>
-      api.post('/restore', payload),
-    onSuccess: async () => {
+      api.post<{ ok: boolean; webhooks_needing_url?: number }>('/restore', payload),
+    onSuccess: async (result) => {
       setImportPending(null);
       setImportPassphrase('');
       await Promise.all([
@@ -415,6 +415,13 @@ export function Settings() {
       ]);
       markRecentlyChanged();
       toast.success(t('settings.backup.restore_success'));
+      // A backup without secrets carries no Apprise URL, and the URL *is* the webhook.
+      // Those rows come back disabled rather than broken -- silently would be worse than
+      // either, since the operator would believe their alerting survived the restore.
+      const needingUrl = result?.webhooks_needing_url ?? 0;
+      if (needingUrl > 0) {
+        toast.error(t('settings.backup.restore_webhooks_disabled', { count: needingUrl }));
+      }
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error(err?.response?.data?.detail || t('settings.backup.restore_failed')),
   });
@@ -484,7 +491,7 @@ export function Settings() {
     if (!q) return webhooks;
     return webhooks.filter((wh) =>
       wh.name.toLowerCase().includes(q) ||
-      wh.url.toLowerCase().includes(q),
+      wh.url_masked.toLowerCase().includes(q),
     );
   }, [webhooks, webhookSearch]);
 
@@ -1640,7 +1647,7 @@ export function Settings() {
                             <div className="min-w-0">
                               <span className="font-medium text-sm">{wh.name}</span>
                               <p className="text-xs text-muted-foreground">{getWebhookScopeSummary(wh)}</p>
-                              <p className="text-xs text-muted-foreground font-mono truncate max-w-xs">{wh.url}</p>
+                              <p className="text-xs text-muted-foreground font-mono truncate max-w-xs">{wh.url_masked}</p>
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">

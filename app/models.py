@@ -245,6 +245,35 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     _migrate_encrypt_passwords(conn)
     _backfill_auth_mode(conn)
+    _purge_logged_webhook_urls(conn)
+
+
+def _purge_logged_webhook_urls(conn: sqlite3.Connection) -> None:
+    """Delete log lines that captured a full Apprise URL before those were masked.
+
+    Masking the four `[Webhook]` log calls stops new leaks; it does nothing about the
+    rows already in the table, and those stay readable by any API key -- a `read` key
+    included -- for as long as the retention window keeps them. A single transient
+    Discord outage was enough to write one.
+
+    Runs once, marked in `settings`. Only `[Webhook]` lines carrying a `://` are
+    touched, so the operator's ordinary history survives.
+    """
+    done = conn.execute(
+        "SELECT 1 FROM settings WHERE key='webhook_log_purge_done'"
+    ).fetchone()
+    if done:
+        return
+    try:
+        conn.execute(
+            "DELETE FROM logs WHERE message LIKE '%[Webhook]%' AND message LIKE '%://%'"
+        )
+    except Exception as e:
+        add_log("error", f"Could not purge logged webhook URLs: {e}", conn)
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('webhook_log_purge_done', '1')"
+    )
 
 
 def _backfill_auth_mode(conn: sqlite3.Connection) -> None:

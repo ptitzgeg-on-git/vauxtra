@@ -163,6 +163,7 @@
   "settings.backup.restore_success": "Backup restored successfully",
   "settings.backup.export_failed": "Failed to export backup",
   "settings.backup.restore_failed": "Failed to restore backup",
+  "settings.backup.restore_webhooks_disabled": "{count} notification target(s) restored without their URL and left disabled — a backup without secrets does not carry it. Re-enter it to switch them back on.",
   "settings.backup.secure_export_help": "Provider passwords will be encrypted with PBKDF2 + AES. You will need this passphrase to restore.",
   "settings.auth.current_required": "Enter your current password",
   "settings.auth.new_min": "New password must be at least 8 characters",

@@ -233,6 +233,7 @@
   "settings.migration.import_failed": "Échec de l'import",
   "settings.backup.export_failed": "Échec de l'export de sauvegarde",
   "settings.backup.restore_failed": "Échec de la restauration de sauvegarde",
+  "settings.backup.restore_webhooks_disabled": "{count} destination(s) de notification restaurée(s) sans leur URL et laissée(s) désactivée(s) — une sauvegarde sans secrets ne la contient pas. Ressaisissez-la pour les réactiver.",
   "settings.backup.secure_export_help": "Les mots de passe providers seront chiffrés avec PBKDF2 + AES. Cette phrase de passe sera nécessaire pour restaurer.",
   "settings.auth.change_failed": "Échec du changement de mot de passe",
   "settings.webhooks.added": "Webhook ajouté",

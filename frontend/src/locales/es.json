@@ -213,6 +213,7 @@
   "settings.migration.import_failed": "Importación fallida",
   "settings.backup.export_failed": "No se pudo exportar la copia de seguridad",
   "settings.backup.restore_failed": "No se pudo restaurar la copia de seguridad",
+  "settings.backup.restore_webhooks_disabled": "{count} destino(s) de notificación restaurado(s) sin su URL y dejado(s) desactivado(s): una copia de seguridad sin secretos no la incluye. Vuelva a introducirla para reactivarlos.",
   "settings.backup.secure_export_help": "Las contraseñas de los proveedores se cifrarán con PBKDF2 + AES. Necesitará esta frase de contraseña para restaurar.",
   "settings.auth.change_failed": "No se pudo cambiar la contraseña",
   "settings.webhooks.added": "Webhook agregado",

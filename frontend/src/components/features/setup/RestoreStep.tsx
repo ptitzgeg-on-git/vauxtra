@@ -6,6 +6,7 @@ type RestoreSummary = {
   providers: number;
   services: number;
   secretsIncluded: boolean;
+  webhooksNeedingUrl: number;
 };
 
 export function RestoreStep({
@@ -68,7 +69,12 @@ export function RestoreStep({
     setError('');
     
     try {
-      const result = await api.post<{ ok: boolean; services?: number; providers?: number }>('/restore', {
+      const result = await api.post<{
+        ok: boolean;
+        services?: number;
+        providers?: number;
+        webhooks_needing_url?: number;
+      }>('/restore', {
         backup: backupData,
         passphrase: passphrase,
       });
@@ -77,6 +83,7 @@ export function RestoreStep({
         providers: result?.providers ?? backupData.providers?.length ?? 0,
         services: result?.services ?? backupData.services?.length ?? 0,
         secretsIncluded: Boolean(backupData.secrets_included),
+        webhooksNeedingUrl: result?.webhooks_needing_url ?? 0,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Restore failed';
@@ -112,6 +119,14 @@ export function RestoreStep({
           ) : (
             <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
               Secrets were not included in this backup. Re-enter provider passwords and tokens before running health checks.
+            </div>
+          )}
+
+          {restoreSummary.webhooksNeedingUrl > 0 && (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
+              {restoreSummary.webhooksNeedingUrl} notification target(s) came back without
+              their URL and are disabled. A notification URL is the credential itself, so a
+              backup without secrets cannot carry it — re-enter it to switch them back on.
             </div>
           )}
         </div>
