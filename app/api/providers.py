@@ -140,6 +140,10 @@ class ProviderValidationOptions(BaseModel):
 
 
 class ProviderDraftValidationIn(ProviderIn):
+    # Nothing is written by this route, so there is nothing to name. Inheriting the required
+    # `name` from `ProviderIn` meant every caller that did not invent one got a 422 -- which
+    # is exactly what the MCP bridge did, on every single call, since the tool was written.
+    name: str = "(draft)"
     hostname_hint: str = ""
     write_probe: bool = False
 

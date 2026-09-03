@@ -13,7 +13,7 @@ def get_health() -> dict[str, Any]:
     Returns database connectivity, API latency, and disk usage.
     """
     r = client.get("/health")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -28,7 +28,7 @@ def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dic
     if level:
         params["level"] = level
     r = client.get("/logs", params=params)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -36,7 +36,7 @@ def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dic
 def get_certificates() -> list[dict[str, Any]]:
     """List SSL certificates managed by proxy providers (e.g., NPM)."""
     r = client.get("/certificates")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -49,7 +49,7 @@ def get_certificate_expiry() -> dict[str, Any]:
     Flags certificates expiring within 30 days.
     """
     r = client.get("/certificates/expiry")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -57,7 +57,7 @@ def get_certificate_expiry() -> dict[str, Any]:
 def check_all_services() -> dict[str, Any]:
     """Trigger a manual health check for all services and return the results."""
     r = client.post("/services/check-all")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -65,5 +65,5 @@ def check_all_services() -> dict[str, Any]:
 def get_stats() -> dict[str, Any]:
     """Return global counters: number of services, providers, and log entries."""
     r = client.get("/stats")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
