@@ -1,12 +1,18 @@
 name: Security Scan
 
 on:
+  # Every branch, not just main: a scan that only runs once the code has already landed
+  # tells you about a problem you now have, instead of one you were about to create.
+  # `main` is deliberately excluded here -- on main this workflow runs as the Build &
+  # Publish gate, so it runs exactly once per push instead of twice.
   push:
-    branches: [main]
+    branches-ignore: [main]
   pull_request:
     branches: [main]
   schedule:
     - cron: "0 3 * * 1"  # every Monday at 03:00 UTC
+  # Called by Build & Publish: the image is not pushed until this is green.
+  workflow_call:
   workflow_dispatch:
 
 env:
@@ -56,6 +62,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # `exit-code` is declared `required: false` with no `default:` in trivy-action's
+      # action.yaml, so leaving it out means the `--exit-code` flag is never passed and
+      # trivy exits 0 whatever it finds. The job is named "Vulnerability scan" and filters
+      # on CRITICAL,HIGH: everything about it said "gate", and half of it was a report.
+      # The SARIF upload below runs `if: always()`, so the findings still reach the
+      # Security tab when this step breaks the build.
       - name: Trivy — filesystem scan (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -64,13 +76,31 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          exit-code: "1"
 
       - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: trivy-results.sarif
           category: trivy
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # Syft's requirements.txt parser drops every line whose constraint is not an exact
+      # pin, and its default config sets GuessUnpinnedRequirements to false. All thirteen
+      # lines of requirements.txt use `>=`. The SBOM therefore contained zero Python
+      # packages, and Grype -- the only step in this pipeline that actually breaks the
+      # build -- had nothing at all to compare on the backend side. Installing the
+      # dependencies first gives Syft real dist-info metadata, with the versions that are
+      # genuinely resolved rather than the floor of a range.
+      - name: Materialise the Python dependencies for the SBOM
+        run: |
+          python -m venv .sbom-venv
+          ./.sbom-venv/bin/python -m pip install --quiet --upgrade pip
+          ./.sbom-venv/bin/python -m pip install --quiet -r requirements.txt
 
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@v0
@@ -80,6 +110,19 @@ jobs:
           output-file: sbom.cyclonedx.json
           artifact-name: sbom.cyclonedx.json
 
+      # The defect this pipeline shipped with was not a wrong number, it was an empty
+      # section nobody thought to look at: a scanner reporting success over a blind spot.
+      # If either ecosystem disappears from the SBOM again, this says so and stops.
+      - name: The SBOM must contain both ecosystems
+        run: |
+          py=$(jq '[.components[]? | select((.purl // "") | startswith("pkg:pypi/"))] | length' sbom.cyclonedx.json)
+          js=$(jq '[.components[]? | select((.purl // "") | startswith("pkg:npm/"))] | length' sbom.cyclonedx.json)
+          echo "SBOM contents: $py Python packages, $js npm packages"
+          if [ "$py" -lt 10 ] || [ "$js" -lt 10 ]; then
+            echo "::error::An ecosystem is missing from the SBOM. Grype would scan a blind spot and report success."
+            exit 1
+          fi
+
       - name: Install Grype
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.96.0
@@ -87,22 +130,37 @@ jobs:
       - name: Grype — scan SBOM (SARIF)
         id: grype
         run: |
-          set +e
+          # `grype db update` sits outside the `set +e` on purpose. It used to be inside,
+          # so a failed database download let the scan run without a database, fail, and
+          # be reported by the step below as "Grype found vulnerabilities" -- sending the
+          # operator to read an empty report while the real cause was the network.
           grype db update
+          set +e
           grype sbom:sbom.cyclonedx.json --fail-on high -o sarif > grype-results.sarif
           rc=$?
+          set -e
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          # The redirection creates the file even when grype writes nothing into it, which
+          # defeated the `hashFiles(...) != ''` guard on the upload step below.
+          [ -s grype-results.sarif ] || rm -f grype-results.sarif
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::grype exited $rc: it failed to run. This is not a vulnerability report."
+            exit "$rc"
+          fi
           exit 0
 
       - name: Upload Grype results to Security tab
         uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('grype-results.sarif') != ''
+        if: always() && hashFiles('grype-results.sarif') != '' && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: grype-results.sarif
           category: grype
 
+      # Exactly 1 -- that is what `--fail-on high` returns when it finds something. Any
+      # other non-zero code is grype failing to run, and is raised by the step above with
+      # a message that says so.
       - name: Enforce Grype policy
-        if: steps.grype.outputs.exit_code != '0'
+        if: steps.grype.outputs.exit_code == '1'
         run: |
-          echo "Grype found vulnerabilities meeting the configured severity cutoff."
+          echo "::error::Grype found vulnerabilities at or above the 'high' cutoff. See the Security tab."
           exit 1
