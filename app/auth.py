@@ -76,23 +76,81 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
     return False
 
 
+# Written the first time a password is set, and never removed afterwards. It is the only
+# thing that can tell "this instance was deliberately left open" apart from "this instance
+# had a password and no longer does". `setup_completed` cannot: adding a provider writes it
+# too, and the wizard offers a *Skip* button on the password step, so a perfectly legitimate
+# passwordless install also carries it.
+AUTH_MODE_KEY = "auth_mode"
+AUTH_MODE_PASSWORD = "password"
+
+
+def _read_auth_settings() -> dict[str, str]:
+    """Read the hash and the mode marker in a single connection.
+
+    Raises on a database it cannot read, so callers can decide -- and they all decide the
+    same way: closed. Returning an empty dict here would make an unreadable database look
+    exactly like a passwordless install and hand out the admin scope.
+    """
+    from app.models import get_db
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT key, value FROM settings WHERE key IN (?, ?)",
+            ("app_password_hash", AUTH_MODE_KEY),
+        ).fetchall()
+        return {r["key"]: r["value"] for r in rows}
+    finally:
+        conn.close()
+
+
 def _get_db_password_hash() -> str:
     """Return the password hash stored in settings, or empty string."""
     try:
-        from app.models import get_db
-        conn = get_db()
-        try:
-            row = conn.execute("SELECT value FROM settings WHERE key='app_password_hash'").fetchone()
-            return row["value"] if row else ""
-        finally:
-            conn.close()
-    except (KeyError, ValueError, OSError):
+        return _read_auth_settings().get("app_password_hash", "")
+    except (KeyError, ValueError, OSError, sqlite3.Error):
         return ""
 
 
 def has_password_configured() -> bool:
     """True if a password is set (env var OR database)."""
     return bool(APP_PASSWORD) or bool(_get_db_password_hash())
+
+
+def password_was_configured_once() -> bool:
+    """True if this instance has ever had an admin password.
+
+    Fails **closed**: a database we cannot read is reported as "yes, there was a password",
+    so a broken or missing database locks the API instead of opening it. The previous code
+    read the hash, got an empty string on any error, and concluded the instance was an
+    open install -- a database failure was a way in.
+    """
+    if APP_PASSWORD:
+        return True
+    try:
+        return _read_auth_settings().get(AUTH_MODE_KEY, "") == AUTH_MODE_PASSWORD
+    except (KeyError, ValueError, OSError, sqlite3.Error):
+        return True
+
+
+def mark_password_configured(conn) -> None:
+    """Record that this instance is password-protected. Call inside the caller's transaction."""
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        (AUTH_MODE_KEY, AUTH_MODE_PASSWORD),
+    )
+
+
+def auth_is_downgraded() -> bool:
+    """A password was set on this instance, and it is gone.
+
+    Nothing in the application can produce this state: `/api/settings/reset` and
+    `/api/restore` both preserve the hash, and no route deletes it. It means the database
+    was edited by hand, replaced by an older file, or partially restored -- and until this
+    check existed, the instance answered every request with the admin scope and said
+    nothing at all about it.
+    """
+    return password_was_configured_once() and not has_password_configured()
 
 
 def is_setup_incomplete() -> bool:
@@ -111,6 +169,11 @@ def is_setup_incomplete() -> bool:
     """
     try:
         if has_password_configured():
+            return False
+        # A password existed and is gone: this is not a fresh install, whatever the rest of
+        # the database says. Re-opening the wizard here would let anyone set a new admin
+        # password on an instance that already has data in it.
+        if password_was_configured_once():
             return False
         from app.models import get_db
         conn = get_db()
@@ -185,6 +248,8 @@ def _get_auth_context(request: Request) -> dict | None:
     on the API key row.
     """
     if not has_password_configured():
+        if password_was_configured_once():
+            return None  # the hash vanished -- refuse, do not fall back to anonymous admin
         return {"kind": "open", "scopes": ["admin"]}
     if get_session(request).get("authenticated") is True:
         return {"kind": "session", "scopes": ["admin"]}
@@ -207,6 +272,18 @@ def is_authenticated(request: Request) -> bool:
 def require_auth(request: Request, scope: str | None = None) -> None:
     ctx = _get_auth_context(request)
     if ctx is None:
+        if auth_is_downgraded():
+            # Say which failure this is. A bare "Unauthorized" on an instance whose password
+            # has disappeared sends the operator hunting for a wrong password for an hour.
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "This instance was configured with an admin password and the hash is no "
+                    "longer in the database. Access is refused rather than granted "
+                    "anonymously. Restore the database, or set APP_PASSWORD to a "
+                    "'pbkdf2:'-prefixed hash to regain access."
+                ),
+            )
         raise HTTPException(status_code=401, detail="Unauthorized")
     if scope is None:
         return

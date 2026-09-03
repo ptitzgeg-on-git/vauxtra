@@ -9,6 +9,7 @@ from app.auth import (
     has_password_configured,
     hash_password,
     is_authenticated,
+    mark_password_configured,
     require_auth,
     require_auth_or_setup,
 )
@@ -49,6 +50,10 @@ def auth_me(request: Request):
         "authenticated": is_authenticated(request),
         "auth_required": has_password_configured(),
         "setup_required": (not setup_completed) and provider_count == 0,
+        # "open" means every request on this instance carries the admin scope, with no
+        # credential at all. The wizard lets you choose that, and until now nothing in the
+        # interface ever mentioned it again.
+        "auth_mode": "password" if has_password_configured() else "open",
     }
 
 
@@ -121,6 +126,7 @@ def setup_password(request: Request, body: SetPasswordBody):
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')"
         )
+        mark_password_configured(conn)
         conn.commit()
     finally:
         conn.close()
@@ -154,6 +160,7 @@ def change_password(request: Request, body: ChangePasswordBody):
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_password_hash', ?)",
             (password_hash,),
         )
+        mark_password_configured(conn)
         conn.commit()
     finally:
         conn.close()
