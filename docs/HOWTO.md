@@ -50,7 +50,11 @@ Vauxtra uses a password to protect access to the panel.
 
 - **Setup wizard**: On first launch, the wizard prompts you to choose a password.
 - **Environment variable**: Set `APP_PASSWORD` in your `.env` file to a **PBKDF2 hash** (takes priority over the UI-configured password).
-- **No password**: Leave both empty for open access (anyone on your network can access the panel).
+- **No password**: Leave both empty for open access. Every request then carries the admin
+  scope with no credential at all — anyone who can reach the port can add providers, read
+  the decrypted credentials of the ones already there, and delete your services. Vauxtra
+  logs a warning at each boot and shows a permanent banner in the interface while this is
+  the case; setting a password later is one form in **Settings → API keys**.
 
 Generate the hash with the same function the wizard uses:
 
@@ -77,11 +81,35 @@ in clear text in your `.env`, your shell history and `docker inspect`.
 ### Forgot your password?
 
 - **If set via `.env`**: Edit the file, change or remove `APP_PASSWORD`, restart the container.
-- **If set via Setup wizard**: Connect to the database and delete the `app_password_hash` row:
+- **If set via Setup wizard**: connect to the database and delete **both** rows:
   ```bash
-  sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='app_password_hash';"
+  sqlite3 data/vauxtra.db \
+    "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"
   ```
-  Then restart the container.
+  Then restart the container. The instance is open again and the interface offers the
+  password form, with the banner up until you use it.
+
+  Deleting `app_password_hash` alone is **not** enough, and that is deliberate: the
+  `auth_mode` row is what tells Vauxtra this instance was protected. With the hash gone and
+  the marker still there, every request is refused with an explicit message rather than
+  granted the admin scope. That way a database restored from the wrong file, or a partial
+  recovery, cannot quietly turn a protected instance into an open one.
+
+### "The hash is no longer in the database"
+
+If every request returns 401 with that message, the two rows disagree: `auth_mode` says a
+password was set, `app_password_hash` is missing. Either restore the database, or choose
+one of the two ways out:
+
+```bash
+# Keep the protection: set a hash in the environment and restart
+docker compose exec vauxtra \
+  python -c "from app.auth import hash_password; print(hash_password('new-password'))"
+# put the value in APP_PASSWORD
+
+# Or go back to open access on purpose (see the warning above)
+sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='auth_mode';"
+```
 
 ---
 

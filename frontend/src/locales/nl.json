@@ -289,5 +289,10 @@
   "monitoring.timeline_empty": "No timeline data yet for this host.",
   "monitoring.related_logs_title": "Related Logs",
   "monitoring.related_logs_empty": "No recent logs linked to this hostname.",
-  "monitoring.toast.checked_count": "Checked {count} service(s)"
+  "monitoring.toast.checked_count": "Checked {count} service(s)",
+  "security.open_access.title": "Geen wachtwoord ingesteld",
+  "security.open_access.body": "Iedereen die deze instantie bereikt, heeft volledige beheerderstoegang.",
+  "security.open_access.action": "Wachtwoord instellen",
+  "settings.auth.set_password": "Wachtwoord instellen",
+  "settings.auth.set_password_desc": "Deze instantie heeft geen beheerderswachtwoord: elk verzoek krijgt volledige toegang. Stel er nu een in."
 }

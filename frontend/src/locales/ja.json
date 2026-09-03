@@ -289,5 +289,10 @@
   "monitoring.timeline_empty": "No timeline data yet for this host.",
   "monitoring.related_logs_title": "Related Logs",
   "monitoring.related_logs_empty": "No recent logs linked to this hostname.",
-  "monitoring.toast.checked_count": "Checked {count} service(s)"
+  "monitoring.toast.checked_count": "Checked {count} service(s)",
+  "security.open_access.title": "パスワードが未設定です",
+  "security.open_access.body": "このインスタンスに到達できる者は誰でも管理者権限を持ちます。",
+  "security.open_access.action": "パスワードを設定",
+  "settings.auth.set_password": "パスワードを設定",
+  "settings.auth.set_password_desc": "このインスタンスには管理者パスワードがありません。すべてのリクエストが完全な権限を得ます。今すぐ設定してください。"
 }
