@@ -228,6 +228,22 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 2. **Push**: `POST /api/services/{id}/push` — apply to providers
 3. **Verify**: check service health on the Services page
 
+### Reading the answer to a push
+
+```json
+{ "ok": false, "errors": ["Proxy (NPM): the provider refused the update of host 12. ..."] }
+```
+
+`ok` is `false` as soon as one target refused, and `errors` names which. Providers report a
+refusal by *returning* a failure, not by raising one — an expired NPM token, a Cloudflare
+token missing `Zone:DNS:Edit`, a Pi-hole answering 401 — and they give no reason, so the
+message says where to look instead of inventing one. The matching `[Push] … refused …` line
+lands in the journal; a `[Push] … synced` line now only ever means the provider accepted.
+
+One case is deliberate: if the stale DNS record could not be removed, the new one is **not**
+created. AdGuard and Pi-hole will happily hold two rewrites for the same name, and the host
+would then resolve to whichever the resolver picked.
+
 ### Drift detection
 
 Drift occurs when provider state differs from Vauxtra's expected state (e.g., someone modified NPM directly).
@@ -669,8 +685,8 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/settings` | Get settings |
-| `POST` | `/api/settings` | Update settings |
+| `GET` | `/api/settings` | Get settings (`webhook_url` masked) |
+| `POST` | `/api/settings` | Update settings — send only the keys you change; 400 (and nothing written) on an invalid value |
 | `POST` | `/api/settings/test-webhook` | Test webhook notification |
 | `GET` | `/api/logs` | Get logs (supports `?level=` filter) |
 | `GET` | `/api/logs/stream` | SSE log stream |

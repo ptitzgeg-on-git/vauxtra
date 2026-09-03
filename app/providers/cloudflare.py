@@ -90,6 +90,12 @@ class CloudflareProvider(DNSProvider):
                 return self._zone_cache[domain]
             try:
                 for zone in self._client.zones.list(name=candidate, per_page=1):
+                    # `name` is a server-side filter whose operator is a documented *prefix*
+                    # of the value (`equal` by default, but `contains` and `ends_with` exist).
+                    # Caching a zone id that does not belong to this domain would send every
+                    # later record into someone else's zone, so the answer is checked.
+                    if not self._same_name(zone.name, candidate):
+                        continue
                     self._zone_cache[domain] = zone.id
                     self._zone_cache[candidate] = zone.id
                     return zone.id
@@ -97,6 +103,11 @@ class CloudflareProvider(DNSProvider):
                 # Zone lookup failed for this candidate; try next subdomain level
                 pass
         return None
+
+    @staticmethod
+    def _same_name(record_name: str, domain: str) -> bool:
+        """Compare two DNS names, ignoring case and the root dot."""
+        return (record_name or "").strip(".").lower() == (domain or "").strip(".").lower()
 
     @staticmethod
     def _is_ip(value: str) -> bool:
@@ -155,8 +166,14 @@ class CloudflareProvider(DNSProvider):
         try:
             # Upsert: check if a matching record already exists
             for record in self._client.dns.records.list(
-                zone_id=zone_id, name=domain, type=rtype
+                zone_id=zone_id, name={"exact": domain}, type=rtype
             ):
+                if not self._same_name(record.name, domain):
+                    # `name` is filtered server-side, and whether it means "equals" or
+                    # "contains" belongs to the API version the installed SDK talks to.
+                    # `cloudflare` is pinned below 5 for that reason; this check is what
+                    # makes the wrong answer harmless rather than destructive.
+                    continue
                 if record.content == ip:
                     return True  # already exists with same content
                 # Exists with different content → update it
@@ -190,8 +207,14 @@ class CloudflareProvider(DNSProvider):
         rtype = self._record_type(ip)
         try:
             for record in self._client.dns.records.list(
-                zone_id=zone_id, name=domain, type=rtype
+                zone_id=zone_id, name={"exact": domain}, type=rtype
             ):
+                if not self._same_name(record.name, domain):
+                    # `name` is filtered server-side, and whether it means "equals" or
+                    # "contains" belongs to the API version the installed SDK talks to.
+                    # `cloudflare` is pinned below 5 for that reason; this check is what
+                    # makes the wrong answer harmless rather than destructive.
+                    continue
                 if record.content == ip:
                     self._client.dns.records.delete(
                         dns_record_id=record.id, zone_id=zone_id

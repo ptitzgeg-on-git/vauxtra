@@ -17,6 +17,21 @@ def _service_public_host(service_row) -> str:
     return f"{service_row['subdomain']}.{service_row['domain']}".strip(".").lower()
 
 
+def _refused(kind: str, provider_name: str, attempted: str) -> str:
+    """Turn a provider's bare `False` into something an operator can act on.
+
+    `update_host`, `create_host`, `add_rewrite` and `delete_rewrite` all answer with a plain
+    boolean or `None`: the reason -- expired credentials, a revoked token, a host that no
+    longer exists on the other side -- never leaves the provider. Saying that much is still
+    worth more than a bare "failed", because it says where to look.
+    """
+    return (
+        f"{kind} ({provider_name}): the provider refused the {attempted}. "
+        "It gave no reason -- check its credentials, that it is reachable, "
+        "and the permissions of the token Vauxtra uses."
+    )
+
+
 def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
     public_host = _service_public_host(svc)
     expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in svc else "proxy_dns"
@@ -427,7 +442,11 @@ def push_service(sid: int, request: Request):
                 host_id = _find_host_id(proxy, public_host)
 
             if host_id:
-                proxy.update_host(
+                # Providers report a refusal by returning False, not by raising: NPM answers
+                # False on an expired token, Cloudflare Tunnel on an ingress rule it could not
+                # write. Only the `except` below used to fill `errors`, so those cases came
+                # back as `ok: true` with a "Proxy synced" line in the journal.
+                pushed = proxy.update_host(
                     host_id,
                     public_host,
                     svc["target_ip"],
@@ -436,6 +455,7 @@ def push_service(sid: int, request: Request):
                     bool(svc["websocket"]),
                     cert_id,
                 )
+                attempted = f"update of host {host_id}"
             else:
                 result = proxy.create_host(
                     public_host,
@@ -445,8 +465,15 @@ def push_service(sid: int, request: Request):
                     bool(svc["websocket"]),
                     cert_id,
                 )
+                pushed = bool(result)
+                attempted = f"creation of a proxy host for {public_host}"
                 if result and expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
                     conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (result.get("id"), sid))
+
+            if not pushed:
+                errors.append(_refused("Proxy", row["name"], attempted))
+                add_log("error", f"[Push] Proxy refused the {attempted} on {row['name']}", conn)
+                continue
 
             add_log("info", f"[Push] Proxy synced on {row['name']}: {public_host}", conn)
         except Exception as e:
@@ -475,11 +502,24 @@ def push_service(sid: int, request: Request):
                     actual_rewrites = dns.list_rewrites()
                     actual_entry = next((e for e in actual_rewrites if e.get("domain") == public_host), None)
                     actual_ip = (actual_entry or {}).get("ip") or (actual_entry or {}).get("answer", "")
+                    failure = ""
                     if actual_ip and actual_ip != dns_target:
-                        dns.delete_rewrite(public_host, actual_ip)
-                        dns.add_rewrite(public_host, dns_target)
-                    elif not actual_ip:
-                        dns.add_rewrite(public_host, dns_target)
+                        # The stale record has to go first, and the `elif` matters: AdGuard and
+                        # Pi-hole happily hold two rewrites for one name, so adding after a
+                        # failed removal leaves the host resolving to whichever the resolver
+                        # picks. Not pushing at all is the lesser evil, and it is reported.
+                        if not dns.delete_rewrite(public_host, actual_ip):
+                            failure = f"removal of the stale {public_host} → {actual_ip} record"
+                        elif not dns.add_rewrite(public_host, dns_target):
+                            failure = f"creation of {public_host} → {dns_target}"
+                    elif not actual_ip and not dns.add_rewrite(public_host, dns_target):
+                        failure = f"creation of {public_host} → {dns_target}"
+
+                    if failure:
+                        errors.append(_refused("DNS", row["name"], failure))
+                        add_log("error", f"[Push] DNS refused the {failure} on {row['name']}", conn)
+                        continue
+
                     add_log("info", f"[Push] DNS synced on {row['name']}: {public_host} → {dns_target}", conn)
                 except Exception as e:
                     errors.append(f"DNS ({row['name']}): {e}")
