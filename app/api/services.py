@@ -1148,7 +1148,20 @@ def update_service(sid: int, request: Request, body: ServiceIn):
 
     set_tags(conn, sid, body.tag_ids)
     set_environments(conn, sid, body.environment_ids)
-    
+
+    # Committed here rather than at the end of the route. The `UPDATE services` above opens
+    # SQLite's write transaction, and the block that follows makes up to three provider HTTP
+    # calls at `PROVIDER_TIMEOUT` seconds each. A provider that hangs therefore held the
+    # single writer lock for half a minute, and every other writer -- a second operator, the
+    # reconcile scheduler -- waited out its 15-second `busy_timeout` and got
+    # `database is locked`. WAL keeps readers unaffected; writers are the whole cost.
+    #
+    # Nothing is lost by splitting the transaction: the provider calls earlier in this route
+    # already ran outside it, so the record and the provider were never atomic to begin
+    # with, and the block below catches its own exceptions and writes through the same
+    # connection, committed by the `conn.commit()` that already closes the route.
+    conn.commit()
+
     # Generalized enable/disable: manage providers when enabled state changes.
     # Tunnel mode is deliberately absent here: it is handled in the `new_mode == "tunnel"`
     # branch above, which runs on every PUT rather than only on a transition, so an already
@@ -1399,6 +1412,12 @@ def bulk_action(body: _BulkActionBody, request: Request):
             f"UPDATE services SET enabled=? WHERE id IN ({placeholders})",
             [enabled_val, *body.ids],
         )
+        # Same reasoning as in `update_service`, and it costs more here: the loop below runs
+        # up to three provider calls *per service*, so a hung provider held SQLite's single
+        # writer lock for `len(ids) x 3 x PROVIDER_TIMEOUT` seconds. The `enabled` flag is
+        # what this route promises; publishing it before the provider work starts is also
+        # what the UI reads back.
+        conn.commit()
 
         # Generalized enable/disable: manage each provider
         for svc in services:
@@ -1487,6 +1506,13 @@ def bulk_action(body: _BulkActionBody, request: Request):
                             add_log("info", f"DNS removed on disable: {pub}", conn)
                 except Exception as e:
                     errors.append(f"Service {sid_b}: DNS state error — {e}")
+
+            # Once per service, not once for the route. The commit above released the writer
+            # lock, but every `add_log(..., conn)` in this loop takes it again -- so without
+            # this the second service's provider calls ran with the lock held by the first
+            # service's log line. It also makes the work durable as it goes: a provider that
+            # hangs on service seven no longer costs the audit trail of services one to six.
+            conn.commit()
 
         affected = conn.execute(
             f"SELECT COUNT(*) FROM services WHERE id IN ({placeholders})",
