@@ -53,7 +53,7 @@ def run_preflight(
         "enabled": True,
     }
     r = client.post("/services/preflight", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -65,7 +65,7 @@ def dry_run_push(service_id: int) -> dict[str, Any]:
     Returns the list of planned proxy and DNS actions, and whether anything would change.
     """
     r = client.post(f"/services/{service_id}/push/dry-run")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -77,7 +77,7 @@ def push_service(service_id: int) -> dict[str, Any]:
     Use dry_run_push first to preview changes.
     """
     r = client.post(f"/services/{service_id}/push")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -89,7 +89,7 @@ def check_drift(service_id: int) -> dict[str, Any]:
     Returns a list of issues (errors and warnings) if discrepancies are detected.
     """
     r = client.get(f"/services/{service_id}/drift")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -101,5 +101,5 @@ def reconcile_service(service_id: int) -> dict[str, Any]:
     Returns before/after drift states and push result.
     """
     r = client.post(f"/services/{service_id}/reconcile")
-    r.raise_for_status()
+    client.check(r)
     return r.json()

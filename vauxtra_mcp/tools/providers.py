@@ -9,7 +9,7 @@ from vauxtra_mcp.app import mcp
 def list_providers() -> list[dict[str, Any]]:
     """List all configured providers (NPM, Traefik, Pi-hole, AdGuard, Cloudflare, etc.)."""
     r = client.get("/providers")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -17,7 +17,7 @@ def list_providers() -> list[dict[str, Any]]:
 def get_provider_types() -> list[dict[str, Any]]:
     """Return all supported provider types with their capabilities and required fields."""
     r = client.get("/providers/types")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -49,7 +49,7 @@ def create_provider(
         "password": password,
         "extra": extra or {},
     })
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -89,7 +89,7 @@ def update_provider(
     if extra is not None:
         payload["extra"] = extra
     r = client.put(f"/providers/{provider_id}", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -103,7 +103,7 @@ def delete_provider(provider_id: int, force: bool = False) -> dict[str, Any]:
     link, so nothing is pushed for them until another provider is chosen.
     """
     r = client.delete(f"/providers/{provider_id}", params={"force": "true"} if force else None)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -115,7 +115,7 @@ def test_provider(provider_id: int) -> dict[str, Any]:
     Returns a structured result with per-check pass/fail details.
     """
     r = client.post(f"/providers/{provider_id}/validate")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -123,7 +123,7 @@ def test_provider(provider_id: int) -> dict[str, Any]:
 def test_provider_connection(provider_id: int) -> dict[str, Any]:
     """Run the provider connectivity test endpoint and return structured diagnostics."""
     r = client.post(f"/providers/{provider_id}/test")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -147,7 +147,7 @@ def validate_provider_draft(
         "hostname_hint": hostname_hint,
         "write_probe": write_probe,
     })
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -155,7 +155,7 @@ def validate_provider_draft(
 def get_provider_health(provider_id: int) -> dict[str, Any]:
     """Get the current health status of a specific provider."""
     r = client.get(f"/providers/{provider_id}/health")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -163,7 +163,7 @@ def get_provider_health(provider_id: int) -> dict[str, Any]:
 def get_all_providers_health() -> dict[str, Any]:
     """Batch health check for all enabled providers. Returns status per provider ID."""
     r = client.get("/providers/health")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -171,5 +171,5 @@ def get_all_providers_health() -> dict[str, Any]:
 def get_tunnel_health() -> dict[str, Any]:
     """Get the aggregate health status of all Cloudflare Tunnel providers."""
     r = client.get("/providers/tunnels/health")
-    r.raise_for_status()
+    client.check(r)
     return r.json()

@@ -94,56 +94,169 @@ anything other than `127.0.0.1`.
 
 ## Available tools
 
-### Monitoring (`tools/monitoring.py`)
-
-| Tool | Description |
-|---|---|
-| `get_health` | Health check — DB status, latency, disk usage, version |
-| `get_logs` | Fetch application logs, filterable by level |
-| `get_certificates` | List all TLS certificates from proxy providers |
-| `get_certificate_expiry` | Expiry report sorted by urgency |
-| `check_all_services` | Trigger a health check pass across all services |
-| `get_stats` | Service/provider/log counts |
-
-### Operations (`tools/operations.py`)
-
-| Tool | Description |
-|---|---|
-| `run_preflight` | Validate a service's routing config before pushing |
-| `dry_run_push` | Preview what would be pushed to providers (no changes) |
-| `push_service` | Push a service's routes to all its configured providers |
-| `check_drift` | Compare expected state with live provider state |
-| `reconcile_service` | Detect drift and automatically fix it |
-
-### Providers (`tools/providers.py`)
-
-| Tool | Description |
-|---|---|
-| `list_providers` | List all configured integrations with status |
-| `get_provider_types` | Available provider types and their capabilities |
-| `create_provider` | Add a new provider integration |
-| `update_provider` | Update provider URL/credentials |
-| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them) |
-| `test_provider` | Test connectivity to a provider |
-| `get_provider_health` | Health status of a single provider |
-| `get_all_providers_health` | Health status of all providers |
-| `get_tunnel_health` | Status of Cloudflare Tunnel connections |
+84 tools across six modules. `scripts/check_api_mcp_parity.py` fails the build if a tool
+listed here does not exist, or if a tool exists and is not listed here.
 
 ### Services (`tools/services.py`)
 
 | Tool | Description |
 |---|---|
 | `list_services` | List all services with health and routing info |
-| `get_service` | Full details of a single service |
-| `create_service` | Create a new service record |
-| `update_service` | Update a service |
-| `delete_service` | Delete a service and remove its provider routes |
-| `toggle_service` | Enable/disable a service |
-| `sync_services_from_providers` | Pull existing hosts/rewrites from providers |
-| `import_services_from_sync` | Import synced data as Vauxtra service records |
-| `discover_docker_containers` | Discover Docker containers via the Docker API |
-| `list_docker_endpoints` | List configured Docker endpoints |
+| `get_service` | Full details of one service: provider assignments and push targets |
+| `create_service` | Create a service (DNS + proxy route) |
+| `update_service` | Update specific fields of a service |
+| `delete_service` | Delete a service and remove its routes from every provider |
+| `toggle_service` | Enable or disable a service without touching its provider routes |
+| `check_service_health` | Run a live health/TCP and DNS check for one service |
+| `get_services_history` | Last 24 h of uptime history for every service |
+| `bulk_service_action` | Enable, disable or delete several services at once |
+| `suggest_public_targets` | Suggest WAN/public DNS targets from current connectivity |
+| `sync_services_from_providers` | Discover services already configured in the providers |
+| `import_services_from_sync` | Import what `sync_services_from_providers` found |
+| `discover_docker_containers` | Discover running containers on a Docker endpoint |
 | `import_docker_containers` | Import Docker containers as services |
+| `list_docker_endpoints` | List the configured Docker endpoints |
+| `add_docker_endpoint` | Create a Docker endpoint for discovery |
+| `set_default_docker_endpoint` | Mark one endpoint as the default for discovery/import |
+| `test_docker_endpoint` | Test one endpoint and report how many containers it sees |
+| `delete_docker_endpoint` | Delete a Docker endpoint (at least one must remain) |
+
+### Operations (`tools/operations.py`)
+
+| Tool | Description |
+|---|---|
+| `run_preflight` | Validate a service's routing config before creating or updating it |
+| `dry_run_push` | Preview what a push would change, without changing anything |
+| `push_service` | Push a service to every configured provider (proxy + DNS) |
+| `check_drift` | Compare the expected state against what the providers really hold |
+| `reconcile_service` | Detect drift, push corrections, then verify the drift is gone |
+
+### Providers (`tools/providers.py`)
+
+| Tool | Description |
+|---|---|
+| `list_providers` | List every configured integration with its status |
+| `get_provider_types` | Supported provider types, their capabilities and required fields |
+| `create_provider` | Add a provider integration |
+| `update_provider` | Update a provider; only the fields you send are changed |
+| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them) |
+| `test_provider` | Test a provider's connection and validate its credentials |
+| `test_provider_connection` | Same test, returning structured diagnostics |
+| `validate_provider_draft` | Validate a provider's settings before creating it (no DB write) |
+| `get_provider_health` | Health of one provider |
+| `get_all_providers_health` | Health of every enabled provider, by id |
+| `get_tunnel_health` | Aggregate health of all Cloudflare Tunnel providers |
+
+Raw per-provider record editing (`/api/providers/{id}/dns-records`, `/proxy-hosts`) is
+deliberately not exposed. A service is the bridge's unit of work: push a service and the
+provider rows follow, so reaching underneath them is a way to manufacture drift.
+
+### Templates (`tools/templates.py`)
+
+| Tool | Description |
+|---|---|
+| `list_templates` | List the service templates |
+| `get_template` | Full details of one template |
+| `create_template` | Create a template |
+| `update_template` | Replace a template's settings (full replacement, not a patch) |
+| `delete_template` | Delete a template; services already created from it are untouched |
+| `apply_template` | Create a service from a template |
+
+### Monitoring (`tools/monitoring.py`)
+
+| Tool | Description |
+|---|---|
+| `get_health` | DB status, latency, disk usage, version |
+| `get_logs` | Recent operational logs, filterable by level |
+| `get_certificates` | TLS certificates held by the proxy providers |
+| `get_certificate_expiry` | The same certificates with days remaining, sorted by urgency |
+| `check_all_services` | Trigger a health-check pass over every service |
+| `get_stats` | Service, provider and log counts |
+
+### Administration (`tools/admin.py`)
+
+**Authentication**
+
+| Tool | Description |
+|---|---|
+| `get_auth_status` | Whether auth is configured, and whether this client is authenticated |
+| `auth_login` | Open a session with the admin password; the cookie is kept for later calls |
+| `auth_logout` | Close the session, on the server and in this bridge |
+| `setup_password` | Set the initial admin password when none is configured |
+| `change_password` | Change the admin password |
+| `mark_setup_complete` | Mark the setup wizard as finished |
+
+An API key is the better credential here: it carries a scope, `auth_login` does not — a
+session is always `admin`. Use `auth_login` only on an instance with no key yet.
+
+**Settings and domains**
+
+| Tool | Description |
+|---|---|
+| `get_settings` | Every global setting (secrets come back masked) |
+| `save_settings` | Save settings; send only the keys you mean to change |
+| `list_domains` | The configured root domains |
+| `add_domain` | Add a root domain |
+| `delete_domain` | Delete a root domain by exact name |
+
+**Tags and environments**
+
+| Tool | Description |
+|---|---|
+| `list_tags` / `create_tag` / `update_tag` / `delete_tag` | Tag CRUD |
+| `list_environments` / `create_environment` / `update_environment` / `delete_environment` | Environment CRUD |
+
+**Webhooks and alerts**
+
+| Tool | Description |
+|---|---|
+| `list_webhooks` | List targets; URLs come back masked (`discord://***`) and cannot be written back |
+| `create_webhook` | Create a notification target |
+| `update_webhook` | Update a target; omitted fields keep their stored value |
+| `delete_webhook` | Delete a target |
+| `test_webhook_url` | Test an Apprise URL without creating anything |
+| `test_webhook` | Send a real test notification to one existing target |
+| `test_global_webhook` | Send one to every enabled target; answers `{ok, results[]}`, one entry per target |
+| `get_service_alerts` | The per-service alert rules |
+| `set_service_alerts` | Replace all per-service alert rules |
+
+**API keys**
+
+| Tool | Description |
+|---|---|
+| `list_api_keys` | List keys; the secret is never returned |
+| `create_api_key` | Create a key and return its secret once |
+| `revoke_api_key` | Revoke a key by id |
+
+**Logs**
+
+| Tool | Description |
+|---|---|
+| `clear_logs` | Delete every log entry |
+| `stream_logs_snapshot` | Read a bounded slice of the SSE log stream; a quiet instance answers `timed_out: true` with whatever it collected |
+
+**Backup and reset**
+
+| Tool | Description |
+|---|---|
+| `create_backup` | Export a backup without credentials |
+| `create_secure_backup` | Export a backup with credentials encrypted by a passphrase |
+| `restore_backup` | Restore from a backup payload — this replaces current data |
+| `reset_all_data` | Delete all application data |
+
+---
+
+## When a call fails
+
+Errors carry what the API said, not just its status code:
+
+```
+ApiError: POST /api/settings -> 400: Nothing was saved -- check_interval: must be between 30 and 86400
+```
+
+`raise_for_status()` used to produce `Client error '400 Bad Request' for url ...`, which
+threw the `detail` away — and since 1.1 the detail is the useful part: which setting was
+refused and why, which provider still holds a service, that a hostname is already taken.
 
 ---
 
