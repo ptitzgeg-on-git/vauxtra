@@ -228,6 +228,15 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 2. **Push**: `POST /api/services/{id}/push` — apply to providers
 3. **Verify**: check service health on the Services page
 
+### One hostname, one service
+
+Two services publishing the same hostname push over each other: whichever syncs last owns
+the proxy host and the DNS record, and the drift check then reports the other as permanently
+wrong. Creating or renaming onto a taken hostname answers **409** and names the service that
+already holds it. A unique index backs this up in the database for anything that bypasses the
+API (a restore, a hand edit). An installation that already contains duplicates keeps starting
+normally and says which rows to merge — being unable to boot is not a way to fix data.
+
 ### Reading the answer to a push
 
 ```json
@@ -442,7 +451,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_tunnel_health` | Aggregate tunnel health |
 | `create_provider` | Create a new provider |
 | `update_provider` | Update an existing provider |
-| `delete_provider` | Delete a provider |
+| `delete_provider` | Delete a provider (409 while services use it; `force=True` unlinks them) |
 
 **Docker**
 | Tool | Description |
@@ -631,14 +640,14 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/services` | List all services |
-| `POST` | `/api/services` | Create a service |
+| `POST` | `/api/services` | Create a service — 400 naming any unknown tag/environment/provider id, 409 if the hostname is taken |
 | `GET` | `/api/services/history` | Recent service activity |
 | `GET` | `/api/services/public-target/suggest` | Suggest public target IP |
 | `POST` | `/api/services/preflight` | Preflight validation |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
 | `POST` | `/api/services/check-all` | Trigger health check for all |
-| `PUT` | `/api/services/{sid}` | Update a service |
+| `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |

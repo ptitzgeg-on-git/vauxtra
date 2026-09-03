@@ -340,19 +340,97 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
     return {"ok": True}
 
 
+def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
+    """Services that lose a provider link the moment `pid` is deleted.
+
+    `app/models.py` declares those links `ON DELETE SET NULL` (and `service_push_targets`
+    `ON DELETE CASCADE`), and `app/db.py` really does turn foreign keys on -- so the deletion
+    always succeeds and always blanks the services silently. This is what makes it worth
+    asking first.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.id, s.subdomain, s.domain,
+               s.proxy_provider_id  AS proxy_id,
+               s.dns_provider_id    AS dns_id,
+               s.tunnel_provider_id AS tunnel_id,
+               (SELECT GROUP_CONCAT(t.role) FROM service_push_targets t
+                 WHERE t.service_id = s.id AND t.provider_id = ?) AS extra_roles
+          FROM services s
+         WHERE s.proxy_provider_id = ? OR s.dns_provider_id = ? OR s.tunnel_provider_id = ?
+            OR EXISTS (SELECT 1 FROM service_push_targets t
+                        WHERE t.service_id = s.id AND t.provider_id = ?)
+         ORDER BY s.domain, s.subdomain
+        """,
+        (pid, pid, pid, pid, pid),
+    ).fetchall()
+
+    dependents: list[dict[str, Any]] = []
+    for row in rows:
+        roles = []
+        if row["proxy_id"] == pid:
+            roles.append("proxy")
+        if row["dns_id"] == pid:
+            roles.append("dns")
+        if row["tunnel_id"] == pid:
+            roles.append("tunnel")
+        for extra in str(row["extra_roles"] or "").split(","):
+            extra = extra.strip()
+            if extra and extra not in roles:
+                roles.append(f"extra {extra}")
+        dependents.append(
+            {
+                "id": row["id"],
+                "fqdn": f"{row['subdomain']}.{row['domain']}".strip(".").lower(),
+                "roles": roles,
+            }
+        )
+    return dependents
+
+
 @router.delete("/api/providers/{pid}")
-def delete_provider(pid: int, request: Request):
+def delete_provider(pid: int, request: Request, force: bool = False):
     require_auth_or_setup(request, scope="write")
     conn = get_db()
     row  = conn.execute("SELECT name FROM providers WHERE id=?", (pid,)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Provider not found")
+
+    dependents = _provider_dependents(conn, pid)
+    if dependents and not force:
+        # The frontend has been sending `?force=true` and reading a `detail.services` list
+        # since it was written (`useProviderMutations.ts`, `Providers.tsx`); the API never
+        # answered 409, so its "N service(s) depend on this provider" dialog was unreachable
+        # and every deletion went through unannounced. This is that missing half.
+        conn.close()
+        raise HTTPException(
+            409,
+            {
+                "message": (
+                    f"{len(dependents)} service(s) still use \"{row['name']}\". Deleting it "
+                    "unlinks them -- they keep their public hostname but stop being pushed "
+                    "anywhere until another provider is chosen. Re-send with ?force=true to "
+                    "do it anyway."
+                ),
+                "services": dependents,
+            },
+        )
+
     conn.execute("DELETE FROM providers WHERE id=?", (pid,))
     conn.commit()
     conn.close()
-    add_log("info", f"Provider deleted: {row['name']}")
-    return {"ok": True}
+    if dependents:
+        names = ", ".join(d["fqdn"] for d in dependents[:5])
+        if len(dependents) > 5:
+            names += f", and {len(dependents) - 5} more"
+        add_log(
+            "warn",
+            f"Provider deleted: {row['name']} -- {len(dependents)} service(s) unlinked ({names})",
+        )
+    else:
+        add_log("info", f"Provider deleted: {row['name']}")
+    return {"ok": True, "unlinked_services": [d["id"] for d in dependents]}
 
 
 @router.post("/api/providers/{pid}/validate")
