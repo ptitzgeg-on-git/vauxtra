@@ -548,14 +548,14 @@ export function Settings() {
   });
 
   const submitSetPassword = () => {
-    if (cpNew.length < MIN_PASSWORD_LENGTH) { toast.error(t('settings.auth.new_min')); return; }
+    if (cpNew.length < MIN_PASSWORD_LENGTH) { toast.error(t('settings.auth.new_min', { min: MIN_PASSWORD_LENGTH })); return; }
     if (cpNew !== cpConfirm) { toast.error(t('settings.auth.confirm_mismatch')); return; }
     setPasswordMutation.mutate({ password: cpNew });
   };
 
   const submitChangePassword = () => {
     if (!cpCurrent) { toast.error(t('settings.auth.current_required')); return; }
-    if (cpNew.length < MIN_PASSWORD_LENGTH) { toast.error(t('settings.auth.new_min')); return; }
+    if (cpNew.length < MIN_PASSWORD_LENGTH) { toast.error(t('settings.auth.new_min', { min: MIN_PASSWORD_LENGTH })); return; }
     if (cpNew !== cpConfirm) { toast.error(t('settings.auth.confirm_mismatch')); return; }
     changePasswordMutation.mutate({ current_password: cpCurrent, new_password: cpNew });
   };
@@ -1090,8 +1090,8 @@ export function Settings() {
                     className="flex items-center gap-2"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      if (securePassphrase.length < 8) {
-                        toast.error(t('settings.backup.passphrase_min'));
+                      if (securePassphrase.length < MIN_PASSWORD_LENGTH) {
+                        toast.error(t('settings.backup.passphrase_min', { min: MIN_PASSWORD_LENGTH }));
                         return;
                       }
                       secureBackupMutation.mutate(securePassphrase);
@@ -1101,14 +1101,14 @@ export function Settings() {
                       type="password"
                       value={securePassphrase}
                       onChange={e => setSecurePassphrase(e.target.value)}
-                      placeholder={t('settings.backup.passphrase_placeholder')}
-                      minLength={8}
+                      placeholder={t('settings.backup.passphrase_placeholder', { min: MIN_PASSWORD_LENGTH })}
+                      minLength={MIN_PASSWORD_LENGTH}
                       required
                       className="flex-1 bg-background border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <button
                       type="submit"
-                      disabled={secureBackupMutation.isPending || securePassphrase.length < 8}
+                      disabled={secureBackupMutation.isPending || securePassphrase.length < MIN_PASSWORD_LENGTH}
                       className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium disabled:opacity-60"
                     >
                       {secureBackupMutation.isPending
@@ -1277,12 +1277,12 @@ export function Settings() {
                 >
                   <input
                     type="password"
-                    placeholder={t('settings.auth.new_password')}
+                    placeholder={t('settings.auth.new_password', { min: MIN_PASSWORD_LENGTH })}
                     value={cpNew}
                     onChange={e => setCpNew(e.target.value)}
                     className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
                     autoComplete="new-password"
-                    minLength={8}
+                    minLength={MIN_PASSWORD_LENGTH}
                     required
                   />
                   <input
@@ -1333,12 +1333,12 @@ export function Settings() {
                   />
                   <input
                     type="password"
-                    placeholder={t('settings.auth.new_password')}
+                    placeholder={t('settings.auth.new_password', { min: MIN_PASSWORD_LENGTH })}
                     value={cpNew}
                     onChange={e => setCpNew(e.target.value)}
                     className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
                     autoComplete="new-password"
-                    minLength={8}
+                    minLength={MIN_PASSWORD_LENGTH}
                     required
                   />
                   <input

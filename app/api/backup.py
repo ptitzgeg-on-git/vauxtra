@@ -12,7 +12,7 @@ from app.auth import require_auth
 from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, encrypt_secret
 from app.limiter import limiter
 from app.models import add_log, get_db
-from app.security import mask_secret_url
+from app.security import mask_secret_url, validate_password_strength
 
 router = APIRouter()
 
@@ -125,8 +125,18 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
     """
     require_auth(request, scope="admin")
 
-    if len(body.passphrase) < 8:
-        raise HTTPException(400, "Passphrase must be at least 8 characters")
+    # The admin password rule, applied here for a stronger reason than it is applied there:
+    # this passphrase guards a file that leaves the instance. Whoever holds the export
+    # attacks it offline, as fast as their hardware allows, and 600 000 PBKDF2 iterations
+    # buy time against a guess, not against a wordlist that already contains it. Eight
+    # characters sat below the floor the same operator's own login had to clear.
+    #
+    # Only the export is gated. `import_backup` never checked a length and still does not,
+    # so a file made under the old rule keeps restoring.
+    passphrase_ok, passphrase_reason = validate_password_strength(body.passphrase)
+    if not passphrase_ok:
+        # The shared validator words its messages for a login password.
+        raise HTTPException(400, passphrase_reason.replace("Password", "Passphrase", 1))
 
     # Generate random salt for this backup
     salt = os.urandom(16)
@@ -434,9 +444,18 @@ def import_backup(request: Request, body: RestoreRequest):
             )
 
         for setting in data.get("settings", []):
-            # Whitelist: an imported file must not be able to set `app_password_hash`
-            # (choosing the admin password) nor `public_target_sources` (URLs this
-            # instance would then query).
+            # Whitelist: `_VALID_SETTINGS` is the same list `POST /api/settings` writes
+            # through, so an imported file reaches no key an operator could not set by
+            # hand -- `app_password_hash` above all, which would let a backup file choose
+            # the admin password.
+            #
+            # It is not a filter on content, and this comment used to claim it was: it said
+            # `public_target_sources` was blocked, and that key comes straight through. It
+            # is left through on purpose. A restore has to give back the configuration it
+            # saved, and a backup file is already trusted with provider URLs and Docker
+            # endpoints -- singling out one setting would cost a real restore and stop
+            # nothing. What bounds it is elsewhere: both routes now require `admin`, and
+            # `detect_server_public_ip` refuses an answer that is not publicly routable.
             key = setting.get("key")
             if key not in _VALID_SETTINGS:
                 continue
