@@ -91,6 +91,7 @@ class TestMetricsEndpoint(unittest.TestCase):
     def test_metrics_no_auth_required(self):
         """Prometheus scrape path must be accessible without auth."""
         from fastapi.testclient import TestClient
+
         from app.main import app
         # Remove auth header entirely
         with TestClient(app) as plain_client:

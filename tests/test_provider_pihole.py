@@ -1,7 +1,7 @@
 """Unit tests for PiholeProvider — v5 and v6, all HTTP calls are mocked."""
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import requests
 

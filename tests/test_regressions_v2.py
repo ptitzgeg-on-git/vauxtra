@@ -6,7 +6,6 @@ All tests run in an isolated in-memory SQLite database (inherited from IsolatedD
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,14 +17,13 @@ from starlette.requests import Request
 import app.auth as auth
 from app import models
 from app.api import auth as auth_api
-from app.limiter import limiter as _app_limiter
 from app.api import backup as backup_api
 from app.api import environments as environments_api
 from app.api import services as services_api
 from app.api import tags as tags_api
 from app.api.backup import RestoreRequest, SecureBackupRequest
 from app.auth import hash_password
-
+from app.limiter import limiter as _app_limiter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -207,10 +205,13 @@ class BackupSecureRoundTripTests(IsolatedDBTestCase):
         # Verify the decrypted password is correct
         from app.config import decrypt_secret
         conn = models.get_db()
-        row = conn.execute("SELECT password FROM providers WHERE name='CFProvider'").fetchone()
+        row = conn.execute("SELECT id, password FROM providers WHERE name='CFProvider'").fetchone()
         conn.close()
         decrypted = decrypt_secret(row["password"])
         self.assertEqual(decrypted, "cloudflare-token-abc")
+        # The restore writes the id back verbatim; a plain INSERT would renumber the row and
+        # every services.proxy_provider_id in the same backup would then point elsewhere.
+        self.assertEqual(row["id"], pid)
 
     def test_restore_requires_passphrase_for_encrypted_backup(self) -> None:
         """Restoring a secrets_included backup without passphrase must return 400."""
