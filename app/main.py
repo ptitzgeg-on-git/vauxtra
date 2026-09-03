@@ -82,6 +82,10 @@ app = FastAPI(
     title="Vauxtra",
     description="Vauxtra RESTful API",
     docs_url="/api/docs" if DEBUG else None,
+    # The schema follows the documentation. It was served unauthenticated on every install
+    # while `/api/docs` was closed -- which hides the reading room and leaves the book on
+    # the doorstep. Nothing in this repository reads it; the file is generated on demand.
+    openapi_url="/openapi.json" if DEBUG else None,
     redoc_url=None,
     lifespan=_lifespan,
 )
@@ -89,8 +93,14 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ✅ Validate CORS origins securely
-_default_cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888"
+# The interface is served by this same application, so the working default is no
+# cross-origin caller at all. It used to be three localhost origins -- the Vite dev server
+# among them -- allowed *with credentials* on every deployment, while `.env.example`
+# promised "leave empty for same-origin only". Those origins are what `npm run dev` needs,
+# so they are what `DEBUG=true` grants, and nothing else does.
+_default_cors = (
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888" if DEBUG else ""
+)
 try:
     _cors_origins = validate_cors_origins(
         os.environ.get("CORS_ORIGINS", ""),
@@ -98,8 +108,10 @@ try:
     )
     _logger.info(f"CORS origins validated: {len(_cors_origins)} allowed")
 except ValueError as e:
-    _logger.error(f"Invalid CORS configuration: {e}")
-    _cors_origins = _default_cors.split(",")
+    # A list that does not parse must not widen back to the defaults: refuse them all and
+    # say which. Same-origin keeps working, which is every ordinary deployment.
+    _logger.error(f"Invalid CORS configuration, no cross-origin caller is allowed: {e}")
+    _cors_origins = []
 
 app.add_middleware(
     CORSMiddleware,
@@ -119,12 +131,56 @@ app.add_middleware(
 )
 
 
+# Everything the interface loads now comes from this origin: the Vite build under
+# `/assets`, and since this change the Inter font too, which was fetched from rsms.me on
+# every page load of a tool that holds provider credentials. Inline styles survive because
+# React writes `style={{...}}` attributes and CSP counts those as inline; `img-src` allows
+# remote https because a service carries an `icon_url` the operator chooses.
+_CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+])
+
+# Swagger UI loads its own bundle from a CDN, so the policy above would leave a blank page
+# explained only in the browser console. Both paths exist only when DEBUG is on.
+_CSP_EXEMPT_PATHS = frozenset({"/api/docs", "/openapi.json"})
+
+_warned_about_forwarded_headers = False
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    global _warned_about_forwarded_headers
+    if (
+        not _warned_about_forwarded_headers
+        and "x-forwarded-for" in request.headers
+        and not os.environ.get("FORWARDED_ALLOW_IPS", "").strip()
+    ):
+        # Said at the first forwarded request rather than at startup, because at startup
+        # there is nothing to look at. The consequence is not cosmetic: every visitor shares
+        # one rate-limit counter, so five failed logins from anywhere lock the operator out.
+        _warned_about_forwarded_headers = True
+        _logger.warning(
+            "A request arrived with X-Forwarded-For but FORWARDED_ALLOW_IPS is not set: "
+            "this instance reads the proxy's address as the client address, so every rate "
+            "limit is shared by every visitor and one attacker can lock you out. Set "
+            "FORWARDED_ALLOW_IPS to the address of your reverse proxy."
+        )
+
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.path not in _CSP_EXEMPT_PATHS:
+        response.headers["Content-Security-Policy"] = _CSP
     if HTTPS_ONLY:
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     return response
