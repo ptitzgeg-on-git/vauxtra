@@ -1,6 +1,5 @@
 """Unit tests for scheduler logic — health checks, DNS auto-update, circuit breaker."""
 
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 

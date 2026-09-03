@@ -1,6 +1,7 @@
 """Tests for security utilities and request cache."""
 
 import unittest
+
 from app.cache import RequestCache
 from app.security import sanitize_domain, validate_cors_origins, validate_password_strength
 
