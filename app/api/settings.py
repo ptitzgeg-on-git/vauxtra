@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -31,6 +32,23 @@ _VALID_SETTINGS = {
 }
 _VALID_THEMES   = {"light", "dark"}
 _VALID_PUBLIC_TARGET_PRIORITY = {"server_public_ip", "proxy_provider_host", "current"}
+
+# Whole-number settings, with the range each one is allowed to hold. `check_interval` is the
+# one that mattered: it is read back with a bare `int()` at startup (`app/main.py`), so any
+# `write`-scoped caller writing "later" there kept the application from booting again --
+# a denial of service that survived every restart.
+_SETTING_RANGES = {
+    "check_interval": (0, 1440),            # 0 disables automatic health checks
+    "log_retention_days": (1, 365),
+    "monitoring_retention_days": (1, 365),
+}
+
+# `timezone` has no reader anywhere -- not in Python, not in the frontend. It is validated
+# for shape rather than against the IANA database on purpose: `zoneinfo` needs the `tzdata`
+# package on Windows, and a missing package would otherwise reject every value there.
+_TIMEZONE_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){0,2}$")
+
+_BOOLEAN_WORDS = {"true", "false", "1", "0", "yes", "no", "on", "off"}
 
 # The `settings` table also stores a server-side secret (the admin password hash) and internal
 # bookkeeping. Reads must go through this whitelist so an API key -- `read` by default -- never
@@ -67,6 +85,73 @@ def _is_valid_public_target_priority(value: str) -> bool:
     return all(item in _VALID_PUBLIC_TARGET_PRIORITY for item in items)
 
 
+def _validate_setting(key: str, value) -> tuple[str | None, str]:
+    """Return `(value to store, "")`, or `(None, reason)` when the value is not acceptable.
+
+    Every branch here used to be a bare `continue` in the write loop, followed by
+    `{"ok": true}`: the operator got a "Saved" toast and the previous value, with nothing
+    naming the field that was thrown away.
+    """
+    text = str(value).strip() if value is not None else ""
+
+    if key in _SETTING_RANGES:
+        low, high = _SETTING_RANGES[key]
+        try:
+            number = int(text)
+        except (TypeError, ValueError):
+            return None, f"expected a whole number between {low} and {high}, got {text!r}"
+        if not low <= number <= high:
+            return None, f"expected a whole number between {low} and {high}, got {number}"
+        return str(number), ""
+
+    if key == "theme":
+        if text not in _VALID_THEMES:
+            return None, f"expected one of {sorted(_VALID_THEMES)}"
+        return text, ""
+
+    if key == "timezone":
+        if not _TIMEZONE_SHAPE.match(text):
+            return None, "expected an IANA name such as UTC or Europe/Paris"
+        return text, ""
+
+    if key == "webhook_enabled":
+        if text.lower() not in _BOOLEAN_WORDS:
+            return None, "expected true or false"
+        return "true" if text.lower() in {"true", "1", "yes", "on"} else "false", ""
+
+    if key == "webhook_url":
+        # `GET /api/settings` masks this one, and an agent that reads the settings and posts
+        # them back would otherwise store `discord://***` as the notification target: the
+        # alerting would keep reporting itself configured, and reach nobody.
+        if "***" in text:
+            return None, (
+                "that is the masked form the API returns, not a usable URL -- "
+                "retype the full one, or leave the key out to keep the stored value"
+            )
+        return text, ""
+
+    if key == "public_target_sources":
+        if not _is_valid_public_target_sources(text):
+            return None, "expected one http:// or https:// URL per line"
+        return text, ""
+
+    if key == "public_target_priority":
+        if not _is_valid_public_target_priority(text):
+            return None, f"expected a comma-separated list of {sorted(_VALID_PUBLIC_TARGET_PRIORITY)}"
+        return text, ""
+
+    if key == "public_target_timeout":
+        try:
+            timeout = float(text)
+        except (TypeError, ValueError):
+            return None, f"expected a number of seconds between 0.5 and 10.0, got {text!r}"
+        if not 0.5 <= timeout <= 10.0:
+            return None, f"expected a number of seconds between 0.5 and 10.0, got {timeout}"
+        return str(timeout), ""
+
+    return text, ""
+
+
 @router.get("/api/settings")
 def get_settings(request: Request):
     require_auth(request)
@@ -83,36 +168,47 @@ def get_settings(request: Request):
 @router.post("/api/settings")
 def save_settings(request: Request, body: dict):
     require_auth(request, scope="write")
-    conn = get_db()
+
+    accepted: dict[str, str] = {}
+    rejected: dict[str, str] = {}
+    ignored: list[str] = []
+
     for key, value in body.items():
         if key not in _VALID_SETTINGS:
+            # Not an error: `GET /api/settings` also returns `schema_version` and
+            # `setup_completed`, so a caller that reads the settings and posts them back --
+            # the MCP bridge does exactly that -- hands over keys nobody may write. They are
+            # dropped, but the answer says which, instead of pretending they were saved.
+            ignored.append(key)
             continue
-        if key == "theme" and value not in _VALID_THEMES:
-            continue
-        if key == "public_target_sources" and not _is_valid_public_target_sources(str(value)):
-            continue
-        if key == "public_target_timeout":
-            try:
-                timeout = float(value)
-                if timeout < 0.5 or timeout > 10.0:
-                    continue
-            except (TypeError, ValueError):
-                continue
-        if key == "public_target_priority" and not _is_valid_public_target_priority(str(value)):
-            continue
+        stored, reason = _validate_setting(key, value)
+        if stored is None:
+            rejected[key] = reason
+        else:
+            accepted[key] = stored
+
+    if rejected:
+        # Nothing is written when part of the payload is bad. A settings form applied by
+        # halves is harder to reason about than one that was refused outright, and the
+        # operator now learns which field, and why.
+        detail = "; ".join(f"{k}: {reason}" for k, reason in sorted(rejected.items()))
+        raise HTTPException(400, f"Nothing was saved -- {detail}")
+
+    conn = get_db()
+    for key, stored in accepted.items():
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, str(value)),
+            (key, stored),
         )
     conn.commit()
     conn.close()
-    if "check_interval" in body:
+    if "check_interval" in accepted:
         try:
             from app.scheduler import configure
-            configure(int(body["check_interval"]))
+            configure(int(accepted["check_interval"]))
         except (ImportError, TypeError, ValueError):
             pass
-    return {"ok": True}
+    return {"ok": True, "saved": sorted(accepted), "ignored": sorted(ignored)}
 
 
 @router.get("/api/stats")

@@ -61,7 +61,20 @@ async def _lifespan(_app: FastAPI):
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key='check_interval'").fetchone()
     conn.close()
-    start(int(row["value"]) if row else 0)
+    # This used to be a bare `int()`, on a value any `write`-scoped caller could set: one bad
+    # row and the application never came up again, on every restart. The write side validates
+    # it now; this stays defensive because a database that already holds a bad value has to
+    # boot before anyone can correct it.
+    try:
+        interval = max(0, int(str(row["value"]).strip())) if row else 0
+    except (TypeError, ValueError):
+        interval = 0
+        _logger.warning(
+            "check_interval holds %r, which is not a number. Automatic health checks stay "
+            "off until it is saved again from Settings.",
+            row["value"],
+        )
+    start(interval)
     yield
 
 
