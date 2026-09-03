@@ -15,6 +15,7 @@ from app.auth import (
 )
 from app.limiter import limiter
 from app.models import get_db
+from app.security import validate_password_strength
 
 router = APIRouter()
 
@@ -111,8 +112,9 @@ def setup_password(request: Request, body: SetPasswordBody):
         raise HTTPException(400, "Password is already configured")
 
     password = body.password.strip()
-    if len(password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    ok, why = validate_password_strength(password)
+    if not ok:
+        raise HTTPException(400, why)
 
     password_hash = hash_password(password)
     conn = get_db()
@@ -150,8 +152,9 @@ def change_password(request: Request, body: ChangePasswordBody):
         raise HTTPException(401, "Current password is incorrect")
 
     new_password = body.new_password.strip()
-    if len(new_password) < 8:
-        raise HTTPException(400, "New password must be at least 8 characters")
+    ok, why = validate_password_strength(new_password)
+    if not ok:
+        raise HTTPException(400, why)
 
     password_hash = hash_password(new_password)
     conn = get_db()

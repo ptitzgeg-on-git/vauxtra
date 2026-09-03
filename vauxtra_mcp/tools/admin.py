@@ -70,8 +70,9 @@ def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
     The answer carries `saved` and `ignored`: read-only keys that `get_settings` also
     returns (`schema_version`, `setup_completed`) land in `ignored`. A value the server
-    refuses fails the whole call with 400 and writes nothing -- notably `webhook_url`, which
-    `get_settings` returns masked and which therefore cannot be posted back unchanged.
+    refuses fails the whole call with 400 and writes nothing -- notably `webhook_url` and
+    `webhook_enabled`, which are retired: notifications are configured with
+    `create_webhook`, which is what alert delivery reads.
     """
     r = client.post("/settings", json=settings)
     r.raise_for_status()
@@ -281,7 +282,13 @@ def clear_logs() -> dict[str, Any]:
 
 @mcp.tool()
 def test_global_webhook() -> dict[str, Any]:
-    """Send a test notification using global webhook settings."""
+    """Send a real test notification to every enabled webhook.
+
+    Answers `{"ok": bool, "results": [{"id", "name", "ok", "error"}]}` -- `ok` is true only
+    when every target accepted. It used to test `settings.webhook_url`, a key nothing
+    delivered through, so a success there proved nothing about alerting. 400 when no enabled
+    webhook exists.
+    """
     r = client.post("/settings/test-webhook")
     r.raise_for_status()
     return r.json()

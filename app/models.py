@@ -198,12 +198,40 @@ def init_db() -> None:
     conn.close()
 
 
+def ensure_default_docker_endpoint(conn: sqlite3.Connection) -> None:
+    """Guarantee exactly one default Docker endpoint. Does not commit; the caller owns that.
+
+    Called from `init_db` at startup and from `POST /api/reset`, which now empties
+    `docker_endpoints` -- an endpoint an operator added carries a host and its TLS material,
+    and a reset that keeps those is not the reset the button offers. Without this the
+    instance would come back from a reset with no Docker host at all until the next restart.
+    """
+    default_host = (
+        os.getenv("DOCKER_HOST") or "unix:///var/run/docker.sock"
+    ).strip() or "unix:///var/run/docker.sock"
+
+    if conn.execute("SELECT COUNT(*) FROM docker_endpoints").fetchone()[0] == 0:
+        conn.execute(
+            "INSERT INTO docker_endpoints (name, docker_host, enabled, is_default) VALUES (?,?,1,1)",
+            ("Local Docker", default_host),
+        )
+        return
+
+    if not conn.execute("SELECT 1 FROM docker_endpoints WHERE is_default=1").fetchone():
+        first = conn.execute("SELECT id FROM docker_endpoints ORDER BY id LIMIT 1").fetchone()
+        if first:
+            conn.execute("UPDATE docker_endpoints SET is_default=1 WHERE id=?", (first["id"],))
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     for sql in [
         "ALTER TABLE providers ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'",
         "ALTER TABLE services ADD COLUMN status       TEXT NOT NULL DEFAULT 'unknown'",
         "ALTER TABLE services ADD COLUMN last_checked TEXT",
-        "ALTER TABLE services ADD COLUMN environment  TEXT NOT NULL DEFAULT ''",
+        # `services.environment` was the single free-text environment, replaced by the
+        # `service_environments` join before 1.1. Nothing has read it since -- not the API,
+        # not the frontend, not the backup restore, which lists its columns explicitly --
+        # so it is dropped below rather than kept as a column every row carries empty.
         "ALTER TABLE services ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE services ADD COLUMN tunnel_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL",
         "ALTER TABLE services ADD COLUMN expose_mode TEXT NOT NULL DEFAULT 'proxy_dns'",
@@ -228,24 +256,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 import traceback
                 add_log("error", f"Unexpected migration error: {e}\n{traceback.format_exc()}")
 
-    # Ensure default docker endpoint exists
-    default_host = (os.getenv("DOCKER_HOST") or "unix:///var/run/docker.sock").strip() or "unix:///var/run/docker.sock"
-    endpoint_count = conn.execute("SELECT COUNT(*) FROM docker_endpoints").fetchone()[0]
-    if endpoint_count == 0:
-        conn.execute(
-            "INSERT INTO docker_endpoints (name, docker_host, enabled, is_default) VALUES (?,?,1,1)",
-            ("Local Docker", default_host),
-        )
-    else:
-        default_exists = conn.execute("SELECT 1 FROM docker_endpoints WHERE is_default=1").fetchone()
-        if not default_exists:
-            first = conn.execute("SELECT id FROM docker_endpoints ORDER BY id LIMIT 1").fetchone()
-            if first:
-                conn.execute("UPDATE docker_endpoints SET is_default=1 WHERE id=?", (first["id"],))
+    ensure_default_docker_endpoint(conn)
 
     _migrate_encrypt_passwords(conn)
     _backfill_auth_mode(conn)
+    _drop_legacy_service_environment(conn)
     _purge_logged_webhook_urls(conn)
+    _migrate_legacy_webhook_url(conn)
     _ensure_unique_service_hostnames(conn)
 
 
@@ -279,6 +296,61 @@ def _ensure_unique_service_hostnames(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_services_hostname ON services (subdomain, domain)"
     )
+
+
+def _drop_legacy_service_environment(conn: sqlite3.Connection) -> None:
+    """Remove `services.environment`, superseded by the `service_environments` join.
+
+    Guarded rather than assumed: `DROP COLUMN` needs SQLite 3.35, and an installation on an
+    older build keeps the empty column instead of failing to start. Nothing reads it either
+    way, so there is nothing to fall back to.
+    """
+    try:
+        conn.execute("ALTER TABLE services DROP COLUMN environment")
+    except sqlite3.OperationalError:
+        pass  # already gone, or a SQLite too old to drop it
+
+
+def _migrate_legacy_webhook_url(conn: sqlite3.Connection) -> None:
+    """Move `settings.webhook_url` into the `webhooks` table, where delivery reads.
+
+    That setting is the pre-1.1 global notification URL. It kept its whole surface -- it was
+    writable, it was masked on the way out, and `POST /api/settings/test-webhook` sent a real
+    notification through it that arrived. What it no longer had was a delivery path:
+    `_fire_service_webhooks` and `_fire_global_webhooks` both read `webhooks.url`, and no
+    migration ever copied the setting across. So an operator could configure alerting, test
+    it successfully, and never be told about a single outage.
+
+    A silent no-op that passes its own test is worse than an obvious gap, so the value is
+    moved rather than dropped: one webhook, enabled if `webhook_enabled` said so, scoped to
+    everything and subscribed to any service going down and coming back -- which is what a
+    single global URL meant. The two settings keys are then deleted, so this runs once.
+    """
+    row = conn.execute("SELECT value FROM settings WHERE key='webhook_url'").fetchone()
+    url = ((row["value"] if row else "") or "").strip()
+    if not url:
+        # Nothing configured, or already migrated. Clear a lingering `webhook_enabled`.
+        conn.execute("DELETE FROM settings WHERE key IN ('webhook_url', 'webhook_enabled')")
+        return
+
+    enabled_row = conn.execute(
+        "SELECT value FROM settings WHERE key='webhook_enabled'"
+    ).fetchone()
+    enabled = 1 if (enabled_row and str(enabled_row["value"]).lower() == "true") else 0
+
+    already = conn.execute("SELECT id FROM webhooks WHERE url=?", (url,)).fetchone()
+    if not already:
+        conn.execute(
+            """INSERT INTO webhooks
+               (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
+                alert_on_any_down, alert_on_any_up)
+               VALUES (?,?,?,'all',NULL,0,1,1)""",
+            ("Global notifications (migrated)", url, enabled),
+        )
+        add_log("info", "[Webhook] The global notification URL moved to the webhooks list -- "
+                        "it now actually delivers; review its rules in Settings", conn)
+
+    conn.execute("DELETE FROM settings WHERE key IN ('webhook_url', 'webhook_enabled')")
 
 
 def _purge_logged_webhook_urls(conn: sqlite3.Connection) -> None:

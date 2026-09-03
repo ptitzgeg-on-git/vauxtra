@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   ArrowLeft, ArrowRight, Lock, Globe, Eye, EyeOff, AlertTriangle, Loader2, ChevronRight,
 } from 'lucide-react';
+import { MIN_PASSWORD_LENGTH } from '@/constants';
 
 interface PasswordStepProps {
   onBack: () => void;
@@ -26,11 +27,14 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
     }
   };
 
-  const strength = password.length >= 12 && /[A-Z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password)
+  // The backend rule is `validate_password_strength`: twelve characters, no character
+  // classes. The meter grades what that rule cares about -- length -- instead of handing
+  // out a full bar for `Password1!`.
+  const strength = password.length >= 20
     ? 4
-    : password.length >= 10 && /[A-Z]/.test(password) && /[0-9]/.test(password)
+    : password.length >= 16
     ? 3
-    : password.length >= 8
+    : password.length >= MIN_PASSWORD_LENGTH
     ? 2
     : 1;
 
@@ -151,13 +155,13 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
                   })}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {password.length < 8
-                    ? 'Too short (min. 8 characters)'
+                  {password.length < MIN_PASSWORD_LENGTH
+                    ? `Too short (min. ${MIN_PASSWORD_LENGTH} characters)`
                     : strength === 4
                     ? 'Strong password'
                     : strength === 3
                     ? 'Good password'
-                    : 'Acceptable (add uppercase, numbers, or symbols for more security)'}
+                    : 'Acceptable (a few unrelated words beat added symbols)'}
                 </p>
               </div>
             )}
@@ -170,7 +174,7 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Repeat your password"
               className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              onKeyDown={(e) => { if (e.key === 'Enter' && password === confirmPassword && password.length >= 8) setupPassword(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && password === confirmPassword && password.length >= MIN_PASSWORD_LENGTH) setupPassword(); }}
             />
           </div>
           {confirmPassword.length > 0 && password !== confirmPassword && (
@@ -231,7 +235,7 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
         ) : skipPassword === false ? (
           <button
             onClick={setupPassword}
-            disabled={settingPassword || password.length < 8 || password !== confirmPassword}
+            disabled={settingPassword || password.length < MIN_PASSWORD_LENGTH || password !== confirmPassword}
             className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
           >
             {settingPassword ? <Loader2 size={16} className="animate-spin" /> : <Lock size={16} />}

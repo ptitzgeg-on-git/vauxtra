@@ -146,7 +146,7 @@
   "settings.backup.export_secure_success": "Backup seguro exportado com credenciais",
   "settings.backup.restore_success": "Backup restaurado com sucesso",
   "settings.auth.current_required": "Digite sua senha atual",
-  "settings.auth.new_min": "A nova senha deve ter pelo menos 8 caracteres",
+  "settings.auth.new_min": "A nova senha deve ter pelo menos 12 caracteres",
   "settings.auth.confirm_mismatch": "Novas senhas não coincidem",
   "settings.auth.changed_success": "Senha alterada com sucesso",
   "settings.api_keys.created": "Chave de API criada",
