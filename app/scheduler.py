@@ -13,6 +13,7 @@ from app.public_target import (
     load_public_target_policy,
     resolve_public_target,
 )
+from app.security import mask_secret_url
 
 _scheduler = BackgroundScheduler(daemon=True)
 _lock      = threading.Lock()
@@ -577,8 +578,12 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
     """
     import apprise as _apprise
     a = _apprise.Apprise()
+    # The URL carries the token. `add_log` writes straight into the `logs` table, which
+    # `GET /api/logs` and its SSE stream hand to any key -- masking here is what keeps a
+    # transient Discord outage from persisting the secret in normal operation.
+    safe_url = mask_secret_url(url)
     if not a.add(url):
-        add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {url}")
+        add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {safe_url}")
         return False
     try:
         ok = bool(a.notify(title=title, body=body))
@@ -607,7 +612,7 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
         except Exception:
             import traceback
             add_log("error", f"[Webhook] Could not queue a retry: {traceback.format_exc()}")
-        add_log("warning", f"[Webhook] Delivery failed for {url}: {exc}")
+        add_log("warning", f"[Webhook] Delivery failed for {safe_url}: {exc}")
         return queued
 
 
@@ -639,7 +644,12 @@ def _run_webhook_retry(conn) -> None:
                 "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
                 (dlid,),
             )
-            add_log("error", f"[Webhook] Delivery abandoned after {attempt} attempts: {row['url']}", conn)
+            add_log(
+                "error",
+                f"[Webhook] Delivery abandoned after {attempt} attempts: "
+                f"{mask_secret_url(row['url'])}",
+                conn,
+            )
             continue
 
         a = _apprise.Apprise()
@@ -668,7 +678,7 @@ def _run_webhook_retry(conn) -> None:
                        WHERE id=?""",
                     (new_attempt, str(exc), dlid),
                 )
-                add_log("error", f"[Webhook] Delivery abandoned: {row['url']}", conn)
+                add_log("error", f"[Webhook] Delivery abandoned: {mask_secret_url(row['url'])}", conn)
             else:
                 delay = _WEBHOOK_RETRY_BACKOFF[new_attempt - 1]
                 next_retry = _utc_stamp(delay)

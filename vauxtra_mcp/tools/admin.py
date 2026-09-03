@@ -162,7 +162,7 @@ def delete_environment(environment_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def list_webhooks() -> list[dict[str, Any]]:
-    """List all webhooks."""
+    """List all webhooks. URLs come back masked (`discord://***`) and cannot be read back."""
     r = client.get("/webhooks")
     r.raise_for_status()
     return r.json()
@@ -177,12 +177,26 @@ def create_webhook(name: str, url: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def update_webhook(webhook_id: int, name: str, url: str, enabled: bool = True) -> dict[str, Any]:
-    """Update a webhook by id."""
-    r = client.put(
-        f"/webhooks/{webhook_id}",
-        json={"name": name, "url": url, "enabled": enabled},
-    )
+def update_webhook(
+    webhook_id: int,
+    name: str | None = None,
+    url: str | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Update a webhook by id. Omitted fields keep their stored value.
+
+    `url` is optional on purpose: `list_webhooks` returns it masked, so an agent that had to
+    supply one in order to flip `enabled` could only pass the mask back -- which the API now
+    refuses rather than store. Leave it out unless you have been given the real URL.
+    """
+    payload: dict[str, Any] = {}
+    if name is not None:
+        payload["name"] = name
+    if url is not None:
+        payload["url"] = url
+    if enabled is not None:
+        payload["enabled"] = enabled
+    r = client.put(f"/webhooks/{webhook_id}", json=payload)
     r.raise_for_status()
     return r.json()
 

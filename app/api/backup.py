@@ -12,6 +12,7 @@ from app.auth import require_auth
 from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, encrypt_secret
 from app.limiter import limiter
 from app.models import add_log, get_db
+from app.security import mask_secret_url
 
 router = APIRouter()
 
@@ -25,7 +26,14 @@ def _table_exists(conn, table_name: str) -> bool:
     return result is not None
 
 
-_BACKUP_VERSION = "7"  # Version 7 supports encrypted secrets
+_BACKUP_VERSION = "8"  # Version 8 encrypts the webhook URLs too, and says which fields
+
+# What a secure export encrypts with the passphrase, written into the file so a restore
+# never has to guess. A version 7 file carries no such list: it encrypted the provider
+# passwords and nothing else, which is exactly what the fallback below assumes, so old
+# backups keep restoring.
+_ENCRYPTED_FIELDS = ("providers.password", "webhooks.url", "settings.webhook_url")
+_LEGACY_ENCRYPTED_FIELDS = ("providers.password",)
 
 
 class SecureBackupRequest(BaseModel):
@@ -37,9 +45,25 @@ class RestoreRequest(BaseModel):
     passphrase: str = ""
 
 
+def _webhook_without_url(row) -> dict:
+    """A webhook row for the *plain* export, with its URL removed.
+
+    An Apprise URL is not a field of a webhook, it is the webhook: `discord://<id>/
+    <token>` is enough to post as the operator. The file says `secrets_included: false`
+    and the docs say "credentials cleared" -- which is precisely what makes it the file
+    an operator forwards to a colleague or attaches to a ticket. The masked form is kept
+    so the entry is still identifiable, and `import_backup` restores such a webhook
+    disabled rather than writing `discord://***` back as a real URL.
+    """
+    data = dict(row)
+    data["url_masked"] = mask_secret_url(data.pop("url", ""))
+    data["url"] = ""
+    return data
+
+
 @router.get("/api/backup")
 def export_backup(request: Request):
-    """Export backup WITHOUT sensitive data (passwords cleared)."""
+    """Export backup WITHOUT sensitive data (passwords and webhook URLs cleared)."""
     # Same scope as /api/backup/secure: this file still carries the full topology,
     # provider URLs and usernames.
     require_auth(request, scope="admin")
@@ -62,11 +86,18 @@ def export_backup(request: Request):
             "environments":        [dict(r) for r in conn.execute("SELECT * FROM environments").fetchall()],
             "service_environments":[dict(r) for r in conn.execute("SELECT * FROM service_environments").fetchall()],
             "domains":             [dict(r) for r in conn.execute("SELECT * FROM domains").fetchall()],
-            "webhooks":            [dict(r) for r in conn.execute("SELECT * FROM webhooks").fetchall()],
+            "webhooks":            [
+                _webhook_without_url(r)
+                for r in conn.execute("SELECT * FROM webhooks").fetchall()
+            ],
             "service_alerts":      [dict(r) for r in conn.execute("SELECT * FROM service_alerts").fetchall()],
-            "settings":            [dict(r) for r in conn.execute(
-                "SELECT key, value FROM settings WHERE key NOT IN ('app_password_hash')"
-            ).fetchall()],
+            "settings":            [
+                # `webhook_url` is the legacy global Apprise URL: same secret, same file.
+                dict(r) for r in conn.execute(
+                    "SELECT key, value FROM settings "
+                    "WHERE key NOT IN ('app_password_hash', 'webhook_url')"
+                ).fetchall()
+            ],
             "docker_endpoints":    [dict(r) for r in conn.execute("SELECT * FROM docker_endpoints").fetchall()],
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
@@ -112,6 +143,25 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             p["password"] = encrypt_for_backup(plaintext_pwd, body.passphrase, salt) if plaintext_pwd else ""
             providers.append(p)
 
+        # An Apprise URL is the credential, exactly like a provider password -- and it
+        # was leaving in clear in the file whose whole purpose is "encrypted credentials".
+        webhooks = []
+        for r in conn.execute("SELECT * FROM webhooks").fetchall():
+            w = dict(r)
+            url = w.get("url", "")
+            w["url"] = encrypt_for_backup(url, body.passphrase, salt) if url else ""
+            webhooks.append(w)
+
+        # Same secret under its legacy global key.
+        settings_rows = []
+        for r in conn.execute(
+            "SELECT key, value FROM settings WHERE key NOT IN ('app_password_hash')"
+        ).fetchall():
+            s = dict(r)
+            if s["key"] == "webhook_url" and s["value"]:
+                s["value"] = encrypt_for_backup(s["value"], body.passphrase, salt)
+            settings_rows.append(s)
+
         # Get docker endpoints
         docker_endpoints = [dict(r) for r in conn.execute("SELECT * FROM docker_endpoints").fetchall()]
 
@@ -120,6 +170,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             "exported_at":         datetime.now(UTC).isoformat(),
             "secrets_included":    True,
             "encryption_salt":     salt_b64,
+            "encrypted_fields":    list(_ENCRYPTED_FIELDS),
             "providers":           providers,
             "services":            [dict(r) for r in conn.execute("SELECT * FROM services").fetchall()],
             "tags":                [dict(r) for r in conn.execute("SELECT * FROM tags").fetchall()],
@@ -128,11 +179,9 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             "environments":        [dict(r) for r in conn.execute("SELECT * FROM environments").fetchall()],
             "service_environments":[dict(r) for r in conn.execute("SELECT * FROM service_environments").fetchall()],
             "domains":             [dict(r) for r in conn.execute("SELECT * FROM domains").fetchall()],
-            "webhooks":            [dict(r) for r in conn.execute("SELECT * FROM webhooks").fetchall()],
+            "webhooks":            webhooks,
             "service_alerts":      [dict(r) for r in conn.execute("SELECT * FROM service_alerts").fetchall()],
-            "settings":            [dict(r) for r in conn.execute(
-                "SELECT key, value FROM settings WHERE key NOT IN ('app_password_hash')"
-            ).fetchall()],
+            "settings":            settings_rows,
             "docker_endpoints":    docker_endpoints,
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
@@ -174,19 +223,34 @@ def import_backup(request: Request, body: RestoreRequest):
 
     salt = base64.urlsafe_b64decode(salt_b64) if salt_b64 else b""
 
+    # A file written before version 8 has no list; back then only the provider passwords
+    # were encrypted, so its webhook URLs must be taken as-is rather than run through a
+    # decryption that would fail on plain text.
+    encrypted_fields = set(data.get("encrypted_fields") or _LEGACY_ENCRYPTED_FIELDS)
+
+    def _unseal(value: str, field: str, label: str) -> str:
+        """Decrypt one backup value, or return it untouched if it was never encrypted."""
+        if not value or not secrets_included or not body.passphrase:
+            return value
+        if field not in encrypted_fields:
+            return value
+        try:
+            return decrypt_from_backup(value, body.passphrase, salt)
+        except Exception as e:
+            raise HTTPException(400, f"Failed to decrypt {label}. Wrong passphrase? ({e})")
+
     # Dry run BEFORE destroying anything: a wrong passphrase must fail with the database
-    # untouched. Decryption is the only expensive validation, so it runs first.
+    # untouched. Decryption is the only expensive validation, so it runs first -- and it
+    # covers the webhook URLs too, otherwise a file whose provider list is empty would be
+    # wiped in before anything proved the passphrase right.
     if secrets_included and body.passphrase:
         for p in data.get("providers", []):
-            pwd = p.get("password", "")
-            if not pwd:
-                continue
-            try:
-                decrypt_from_backup(pwd, body.passphrase, salt)
-            except Exception as e:
-                raise HTTPException(
-                    400, f"Failed to decrypt provider secrets. Wrong passphrase? ({e})"
-                )
+            _unseal(p.get("password", ""), "providers.password", "provider secrets")
+        for w in data.get("webhooks", []):
+            _unseal(w.get("url", ""), "webhooks.url", "webhook URLs")
+        for s in data.get("settings", []):
+            if s.get("key") == "webhook_url":
+                _unseal(s.get("value", ""), "settings.webhook_url", "the webhook URL")
 
     conn = get_db()
     try:
@@ -219,13 +283,10 @@ def import_backup(request: Request, body: RestoreRequest):
         # Restore providers - decrypt from backup passphrase, re-encrypt with instance key
         for p in data.get("providers", []):
             password = p.get("password", "")
-            if secrets_included and password and body.passphrase:
-                try:
-                    # Decrypt from backup, re-encrypt with instance secret
-                    decrypted = decrypt_from_backup(password, body.passphrase, salt)
-                    password = encrypt_secret(decrypted)
-                except Exception as e:
-                    raise HTTPException(400, f"Failed to decrypt provider secrets. Wrong passphrase? ({e})")
+            if password:
+                password = encrypt_secret(
+                    _unseal(password, "providers.password", "provider secrets")
+                )
 
             conn.execute(
                 """INSERT OR REPLACE INTO providers
@@ -261,7 +322,18 @@ def import_backup(request: Request, body: RestoreRequest):
             else:
                 conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (name,))
 
+        webhooks_needing_url = 0
         for wh in data.get("webhooks", []):
+            # Stored in clear like it always was: `_try_send_apprise` hands the URL to
+            # apprise as-is. The instance key protects the provider passwords, not this.
+            webhook_url = _unseal(wh.get("url") or "", "webhooks.url", "webhook URLs")
+            # A plain export carries no URL. Restoring the row enabled would leave a
+            # webhook that can never fire and logs an error on every alert; restoring it
+            # disabled keeps the name, the scope and the rules the operator configured,
+            # and says plainly that one field has to be typed back in.
+            webhook_enabled = wh.get("enabled", 1) if webhook_url else 0
+            if not webhook_url:
+                webhooks_needing_url += 1
             conn.execute(
                 """INSERT OR REPLACE INTO webhooks
                    (id, name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
@@ -271,8 +343,8 @@ def import_backup(request: Request, body: RestoreRequest):
                 (
                     wh.get("id"),
                     wh.get("name"),
-                    wh.get("url"),
-                    wh.get("enabled", 1),
+                    webhook_url,
+                    webhook_enabled,
                     wh.get("scope_type", "all"),
                     wh.get("scope_ref_id"),
                     wh.get("repeat_interval_minutes", 0),
@@ -365,11 +437,15 @@ def import_backup(request: Request, body: RestoreRequest):
             # Whitelist: an imported file must not be able to set `app_password_hash`
             # (choosing the admin password) nor `public_target_sources` (URLs this
             # instance would then query).
-            if setting.get("key") not in _VALID_SETTINGS:
+            key = setting.get("key")
+            if key not in _VALID_SETTINGS:
                 continue
+            value = setting.get("value")
+            if key == "webhook_url":
+                value = _unseal(value or "", "settings.webhook_url", "the webhook URL")
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
-                (setting.get("key"), setting.get("value")),
+                (key, value),
             )
 
         # Restore docker endpoints
@@ -402,4 +478,11 @@ def import_backup(request: Request, body: RestoreRequest):
     add_log("info", f"Backup restored (version {data.get('version')})")
     svc_count = len(data.get("services", []))
     prv_count = len(data.get("providers", []))
-    return {"ok": True, "services": svc_count, "providers": prv_count}
+    # Reported, not buried: without this the operator has no way of knowing that some
+    # notification targets came back switched off.
+    return {
+        "ok": True,
+        "services": svc_count,
+        "providers": prv_count,
+        "webhooks_needing_url": webhooks_needing_url,
+    }

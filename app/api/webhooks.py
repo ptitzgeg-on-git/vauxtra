@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.auth import require_auth
 from app.models import get_db
+from app.security import mask_secret_url
 
 router = APIRouter()
 
@@ -35,6 +36,17 @@ def _validate_apprise_url(url: str) -> str:
     value = (url or "").strip()
     if not value:
         raise HTTPException(400, "URL is required")
+    # The read routes answer with `discord://***`. A caller that reads a webhook and writes
+    # it back -- an agent through the MCP bridge, a script -- would otherwise store the mask
+    # as the real URL and silently kill the alerting. apprise would likely refuse it anyway;
+    # relying on that would make the error message depend on which service the mask is for.
+    if "***" in value:
+        raise HTTPException(
+            400,
+            "That URL is the masked form the API returns, not a usable one. "
+            "Notification URLs are never readable back -- retype the full URL, "
+            "or omit the field to keep the one already stored.",
+        )
     try:
         import apprise
         a = apprise.Apprise()
@@ -49,14 +61,31 @@ def _validate_apprise_url(url: str) -> str:
     return value
 
 
+def _public_webhook(row) -> dict:
+    """A webhook row without its URL, plus a masked form for display.
+
+    `url` is dropped rather than masked: a client that reads a webhook and writes it
+    back would otherwise store `discord://***` as the real URL. The update route
+    supports partial bodies, so a round-trip that omits `url` keeps the stored one.
+    """
+    data = dict(row)
+    data["url_masked"] = mask_secret_url(data.pop("url", ""))
+    return data
+
+
 @router.get("/api/webhooks")
 def list_webhooks(request: Request):
-    """Return all configured webhooks (Apprise notification targets)."""
+    """Return all configured webhooks (Apprise notification targets), URLs masked.
+
+    An API key is `read` by default and every GET is in that scope, so this list is the
+    widest door onto the one secret a webhook holds. `docs/HOWTO.md` promises `read`
+    grants "every GET" -- so the fix belongs here, not in the scope table.
+    """
     require_auth(request)
     conn = get_db()
     try:
         rows = conn.execute("SELECT * FROM webhooks ORDER BY name").fetchall()
-        return [dict(r) for r in rows]
+        return [_public_webhook(r) for r in rows]
     finally:
         conn.close()
 
@@ -99,7 +128,7 @@ def add_webhook(request: Request, body: dict):
         )
         wid = cur.lastrowid
         conn.commit()
-        return {"id": wid, "name": name, "url": url, "enabled": 1,
+        return {"id": wid, "name": name, "url_masked": mask_secret_url(url), "enabled": 1,
                 "scope_type": scope_type, "scope_ref_id": scope_ref_id,
                 "repeat_interval_minutes": repeat_interval_minutes,
                 "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,
@@ -159,7 +188,9 @@ def update_webhook(wid: int, request: Request, body: dict):
             ),
         )
         conn.commit()
-        return {"id": wid, "name": name, "url": url, "enabled": enabled,
+        # Masked on the way out too: a partial update (the enable/disable toggle sends
+        # only `enabled`) would otherwise echo back a URL the caller never sent.
+        return {"id": wid, "name": name, "url_masked": mask_secret_url(url), "enabled": enabled,
                 "scope_type": scope_type, "scope_ref_id": scope_ref_id,
                 "repeat_interval_minutes": repeat_interval_minutes,
                 "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,
@@ -244,7 +275,13 @@ def get_service_alerts(sid: int, request: Request):
                JOIN webhooks w ON w.id = sa.webhook_id
                WHERE sa.service_id=?""", (sid,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        # Second door onto the same secret, and this one has no scope at all.
+        out = []
+        for r in rows:
+            item = dict(r)
+            item["webhook_url_masked"] = mask_secret_url(item.pop("webhook_url", ""))
+            out.append(item)
+        return out
     finally:
         conn.close()
 

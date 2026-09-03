@@ -213,6 +213,7 @@
   "settings.migration.import_failed": "Importeren is mislukt",
   "settings.backup.export_failed": "Kan back-up niet exporteren",
   "settings.backup.restore_failed": "Kan back-up niet herstellen",
+  "settings.backup.restore_webhooks_disabled": "{count} notificatiedoel(en) hersteld zonder URL en uitgeschakeld gelaten — een back-up zonder geheimen bevat die niet. Voer de URL opnieuw in om ze weer aan te zetten.",
   "settings.backup.secure_export_help": "Providerwachtwoorden worden gecodeerd met PBKDF2 + AES. U hebt deze wachtwoordzin nodig om te herstellen.",
   "settings.auth.change_failed": "Kan wachtwoord niet wijzigen",
   "settings.webhooks.added": "Webhook toegevoegd",

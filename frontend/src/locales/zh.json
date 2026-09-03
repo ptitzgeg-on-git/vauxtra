@@ -213,6 +213,7 @@
   "settings.migration.import_failed": "导入失败",
   "settings.backup.export_failed": "导出备份失败",
   "settings.backup.restore_failed": "恢复备份失败",
+  "settings.backup.restore_webhooks_disabled": "已恢复 {count} 个通知目标，但未包含其 URL，因此保持禁用状态。不含密钥的备份中没有该 URL。重新填写后即可重新启用。",
   "settings.backup.secure_export_help": "Provider 密码将使用 PBKDF2 + AES 加密。恢复时需要这段口令。",
   "settings.auth.change_failed": "修改密码失败",
   "settings.webhooks.added": "Webhook 已添加",
