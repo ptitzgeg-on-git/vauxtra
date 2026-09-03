@@ -6,6 +6,24 @@ from app.config import PROVIDER_TIMEOUT
 from app.providers.base import ProxyProvider, TimeoutSession
 
 
+def _numeric_host_id(host_id) -> int | None:
+    """The identifier as NPM numbers it, or None if this is not one.
+
+    Two reasons to check it here rather than at the call site. The first is that the caller
+    does not know: `DELETE /api/providers/{pid}/proxy-hosts/{host_id}` serves all three
+    providers and only this one insists on an integer. The second is that the value is
+    interpolated into a URL -- a `host_id` of `1/../../users` would compose a path NPM
+    would happily serve.
+
+    Returns None rather than raising: the `ProxyProvider` contract is that a failure gives
+    back a falsy value, and every caller already handles that.
+    """
+    try:
+        return int(str(host_id).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 class NPMProvider(ProxyProvider):
 
     def __init__(self, url: str, email: str, password: str):
@@ -109,8 +127,9 @@ class NPMProvider(ProxyProvider):
         except requests.RequestException:
             return None
 
-    def delete_host(self, host_id: int) -> bool:
-        if not self._ensure_auth():
+    def delete_host(self, host_id: int | str) -> bool:
+        host_id = _numeric_host_id(host_id)
+        if host_id is None or not self._ensure_auth():
             return False
         try:
             r = self.session.delete(
@@ -125,7 +144,8 @@ class NPMProvider(ProxyProvider):
                     scheme: str = "http", websocket: bool = False,
                     cert_id: int | None = None) -> bool:
         """Update an existing proxy host via PUT."""
-        if not self._ensure_auth():
+        host_id = _numeric_host_id(host_id)
+        if host_id is None or not self._ensure_auth():
             return False
         payload = {
             "domain_names": [domain],
@@ -151,9 +171,10 @@ class NPMProvider(ProxyProvider):
         except requests.RequestException:
             return False
 
-    def toggle_host(self, host_id: int, enabled: bool) -> bool:
+    def toggle_host(self, host_id: int | str, enabled: bool) -> bool:
         """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints."""
-        if not self._ensure_auth():
+        host_id = _numeric_host_id(host_id)
+        if host_id is None or not self._ensure_auth():
             return False
         action = "enable" if enabled else "disable"
         try:
