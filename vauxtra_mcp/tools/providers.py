@@ -94,9 +94,15 @@ def update_provider(
 
 
 @mcp.tool()
-def delete_provider(provider_id: int) -> dict[str, Any]:
-    """Delete a provider by ID. Services referencing this provider will lose their link."""
-    r = client.delete(f"/providers/{provider_id}")
+def delete_provider(provider_id: int, force: bool = False) -> dict[str, Any]:
+    """Delete a provider by ID.
+
+    Refuses with 409 while services still reference it, and the error carries the list
+    (`detail.services`, each with `id`, `fqdn` and the `roles` it fills). Call again with
+    `force=True` to delete anyway: those services keep their public hostname but lose the
+    link, so nothing is pushed for them until another provider is chosen.
+    """
+    r = client.delete(f"/providers/{provider_id}", params={"force": "true"} if force else None)
     r.raise_for_status()
     return r.json()
 
