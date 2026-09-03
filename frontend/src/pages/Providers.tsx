@@ -286,11 +286,17 @@ export function Providers() {
       await deleteProvider.mutateAsync({ id });
       setDeletingId(null);
     } catch (error: unknown) {
-      const err = error as { response?: { status?: number; data?: { detail?: { message?: string; services?: Array<{ fqdn: string }> } | string } } };
+      const err = error as { response?: { status?: number; data?: { detail?: { message?: string; services?: Array<{ fqdn: string; roles?: string[] }> } | string } } };
       const detail = err?.response?.data?.detail;
       if (err?.response?.status === 409 && typeof detail === 'object' && detail?.services) {
         const count = detail.services.length;
-        const list = detail.services.slice(0, 5).map((s: { fqdn: string }) => s.fqdn).join('\n• ');
+        // The API names the role each service fills (proxy, dns, tunnel, extra dns).
+        // Which link is about to be cut is what decides whether to go ahead.
+        const list = detail.services
+          .slice(0, 5)
+          .map((s: { fqdn: string; roles?: string[] }) =>
+            (s.roles?.length ? `${s.fqdn} (${s.roles.join(', ')})` : s.fqdn))
+          .join('\n• ');
         const suffix = count > 5 ? `\n… and ${count - 5} more` : '';
         if (await confirm({
           title: 'Provider has dependencies',

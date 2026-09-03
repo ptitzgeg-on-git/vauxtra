@@ -621,6 +621,68 @@ def get_service(sid: int, request: Request):
     return service
 
 
+def _conflicting_service(conn, public_host: str, exclude_id: int | None = None):
+    """The service already answering for `public_host`, if there is one.
+
+    Comparison goes through `_service_public_hostname` rather than the raw columns, because
+    a tunnel service publishes `tunnel_hostname` -- so a tunnel and a proxy service can
+    collide while their `(subdomain, domain)` pairs differ, which the unique index in
+    `app/models.py` cannot see.
+    """
+    for row in conn.execute(
+        "SELECT id, subdomain, domain, expose_mode, tunnel_hostname FROM services"
+    ).fetchall():
+        if exclude_id is not None and row["id"] == exclude_id:
+            continue
+        existing = _service_public_hostname(
+            row["expose_mode"] or "proxy_dns",
+            row["tunnel_hostname"] or "",
+            row["subdomain"],
+            row["domain"],
+        )
+        if existing == public_host:
+            return row
+    return None
+
+
+def _unknown_references(conn, body: ServiceIn) -> list[str]:
+    """Name every id in the payload that points at nothing.
+
+    Both write endpoints call the proxy and the DNS provider *first*, and only then write the
+    rows -- `INSERT INTO services`, `set_push_targets`, `set_tags`, `set_environments`.
+    Foreign keys are enforced (`app/db.py`), so a single unknown id raised `IntegrityError`
+    well after the public hostname had been published: the transaction rolled back, the route
+    stayed up, and nothing in the database described it any more. It could not be listed, and
+    therefore not deleted, from Vauxtra.
+
+    Checking here costs one query per kind and turns that 500-and-an-orphan into a 400 that
+    names the offending id, before anything reaches a provider.
+    """
+    unknown: list[str] = []
+
+    def _check(table: str, ids, label: str) -> None:
+        wanted = sorted({int(i) for i in ids if i})
+        if not wanted:
+            return
+        marks = ",".join("?" * len(wanted))
+        found = {
+            r["id"]
+            for r in conn.execute(f"SELECT id FROM {table} WHERE id IN ({marks})", tuple(wanted))
+        }
+        unknown.extend(f"{label} {i}" for i in wanted if i not in found)
+
+    _check("tags", body.tag_ids or [], "tag")
+    _check("environments", body.environment_ids or [], "environment")
+    _check(
+        "providers",
+        [body.proxy_provider_id, body.dns_provider_id, body.tunnel_provider_id]
+        + list(body.extra_proxy_provider_ids or [])
+        + list(body.extra_dns_provider_ids or []),
+        "provider",
+    )
+    return unknown
+
+
 @router.post("/api/services", status_code=201)
 def add_service(request: Request, body: ServiceIn):
     require_auth(request, scope="write")
@@ -632,6 +694,21 @@ def add_service(request: Request, body: ServiceIn):
 
     public_host = _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain)
     conn   = get_db()
+
+    unknown = _unknown_references(conn, body)
+    if unknown:
+        conn.close()
+        raise HTTPException(400, f"Nothing was created -- unknown {', '.join(unknown)}")
+
+    clash = _conflicting_service(conn, public_host)
+    if clash:
+        conn.close()
+        raise HTTPException(
+            409,
+            f"{public_host} is already served by service #{clash['id']}. Two services on one "
+            "hostname push over each other -- edit that one, or choose another hostname.",
+        )
+
     errors = []
 
     npm_host_id = None
@@ -786,6 +863,27 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     if not old:
         conn.close()
         raise HTTPException(404, "Service not found")
+
+    unknown = _unknown_references(conn, body)
+    if unknown:
+        # Same reasoning as `add_service`: the providers are reconfigured before the row is
+        # rewritten, so an id that does not exist used to be discovered only once the public
+        # hostname had already moved.
+        conn.close()
+        raise HTTPException(400, f"Nothing was changed -- unknown {', '.join(unknown)}")
+
+    clash = _conflicting_service(
+        conn,
+        _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain),
+        exclude_id=sid,
+    )
+    if clash:
+        conn.close()
+        raise HTTPException(
+            409,
+            f"That hostname is already served by service #{clash['id']}. Two services on one "
+            "hostname push over each other -- edit that one, or choose another hostname.",
+        )
 
     old_mode = (old["expose_mode"] or "proxy_dns").strip().lower()
     new_mode = body.expose_mode
