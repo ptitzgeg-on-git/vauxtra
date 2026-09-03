@@ -66,7 +66,13 @@ def get_settings() -> dict[str, Any]:
 
 @mcp.tool()
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Save one or more global settings."""
+    """Save one or more global settings. Send only the keys you mean to change.
+
+    The answer carries `saved` and `ignored`: read-only keys that `get_settings` also
+    returns (`schema_version`, `setup_completed`) land in `ignored`. A value the server
+    refuses fails the whole call with 400 and writes nothing -- notably `webhook_url`, which
+    `get_settings` returns masked and which therefore cannot be posted back unchanged.
+    """
     r = client.post("/settings", json=settings)
     r.raise_for_status()
     return r.json()
