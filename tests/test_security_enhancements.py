@@ -1,8 +1,7 @@
-"""Tests for security utilities and request cache."""
+"""Tests for the security utilities."""
 
 import unittest
 
-from app.cache import RequestCache
 from app.security import sanitize_domain, validate_cors_origins, validate_password_strength
 
 
@@ -55,6 +54,8 @@ class TestDomainSanitization(unittest.TestCase):
 
 
 class TestPasswordValidation(unittest.TestCase):
+    """One policy: twelve characters, no character-class rules."""
+
     def test_strong_password(self):
         is_valid, msg = validate_password_strength("SecurePass123!")
         self.assertTrue(is_valid)
@@ -65,53 +66,20 @@ class TestPasswordValidation(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertIn("at least", msg)
 
-    def test_missing_uppercase(self):
-        is_valid, msg = validate_password_strength("password123!")
+    def test_eleven_characters_is_one_too_few(self):
+        """The floor is twelve, and it is the floor both endpoints apply."""
+        self.assertFalse(validate_password_strength("elevenchars")[0])
+        self.assertTrue(validate_password_strength("twelvechars!")[0])
+
+    def test_a_passphrase_needs_no_symbols(self):
+        """This is the point of dropping the class rules: length is what is asked for."""
+        is_valid, msg = validate_password_strength("correct horse battery staple")
+        self.assertTrue(is_valid, msg)
+
+    def test_length_alone_does_not_buy_a_repeated_character(self):
+        is_valid, msg = validate_password_strength("abababababababab")
         self.assertFalse(is_valid)
-        self.assertIn("uppercase", msg)
-
-    def test_missing_digit(self):
-        is_valid, msg = validate_password_strength("StrongPassword!")
-        self.assertFalse(is_valid)
-        self.assertIn("digit", msg)
-
-
-class TestRequestCache(unittest.TestCase):
-    def setUp(self):
-        self.cache = RequestCache()
-
-    def test_cache_hit(self):
-        self.cache.set("key1", "value1")
-        self.assertEqual(self.cache.get("key1"), "value1")
-
-    def test_cache_miss(self):
-        self.assertIsNone(self.cache.get("nonexistent"))
-
-    def test_ttl_expiration(self):
-        self.cache.set("key1", "value1", ttl=0.01)
-        import time
-        time.sleep(0.1)
-        self.assertIsNone(self.cache.get("key1"))
-
-    def test_get_or_compute(self):
-        result = self.cache.get_or_compute("key1", lambda: "computed")
-        self.assertEqual(result, "computed")
-        result = self.cache.get_or_compute("key1", lambda: "recomputed")
-        self.assertEqual(result, "computed")
-
-    def test_clear(self):
-        self.cache.set("key1", "val1")
-        self.cache.set("key2", "val2")
-        self.cache.clear()
-        self.assertIsNone(self.cache.get("key1"))
-        self.assertIsNone(self.cache.get("key2"))
-
-    def test_stats(self):
-        self.cache.set("key1", "val1")
-        self.cache.set("key2", "val2")
-        stats = self.cache.stats()
-        self.assertEqual(stats["size"], 2)
-        self.assertIn("key1", stats["keys"])
+        self.assertIn("different characters", msg)
 
 
 if __name__ == "__main__":

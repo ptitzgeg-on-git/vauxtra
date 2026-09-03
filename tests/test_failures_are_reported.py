@@ -424,10 +424,13 @@ class SettingsRejectionTests(_IsolatedDB):
         self.assertEqual(self._stored("timezone"), "Europe/Paris")
 
     def test_boolean_settings_are_normalized(self) -> None:
-        self._save({"webhook_enabled": "YES"})
-        self.assertEqual(self._stored("webhook_enabled"), "true")
+        # This used to test `webhook_enabled`, which is retired: it switched on a delivery
+        # path that no longer existed. `auto_reconcile_enabled` is the boolean that remains,
+        # and it is the one that was unwritable until now.
+        self._save({"auto_reconcile_enabled": "YES"})
+        self.assertEqual(self._stored("auto_reconcile_enabled"), "true")
         with self.assertRaises(HTTPException):
-            self._save({"webhook_enabled": "maybe"})
+            self._save({"auto_reconcile_enabled": "maybe"})
 
 
 class StartupSurvivesABadIntervalTests(_IsolatedDB):

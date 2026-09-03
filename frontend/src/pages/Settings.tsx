@@ -10,6 +10,7 @@ import { useTheme } from "@/theme";
 import { toast } from "react-hot-toast";
 import { GeneralTab } from "@/components/features/settings";
 import { useWebhookActions } from "@/hooks/useWebhookActions";
+import { MIN_PASSWORD_LENGTH } from "@/constants";
 
 const LOCAL_TLDS = ['.lan', '.local', '.home', '.internal', '.localdomain', '.arpa'];
 
@@ -109,11 +110,15 @@ export function Settings() {
     enabled: activeTab === 'general',
   });
 
-  // Services list for deduplication in Import & Sync, and domain dependency count
+  // Services list for deduplication in Import & Sync, and domain dependency count.
+  // `dataops` is remapped to `general` above, so it is never the active tab: this query
+  // stayed disabled on the very screen that uses it, `existingPublicHosts` was always
+  // empty, and every discovered host was offered as new -- including the ones already
+  // in Vauxtra, which now come back as a 409 on import.
   const { data: existingServices = [] } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get('/services'),
-    enabled: activeTab === 'dataops' || activeTab === 'dns',
+    enabled: activeTab === 'general' || activeTab === 'dns',
   });
 
   const { data: notificationProviders = [] } = useQuery<Provider[]>({
@@ -543,14 +548,14 @@ export function Settings() {
   });
 
   const submitSetPassword = () => {
-    if (cpNew.length < 8) { toast.error(t('settings.auth.new_min')); return; }
+    if (cpNew.length < MIN_PASSWORD_LENGTH) { toast.error(t('settings.auth.new_min')); return; }
     if (cpNew !== cpConfirm) { toast.error(t('settings.auth.confirm_mismatch')); return; }
     setPasswordMutation.mutate({ password: cpNew });
   };
 
   const submitChangePassword = () => {
     if (!cpCurrent) { toast.error(t('settings.auth.current_required')); return; }
-    if (cpNew.length < 8) { toast.error(t('settings.auth.new_min')); return; }
+    if (cpNew.length < MIN_PASSWORD_LENGTH) { toast.error(t('settings.auth.new_min')); return; }
     if (cpNew !== cpConfirm) { toast.error(t('settings.auth.confirm_mismatch')); return; }
     changePasswordMutation.mutate({ current_password: cpCurrent, new_password: cpNew });
   };
@@ -562,7 +567,6 @@ export function Settings() {
     taxonomy: `${t('settings.tab.tags')} & ${t('settings.tab.environments')}`,
     apikeys: t('settings.tab.apikeys'),
     webhooks: t('settings.tab.webhooks'),
-    dataops: `${t('settings.tab.migration')} & ${t('settings.tab.backup')}`,
     logs: t('settings.tab.logs'),
   };
 

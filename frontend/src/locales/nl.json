@@ -146,7 +146,7 @@
   "settings.backup.export_secure_success": "Veilige back-up geëxporteerd met inloggegevens",
   "settings.backup.restore_success": "Back-up succesvol hersteld",
   "settings.auth.current_required": "Voer uw huidige wachtwoord in",
-  "settings.auth.new_min": "Nieuw wachtwoord moet minimaal 8 tekens lang zijn",
+  "settings.auth.new_min": "Nieuw wachtwoord moet minimaal 12 tekens lang zijn",
   "settings.auth.confirm_mismatch": "Nieuwe wachtwoorden komen niet overeen",
   "settings.auth.changed_success": "Wachtwoord succesvol gewijzigd",
   "settings.api_keys.created": "API-sleutel gemaakt",

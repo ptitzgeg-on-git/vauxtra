@@ -74,38 +74,36 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
     return parsed_origins
 
 
-def validate_password_strength(password: str, min_length: int = 12) -> tuple[bool, str]:
-    """
-    Validate password strength for sensitive operations.
-    
-    Requirements:
-    - Minimum length (default 12)
-    - At least one uppercase letter
-    - At least one lowercase letter
-    - At least one digit
-    - At least one special character
-    
-    Args:
-        password: Password to validate
-        min_length: Minimum required length
-    
-    Returns:
-        Tuple of (is_valid, error_message)
+MIN_PASSWORD_LENGTH = 12
+
+
+def validate_password_strength(
+    password: str, min_length: int = MIN_PASSWORD_LENGTH
+) -> tuple[bool, str]:
+    """The admin password rule -- and the only place it is written.
+
+    Until now there were two. This function asked for 12 characters and four character
+    classes and was called by nothing but its own tests, while `setup_password` and
+    `change_password` each carried an inline `len(password) < 8`. The policy that ran was
+    the one nobody had thought about.
+
+    The rule that survives is length, not composition. NIST SP 800-63B stopped recommending
+    character-class requirements because of what they do to real passwords: asked for an
+    uppercase, a digit and a symbol, people produce `Password1!` -- eleven characters a
+    wordlist finds instantly, and which the old rule accepted the moment it reached twelve.
+    A floor of twelve with no class rules leaves a passphrase as the obvious way to pass,
+    and a passphrase is what we actually want.
+
+    The distinct-character check is the one thing kept from the old spirit: it costs nothing
+    and it refuses `aaaaaaaaaaaa` and `abababababab`, which length alone waves through.
+
+    Returns (is_valid, error_message); the message is shown to the user as-is.
     """
     if len(password) < min_length:
         return False, f"Password must be at least {min_length} characters"
 
-    if not re.search(r"[A-Z]", password):
-        return False, "Password must contain at least one uppercase letter"
-
-    if not re.search(r"[a-z]", password):
-        return False, "Password must contain at least one lowercase letter"
-
-    if not re.search(r"\d", password):
-        return False, "Password must contain at least one digit"
-
-    if not re.search(r"[!@#$%^&*()_+\-=\[\]{};:'\",.<>?/\\|`~]", password):
-        return False, "Password must contain at least one special character"
+    if len(set(password)) < 5:
+        return False, "Password must use more than a few different characters"
 
     return True, ""
 

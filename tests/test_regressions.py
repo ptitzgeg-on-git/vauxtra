@@ -48,12 +48,12 @@ class IsolatedDBTestCase(unittest.TestCase):
 
         scheduler._alert_down_since.clear()
         scheduler._alert_down_sent.clear()
-        scheduler._tunnel_last_status.clear()
+        scheduler._provider_last_status.clear()
 
     def tearDown(self) -> None:
         scheduler._alert_down_since.clear()
         scheduler._alert_down_sent.clear()
-        scheduler._tunnel_last_status.clear()
+        scheduler._provider_last_status.clear()
 
         self._auth_patch.stop()
 

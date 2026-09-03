@@ -146,7 +146,7 @@
   "settings.backup.export_secure_success": "認証情報を使用してエクスポートされた安全なバックアップ",
   "settings.backup.restore_success": "バックアップが正常に復元されました",
   "settings.auth.current_required": "現在のパスワードを入力してください",
-  "settings.auth.new_min": "新しいパスワードは 8 文字以上である必要があります",
+  "settings.auth.new_min": "新しいパスワードは 12 文字以上である必要があります",
   "settings.auth.confirm_mismatch": "新しいパスワードが一致しません",
   "settings.auth.changed_success": "パスワードが正常に変更されました",
   "settings.api_keys.created": "APIキーが作成されました",
