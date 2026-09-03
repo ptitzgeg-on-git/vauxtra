@@ -72,7 +72,17 @@ _MASKED_SETTINGS = {"webhook_url"}
 # Keys that must survive a reset or a restore: wiping the password hash would drop the instance
 # back to anonymous-admin, and importing one would let a backup file pick the admin password.
 # `auth_mode` belongs here for the same reason -- it is what makes that drop *visible*.
-_PROTECTED_SETTINGS = ("app_password_hash", "setup_completed", "schema_version", "auth_mode")
+# `session_epoch` is here for a subtler reason than the rest: it is a counter that only
+# ever goes up, and deleting it sends it back to 0 -- which is the epoch every cookie
+# minted before the last password change is still carrying. A reset would have handed
+# those sessions back their access.
+_PROTECTED_SETTINGS = (
+    "app_password_hash",
+    "setup_completed",
+    "schema_version",
+    "auth_mode",
+    "session_epoch",
+)
 
 # The placeholders are built from the tuple, never written out by hand: the two DELETE
 # statements below used a literal `(?,?,?)`, so adding this fourth key would have raised

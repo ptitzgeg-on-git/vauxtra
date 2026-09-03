@@ -4,7 +4,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import (
+    bump_session_epoch,
     check_password,
+    current_session_epoch,
     get_session,
     has_password_configured,
     hash_password,
@@ -93,6 +95,7 @@ def auth_login(request: Request, body: LoginBody):
 
     session = get_session(request)
     session["authenticated"] = True
+    session["epoch"] = current_session_epoch()
     return {"ok": True}
 
 
@@ -136,6 +139,7 @@ def setup_password(request: Request, body: SetPasswordBody):
     # Auto-login after setting password
     session = get_session(request)
     session["authenticated"] = True
+    session["epoch"] = current_session_epoch()
     return {"ok": True}
 
 
@@ -164,8 +168,18 @@ def change_password(request: Request, body: ChangePasswordBody):
             (password_hash,),
         )
         mark_password_configured(conn)
+        # Every other session dies with the old password. This is the whole point of
+        # changing it after a suspected compromise, and until now it did not happen: the
+        # thief's cookie kept working for the remaining days of its seven.
+        bump_session_epoch(conn)
         conn.commit()
     finally:
         conn.close()
+
+    # ... except this one. Logging the operator out of the browser they are holding, as a
+    # side effect of following the advice, is how people learn not to follow it.
+    session = get_session(request)
+    if session.get("authenticated") is True:
+        session["epoch"] = current_session_epoch()
 
     return {"ok": True}

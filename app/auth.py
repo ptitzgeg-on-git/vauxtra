@@ -84,6 +84,10 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
 AUTH_MODE_KEY = "auth_mode"
 AUTH_MODE_PASSWORD = "password"
 
+# Bumped whenever every open session must stop being valid. A session cookie carries the
+# epoch it was opened in and is refused once the two disagree.
+SESSION_EPOCH_KEY = "session_epoch"
+
 
 def _read_auth_settings() -> dict[str, str]:
     """Read the hash and the mode marker in a single connection.
@@ -96,8 +100,8 @@ def _read_auth_settings() -> dict[str, str]:
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT key, value FROM settings WHERE key IN (?, ?)",
-            ("app_password_hash", AUTH_MODE_KEY),
+            "SELECT key, value FROM settings WHERE key IN (?, ?, ?)",
+            ("app_password_hash", AUTH_MODE_KEY, SESSION_EPOCH_KEY),
         ).fetchall()
         return {r["key"]: r["value"] for r in rows}
     finally:
@@ -131,6 +135,40 @@ def password_was_configured_once() -> bool:
         return _read_auth_settings().get(AUTH_MODE_KEY, "") == AUTH_MODE_PASSWORD
     except (KeyError, ValueError, OSError, sqlite3.Error):
         return True
+
+
+def current_session_epoch() -> int:
+    """The generation a session cookie must carry to still count as authenticated.
+
+    Fails **closed**, like `password_was_configured_once`: a database that cannot be read
+    yields -1, which no stored epoch matches, so sessions are refused rather than accepted
+    on the strength of a number nobody could check.
+    """
+    try:
+        return int(_read_auth_settings().get(SESSION_EPOCH_KEY, "0") or "0")
+    except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
+        return -1
+
+
+def bump_session_epoch(conn) -> None:
+    """Invalidate every open session. Call inside the caller's transaction.
+
+    Changing the admin password used to invalidate nothing at all. The session cookie is
+    signed with `SECRET_KEY` and says `authenticated`, and neither of those changes when the
+    password does -- so the one move an operator makes after "I think someone has my
+    session" left that session working for the rest of its seven days.
+    """
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key=?", (SESSION_EPOCH_KEY,)
+    ).fetchone()
+    try:
+        current = int((row["value"] if row else "0") or "0")
+    except (TypeError, ValueError):
+        current = 0
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        (SESSION_EPOCH_KEY, str(current + 1)),
+    )
 
 
 def mark_password_configured(conn) -> None:
@@ -251,8 +289,17 @@ def _get_auth_context(request: Request) -> dict | None:
         if password_was_configured_once():
             return None  # the hash vanished -- refuse, do not fall back to anonymous admin
         return {"kind": "open", "scopes": ["admin"]}
-    if get_session(request).get("authenticated") is True:
-        return {"kind": "session", "scopes": ["admin"]}
+    session = get_session(request)
+    if session.get("authenticated") is True:
+        # A session carries the epoch it was opened in, and `change_password` bumps the
+        # stored one. A cookie from before this existed has no epoch at all, so an upgrade
+        # costs one re-login -- which is the correct answer for a cookie minted under rules
+        # that could not expire it.
+        if session.get("epoch") == current_session_epoch():
+            return {"kind": "session", "scopes": ["admin"]}
+        # Drop it rather than merely ignore it: the browser gets an empty cookie back and
+        # stops presenting a credential that will never be accepted again.
+        session.clear()
     # Bearer token authentication (for MCP and API integrations)
     authorization = request.headers.get("Authorization", "")
     if authorization.startswith("Bearer "):
