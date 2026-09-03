@@ -422,7 +422,29 @@ def push_service(sid: int, request: Request):
     if not svc:
         conn.close()
         raise HTTPException(404, "Service not found")
+    try:
+        return _push_service_row(conn, svc, sid)
+    finally:
+        conn.close()
 
+
+def _execute_push(svc, sid: int) -> dict:
+    """Push a service from outside the HTTP layer -- the scheduler's auto-reconcile job.
+
+    `app/scheduler.py` has imported this name since auto-reconcile was written, and it was
+    never defined: the job raised `ImportError` on its first tick. Nobody noticed because
+    `auto_reconcile_enabled` was not writable either, so the job could never be scheduled.
+    Both halves are fixed together; a feature that cannot be switched on is not a feature.
+    """
+    conn = get_db()
+    try:
+        return _push_service_row(conn, svc, sid)
+    finally:
+        conn.close()
+
+
+def _push_service_row(conn, svc, sid: int) -> dict:
+    """The push itself. Commits; the caller owns the connection and closes it."""
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
     errors = []
 
@@ -525,7 +547,6 @@ def push_service(sid: int, request: Request):
                     errors.append(f"DNS ({row['name']}): {e}")
 
     conn.commit()
-    conn.close()
     return {"ok": not errors, "errors": errors}
 
 

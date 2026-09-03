@@ -5,7 +5,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 
 from app.auth import require_auth
-from app.models import add_log, get_db
+from app.models import add_log, ensure_default_docker_endpoint, get_db
 from app.security import mask_secret_url
 from app.validators import is_valid_domain, normalize_domain
 
@@ -29,6 +29,13 @@ _VALID_SETTINGS = {
     "public_target_sources",
     "public_target_timeout",
     "public_target_priority",
+    # Read by `app/scheduler.py` since 1.1.0, and until now writable by nobody: the
+    # auto-reconcile job could not be switched on, and `CHANGELOG.md` advertised the webhook
+    # retention as "configurable via `webhook_retry_retention_days`" while the key was
+    # dropped by `save_settings` on the way in.
+    "auto_reconcile_enabled",
+    "auto_reconcile_interval",
+    "webhook_retry_retention_days",
 }
 _VALID_THEMES   = {"light", "dark"}
 _VALID_PUBLIC_TARGET_PRIORITY = {"server_public_ip", "proxy_provider_host", "current"}
@@ -41,6 +48,8 @@ _SETTING_RANGES = {
     "check_interval": (0, 1440),            # 0 disables automatic health checks
     "log_retention_days": (1, 365),
     "monitoring_retention_days": (1, 365),
+    "auto_reconcile_interval": (0, 1440),   # 0 disables auto-reconcile too
+    "webhook_retry_retention_days": (1, 90),  # the bounds `_read_retention_days` clamps to
 }
 
 # `timezone` has no reader anywhere -- not in Python, not in the frontend. It is validated
@@ -114,21 +123,29 @@ def _validate_setting(key: str, value) -> tuple[str | None, str]:
             return None, "expected an IANA name such as UTC or Europe/Paris"
         return text, ""
 
-    if key == "webhook_enabled":
+    if key == "auto_reconcile_enabled":
         if text.lower() not in _BOOLEAN_WORDS:
             return None, "expected true or false"
         return "true" if text.lower() in {"true", "1", "yes", "on"} else "false", ""
 
-    if key == "webhook_url":
-        # `GET /api/settings` masks this one, and an agent that reads the settings and posts
+    if key in {"webhook_url", "webhook_enabled"}:
+        # `GET /api/settings` masks the URL, and an agent that reads the settings and posts
         # them back would otherwise store `discord://***` as the notification target: the
-        # alerting would keep reporting itself configured, and reach nobody.
+        # alerting would keep reporting itself configured, and reach nobody. That message
+        # comes first because it names a mistake worth naming.
         if "***" in text:
             return None, (
                 "that is the masked form the API returns, not a usable URL -- "
                 "retype the full one, or leave the key out to keep the stored value"
             )
-        return text, ""
+        # Neither key has fed delivery since the `webhooks` table arrived: the schedulers
+        # read `webhooks.url`. Writing here used to look like configuring alerting while
+        # configuring nothing. `_migrate_legacy_webhook_url` moves any stored value across
+        # at the next start; new ones go to the table directly.
+        return None, (
+            "the global notification URL is retired -- create a target with "
+            "POST /api/webhooks, which is what alert delivery reads"
+        )
 
     if key == "public_target_sources":
         if not _is_valid_public_target_sources(text):
@@ -208,6 +225,27 @@ def save_settings(request: Request, body: dict):
             configure(int(accepted["check_interval"]))
         except (ImportError, TypeError, ValueError):
             pass
+
+    if {"auto_reconcile_enabled", "auto_reconcile_interval"} & set(accepted):
+        # Applied now rather than at the next restart, the same way `check_interval` is.
+        # Either key can move alone, so the other is read back from the database instead of
+        # being assumed unchanged.
+        try:
+            from app.scheduler import configure_reconcile
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT key, value FROM settings WHERE key IN "
+                "('auto_reconcile_enabled', 'auto_reconcile_interval')"
+            ).fetchall()
+            conn.close()
+            cfg = {r["key"]: r["value"] for r in rows}
+            configure_reconcile(
+                cfg.get("auto_reconcile_enabled") == "true",
+                int(cfg.get("auto_reconcile_interval") or 0),
+            )
+        except (ImportError, TypeError, ValueError):
+            pass
+
     return {"ok": True, "saved": sorted(accepted), "ignored": sorted(ignored)}
 
 
@@ -271,53 +309,81 @@ def clear_logs(request: Request):
 
 @router.post("/api/settings/test-webhook")
 def test_webhook(request: Request):
-    # `write`, like every other test-send route: this delivers a real notification to
-    # whatever the operator configured, which is a side effect outside Vauxtra.
+    """Send a test notification to every enabled webhook.
+
+    This used to read `settings.webhook_url`, a key nothing delivered through: it answered
+    `{"ok": true}` from a target that would never carry a real alert. It now exercises the
+    rows the schedulers actually read, so a success here means alerting works.
+
+    `write`, like every other test-send route: this delivers a real notification to whatever
+    the operator configured, which is a side effect outside Vauxtra.
+    """
     require_auth(request, scope="write")
     conn = get_db()
-    rows = conn.execute(
-        "SELECT key, value FROM settings WHERE key IN ('webhook_url', 'webhook_enabled')"
-    ).fetchall()
-    conn.close()
-    cfg = {r["key"]: r["value"] for r in rows}
-    url = cfg.get("webhook_url", "").strip()
-    if not url:
-        raise HTTPException(400, "No notification URL configured")
+    try:
+        rows = conn.execute(
+            "SELECT id, name, url FROM webhooks WHERE enabled=1 ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        raise HTTPException(400, "No enabled webhook configured -- create one with POST /api/webhooks")
+
     try:
         import apprise
-        a = apprise.Apprise()
-        if not a.add(url):
-            raise HTTPException(400, "Invalid or unrecognized Apprise URL")
-        ok = a.notify(
-            title="Vauxtra — Test",
-            body="✓ Test notification — configuration is working correctly.",
-        )
-        if not ok:
-            raise HTTPException(500, "Send failed (incorrect URL or service unavailable)")
-        return {"ok": True}
     except ImportError:
         raise HTTPException(500, "Package 'apprise' not installed — rebuild the Docker image")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+
+    results = []
+    for row in rows:
+        entry = {"id": row["id"], "name": row["name"], "ok": False, "error": ""}
+        try:
+            a = apprise.Apprise()
+            if not a.add(row["url"]):
+                entry["error"] = "invalid or unrecognized Apprise URL"
+            elif a.notify(
+                title="Vauxtra — Test",
+                body="✓ Test notification — configuration is working correctly.",
+            ):
+                entry["ok"] = True
+            else:
+                entry["error"] = "send failed (service unavailable, or the URL is wrong)"
+        except Exception as e:  # one bad target must not hide the state of the others
+            entry["error"] = str(e)
+        results.append(entry)
+
+    # 200 either way: a per-target report says more than a single failed status, and the
+    # caller can see which one is broken instead of guessing.
+    return {"ok": all(r["ok"] for r in results), "results": results}
 
 
 @router.post("/api/reset")
 def reset_all(request: Request):
     require_auth(request, scope="admin")
     conn = get_db()
+    # Five tables used to survive this: `docker_endpoints` kept a Docker host and its TLS
+    # material, `service_templates` kept provider ids pointing at deleted rows,
+    # `webhook_delivery_log` kept queued notifications addressed to deleted webhooks --
+    # which the retry job would then try to send -- and `scheduler_state` kept the alert
+    # bookkeeping of services that no longer exist. A reset that leaves credentials and a
+    # send queue behind is not the reset the button offers.
     conn.executescript("""
         DELETE FROM service_alerts;
         DELETE FROM service_tags;
         DELETE FROM service_environments;
+        DELETE FROM service_push_targets;
         DELETE FROM uptime_events;
         DELETE FROM services;
+        DELETE FROM webhook_delivery_log;
         DELETE FROM webhooks;
+        DELETE FROM service_templates;
+        DELETE FROM docker_endpoints;
         DELETE FROM providers;
         DELETE FROM tags;
         DELETE FROM environments;
         DELETE FROM domains;
+        DELETE FROM scheduler_state;
         DELETE FROM logs;
     """)
     # Reset the business data, never the credentials: deleting `app_password_hash` would leave
@@ -327,6 +393,9 @@ def reset_all(request: Request):
         f"DELETE FROM settings WHERE key NOT IN ({_PROTECTED_PLACEHOLDERS})",  # noqa: S608
         _PROTECTED_SETTINGS,
     )
+    # `docker_endpoints` was just emptied, and it is normally seeded at startup: without this
+    # the instance would sit with no Docker host at all until someone restarted it.
+    ensure_default_docker_endpoint(conn)
     conn.commit()
     conn.close()
     return {"ok": True}

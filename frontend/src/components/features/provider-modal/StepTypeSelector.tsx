@@ -3,8 +3,8 @@ import { ProviderLogo } from '@/components/ui/ProviderLogos';
 import {
   type ProviderTypeMap,
   fallbackIconByType,
-  descByType,
-  providerColor,
+  getDescription,
+  getProviderColor,
 } from '@/components/features/providers/providerConstants';
 
 interface GroupedProviders {
@@ -52,7 +52,7 @@ export function StepTypeSelector({
                         : 'border-border bg-card hover:border-primary/30 hover:bg-muted shadow-sm'
                     }`}
                   >
-                    <div className={`p-2.5 rounded-lg border mt-0.5 flex-shrink-0 ${selected ? (providerColor[type] || 'bg-primary/10 text-primary border-primary/20') : 'bg-muted border-border text-primary'}`}>
+                    <div className={`p-2.5 rounded-lg border mt-0.5 flex-shrink-0 ${selected ? getProviderColor(type, meta) : 'bg-muted border-border text-primary'}`}>
                       <ProviderLogo type={type} className="w-6 h-6" fallback={<FallbackIcon className="w-6 h-6" />} />
                     </div>
                     <div className="min-w-0">
@@ -60,7 +60,7 @@ export function StepTypeSelector({
                         {meta.label || type}
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
-                        {descByType[type] || (meta.category === 'dns' ? 'DNS provider' : 'Proxy provider')}
+                        {getDescription(type, meta) || (meta.category === 'dns' ? 'DNS provider' : 'Proxy provider')}
                       </div>
                     </div>
                   </button>
