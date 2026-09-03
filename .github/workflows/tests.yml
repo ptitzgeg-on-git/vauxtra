@@ -26,8 +26,10 @@ jobs:
       - name: Compile check
         run: python -m py_compile app/*.py app/api/*.py app/providers/*.py app/services/*.py vauxtra_mcp/*.py vauxtra_mcp/tools/*.py
 
+      # The whole repository, not just the shipped code: a test that no longer compiles or
+      # imports a module it stopped using is a test nobody reads any more.
       - name: Ruff lint
-        run: ruff check app/ vauxtra_mcp/
+        run: ruff check .
 
       - name: API-MCP parity gate
         run: python scripts/check_api_mcp_parity.py
@@ -61,6 +63,12 @@ jobs:
 
       - name: Build
         run: cd frontend && npm run build
+
+      # Key parity across the eight locales. The repository has carried this script since
+      # v1.0 and CI never ran it, so a key added to en.json alone reached production and the
+      # UI printed its raw name to the operator.
+      - name: Locale key parity
+        run: cd frontend && npm run i18n:check
 
       - name: Locale semantic quality
         run: cd frontend && npm run i18n:quality
