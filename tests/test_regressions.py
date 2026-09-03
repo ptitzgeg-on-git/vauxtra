@@ -150,7 +150,7 @@ class BackupRestoreRegressionTests(IsolatedDBTestCase):
         exported = backup_api.export_backup(_request("GET", "/api/backup"))
         data = json.loads(exported.body.decode("utf-8"))
 
-        self.assertEqual(data["version"], "7")
+        self.assertEqual(data["version"], backup_api._BACKUP_VERSION)
         self.assertEqual(
             sorted(item["name"] for item in data["domains"]),
             ["example.com", "internal.local"],

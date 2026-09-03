@@ -255,6 +255,33 @@ Vauxtra uses [Apprise](https://github.com/caronc/apprise) format for webhooks.
 - **Email**: `mailto://user:pass@smtp.example.com`
 - [Full list](https://github.com/caronc/apprise/wiki)
 
+### The URL is the credential
+
+Look at those formats: the token *is* the URL. Anyone holding
+`discord://webhook_id/webhook_token` can post to that channel — there is no separate
+password to clear, and no way to show the URL without handing over the ability to use it.
+
+So a notification URL only ever travels inward. It is never returned by any route, in any
+scope, to anyone:
+
+- `GET /api/webhooks` and `GET /api/services/{sid}/alerts` return `url_masked` /
+  `webhook_url_masked` (`discord://***`) and no `url` field at all. The create and update
+  responses answer the same way.
+- `GET /api/settings` masks the legacy global `webhook_url` the same way. The key stays, so
+  you can tell one is configured.
+- The `[Webhook]` log lines are masked too. Before this, one failed delivery wrote the token
+  into the `logs` table, which every `read` key can read; the migration deletes those rows
+  once, on the next start.
+- `GET /api/backup` — the export whose own flag says `secrets_included: false` — leaves the
+  URL out entirely. `POST /api/backup/secure` encrypts it with your passphrase, alongside the
+  provider passwords.
+
+The consequence to know about: **to change a URL you retype it**. The UI shows you which
+service a webhook points at, never the token. And restoring a *plain* backup brings your
+notification targets back **disabled**, with `webhooks_needing_url` in the response saying
+how many — their names, scopes and rules survive, only the one field a secret-free file
+cannot carry is missing. Restoring a secure backup restores them working.
+
 ### Events
 
 Notifications are sent for:
@@ -656,8 +683,8 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/backup` | Export backup (credentials cleared) |
-| `POST` | `/api/backup/secure` | Export with encrypted credentials |
+| `GET` | `/api/backup` | Export backup (credentials cleared — including notification URLs) |
+| `POST` | `/api/backup/secure` | Export with encrypted credentials (passwords **and** notification URLs) |
 | `POST` | `/api/restore` | Restore from backup |
 
 ### Service Templates
@@ -702,7 +729,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/webhooks` | List webhooks |
+| `GET` | `/api/webhooks` | List webhooks (URLs masked — see [The URL is the credential](#the-url-is-the-credential)) |
 | `POST` | `/api/webhooks` | Create a webhook |
 | `PUT` | `/api/webhooks/{wid}` | Update a webhook |
 | `DELETE` | `/api/webhooks/{wid}` | Delete a webhook |

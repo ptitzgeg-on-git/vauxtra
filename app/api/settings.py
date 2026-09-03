@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.auth import require_auth
 from app.models import add_log, get_db
+from app.security import mask_secret_url
 from app.validators import is_valid_domain, normalize_domain
 
 try:
@@ -35,6 +36,11 @@ _VALID_PUBLIC_TARGET_PRIORITY = {"server_public_ip", "proxy_provider_host", "cur
 # bookkeeping. Reads must go through this whitelist so an API key -- `read` by default -- never
 # walks away with a hash it can crack offline.
 _READABLE_SETTINGS = _VALID_SETTINGS | {"schema_version", "setup_completed"}
+
+# Readable, but never in full: `webhook_url` is an Apprise URL, so its value is the
+# credential. The key stays in the response -- the operator needs to know one is set --
+# with everything past the scheme removed.
+_MASKED_SETTINGS = {"webhook_url"}
 
 # Keys that must survive a reset or a restore: wiping the password hash would drop the instance
 # back to anonymous-admin, and importing one would let a backup file pick the admin password.
@@ -67,7 +73,11 @@ def get_settings(request: Request):
     conn = get_db()
     rows = conn.execute("SELECT key, value FROM settings").fetchall()
     conn.close()
-    return {r["key"]: r["value"] for r in rows if r["key"] in _READABLE_SETTINGS}
+    return {
+        r["key"]: (mask_secret_url(r["value"]) if r["key"] in _MASKED_SETTINGS else r["value"])
+        for r in rows
+        if r["key"] in _READABLE_SETTINGS
+    }
 
 
 @router.post("/api/settings")

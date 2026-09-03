@@ -41,7 +41,7 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
                 <Bell size={16} className="text-primary shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">{wh.name}</p>
-                  <p className="text-xs text-muted-foreground font-mono truncate">{wh.url}</p>
+                  <p className="text-xs text-muted-foreground font-mono truncate">{wh.url_masked}</p>
                 </div>
                 <button onClick={() => testWebhookById.mutate(wh.id)} className="text-muted-foreground hover:text-primary transition-colors shrink-0" title="Send test notification">
                   <Send size={14} />

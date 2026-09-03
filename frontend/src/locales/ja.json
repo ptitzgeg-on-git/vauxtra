@@ -213,6 +213,7 @@
   "settings.migration.import_failed": "インポートに失敗しました",
   "settings.backup.export_failed": "バックアップのエクスポートに失敗しました",
   "settings.backup.restore_failed": "バックアップの復元に失敗しました",
+  "settings.backup.restore_webhooks_disabled": "{count} 件の通知先を URL なしで復元し、無効のままにしました。シークレットを含まないバックアップには URL が含まれていません。再入力すると有効化できます。",
   "settings.backup.secure_export_help": "プロバイダーのパスワードは PBKDF2 + AES で暗号化されます。復元するにはこのパスフレーズが必要です。",
   "settings.auth.change_failed": "パスワードの変更に失敗しました",
   "settings.webhooks.added": "Webhook が追加されました",
