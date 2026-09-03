@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 from starlette.requests import Request
 
-from app import models, scheduler
 import app.auth as auth
+from app import models, scheduler
 from app.api import backup as backup_api
-from app.api.backup import RestoreRequest
 from app.api import settings as settings_api
+from app.api.backup import RestoreRequest
 
 
 def _request(method: str = "GET", path: str = "/") -> Request:

@@ -5,11 +5,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import models
 import app.auth as auth
 import app.db as db
 import app.main as app_main
 import app.scheduler as scheduler
+from app import models
 
 
 class HttpAuthIntegrationTests(unittest.TestCase):

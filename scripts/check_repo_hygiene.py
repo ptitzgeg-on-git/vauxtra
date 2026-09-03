@@ -4,7 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 FORBIDDEN_TRACKED_FILES = {
     "CLAUDE.md",
     "SESSION_SUMMARY.md",
