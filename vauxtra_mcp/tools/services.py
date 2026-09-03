@@ -37,7 +37,7 @@ def _service_to_payload(current: dict[str, Any]) -> dict[str, Any]:
 def list_services() -> list[dict[str, Any]]:
     """List all configured services with their current health status and routing info."""
     r = client.get("/services")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -45,7 +45,7 @@ def list_services() -> list[dict[str, Any]]:
 def get_service(service_id: int) -> dict[str, Any]:
     """Get full details of a single service, including provider assignments and push targets."""
     r = client.get(f"/services/{service_id}")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -92,7 +92,7 @@ def create_service(
         "extra_dns_provider_ids": [],
     }
     r = client.post("/services", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -117,7 +117,7 @@ def update_service(
     The current service state is fetched first and merged with your overrides.
     """
     current = client.get(f"/services/{service_id}")
-    current.raise_for_status()
+    client.check(current)
     payload: dict[str, Any] = _service_to_payload(current.json())
     for key, value in {
         "target_ip": target_ip,
@@ -134,7 +134,7 @@ def update_service(
         if value is not None:
             payload[key] = value
     r = client.put(f"/services/{service_id}", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -142,7 +142,7 @@ def update_service(
 def delete_service(service_id: int) -> dict[str, Any]:
     """Delete a service and remove its routes from all configured providers."""
     r = client.delete(f"/services/{service_id}")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -150,10 +150,10 @@ def delete_service(service_id: int) -> dict[str, Any]:
 def toggle_service(service_id: int, enabled: bool) -> dict[str, Any]:
     """Enable or disable a service without removing its provider routes."""
     current = client.get(f"/services/{service_id}")
-    current.raise_for_status()
+    client.check(current)
     payload: dict[str, Any] = {**_service_to_payload(current.json()), "enabled": enabled}
     r = client.put(f"/services/{service_id}", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -166,7 +166,7 @@ def sync_services_from_providers() -> dict[str, Any]:
     (from Pi-hole, AdGuard, Cloudflare DNS) that can be imported into Vauxtra.
     """
     r = client.post("/services/sync")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -183,7 +183,7 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
         "dns_rewrites": dns_rewrites or [],
     }
     r = client.post("/services/import", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -197,7 +197,7 @@ def discover_docker_containers(endpoint_id: int | None = None) -> list[dict[str,
     """
     params = {"endpoint_id": endpoint_id} if endpoint_id else {}
     r = client.get("/docker/containers", params=params)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -205,7 +205,7 @@ def discover_docker_containers(endpoint_id: int | None = None) -> list[dict[str,
 def list_docker_endpoints() -> list[dict[str, Any]]:
     """List configured Docker endpoints (hosts) for container discovery."""
     r = client.get("/docker/endpoints")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -236,7 +236,7 @@ def import_docker_containers(
         "endpoint_id": endpoint_id,
     }
     r = client.post("/docker/import", json=payload)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -244,7 +244,7 @@ def import_docker_containers(
 def get_services_history() -> dict[str, Any]:
     """Return the last 24h uptime history for all services."""
     r = client.get("/services/history")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -253,7 +253,7 @@ def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, An
     """Suggest WAN/public targets for DNS based on current connectivity and provider context."""
     params = {"proxy_provider_id": proxy_provider_id} if proxy_provider_id is not None else {}
     r = client.get("/services/public-target/suggest", params=params)
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -261,7 +261,7 @@ def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, An
 def check_service_health(service_id: int) -> dict[str, Any]:
     """Run a live health/TCP and DNS check for one service."""
     r = client.get(f"/services/{service_id}/check")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -269,7 +269,7 @@ def check_service_health(service_id: int) -> dict[str, Any]:
 def bulk_service_action(service_ids: list[int], action: str) -> dict[str, Any]:
     """Run bulk service actions: enable, disable, or delete."""
     r = client.post("/services/bulk", json={"ids": service_ids, "action": action})
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -284,7 +284,7 @@ def add_docker_endpoint(name: str, docker_host: str, enabled: bool = True) -> di
             "enabled": enabled,
         },
     )
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -292,7 +292,7 @@ def add_docker_endpoint(name: str, docker_host: str, enabled: bool = True) -> di
 def set_default_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
     """Mark one Docker endpoint as default for discovery/import."""
     r = client.post(f"/docker/endpoints/{endpoint_id}/default")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -300,7 +300,7 @@ def set_default_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
 def test_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
     """Test connectivity to one Docker endpoint and return visible container count."""
     r = client.post(f"/docker/endpoints/{endpoint_id}/test")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
 
 
@@ -308,5 +308,5 @@ def test_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
 def delete_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
     """Delete a Docker endpoint (requires at least one endpoint to remain)."""
     r = client.delete(f"/docker/endpoints/{endpoint_id}")
-    r.raise_for_status()
+    client.check(r)
     return r.json()
