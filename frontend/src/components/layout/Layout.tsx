@@ -1,9 +1,50 @@
 import { useState, useEffect } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
-import { Menu, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Menu, X, PanelLeftClose, PanelLeftOpen, ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
+import { api } from "@/api/client";
+import { useI18n } from "@/i18n";
 
 const STORAGE_KEY = "vauxtra_sidebar_collapsed";
+
+/**
+ * The wizard offers a *Skip* button on the password step, and nothing ever mentioned it
+ * again: an instance answering every request with the admin scope looked exactly like a
+ * protected one. This is the only place in the interface that says otherwise, so it is
+ * deliberately not dismissible.
+ */
+function OpenAccessBanner() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const { data } = useQuery<{ auth_mode?: string }>({
+    queryKey: ["auth-status"],
+    queryFn: () => api.get("/auth/me"),
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  if (data?.auth_mode !== "open") return null;
+
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-700 dark:text-amber-400 text-sm"
+    >
+      <ShieldAlert size={16} className="shrink-0" />
+      <span className="font-medium">{t("security.open_access.title")}</span>
+      <span className="text-amber-700/80 dark:text-amber-400/80">
+        {t("security.open_access.body")}
+      </span>
+      <button
+        onClick={() => navigate("/settings?tab=apikeys")}
+        className="ml-auto underline underline-offset-2 hover:no-underline font-medium"
+      >
+        {t("security.open_access.action")}
+      </button>
+    </div>
+  );
+}
 
 export function Layout() {
   const navigate = useNavigate();
@@ -117,7 +158,10 @@ export function Layout() {
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-x-hidden overflow-y-auto scroll-smooth">
-        <div className="mt-14 md:mt-0 p-4 sm:p-6 lg:p-8 min-h-[calc(100vh)]">
+        <div className="mt-14 md:mt-0">
+          <OpenAccessBanner />
+        </div>
+        <div className="p-4 sm:p-6 lg:p-8 min-h-[calc(100vh)]">
           <Outlet />
         </div>
       </main>

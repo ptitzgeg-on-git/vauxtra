@@ -38,7 +38,13 @@ _READABLE_SETTINGS = _VALID_SETTINGS | {"schema_version", "setup_completed"}
 
 # Keys that must survive a reset or a restore: wiping the password hash would drop the instance
 # back to anonymous-admin, and importing one would let a backup file pick the admin password.
-_PROTECTED_SETTINGS = ("app_password_hash", "setup_completed", "schema_version")
+# `auth_mode` belongs here for the same reason -- it is what makes that drop *visible*.
+_PROTECTED_SETTINGS = ("app_password_hash", "setup_completed", "schema_version", "auth_mode")
+
+# The placeholders are built from the tuple, never written out by hand: the two DELETE
+# statements below used a literal `(?,?,?)`, so adding this fourth key would have raised
+# "Incorrect number of bindings" at the exact moment an operator asked for a reset.
+_PROTECTED_PLACEHOLDERS = ",".join("?" * len(_PROTECTED_SETTINGS))
 
 
 def _is_valid_public_target_sources(value: str) -> bool:
@@ -212,7 +218,7 @@ def reset_all(request: Request):
     # the instance answering anonymously with admin scope, and nothing in the {"ok": true}
     # response would say so.
     conn.execute(
-        "DELETE FROM settings WHERE key NOT IN (?,?,?)",
+        f"DELETE FROM settings WHERE key NOT IN ({_PROTECTED_PLACEHOLDERS})",  # noqa: S608
         _PROTECTED_SETTINGS,
     )
     conn.commit()

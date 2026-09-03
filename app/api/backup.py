@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app.api.settings import _PROTECTED_SETTINGS, _VALID_SETTINGS
+from app.api.settings import _PROTECTED_PLACEHOLDERS, _PROTECTED_SETTINGS, _VALID_SETTINGS
 from app.auth import require_auth
 from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, encrypt_secret
 from app.limiter import limiter
@@ -212,7 +212,7 @@ def import_backup(request: Request, body: RestoreRequest):
         # Never wipe the credentials: a restore must not be able to drop the instance
         # back to anonymous-admin.
         conn.execute(
-            "DELETE FROM settings WHERE key NOT IN (?,?,?)",
+            f"DELETE FROM settings WHERE key NOT IN ({_PROTECTED_PLACEHOLDERS})",  # noqa: S608
             _PROTECTED_SETTINGS,
         )
 

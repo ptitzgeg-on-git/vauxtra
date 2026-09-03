@@ -289,5 +289,10 @@
   "monitoring.timeline_empty": "No timeline data yet for this host.",
   "monitoring.related_logs_title": "Related Logs",
   "monitoring.related_logs_empty": "No recent logs linked to this hostname.",
-  "monitoring.toast.checked_count": "Checked {count} service(s)"
+  "monitoring.toast.checked_count": "Checked {count} service(s)",
+  "security.open_access.title": "Sin contraseña",
+  "security.open_access.body": "Cualquiera que alcance esta instancia tiene acceso total de administrador.",
+  "security.open_access.action": "Definir una contraseña",
+  "settings.auth.set_password": "Definir una contraseña",
+  "settings.auth.set_password_desc": "Esta instancia no tiene contraseña de administrador: cada petición obtiene acceso total. Defina una ahora."
 }
