@@ -213,6 +213,7 @@
   "settings.migration.import_failed": "Der Import ist fehlgeschlagen",
   "settings.backup.export_failed": "Backup konnte nicht exportiert werden",
   "settings.backup.restore_failed": "Sicherung konnte nicht wiederhergestellt werden",
+  "settings.backup.restore_webhooks_disabled": "{count} Benachrichtigungsziel(e) ohne URL wiederhergestellt und deaktiviert gelassen — eine Sicherung ohne Geheimnisse enthält sie nicht. Geben Sie sie erneut ein, um sie wieder zu aktivieren.",
   "settings.backup.secure_export_help": "Provider-Passwörter werden mit PBKDF2 + AES verschlüsselt. Für die Wiederherstellung benötigen Sie diese Passphrase.",
   "settings.auth.change_failed": "Das Passwort konnte nicht geändert werden",
   "settings.webhooks.added": "Webhook hinzugefügt",

@@ -237,7 +237,8 @@ export interface AppSettings {
 export interface Webhook {
   id: number;
   name: string;
-  url: string;
+  /** Scheme only -- the API never returns the full Apprise URL, which is the credential. */
+  url_masked: string;
   enabled: boolean | number;
   created_at: string;
   scope_type: 'all' | 'provider' | 'service';
