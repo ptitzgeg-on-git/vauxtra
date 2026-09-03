@@ -98,8 +98,13 @@ class CloudflareTunnelProvider(ProxyProvider):
         for i in range(len(labels) - 1):
             candidate = ".".join(labels[i:])
             result = self._request("GET", "/zones", params={"name": candidate, "per_page": 1})
-            if isinstance(result, list) and result:
-                zone_id = str(result[0].get("id", "")).strip()
+            for zone in result if isinstance(result, list) else []:
+                # Same reason as the Cloudflare DNS provider: `name` is a filter, not a
+                # promise. A zone id that is not this domain's would publish the tunnel
+                # CNAME in the wrong zone.
+                if str(zone.get("name", "")).strip(".").lower() != candidate.strip(".").lower():
+                    continue
+                zone_id = str(zone.get("id", "")).strip()
                 if zone_id:
                     return zone_id
         return ""
@@ -256,10 +261,15 @@ class CloudflareTunnelProvider(ProxyProvider):
             f"/zones/{zone_id}/dns_records",
             params={"type": "CNAME", "name": hostname},
         )
-        records = existing if isinstance(existing, list) else []
+        if not isinstance(existing, list):
+            # `_request` answers None for a network error, for a non-2xx, and for a payload
+            # carrying `success: false` alike. Reading that as "the zone holds no such record"
+            # made every listing failure return True, so `delete_host` reported the hostname
+            # withdrawn while its CNAME was still pointing at the tunnel.
+            return False
 
         ok = True
-        for rec in records:
+        for rec in existing:
             rec_id = str(rec.get("id", "")).strip()
             if not rec_id:
                 continue
