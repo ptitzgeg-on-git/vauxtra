@@ -123,7 +123,7 @@ anything other than `127.0.0.1`.
 | `get_provider_types` | Available provider types and their capabilities |
 | `create_provider` | Add a new provider integration |
 | `update_provider` | Update provider URL/credentials |
-| `delete_provider` | Remove a provider |
+| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them) |
 | `test_provider` | Test connectivity to a provider |
 | `get_provider_health` | Health status of a single provider |
 | `get_all_providers_health` | Health status of all providers |

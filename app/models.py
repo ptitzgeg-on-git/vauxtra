@@ -246,6 +246,39 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_encrypt_passwords(conn)
     _backfill_auth_mode(conn)
     _purge_logged_webhook_urls(conn)
+    _ensure_unique_service_hostnames(conn)
+
+
+def _ensure_unique_service_hostnames(conn: sqlite3.Connection) -> None:
+    """Two services on one hostname is not a configuration, it is a race.
+
+    Both rows resolve to the same proxy host and the same DNS record, so whichever is pushed
+    last wins and the drift check then reports the other as permanently wrong. Nothing
+    prevented it: the table carried no constraint and neither write endpoint looked.
+
+    The index is only created when the database allows it. An install that already holds
+    duplicates keeps booting -- it is told which rows to merge instead of being wedged shut,
+    which is the same reasoning as the defensive `check_interval` read at startup.
+    """
+    dupes = conn.execute(
+        """SELECT subdomain, domain, COUNT(*) AS n
+             FROM services
+            GROUP BY subdomain, domain
+           HAVING n > 1
+            ORDER BY domain, subdomain"""
+    ).fetchall()
+    if dupes:
+        listed = ", ".join(f"{d['subdomain']}.{d['domain']} (x{d['n']})" for d in dupes)
+        add_log(
+            "warn",
+            f"Duplicate service hostnames prevent the uniqueness index: {listed}. "
+            "Merge or delete the extra rows -- until then two services can push over "
+            "each other.",
+        )
+        return
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_services_hostname ON services (subdomain, domain)"
+    )
 
 
 def _purge_logged_webhook_urls(conn: sqlite3.Connection) -> None:
