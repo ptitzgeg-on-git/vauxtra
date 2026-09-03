@@ -5,9 +5,19 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  # Called by Build & Publish so that no image is ever pushed and signed before this
+  # workflow is green. Tag pushes reach the tests only through this call: they match none
+  # of the branch triggers above.
+  workflow_call:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# This workflow runs code from every branch that is pushed. It needs to read the tree and
+# nothing else, and it was the only workflow in the repository not saying so -- which left
+# the token on whatever the repository default happens to be.
+permissions:
+  contents: read
 
 jobs:
   backend:
