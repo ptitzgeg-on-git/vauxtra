@@ -244,6 +244,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute("UPDATE docker_endpoints SET is_default=1 WHERE id=?", (first["id"],))
 
     _migrate_encrypt_passwords(conn)
+    _backfill_auth_mode(conn)
+
+
+def _backfill_auth_mode(conn: sqlite3.Connection) -> None:
+    """Stamp `auth_mode=password` on instances that already had a hash before this marker.
+
+    Without it, every existing protected install would look -- to the new check -- like one
+    that was never given a password, and the downgrade would stay invisible on exactly the
+    instances that have something to lose.
+    """
+    has_hash = conn.execute(
+        "SELECT 1 FROM settings WHERE key='app_password_hash' AND value != ''"
+    ).fetchone()
+    if not has_hash:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_mode', 'password')"
+    )
 
 
 def _update_schema_version(conn: sqlite3.Connection) -> None:

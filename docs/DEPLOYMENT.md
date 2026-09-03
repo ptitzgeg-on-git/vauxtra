@@ -125,6 +125,7 @@ Recovery rule:
 |---|---|---|
 | `SECRET_KEY` | auto-generated | Set explicitly for predictable recovery and keep stable |
 | `APP_PASSWORD` | empty | PBKDF2 hash for non-wizard bootstrap, or leave empty for the setup flow |
+| _(no password at all)_ | — | Every request gets the admin scope. Logged as a warning at each boot, and shown as a banner in the interface. |
 | `ALLOW_PLAINTEXT_APP_PASSWORD` | `false` | Accept a plaintext `APP_PASSWORD`. Leave off outside a lab. |
 | `TZ` | `UTC` | Set to your timezone |
 | `HTTPS_ONLY` | `false` | Use `true` only when app itself is served over HTTPS |

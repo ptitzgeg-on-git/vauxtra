@@ -38,8 +38,26 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
+    from app.auth import auth_is_downgraded, has_password_configured
     from app.models import get_db
     from app.scheduler import start
+
+    # Both of these are states an operator reaches without ever being told. The wizard has a
+    # *Skip* button on the password step, and a database restored from the wrong file can
+    # lose the hash. One line in the logs at every boot is the cheapest possible warning.
+    if auth_is_downgraded():
+        _logger.error(
+            "SECURITY: this instance was configured with an admin password and the hash is "
+            "no longer in the database. Every request will be refused until the database is "
+            "restored or APP_PASSWORD is set. Vauxtra will not fall back to anonymous access."
+        )
+    elif not has_password_configured():
+        _logger.warning(
+            "SECURITY: no admin password is configured. Every request reaching this instance "
+            "is granted the admin scope, with no credential. Set one in Settings > API keys, "
+            "or through APP_PASSWORD, before exposing port 8888 to anything but localhost."
+        )
+
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key='check_interval'").fetchone()
     conn.close()

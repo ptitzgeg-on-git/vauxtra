@@ -519,6 +519,28 @@ export function Settings() {
     });
   };
 
+  // The change-password card is hidden when no password is configured -- which used to
+  // mean an instance running open had no way at all, anywhere in the interface, to close
+  // itself. `/auth/setup-password` refuses once a hash exists, so it cannot be used to
+  // overwrite one.
+  const setPasswordMutation = useMutation({
+    mutationFn: (body: { password: string }) => api.post('/auth/setup-password', body),
+    onSuccess: () => {
+      setCpNew(""); setCpConfirm("");
+      markRecentlyChanged();
+      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
+      toast.success(t('settings.auth.changed_success'));
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error(err?.response?.data?.detail || t('settings.auth.change_failed')),
+  });
+
+  const submitSetPassword = () => {
+    if (cpNew.length < 8) { toast.error(t('settings.auth.new_min')); return; }
+    if (cpNew !== cpConfirm) { toast.error(t('settings.auth.confirm_mismatch')); return; }
+    setPasswordMutation.mutate({ password: cpNew });
+  };
+
   const submitChangePassword = () => {
     if (!cpCurrent) { toast.error(t('settings.auth.current_required')); return; }
     if (cpNew.length < 8) { toast.error(t('settings.auth.new_min')); return; }
@@ -1226,6 +1248,53 @@ export function Settings() {
 
         {activeTab === "apikeys" && (
           <div className="space-y-6">
+            {authStatus && !authStatus.auth_required && (
+              <div className="bg-amber-500/5 border border-amber-500/30 rounded-xl p-6 shadow-sm">
+                <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
+                  <Lock className="w-5 h-5 text-amber-600 dark:text-amber-500" />
+                  {t('settings.auth.set_password')}
+                </h3>
+                <p className="text-sm text-muted-foreground mb-5">
+                  {t('settings.auth.set_password_desc')}
+                </p>
+                <form
+                  className="space-y-3 max-w-sm"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitSetPassword();
+                  }}
+                >
+                  <input
+                    type="password"
+                    placeholder={t('settings.auth.new_password')}
+                    value={cpNew}
+                    onChange={e => setCpNew(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                  />
+                  <input
+                    type="password"
+                    placeholder={t('settings.auth.confirm_password')}
+                    value={cpConfirm}
+                    onChange={e => setCpConfirm(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={setPasswordMutation.isPending}
+                    className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
+                  >
+                    {setPasswordMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                    {t('settings.auth.set_password')}
+                  </button>
+                </form>
+              </div>
+            )}
+
             {authStatus?.auth_required && (
               <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
                 <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
