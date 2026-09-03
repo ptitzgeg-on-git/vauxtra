@@ -90,6 +90,15 @@ _PROTECTED_SETTINGS = (
 _PROTECTED_PLACEHOLDERS = ",".join("?" * len(_PROTECTED_SETTINGS))
 
 
+# `write` means "may change how this instance is configured". This key means something
+# else: it names URLs the instance itself then fetches, on a schedule, from inside the
+# network it is deployed in -- and `save_settings` asked for `write` and nothing more, so a
+# key minted for a monitoring dashboard could aim the scheduler at an internal admin panel
+# or a cloud metadata endpoint. The other two WAN-policy keys stay at `write`: a timeout is
+# a number, and a priority is one of three fixed words.
+_ADMIN_ONLY_SETTINGS = frozenset({"public_target_sources"})
+
+
 def _is_valid_public_target_sources(value: str) -> bool:
     entries = [line.strip() for line in str(value).replace(",", "\n").splitlines() if line.strip()]
     if not entries:
@@ -195,6 +204,10 @@ def get_settings(request: Request):
 @router.post("/api/settings")
 def save_settings(request: Request, body: dict):
     require_auth(request, scope="write")
+    # Before validation, so the answer is a single 403 rather than a payload half refused
+    # for scope and half for syntax. The route is already all-or-nothing; this keeps it so.
+    if _ADMIN_ONLY_SETTINGS & set(body):
+        require_auth(request, scope="admin")
 
     accepted: dict[str, str] = {}
     rejected: dict[str, str] = {}

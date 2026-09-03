@@ -25,8 +25,10 @@ services:
       - "8888:8888"
     environment:
       TZ: UTC
-      HTTPS_ONLY: "false"
+      HTTPS_ONLY: "true"          # the browser reaches you over https://, proxy or not
       DEBUG: "false"
+      # Set this to your reverse proxy's address, or every visitor shares one rate limit:
+      # FORWARDED_ALLOW_IPS: "172.18.0.2"
       # Optional but recommended in production:
       # SECRET_KEY: "set-a-long-random-value-and-keep-it-stable"
       # APP_PASSWORD: "pbkdf2:sha256:600000$...$..."   # a hash, not the password itself
@@ -66,7 +68,9 @@ Recommended upstream:
 - Preserve `Host` header
 - Configure HTTPS certificate at proxy layer
 
-When TLS is terminated at proxy, keep `HTTPS_ONLY=false` in Vauxtra unless you serve HTTPS directly to the app container.
+When TLS is terminated at the proxy, set `HTTPS_ONLY=true` anyway: it is about the URL the browser used, not about the hop between proxy and container. It marks the session cookie `Secure` and sends HSTS, and both are exactly what a proxied HTTPS deployment wants. Leave it `false` only while reaching the instance over plain `http://`.
+
+Set `FORWARDED_ALLOW_IPS` to the proxy's address at the same time. Without it Vauxtra reads the socket peer as the client address — behind a proxy, one address for every visitor — so the login limit of 5/minute is shared by the whole internet and one attacker locks the operator out. It is opt-in on purpose: honouring `X-Forwarded-For` from anyone lets any caller choose the address every rate limit and log line is charged to.
 
 ## 6. Update Procedure
 
@@ -128,13 +132,15 @@ Recovery rule:
 | _(no password at all)_ | — | Every request gets the admin scope. Logged as a warning at each boot, and shown as a banner in the interface. |
 | `ALLOW_PLAINTEXT_APP_PASSWORD` | `false` | Accept a plaintext `APP_PASSWORD`. Leave off outside a lab. |
 | `TZ` | `UTC` | Set to your timezone |
-| `HTTPS_ONLY` | `false` | Use `true` only when app itself is served over HTTPS |
-| `DEBUG` | `false` | Keep `false` in production |
-| `CORS_ORIGINS` | local defaults | Restrict to actual frontend origins |
+| `HTTPS_ONLY` | `false` | `true` whenever the browser reaches the interface over `https://`, including behind a TLS-terminating proxy |
+| `DEBUG` | `false` | Keep `false` in production — it also exposes `/api/docs` and `/openapi.json` |
+| `CORS_ORIGINS` | *(empty)* | Empty is correct for a normal install; the interface is same-origin. List an origin only for a frontend hosted elsewhere |
+| `FORWARDED_ALLOW_IPS` | *(empty)* | Your reverse proxy's address. Required for per-visitor rate limiting behind a proxy |
 
 ## 9. Deployment Readiness Checklist
 
 - [ ] `DEBUG=false`
+- [ ] `HTTPS_ONLY=true` and `FORWARDED_ALLOW_IPS` set to the proxy address
 - [ ] Stable `SECRET_KEY` configured and backed up
 - [ ] `APP_PASSWORD` set to a PBKDF2 hash, or setup wizard completed securely
 - [ ] `/app/data` persisted on durable storage
