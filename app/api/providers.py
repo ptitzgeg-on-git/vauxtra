@@ -752,7 +752,14 @@ def delete_proxy_host(pid: int, host_id: str, request: Request):
 
     try:
         provider = create_provider(row)
-        success = provider.delete_host(int(host_id))
+        # Passed through. A route identifier does not have the same shape for every
+        # provider: NPM numbers its hosts, Cloudflare Tunnel addresses its ingress rules by
+        # hostname, Traefik by router name. `int(host_id)` therefore raised ValueError for
+        # anything that was not NPM -- caught by the `except Exception` below and returned
+        # as `500 Failed to delete proxy host: invalid literal for int()`. Deleting a tunnel
+        # route through the API was impossible, and the message said nothing about why.
+        # Reading its own identifier is the provider's job.
+        success = provider.delete_host(host_id)
         if not success:
             raise HTTPException(400, "Failed to delete proxy host (provider rejected)")
         add_log("info", f"Proxy host deleted: ID {host_id}")

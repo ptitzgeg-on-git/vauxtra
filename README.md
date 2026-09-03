@@ -79,6 +79,12 @@ docker run -d \
   ghcr.io/ptitzgeg-on-git/vauxtra:latest
 ```
 
+> The Docker socket is only needed for container discovery, and mounting it is a real
+> grant: `:ro` applies to the socket file, not to the Docker API, so whoever reaches it can
+> start a privileged container and is root on the host. Drop the `-v /var/run/docker.sock`
+> line if you do not use the Docker features — the rest of Vauxtra is unaffected and the
+> Docker screens answer "daemon unavailable" — or front it with a read-only socket proxy.
+
 Or use Docker Compose:
 
 ```yaml

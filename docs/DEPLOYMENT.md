@@ -57,6 +57,15 @@ Open: `http://<host>:8888`
    A plaintext value is refused unless `ALLOW_PLAINTEXT_APP_PASSWORD=true`.
 4. Set `DEBUG=false` in production to disable `/api/docs`.
 5. Restrict inbound access with reverse proxy/firewall if Internet-exposed.
+6. Treat the Docker socket mount as root on the host, because it is. The `:ro` in
+   `/var/run/docker.sock:/var/run/docker.sock:ro` applies to the socket *file*; the Docker
+   API behind it is unchanged, and it can create a container that bind-mounts `/`. Vauxtra
+   only lists and inspects containers, but the grant is not bounded by what Vauxtra does
+   with it — it is bounded by what anyone who reaches this container can do with it.
+   Two ways to spend less: drop the mount entirely if you do not use the Docker features
+   (the Docker screens then answer 503 and nothing else changes), or run a read-only socket
+   proxy — for example `tecnativa/docker-socket-proxy` with `CONTAINERS=1` and everything
+   else left off — and set the endpoint's Docker host to `tcp://docker-proxy:2375`.
 
 ## 5. Reverse Proxy (Recommended)
 

@@ -88,8 +88,13 @@ class ProxyProvider(ABC):
         return False  # Default: not supported
 
     @abstractmethod
-    def delete_host(self, host_id: int) -> bool:
-        """Delete a proxy host by its ID."""
+    def delete_host(self, host_id: int | str) -> bool:
+        """Delete a proxy host by the identifier *this* provider uses for it.
+
+        NPM numbers its hosts, Cloudflare Tunnel addresses its ingress rules by hostname,
+        Traefik by router name. The caller passes through whatever it stored or listed; an
+        implementation that needs a particular shape checks it and returns False.
+        """
 
     @abstractmethod
     def get_certificates(self) -> list[dict]:
