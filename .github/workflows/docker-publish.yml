@@ -9,8 +9,27 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # `build-and-push` had no `needs:` at all. Tests, Security Scan and this workflow all
+  # trigger on the same push and started in parallel, so an image was pushed to `latest`,
+  # signed with the repository's OIDC identity and given a SLSA provenance attestation
+  # while the other two were still running -- or already red. An operator who verifies
+  # that signature gets a valid answer, and a valid answer only ever meant "this
+  # repository built this"; it never meant the image was sound. Gating the publish is
+  # what makes the signature worth what people read into it.
+  tests:
+    name: Gate — tests
+    uses: ./.github/workflows/tests.yml
+
+  security:
+    name: Gate — security scan
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      security-events: write
+
   build-and-push:
     name: Build & Push Docker Image
+    needs: [tests, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read
