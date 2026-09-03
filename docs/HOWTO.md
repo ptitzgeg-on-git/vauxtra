@@ -787,6 +787,27 @@ what it was created with. A request that falls short is refused with
 | `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
 | `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`. |
 
+Two things a `write` key may **not** do, because they choose a URL rather than a value,
+and the server is what goes and fetches it:
+
+- `public_target_sources` through `POST /api/settings` — the resolvers Vauxtra polls to
+  discover its own WAN address. A key that could set them could aim the scheduler at any
+  host reachable from the container, including one on the deployment's own network. The
+  other two WAN-policy keys stay at `write`: `public_target_timeout` is a number, and
+  `public_target_priority` is one of three fixed words.
+- Apprise URLs on the six generic schemes — `json://`, `jsons://`, `form://`, `forms://`,
+  `xml://`, `xmls://` — through `POST /api/webhooks`, `PUT /api/webhooks/{id}` and
+  `POST /api/webhooks/test-url`. Every other scheme names a service (`discord://`,
+  `tgram://`, `ntfy://`); these six name a host and a body, which is a notification for an
+  operator and an arbitrary outbound POST for anyone else. `test-url` sends one straight
+  away, without storing anything.
+
+Both are refused with the same `403 Insufficient scope: 'admin' required`. Neither is
+blocked outright — posting JSON to your own service is a fair reason to run a tool like
+this — and a UI session, always `admin`, never meets either rule. A partial update that
+does not carry a `url` field is not affected: toggling `enabled` on a webhook an admin
+created stays a `write`.
+
 A `read` key is deliberately refused on the test and preflight routes. They take a target
 host and port from the request and make the server connect to it, or deliver a real
 notification — side effects, not reads, even though nothing in Vauxtra's own database

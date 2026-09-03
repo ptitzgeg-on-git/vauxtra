@@ -31,8 +31,26 @@ def _normalize_scope(body: dict, existing: dict | None = None) -> tuple[str, int
     return scope_type, scope_ref_id
 
 
-def _validate_apprise_url(url: str) -> str:
-    """Validate and normalize an Apprise URL string."""
+# apprise carries a family of generic schemes whose whole purpose is to POST a body to a
+# host the caller names: `json://`, `form://`, `xml://` and their TLS forms. For an operator
+# that is a notification target; for anyone else it is an arbitrary outbound request fired
+# from inside the network this instance runs in, and `POST /api/webhooks/test-url` fires one
+# immediately without storing anything.
+#
+# They are not refused -- posting JSON to your own service is a fair reason to run a tool
+# like this. They ask for `admin`, the same line drawn around `public_target_sources`, so
+# that a key minted for a dashboard cannot reach past the dashboard. The list is exhaustive
+# for apprise 1.10: no other scheme it accepts lets the caller choose the request body.
+_GENERIC_HTTP_SCHEMES = ("json://", "jsons://", "form://", "forms://", "xml://", "xmls://")
+
+
+def _validate_apprise_url(url: str, request: Request | None = None) -> str:
+    """Validate and normalize an Apprise URL string.
+
+    `request` is passed by the routes where the *caller* chose the URL. Left None, the
+    scheme check is skipped -- that is how a partial update keeps working: toggling
+    `enabled` on a webhook an admin created must not demand admin.
+    """
     value = (url or "").strip()
     if not value:
         raise HTTPException(400, "URL is required")
@@ -47,6 +65,9 @@ def _validate_apprise_url(url: str) -> str:
             "Notification URLs are never readable back -- retype the full URL, "
             "or omit the field to keep the one already stored.",
         )
+    if request is not None and value.lower().startswith(_GENERIC_HTTP_SCHEMES):
+        require_auth(request, scope="admin")
+
     try:
         import apprise
         a = apprise.Apprise()
@@ -95,7 +116,7 @@ def add_webhook(request: Request, body: dict):
     """Create a new webhook notification target."""
     require_auth(request, scope="write")
     name = body.get("name", "").strip()
-    url  = _validate_apprise_url(body.get("url", ""))
+    url  = _validate_apprise_url(body.get("url", ""), request)
     if not name or not url:
         raise HTTPException(400, "Name and URL are required")
     alert_on_any_down        = int(bool(body.get("alert_on_any_down", False)))
@@ -162,7 +183,8 @@ def update_webhook(wid: int, request: Request, body: dict):
         repeat_interval_minutes   = max(0, int(body.get("repeat_interval_minutes", existing["repeat_interval_minutes"]) or 0))
 
         name = (name or "").strip()
-        url  = _validate_apprise_url(url)
+        # Only when the caller supplied one: `url` otherwise holds what is already stored.
+        url  = _validate_apprise_url(url, request if "url" in body else None)
         if not name or not url:
             raise HTTPException(400, "Name and URL are required")
 
@@ -218,7 +240,7 @@ def delete_webhook(wid: int, request: Request):
 def test_webhook_url(request: Request, body: dict):
     """Test a webhook URL without saving it (for pre-validation in setup wizard)."""
     require_auth(request, scope="write")
-    url = _validate_apprise_url(body.get("url", ""))
+    url = _validate_apprise_url(body.get("url", ""), request)
     try:
         import apprise
         a = apprise.Apprise()

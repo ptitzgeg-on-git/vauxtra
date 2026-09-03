@@ -117,18 +117,25 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `SECRET_KEY` | auto-generated | **Do not change after setup.** Used to sign session cookies and encrypt provider credentials. Auto-generated to `data/.secret_key` if left empty. |
 | `APP_PASSWORD` | *(none)* | Password to protect the web interface. Leave empty to configure via Setup wizard. |
 | `TZ` | `UTC` | Timezone for scheduler and log timestamps. |
-| `HTTPS_ONLY` | `false` | Set to `true` when serving directly over HTTPS (not behind a reverse proxy). |
-| `DEBUG` | `false` | Enable `/api/docs` (Swagger UI) and verbose logging. |
+| `HTTPS_ONLY` | `false` | Set to `true` whenever the interface is reached over `https://`, **including behind a reverse proxy that terminates TLS** — which is the usual deployment. Marks the session cookie `Secure` and sends HSTS. |
+| `DEBUG` | `false` | Enable `/api/docs` and `/openapi.json`, add the Vite dev server to `CORS_ORIGINS`, and log verbosely. |
 | `VAUXTRA_URL` | `http://localhost:8888` | Base URL of this instance (used by the MCP server). |
 | `VAUXTRA_API_KEY` | *(none)* | API key for MCP server auth. Create one in **Settings → API Keys**. |
 | `DOCKER_HOST` | *(env default)* | Docker socket path. Override if using a non-standard location. |
 | `VAUXTRA_REWRITE_LOCALHOST` | `true` | Rewrite provider URLs using localhost/127.0.0.1 to a host alias when running inside Docker. |
 | `VAUXTRA_LOCALHOST_ALIAS` | `host.docker.internal` | Hostname used when localhost rewrite is active. |
-| `CORS_ORIGINS` | `http://localhost:5173,...` | Comma-separated list of allowed CORS origins. Override when serving behind a custom domain. |
+| `CORS_ORIGINS` | *(empty)* | Cross-origin callers allowed to reach the API, comma-separated. Empty is right for a normal install: the interface is served by this same application, so it is already same-origin. Fill it in only for a frontend hosted elsewhere — every origin listed may send the session cookie. |
+| `FORWARDED_ALLOW_IPS` | *(empty)* | Address of the reverse proxy in front of this instance. Unset, every rate limit keys on the socket peer — behind a proxy that is one address for every visitor, so five failed logins from anywhere lock you out. Do not set it without a proxy actually in front. |
 
 > **⚠️ Important**: Do not change `SECRET_KEY` after adding providers. All stored credentials are encrypted with this key.
 
-> **Forgot your password?** If set via `.env`, edit the file. If set via Setup wizard, use Settings → Change Password while logged in, or delete the hash from the database: `sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='app_password_hash';"` and restart.
+> **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
+>
+> ```bash
+> sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"
+> ```
+>
+> `auth_mode` is what tells a deliberately passwordless install apart from one whose hash went missing. Deleting the hash on its own leaves the second state, and Vauxtra then refuses every request rather than falling back to anonymous admin — which is the point of it, and why it has to go too.
 
 ---
 
