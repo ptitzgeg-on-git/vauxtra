@@ -7,7 +7,7 @@ from vauxtra_mcp.app import mcp
 
 @mcp.tool()
 def list_providers() -> list[dict[str, Any]]:
-    """List all configured providers (NPM, Traefik, Pi-hole, AdGuard, Cloudflare, etc.)."""
+    """List all configured providers (NPM, Zoraxy, Traefik, Pi-hole, AdGuard, Cloudflare, etc.)."""
     r = client.get("/providers")
     client.check(r)
     return r.json()
@@ -35,7 +35,7 @@ def create_provider(
 
     Args:
         name: Display name for this provider.
-        type: Provider type (npm, traefik, cloudflare, cloudflare_tunnel, pihole, adguard).
+        type: Provider type (npm, zoraxy, traefik, cloudflare, cloudflare_tunnel, pihole, adguard, technitium).
         url: Connection URL (e.g. http://npm:81 or https://api.cloudflare.com).
         username: Username or email for authentication.
         password: Password or API token.

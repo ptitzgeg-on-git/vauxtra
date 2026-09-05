@@ -125,7 +125,7 @@ export function Certificates() {
             <Shield className="w-12 h-12 text-muted-foreground opacity-50 mb-4" />
             <h3 className="text-lg font-semibold text-foreground">No Certificates Found</h3>
             <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-              Certificates are synced from your reverse proxy providers. Connect NPM or Traefik to see certificates here.
+              Certificates are synced from your reverse proxy providers. Connect NPM or Zoraxy to see certificates here.
             </p>
           </div>
         ) : (

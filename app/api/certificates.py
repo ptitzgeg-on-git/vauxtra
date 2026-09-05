@@ -1,6 +1,7 @@
 """Certificate management endpoints.
 
-Provides certificate listing and expiry monitoring across all NPM providers.
+Provides certificate listing and expiry monitoring across every proxy provider that
+exposes its certificate store (NPM, Zoraxy).
 """
 
 from __future__ import annotations
@@ -11,12 +12,36 @@ from fastapi import APIRouter, Request
 
 from app.auth import require_auth
 from app.models import add_log, get_db_ctx
-from app.providers.factory import create_provider
+from app.providers.factory import certificate_provider_types, create_provider
 
 router = APIRouter()
 
 # Certificates expiring within this many days are flagged as "expiring soon"
 _EXPIRY_WARN_DAYS = 30
+
+
+def _certificate_provider_rows(conn) -> list:
+    """Enabled providers whose type declares the `certificates` capability."""
+    types = certificate_provider_types()
+    if not types:
+        return []
+    placeholders = ",".join("?" * len(types))
+    return conn.execute(
+        f"SELECT * FROM providers WHERE type IN ({placeholders}) AND enabled=1", types
+    ).fetchall()
+
+
+def _with_domain_names(cert: dict) -> dict:
+    """The certificate with `domain_names` filled from `domains` when a provider omits it.
+
+    The providers hand back `domains`; the frontend was written against `domain_names`
+    and the Dashboard dereferences it without a guard, so one expiring certificate from
+    a provider that only says `domains` took the whole Dashboard route down. Both
+    spellings are kept so nothing that reads the other one changes.
+    """
+    if "domain_names" not in cert:
+        cert["domain_names"] = list(cert.get("domains") or [])
+    return cert
 
 
 def _parse_expiry(raw: str | None) -> datetime.datetime | None:
@@ -35,16 +60,15 @@ def _parse_expiry(raw: str | None) -> datetime.datetime | None:
 def list_certificates(request: Request):
     require_auth(request)
     with get_db_ctx() as conn:
-        npm_providers = conn.execute(
-            "SELECT * FROM providers WHERE type='npm' AND enabled=1"
-        ).fetchall()
+        cert_providers = _certificate_provider_rows(conn)
 
     result = []
-    for p in npm_providers:
+    for p in cert_providers:
         try:
             provider = create_provider(p)
             certs = provider.get_certificates()
             for c in certs:
+                _with_domain_names(c)
                 c["provider_id"] = p["id"]
                 c["provider_name"] = p["name"]
             result.extend(certs)
@@ -65,14 +89,12 @@ def certificate_expiry(request: Request):
     """
     require_auth(request)
     with get_db_ctx() as conn:
-        npm_providers = conn.execute(
-            "SELECT * FROM providers WHERE type='npm' AND enabled=1"
-        ).fetchall()
+        cert_providers = _certificate_provider_rows(conn)
 
     now    = datetime.datetime.utcnow()
     result = []
 
-    for p in npm_providers:
+    for p in cert_providers:
         try:
             provider = create_provider(p)
             certs    = provider.get_certificates()
@@ -95,7 +117,7 @@ def certificate_expiry(request: Request):
 
             result.append(
                 {
-                    **c,
+                    **_with_domain_names(c),
                     "provider_id":     p["id"],
                     "provider_name":   p["name"],
                     "days_remaining":  days_remaining,

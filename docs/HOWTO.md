@@ -32,7 +32,7 @@
 On first launch, Vauxtra displays a guided setup wizard to help you configure:
 
 1. **Password** — Protect access to your panel (optional — you can skip for open access)
-2. **Providers** — Connect reverse proxies (NPM, Traefik) and DNS providers (Cloudflare, Pi-hole, AdGuard)
+2. **Providers** — Connect reverse proxies (NPM, Traefik, Zoraxy) and DNS providers (Cloudflare, Pi-hole, AdGuard)
 3. **Notifications** — Add webhooks for alerts (Discord, Slack, Telegram, etc.)
 4. **Docker endpoints** — Connect Docker hosts for container discovery
 
@@ -169,7 +169,7 @@ Use **Providers → Add Connection** to add a new integration. Providers are org
 - **External DNS** — Cloudflare DNS
 - **Zero Trust** — Cloudflare Tunnel
 - **Local DNS** — Pi-hole, AdGuard Home
-- **Reverse Proxy** — Nginx Proxy Manager, Traefik
+- **Reverse Proxy** — Nginx Proxy Manager, Traefik, Zoraxy
 
 Choose **Guided setup** for step-by-step instructions, or **Expert mode** if you already have all credentials ready.
 
@@ -186,6 +186,42 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 1. Expose the Traefik API (e.g., `--api.insecure=true` or dashboard router on port 8080)
 2. In Vauxtra: Add provider → Traefik → enter API URL
 3. Use **Sync → Import** to import existing routes
+
+### Zoraxy
+
+Vauxtra drives Zoraxy through its management API (port 8000 by default): it logs in with
+the admin username/password, keeps the session cookie and sends the CSRF token Zoraxy
+requires on every write.
+
+1. Note the management URL (`http://zoraxy:8000`) and the admin credentials
+2. In Vauxtra: Add provider → Zoraxy → enter URL, username and password
+3. Test connection, then **Sync → Import** to pick up existing host rules
+
+**No dedicated account:** Zoraxy has exactly one admin account and no API keys, so Vauxtra
+holds the same credentials as your browser session. Keep port 8000 on the LAN or behind the
+VPN; never expose it to the internet.
+
+**`-noauth` instances:** leave username and password empty. Vauxtra skips the login and only
+checks that the instance answers as authenticated.
+
+What Vauxtra does on a Zoraxy rule:
+- Creates, updates, enables/disables and deletes the rule (hostname → `ip:port`)
+- Sets the upstream scheme; for HTTPS upstreams the certificate validation is skipped
+- Turns WebSocket support on or off
+- Lists Zoraxy certificates and records the one whose CN matches the hostname (or its
+  parent wildcard) as the rule's preferred certificate
+- Imports existing rules and reports drift when the live rule no longer matches the service
+
+Limitations:
+- Only **host** rules are managed — no virtual directories, no TCP/UDP stream proxies
+- One upstream per rule; extra load-balanced upstreams are left untouched
+- Zoraxy terminates TLS globally, so there is no per-host "force SSL" switch
+- The preferred certificate is recorded, but Zoraxy still picks certificates by SNI unless
+  SNI matching is disabled on the rule
+- A rule renamed in Zoraxy is seen as drift, because the hostname is the rule's identifier
+- Creating a service for a hostname that already has a rule in Zoraxy is refused rather
+  than overwriting the rule (Zoraxy's own `add` would replace it silently): import the
+  rule first, then edit the service
 
 ### Cloudflare DNS
 
@@ -375,7 +411,7 @@ This keeps behavior stable when new providers are added later.
 ### DNS + Reverse Proxy with local DNS providers
 
 - DNS must point to the reverse proxy endpoint, not directly to the backend service
-- Use the **Reverse proxy LAN IP** field (LAN IP/FQDN of NPM/Traefik)
+- Use the **Reverse proxy LAN IP** field (LAN IP/FQDN of NPM/Traefik/Zoraxy)
 - When available, Vauxtra pre-fills this field from the selected proxy provider URL host
 
 ### DNS with external providers (Cloudflare, etc.)

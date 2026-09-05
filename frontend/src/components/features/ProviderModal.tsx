@@ -13,6 +13,8 @@ import {
   getGuidedSteps,
   getProjectUrl,
   canSubmitProvider,
+  isDnsType,
+  isProxyType,
 } from '@/components/features/providers/providerConstants';
 import { StepTypeSelector, StepCredentials } from '@/components/features/provider-modal';
 import { useProviderMutations } from '@/hooks/useProviderMutations';
@@ -54,16 +56,14 @@ export function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
       Other: [],
     };
 
-    const dnsTypes = new Set(['cloudflare', 'pihole', 'adguard', 'technitium']);
-    const reverseTypes = new Set(['npm', 'traefik', 'cloudflare_tunnel']);
+    const tunnelTypes = new Set(['cloudflare_tunnel']);
 
     for (const entry of availableProviderTypes) {
       const [type, meta] = entry;
-      const metaCategory = String(meta?.category || '').toLowerCase();
 
-      if (metaCategory === 'dns' || dnsTypes.has(type)) {
+      if (isDnsType(type, meta)) {
         groups['DNS Providers'].push(entry);
-      } else if (metaCategory === 'proxy' || reverseTypes.has(type)) {
+      } else if (isProxyType(type, meta) || meta?.capabilities?.supports_tunnel || tunnelTypes.has(type)) {
         groups['Reverse & Tunnel Providers'].push(entry);
       } else {
         groups.Other.push(entry);
