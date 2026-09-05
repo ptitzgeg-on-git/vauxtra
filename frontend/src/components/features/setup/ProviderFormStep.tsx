@@ -15,6 +15,8 @@ import {
   getProviderColor,
   getGuidedSteps,
   canSubmitProvider as canSubmitProviderFn,
+  isDnsType,
+  isProxyType,
 } from '@/components/features/providers/providerConstants';
 
 interface ProviderFormStepProps {
@@ -48,8 +50,7 @@ export function ProviderFormStep({
   }, [providerTypes]);
 
   const groupedProviderTypes = useMemo(() => {
-    const dnsTypes = new Set(['cloudflare', 'pihole', 'adguard', 'technitium']);
-    const reverseTypes = new Set(['npm', 'traefik', 'cloudflare_tunnel']);
+    const tunnelTypes = new Set(['cloudflare_tunnel']);
     const groups: Record<string, Array<[string, ProviderTypeMeta]>> = {
       'DNS Providers': [],
       'Reverse & Tunnel Providers': [],
@@ -57,10 +58,9 @@ export function ProviderFormStep({
     };
 
     for (const [type, meta] of availableProviderTypes) {
-      const metaCategory = String(meta?.category || '').toLowerCase();
-      if (metaCategory === 'dns' || dnsTypes.has(type)) {
+      if (isDnsType(type, meta)) {
         groups['DNS Providers'].push([type, meta]);
-      } else if (metaCategory === 'proxy' || reverseTypes.has(type)) {
+      } else if (isProxyType(type, meta) || meta?.capabilities?.supports_tunnel || tunnelTypes.has(type)) {
         groups['Reverse & Tunnel Providers'].push([type, meta]);
       } else {
         groups.Other.push([type, meta]);

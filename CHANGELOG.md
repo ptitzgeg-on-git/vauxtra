@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 ## [Unreleased]
 
 Security audit of v1.1.0 and the fixes it produced. Everything below is on
-`fix/audit-securite-v1.1.0`; the test suite went from 284 to 386.
+`fix/audit-securite-v1.1.0`; the test suite went from 284 to 718.
 
 ### Security
 - **Path traversal in the SPA catch-all route.** `/{full_path:path}` does not strip `..`
@@ -116,6 +116,12 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
   `vauxtra_mcp/README.md` no longer advertises an "all" scope that does not exist.
 
 ### Added
+- **Zoraxy provider** (`zoraxy`, Reverse Proxy). Drives host rules through the management
+  API on port 8000 (session login + CSRF token; empty credentials for a `-noauth`
+  instance): create, update, enable/disable, delete, import, drift detection, HTTP or
+  HTTPS upstream, WebSocket toggle, and the certificate whose CN matches the hostname or
+  its parent wildcard recorded as the rule's preferred certificate. Host rules only, one
+  managed upstream per rule; no per-host "force SSL" since Zoraxy terminates TLS globally.
 - `useModalDialog` — Escape to close, a focus trap, and focus restored to whatever opened
   the dialog. Applied to the expose, provider and connection-editor modals.
 - Static guards that need neither a browser nor Node: locale key parity, placeholder

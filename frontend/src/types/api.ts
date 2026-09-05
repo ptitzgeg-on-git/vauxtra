@@ -31,6 +31,19 @@ export interface Environment {
 
 export type ProviderType = string;
 
+/**
+ * Capability keys served by GET /api/providers/types. Keeping the union here
+ * lets hasCapability() and the reverse-proxy grouping stay exhaustive when the
+ * backend adds a key (certificates arrived with the Zoraxy provider).
+ */
+export type ProviderCapability =
+  | 'proxy'
+  | 'dns'
+  | 'public_dns'
+  | 'supports_auto_public_target'
+  | 'supports_tunnel'
+  | 'certificates';
+
 export interface Provider {
   id: number;
   name: string;
@@ -48,7 +61,7 @@ export interface Provider {
 export interface ProviderTypeMeta {
   label: string;
   category: 'proxy' | 'dns';
-  capabilities: Record<string, boolean>;
+  capabilities: Partial<Record<ProviderCapability, boolean>>;
   requires_username?: boolean;
   requires_password?: boolean;
 }
@@ -91,7 +104,8 @@ export interface Service {
   auto_update_dns: boolean | number;
   tunnel_hostname: string;
   dns_ip: string;
-  npm_host_id: number | null;
+  /** NPM numbers its hosts; Zoraxy and Cloudflare Tunnel key them on the hostname. */
+  npm_host_id: number | string | null;
   dns_provider_id: number | null;
   proxy_provider_id: number | null;
   tunnel_provider_id: number | null;
@@ -277,7 +291,8 @@ export interface CertificateExpiry {
   id: number;
   provider_id: number;
   provider_name: string;
-  domain_names: string[];
+  domain_names?: string[];
+  domains?: string[];
   expires_on: string;
   days_remaining: number | null;
   expiring_soon: boolean;

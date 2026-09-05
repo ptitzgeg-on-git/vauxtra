@@ -14,7 +14,7 @@ from app.models import (
     set_push_targets,
     set_tags,
 )
-from app.providers.factory import create_provider
+from app.providers.factory import create_provider, host_id_is_hostname
 from app.public_target import resolve_public_target, suggest_public_targets
 from app.validators import (
     is_valid_domain,
@@ -1014,7 +1014,14 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                             cert_id,
                         )
                         if ok:
-                            next_npm_host_id = old["npm_host_id"]
+                            # A provider that keys its rules on the hostname has just
+                            # renamed the rule along with the service: the stored id would
+                            # name a rule that no longer exists, and every later toggle,
+                            # push and delete would address it.
+                            if host_id_is_hostname(proxy, proxy_row["type"]):
+                                next_npm_host_id = new_public_host
+                            else:
+                                next_npm_host_id = old["npm_host_id"]
                         else:
                             errors.append("Failed to update proxy host")
                     else:

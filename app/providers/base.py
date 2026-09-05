@@ -61,6 +61,13 @@ class DNSProvider(ABC):
 class ProxyProvider(ABC):
     """Common interface for all reverse proxy providers (NPM, Traefik, etc.)."""
 
+    # True when the `id` a host is handed back under is its hostname, so that renaming
+    # the host renames the identifier. NPM numbers its hosts and the number survives a
+    # rename; Zoraxy and Cloudflare Tunnel key their rules on the name, and a caller that
+    # keeps the old name after a rename addresses a rule that no longer exists. The
+    # service and sync routes read this to know what to store and what to trust.
+    HOST_ID_IS_HOSTNAME = False
+
     @abstractmethod
     def test_connection(self) -> bool:
         """Test whether the provider is reachable and credentials are valid."""

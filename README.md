@@ -2,7 +2,7 @@
 
 > **The missing link in your network stack.**  
 > Self-hosted DNS & reverse proxy management panel — built for homelab.  
-> Orchestrate Nginx Proxy Manager, Traefik, Cloudflare, Pi-hole, AdGuard Home, and more from one unified interface.
+> Orchestrate Nginx Proxy Manager, Traefik, Zoraxy, Cloudflare, Pi-hole, AdGuard Home, and more from one unified interface.
 
 <div align="center">
 
@@ -23,7 +23,7 @@
 
 | Category | What you get |
 |---|---|
-| **Multi-provider routing** | Manage proxy hosts (NPM, Traefik) and DNS rewrites (Cloudflare, Pi-hole, AdGuard) from a single service record |
+| **Multi-provider routing** | Manage proxy hosts (NPM, Traefik, Zoraxy) and DNS rewrites (Cloudflare, Pi-hole, AdGuard) from a single service record |
 | **Exposure modes** | Choose DNS-only, DNS + Reverse Proxy, or Tunnel with capability-aware guidance |
 | **Cloudflare Tunnel** | Expose services without port-forwarding via Cloudflare Tunnel integration |
 | **Docker discovery** | Auto-detect running containers with Traefik label parsing and confidence scoring |
@@ -31,7 +31,7 @@
 | **Drift detection** | Detect when live provider state diverges from expected and reconcile automatically |
 | **Auto-reconcile scheduler** | Periodic background reconciliation with webhook notifications |
 | **Service Templates** | Pre-configured blueprints that pre-fill the service form — one click to deploy a standard HTTPS app, internal tool, or tunnel service |
-| **Certificate monitoring** | Track NPM certificates; alerts at < 30 days (warn) and < 7 days (error) |
+| **Certificate monitoring** | Track NPM and Zoraxy certificates; alerts at < 30 days (warn) and < 7 days (error) |
 | **Webhook retry** | Failed Apprise notifications are retried with exponential backoff (1 min → 24 h); delivery log visible in metrics |
 | **Prometheus metrics** | `/metrics` endpoint in Prometheus text format — scrape service health, provider counts, logs, webhooks, templates |
 | **API Keys** | Bearer token auth for CI/CD pipelines and MCP server access |
@@ -54,8 +54,9 @@
 │          │                                              │
 │   ┌──────┴────────────────────────┐                     │
 │   │         Providers             │                     │
-│   │  NPM  Traefik  Cloudflare DNS │                     │
-│   │  Pi-hole  AdGuard  CF Tunnel  │                     │
+│   │  NPM  Zoraxy  Traefik         │                     │
+│   │  Cloudflare DNS  CF Tunnel    │                     │
+│   │  Pi-hole  AdGuard  Technitium │                     │
 │   └───────────────────────────────┘                     │
 └─────────────────────────────────────────────────────────┘
           │
@@ -171,6 +172,21 @@ Traefik is **read-only** in Vauxtra (it configures itself via Docker labels or c
 1. Expose the Traefik dashboard API at e.g. `http://traefik:8080`.
 2. In Vauxtra, add a provider: type = `traefik`, URL = `http://traefik:8080`.
 3. Use **Sync → Import** to import existing routes.
+
+### Zoraxy
+
+Zoraxy has a single admin account and no API keys: Vauxtra logs in with the same
+credentials you use in the browser. Keep the management port reachable from the LAN or
+VPN only.
+
+1. Note the management URL, e.g. `http://zoraxy:8000`, and the admin username/password
+   (leave both empty for an instance started with `-noauth`).
+2. In Vauxtra, add a provider: type = `zoraxy`, URL = `http://zoraxy:8000`.
+3. Test connection, then **Sync → Import** to pick up existing host rules.
+
+Vauxtra manages **host** rules only (no virtual directories, no TCP/UDP stream proxies) and
+one upstream per rule; extra load-balanced upstreams are left untouched. Zoraxy terminates
+TLS globally, so there is no per-host "force SSL" switch.
 
 ### Cloudflare DNS
 
