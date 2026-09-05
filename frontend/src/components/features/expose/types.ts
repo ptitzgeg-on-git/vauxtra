@@ -1,3 +1,5 @@
+import type { ProviderCapability } from '@/types/api';
+
 export type Provider = {
   id: number;
   name: string;
@@ -95,7 +97,7 @@ export const toFormState = (service?: Record<string, unknown> | null): FormState
 
 export const hasCapability = (
   provider: Provider,
-  capability: 'proxy' | 'dns' | 'public_dns' | 'supports_auto_public_target' | 'supports_tunnel',
+  capability: ProviderCapability,
   providerTypeMap: Record<string, Record<string, unknown>>,
 ): boolean => {
   const typeKey = (provider.type || '').toLowerCase();
@@ -103,8 +105,8 @@ export const hasCapability = (
   const caps = (meta?.capabilities || {}) as Record<string, unknown>;
 
   if (Object.prototype.hasOwnProperty.call(caps, capability)) return Boolean(caps[capability]);
-  if (capability === 'proxy') return meta?.category === 'proxy' || ['npm', 'traefik'].includes(typeKey);
-  if (capability === 'dns') return meta?.category === 'dns' || ['cloudflare', 'pihole', 'adguard'].includes(typeKey);
+  if (capability === 'proxy') return meta?.category === 'proxy' || ['npm', 'traefik', 'zoraxy'].includes(typeKey);
+  if (capability === 'dns') return meta?.category === 'dns' || ['cloudflare', 'pihole', 'adguard', 'technitium'].includes(typeKey);
   if (capability === 'public_dns') return ['cloudflare'].includes(typeKey);
   return false;
 };

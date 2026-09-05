@@ -7,7 +7,7 @@ import time
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.models import add_log, get_db
-from app.providers.factory import create_provider
+from app.providers.factory import certificate_provider_types, create_provider
 from app.public_target import (
     detect_server_public_ip,
     load_public_target_policy,
@@ -485,7 +485,7 @@ def _run_dns_auto_updates(conn) -> bool:
 # ── Certificate expiry alerts ────────────────────────────────────────────
 
 def _run_cert_expiry_alerts(conn) -> None:
-    """Scan NPM proxy providers for certificates close to expiry and log alerts.
+    """Scan certificate-capable proxy providers for certificates close to expiry and log alerts.
 
     Alerts:  < 30 days → warn   |   < 7 days → error
     Re-alerts after 24 h or when the severity level changes.
@@ -494,16 +494,21 @@ def _run_cert_expiry_alerts(conn) -> None:
     import datetime as _dt
 
     try:
-        npm_rows = conn.execute(
-            "SELECT * FROM providers WHERE type='npm' AND enabled=1"
+        cert_types = certificate_provider_types()
+        if not cert_types:
+            return
+        placeholders = ",".join("?" * len(cert_types))
+        cert_rows = conn.execute(
+            f"SELECT * FROM providers WHERE type IN ({placeholders}) AND enabled=1",
+            cert_types,
         ).fetchall()
-        if not npm_rows:
+        if not cert_rows:
             return
 
         now_utc = _dt.datetime.utcnow()
         seen_keys: set[tuple[int, int]] = set()
 
-        for prow in npm_rows:
+        for prow in cert_rows:
             provider_id = int(prow["id"])
             try:
                 provider = create_provider(prow)

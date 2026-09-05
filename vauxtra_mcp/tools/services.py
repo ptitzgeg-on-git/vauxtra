@@ -162,7 +162,7 @@ def sync_services_from_providers() -> dict[str, Any]:
     """
     Discover existing services from all enabled providers.
 
-    Returns proxy_hosts (from NPM, Traefik, Cloudflare Tunnel) and dns_rewrites
+    Returns proxy_hosts (from NPM, Zoraxy, Traefik, Cloudflare Tunnel) and dns_rewrites
     (from Pi-hole, AdGuard, Cloudflare DNS) that can be imported into Vauxtra.
     """
     r = client.post("/services/sync")

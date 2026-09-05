@@ -66,6 +66,7 @@ Provider URL notes:
 
 - NPM: `http://<host>:81` (or mapped host port)
 - Traefik API: `http://<host>:8080`
+- Zoraxy: management URL `http://<host>:8000`, admin credentials (empty with `-noauth`); a 403 `CSRF token invalid` means the URL is fronted by a proxy that drops cookies
 - Pi-hole: base URL only (`http://pihole`), not `/admin`
 - AdGuard: web/API URL (commonly `:3000`)
 
@@ -102,7 +103,7 @@ Checks:
 
 1. Provider write permissions still valid.
 2. Service target and domain fields valid.
-3. Provider type supports writes (Traefik is read-only).
+3. Provider type supports writes (Traefik is read-only; Zoraxy only manages host rules, and a rule renamed in Zoraxy is reported as drift).
 
 Actions:
 

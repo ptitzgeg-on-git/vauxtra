@@ -1,6 +1,8 @@
 import { ArrowLeft, ArrowRight, GitMerge, Server, Plus, Trash2, CheckCircle2, Shield, type LucideIcon } from 'lucide-react';
 import { ProviderLogo } from '@/components/ui/ProviderLogos';
-import { fallbackIconByType as iconByType, descByType, providerColor, categoryByType } from '@/components/features/providers/providerConstants';
+import {
+  fallbackIconByType as iconByType, descByType, providerColor, categoryByType, isDnsType, isProxyType,
+} from '@/components/features/providers/providerConstants';
 import type { ProviderItem } from './types';
 
 interface ProvidersStepProps {
@@ -67,12 +69,12 @@ export function ProvidersStep({ providers, onAdd, onDelete, deleteIsPending, onB
   // Group providers by category
   const dnsProviders = providers.filter(p => {
     const category = categoryByType[p.type];
-    return category?.label?.includes('DNS') || categoryByType[p.type]?.label?.includes('Zero Trust');
+    return category?.label?.includes('DNS') || category?.label?.includes('Zero Trust') || isDnsType(p.type);
   });
-  
+
   const proxyProviders = providers.filter(p => {
     const category = categoryByType[p.type];
-    return category?.label?.includes('Proxy') || (p.type === 'npm' || p.type === 'traefik');
+    return category?.label?.includes('Proxy') || isProxyType(p.type);
   });
 
   return (
@@ -93,7 +95,7 @@ export function ProvidersStep({ providers, onAdd, onDelete, deleteIsPending, onB
             <Server className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
             <p className="text-sm text-muted-foreground">No integrations added yet.</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Add at least one reverse proxy (NPM, Traefik) or DNS provider to get started.
+              Add at least one reverse proxy (NPM, Traefik, Zoraxy) or DNS provider to get started.
             </p>
           </div>
         ) : (
