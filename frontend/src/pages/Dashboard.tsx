@@ -294,12 +294,13 @@ export function Dashboard() {
                 {urgentCerts.map((cert) => {
                   const days = cert.days_remaining;
                   const isExpired = cert.expired;
+                  const names = cert.domain_names ?? cert.domains ?? [];
                   return (
                     <div key={cert.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isExpired ? 'bg-destructive' : 'bg-yellow-500'}`} />
-                      <span className="font-medium text-foreground truncate flex-1" title={cert.domain_names.join(', ')}>
-                        {cert.domain_names[0] || '—'}
-                        {cert.domain_names.length > 1 && <span className="text-muted-foreground ml-1">+{cert.domain_names.length - 1}</span>}
+                      <span className="font-medium text-foreground truncate flex-1" title={names.join(', ')}>
+                        {names[0] || '—'}
+                        {names.length > 1 && <span className="text-muted-foreground ml-1">+{names.length - 1}</span>}
                       </span>
                       <span className={`text-xs font-semibold shrink-0 ${isExpired ? 'text-destructive' : (days !== null && days <= 7) ? 'text-destructive' : 'text-yellow-600 dark:text-yellow-400'}`}>
                         {isExpired ? 'Expired' : days !== null ? `${days}d left` : '—'}

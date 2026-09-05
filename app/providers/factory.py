@@ -12,6 +12,7 @@ from app.providers.npm import NPMProvider
 from app.providers.pihole import PiholeProvider
 from app.providers.technitium import TechnitiumProvider
 from app.providers.traefik import TraefikProvider
+from app.providers.zoraxy import ZoraxyProvider
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ PROVIDER_TYPES = {
             "public_dns": False,
             "supports_auto_public_target": False,
             "supports_tunnel": False,
+            "certificates": True,
         },
         "icon": "ti-lock", "color": "blue",
         "placeholder_url": "http://192.168.1.10:81",
@@ -54,6 +56,49 @@ PROVIDER_TYPES = {
                      "hint": "The email you set when creating the NPM user.", "input_type": "text"},
                     {"key": "password", "label": "Password", "placeholder": "(NPM user password)",
                      "input_type": "password"},
+                ],
+            },
+        ],
+    },
+    "zoraxy": {
+        "label": "Zoraxy", "category": "proxy", "available": True,
+        "description": "Zoraxy reverse proxy",
+        "category_label": "Reverse Proxy",
+        "category_color": "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+        "provider_color": "bg-sky-500/10 text-sky-600 border-sky-500/30 dark:text-sky-400",
+        "capabilities": {
+            "proxy": True,
+            "dns": False,
+            "public_dns": False,
+            "supports_auto_public_target": False,
+            "supports_tunnel": False,
+            "certificates": True,
+        },
+        "icon": "ti-route", "color": "sky",
+        "placeholder_url": "http://192.168.1.10:8000",
+        "user_label": "Username", "pass_label": "Password",
+        "user_placeholder": "admin",
+        "guided_steps": [
+            {
+                "title": "Prepare the Zoraxy web console",
+                "body": "Vauxtra logs in to the Zoraxy web console with the same username and password you use in the browser, then manages proxy rules and reads certificates through its API.\n\nZoraxy has a single administrator account: Vauxtra will use it, so keep the console (port 8000) on your LAN or VPN and never expose it publicly.\n\nIf Zoraxy runs with -noauth, leave the username and password blank in step 3.\n\nNote: imported rules become managed by Vauxtra: editing or deleting the service edits or deletes the Zoraxy rule. Creating a service for a hostname that already has a rule in Zoraxy is refused; import the rule instead.",
+            },
+            {
+                "title": "Enter the Zoraxy URL",
+                "body": "Enter the URL of the Zoraxy web console. The default port is 8000.",
+                "fields": [
+                    {"key": "url", "label": "Zoraxy URL", "placeholder": "http://192.168.1.10:8000",
+                     "hint": "Use the internal IP or hostname. Include the port (default: 8000).", "input_type": "url"},
+                ],
+            },
+            {
+                "title": "Zoraxy credentials",
+                "body": "Enter the username and password of the Zoraxy web console. Leave both blank if Zoraxy runs with -noauth.",
+                "fields": [
+                    {"key": "username", "label": "Username", "placeholder": "admin",
+                     "hint": "The web console login.", "input_type": "text", "optional": True},
+                    {"key": "password", "label": "Password", "placeholder": "(web console password)",
+                     "input_type": "password", "optional": True},
                 ],
             },
         ],
@@ -285,6 +330,7 @@ PROVIDER_TYPES = {
 _PROVIDER_REGISTRY: dict[str, tuple[type, bool]] = {
     "adguard":           (AdGuardProvider,           False),
     "npm":               (NPMProvider,               False),
+    "zoraxy":            (ZoraxyProvider,            False),
     "pihole":            (PiholeProvider,             False),
     "traefik":           (TraefikProvider,            False),
     "cloudflare":        (CloudflareProvider,         True),
@@ -414,3 +460,32 @@ def create_provider(provider_row):
         return cls(url, user, pwd, extra)
 
     return cls(url, user, pwd)
+
+
+def certificate_provider_types() -> list[str]:
+    """Provider types whose certificate store Vauxtra can read, in PROVIDER_TYPES order.
+
+    The certificate routes and the expiry scanner used to hard-code `type='npm'`, so a
+    second proxy exposing its store stayed invisible to both. The capability flag is where
+    a provider declares it, plugin-registered types included, so it is also where the SQL
+    should read it from.
+    """
+    return [
+        ptype for ptype, meta in PROVIDER_TYPES.items()
+        if (meta.get("capabilities") or {}).get("certificates")
+    ]
+
+
+def host_id_is_hostname(proxy, provider_type: str | None = None) -> bool:
+    """Whether `proxy` hands hosts back under their hostname rather than a stable id.
+
+    The provider instance is asked first, so a class that declares
+    `HOST_ID_IS_HOSTNAME` answers for itself. An object that does not declare it -- a
+    test double standing in for a real provider -- is judged by the class registered for
+    its row's type, which is what would have been built for that row.
+    """
+    declared = getattr(proxy, "HOST_ID_IS_HOSTNAME", None)
+    if declared is not None:
+        return bool(declared)
+    entry = _PROVIDER_REGISTRY.get(provider_type or "")
+    return bool(getattr(entry[0], "HOST_ID_IS_HOSTNAME", False)) if entry else False

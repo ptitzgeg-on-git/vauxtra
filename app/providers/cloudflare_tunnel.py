@@ -16,6 +16,8 @@ from app.providers.base import ProxyProvider, TimeoutSession
 
 
 class CloudflareTunnelProvider(ProxyProvider):
+    HOST_ID_IS_HOSTNAME = True
+
     def __init__(self, url: str, account_id: str, api_token: str, extra: dict | None = None):
         self.account_id = (account_id or "").strip()
         self.tunnel_id = str((extra or {}).get("tunnel_id", "")).strip()

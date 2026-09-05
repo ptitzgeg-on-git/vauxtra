@@ -3,8 +3,9 @@
  * Used by both ProviderModal (main panel) and Setup (first-run wizard).
  */
 
-import { Globe, Shield, Server, Box, ShieldCheck, Waypoints, Cpu } from 'lucide-react';
+import { Globe, Shield, Server, Box, ShieldCheck, Waypoints, Cpu, Route } from 'lucide-react';
 import type { ComponentType } from 'react';
+import type { ProviderCapability } from '@/types/api';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ export type ApiGuidedStep = {
 export type ProviderTypeMeta = {
   label?: string;
   category?: string;
+  capabilities?: Partial<Record<ProviderCapability, boolean>>;
   available?: boolean;
   read_only?: boolean;
   placeholder_url?: string;
@@ -98,9 +100,34 @@ export const fallbackIconByType: Record<string, ComponentType<{ className?: stri
   pihole: Shield,
   npm: Server,
   traefik: Box,
+  zoraxy: Route,
   adguard: ShieldCheck,
   technitium: Cpu,
 };
+
+/**
+ * Types the UI must classify even when /api/providers/types has not answered
+ * yet (first paint, offline setup wizard). The API metadata always wins when
+ * present; these lists only decide what the fallback looks like.
+ */
+const fallbackProxyTypes = new Set(['npm', 'traefik', 'zoraxy']);
+const fallbackDnsTypes = new Set(['cloudflare', 'pihole', 'adguard', 'technitium']);
+
+/** True when the type serves as a reverse proxy: API category/capabilities first, local list otherwise. */
+export function isProxyType(type: string, meta?: ProviderTypeMeta): boolean {
+  const key = (type || '').toLowerCase();
+  if (meta?.capabilities && typeof meta.capabilities.proxy === 'boolean') return meta.capabilities.proxy;
+  if (meta?.category) return meta.category.toLowerCase() === 'proxy';
+  return fallbackProxyTypes.has(key);
+}
+
+/** True when the type manages DNS records: API category/capabilities first, local list otherwise. */
+export function isDnsType(type: string, meta?: ProviderTypeMeta): boolean {
+  const key = (type || '').toLowerCase();
+  if (meta?.capabilities && typeof meta.capabilities.dns === 'boolean') return meta.capabilities.dns;
+  if (meta?.category) return meta.category.toLowerCase() === 'dns';
+  return fallbackDnsTypes.has(key);
+}
 
 // ─── Metadata fallbacks (authoritative source is now /api/providers/types) ───
 
@@ -110,6 +137,7 @@ export const descByType: Record<string, string> = {
   pihole: 'Local DNS & ad filtering',
   npm: 'Nginx Proxy Manager',
   traefik: 'Dynamic reverse proxy (read-only)',
+  zoraxy: 'Zoraxy reverse proxy',
   adguard: 'DNS sinkhole & filtering',
   technitium: 'Self-hosted authoritative DNS server',
 };
@@ -120,6 +148,7 @@ export const categoryByType: Record<string, { label: string; color: string }> = 
   pihole: { label: 'Local DNS', color: 'bg-red-500/10 text-red-600 dark:text-red-400' },
   npm: { label: 'Reverse Proxy', color: 'bg-green-500/10 text-green-700 dark:text-green-400' },
   traefik: { label: 'Reverse Proxy', color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
+  zoraxy: { label: 'Reverse Proxy', color: 'bg-sky-500/10 text-sky-600 dark:text-sky-400' },
   adguard: { label: 'Local DNS', color: 'bg-teal-500/10 text-teal-600 dark:text-teal-400' },
   technitium: { label: 'Local DNS', color: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400' },
 };
@@ -129,6 +158,7 @@ export const providerColor: Record<string, string> = {
   cloudflare_tunnel: 'bg-orange-500/10 text-orange-600 border-orange-500/30 dark:text-orange-400',
   npm: 'bg-green-500/10 text-green-700 border-green-500/30 dark:text-green-400',
   traefik: 'bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400',
+  zoraxy: 'bg-sky-500/10 text-sky-600 border-sky-500/30 dark:text-sky-400',
   pihole: 'bg-red-500/10 text-red-600 border-red-500/30 dark:text-red-400',
   adguard: 'bg-teal-500/10 text-teal-600 border-teal-500/30 dark:text-teal-400',
   technitium: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/30 dark:text-indigo-400',
@@ -363,6 +393,35 @@ const _localGuidedSteps: Record<string, GuidedStep[]> = {
       ],
     },
   ],
+  zoraxy: [
+    {
+      title: 'Zoraxy connection details',
+      body: 'Vauxtra logs in to the Zoraxy web console with the same username and password you use in the browser, then manages proxy rules through its API.\n\nDefault URL: http://<host>:8000\n\nIf Zoraxy runs with -noauth, leave the username and password blank.',
+      fields: [
+        {
+          key: 'url',
+          label: 'Zoraxy URL',
+          placeholder: 'http://192.168.1.10:8000',
+          hint: 'Default port is 8000. Use the internal IP or hostname.',
+          inputType: 'url',
+        },
+        {
+          key: 'username',
+          label: 'Username',
+          placeholder: 'admin',
+          inputType: 'text',
+          optional: true,
+        },
+        {
+          key: 'password',
+          label: 'Password',
+          placeholder: '(web console password)',
+          inputType: 'password',
+          optional: true,
+        },
+      ],
+    },
+  ],
   technitium: [
     {
       title: 'Prepare your DNS zones',
@@ -401,6 +460,7 @@ export const projectUrlByType: Record<string, string> = {
   adguard: 'https://github.com/AdguardTeam/AdGuardHome',
   pihole: 'https://pi-hole.net',
   traefik: 'https://traefik.io',
+  zoraxy: 'https://zoraxy.aroz.org',
   cloudflare: 'https://dash.cloudflare.com',
   cloudflare_tunnel: 'https://one.dash.cloudflare.com',
   technitium: 'https://technitium.com/dns',
@@ -427,7 +487,7 @@ export function buildPayload(formData: ProviderFormState) {
 }
 
 export function canSubmitProvider(formData: ProviderFormState): boolean {
-  const passwordOptionalTypes = new Set(['traefik']);
+  const passwordOptionalTypes = new Set(['traefik', 'zoraxy']);
   const requiresPassword = !passwordOptionalTypes.has(formData.type);
 
   return (

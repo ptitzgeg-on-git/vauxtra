@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 
 from app.auth import require_auth, require_auth_or_setup
 from app.models import add_log, get_db
-from app.providers.factory import PROVIDER_TYPES, create_provider
+from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import resolve_public_target
 
 router = APIRouter()
@@ -80,14 +80,37 @@ def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
 
 
 def _find_host_id(proxy, public_host: str):
+    """The provider's id for the host serving `public_host`, or None.
+
+    Hostnames compare case-insensitively: Zoraxy keeps a rule under the spelling it was
+    typed with, and a rule created as "App.Example.com" is the same host as the service
+    Vauxtra spells "app.example.com".
+    """
+    wanted = (public_host or "").strip().lower()
     try:
         for h in proxy.list_hosts() or []:
             domains = h.get("domains") or h.get("domain_names") or []
-            if public_host in domains:
+            if any(str(d).strip().lower() == wanted for d in domains):
                 return h.get("id")
     except (AttributeError, TypeError, ValueError):
         return None
     return None
+
+
+def _stored_host_id(hostname_keyed: bool, svc, public_host: str):
+    """The stored primary-proxy id, unless the provider keys hosts on a name that moved.
+
+    For a provider whose id is the hostname, an id that no longer spells the service's
+    public host names a rule that is gone -- a service renamed before the rename was
+    written back, or renamed by hand. Returning None sends the caller to the live
+    lookup instead of to a rule that does not exist.
+    """
+    host_id = svc["npm_host_id"]
+    if not host_id:
+        return None
+    if hostname_keyed and str(host_id).strip().lower() != public_host:
+        return None
+    return host_id
 
 
 def _all_route_holders(conn, svc, sid: int) -> tuple[str, str, list, list]:
@@ -165,8 +188,10 @@ def withdraw_service_routes(conn, svc, sid: int) -> list[str]:
         try:
             proxy = create_provider(row)
             host_id = None
-            if row["type"] == "cloudflare_tunnel":
-                # This one addresses its ingress rules by hostname, not by numeric id.
+            if host_id_is_hostname(proxy, row["type"]):
+                # Cloudflare Tunnel and Zoraxy address their rules by hostname, not by a
+                # numeric id, so the service's own hostname is the route to withdraw --
+                # whatever an older rename may have left in `npm_host_id`.
                 host_id = public_host
             elif row["id"] == svc["proxy_provider_id"]:
                 host_id = svc["npm_host_id"]
@@ -255,7 +280,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
             proxy = create_provider(row)
             host_id = None
             if expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
-                host_id = svc["npm_host_id"]
+                host_id = _stored_host_id(host_id_is_hostname(proxy, row["type"]), svc, public_host)
             if not host_id:
                 host_id = _find_host_id(proxy, public_host)
 
@@ -459,7 +484,7 @@ def _push_service_row(conn, svc, sid: int) -> dict:
 
             host_id = None
             if expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
-                host_id = svc["npm_host_id"]
+                host_id = _stored_host_id(host_id_is_hostname(proxy, row["type"]), svc, public_host)
             if not host_id:
                 host_id = _find_host_id(proxy, public_host)
 
@@ -478,6 +503,11 @@ def _push_service_row(conn, svc, sid: int) -> dict:
                     cert_id,
                 )
                 attempted = f"update of host {host_id}"
+                if pushed and expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"] \
+                        and host_id != svc["npm_host_id"]:
+                    # The live lookup found the rule under a name the row did not hold:
+                    # write it back so the next cycle does not have to look again.
+                    conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (host_id, sid))
             else:
                 result = proxy.create_host(
                     public_host,
