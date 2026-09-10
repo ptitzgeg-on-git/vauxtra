@@ -152,6 +152,8 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 - End-user operations and API usage: [docs/HOWTO.md](docs/HOWTO.md)
 - Production deployment checklist and recipes: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - Troubleshooting and known failure patterns: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- Supported providers, evaluated candidates, writing your own: [docs/PROVIDERS.md](docs/PROVIDERS.md)
+- Integration lab against real provider containers: [lab/README.md](lab/README.md)
 - Security policy and reporting: [SECURITY.md](SECURITY.md)
 - MCP server setup for compatible clients: [vauxtra_mcp/README.md](vauxtra_mcp/README.md)
 
