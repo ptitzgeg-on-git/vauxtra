@@ -106,7 +106,10 @@ try:
         os.environ.get("CORS_ORIGINS", ""),
         _default_cors
     )
-    _logger.info(f"CORS origins validated: {len(_cors_origins)} allowed")
+    if _cors_origins:
+        _logger.info(f"CORS origins validated: {len(_cors_origins)} allowed")
+    else:
+        _logger.info("No CORS origin configured: same-origin callers only")
 except ValueError as e:
     # A list that does not parse must not widen back to the defaults: refuse them all and
     # say which. Same-origin keeps working, which is every ordinary deployment.
