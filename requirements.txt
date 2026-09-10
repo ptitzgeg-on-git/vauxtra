@@ -1,13 +1,13 @@
 fastapi>=0.135
 uvicorn[standard]>=0.44
-python-multipart>=0.0.26
+python-multipart>=0.0.32
 itsdangerous>=2.2
-requests>=2.32
+requests>=2.34.2
 cryptography>=46
 apprise>=1.9
 apscheduler>=3.11
 cloudflare>=5,<6
 sse-starlette>=3.3
-docker>=7.1
+docker>=7.2.0
 slowapi>=0.1.9
 dnspython>=2.8
