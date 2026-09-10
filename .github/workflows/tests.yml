@@ -31,7 +31,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest ruff
+        run: pip install -r requirements-dev.txt
 
       - name: Compile check
         run: python -m py_compile app/*.py app/api/*.py app/providers/*.py app/services/*.py vauxtra_mcp/*.py vauxtra_mcp/tools/*.py
