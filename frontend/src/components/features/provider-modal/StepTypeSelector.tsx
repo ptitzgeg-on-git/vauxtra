@@ -1,102 +1,174 @@
-import { Server, Container } from 'lucide-react';
-import { ProviderLogo } from '@/components/ui/ProviderLogos';
+import { useMemo, useState } from 'react';
+import { Container, Server } from 'lucide-react';
+import { Chip, ChipGroup, EmptyState, ProviderLogo, Skeleton, cn } from '@/components/ui';
+import { useT } from '@/i18n';
 import {
-  type ProviderTypeMap,
+  PROVIDER_GROUPS,
+  type ProviderGroup,
+  type ProviderTypeMeta,
   fallbackIconByType,
   getDescription,
-  getProviderColor,
+  getProviderGroup,
+  isDnsType,
 } from '@/components/features/providers/providerConstants';
 
-interface GroupedProviders {
-  category: string;
-  providers: Array<[string, ProviderTypeMap[string]]>;
-}
+type Filter = ProviderGroup | 'docker' | 'all';
 
-interface StepTypeSelectorProps {
-  groupedProviders: GroupedProviders[];
+export interface StepTypeSelectorProps {
+  /** Available types, already sorted by label. */
+  types: Array<[string, ProviderTypeMeta]>;
+  /**
+   * `GET /api/providers/types` is still in flight. An empty `types` means two very different
+   * things -- "the request has not answered yet" and "this build serves no provider" -- and
+   * the second one is a dead end the user cannot act on. Without this flag the first paint of
+   * the wizard told every user their install had no integrations at all.
+   */
+  loading?: boolean;
   selectedType: string;
   isDockerMode: boolean;
-  onChooseProvider: (type: string, label: string, placeholderUrl: string) => void;
+  onChooseProvider: (type: string, meta: ProviderTypeMeta) => void;
   onChooseDocker: () => void;
 }
 
+const CARD =
+  'flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+const CARD_IDLE = 'border-border bg-card hover:border-primary/40 hover:bg-accent';
+const CARD_SELECTED = 'border-primary bg-primary/10 ring-1 ring-primary/30';
+
 export function StepTypeSelector({
-  groupedProviders,
+  types,
+  loading = false,
   selectedType,
   isDockerMode,
   onChooseProvider,
   onChooseDocker,
 }: StepTypeSelectorProps) {
+  const t = useT();
+  const [filter, setFilter] = useState<Filter>('all');
+
+  const grouped = useMemo(() => {
+    const byGroup: Record<ProviderGroup, Array<[string, ProviderTypeMeta]>> = { reverse: [], tunnel: [], dns: [], other: [] };
+    for (const entry of types) byGroup[getProviderGroup(entry[0], entry[1])].push(entry);
+    return PROVIDER_GROUPS.map((group) => ({ group, entries: byGroup[group] })).filter((g) => g.entries.length > 0);
+  }, [types]);
+
+  const visibleGroups = loading || filter === 'docker' ? [] : filter === 'all' ? grouped : grouped.filter((g) => g.group === filter);
+  const showDocker = filter === 'all' || filter === 'docker';
+  const groupLabel = (group: ProviderGroup) => t(`providers.section.${group}`);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div>
-        <h3 className="text-[15px] font-bold text-foreground mb-1">Select Integration Type</h3>
-        <p className="text-sm text-muted-foreground">Choose the service you want to connect.</p>
+        <h3 className="text-base font-semibold text-foreground">{t('provider_modal.type.title')}</h3>
+        <p className="mt-1 text-sm text-muted-foreground">{t('provider_modal.type.description')}</p>
       </div>
 
-      <div className="space-y-5">
-        {groupedProviders.map(({ category, providers: groupEntries }) => (
-          <div key={category}>
-            <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest mb-2">{category}</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {groupEntries.map(([type, meta]) => {
+      {loading ? (
+        <section aria-label={t('provider_modal.type.loading')} className="space-y-2" role="status" aria-busy="true">
+          <Skeleton className="h-3 w-28" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className={cn(CARD, CARD_IDLE)}>
+                <Skeleton className="mt-0.5 h-10 w-10 shrink-0 rounded-lg" />
+                <span className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/2" />
+                  <Skeleton className="h-3 w-3/4" />
+                </span>
+              </div>
+            ))}
+          </div>
+          <span className="sr-only">{t('provider_modal.type.loading')}</span>
+        </section>
+      ) : (
+        <>
+        <ChipGroup label={t('provider_modal.type.filter_label')}>
+          <Chip size="sm" selected={filter === 'all'} onClick={() => setFilter('all')} count={types.length + 1}>
+            {t('provider_modal.type.all')}
+          </Chip>
+          {grouped.map(({ group, entries }) => (
+            <Chip key={group} size="sm" selected={filter === group} onClick={() => setFilter(group)} count={entries.length}>
+              {groupLabel(group)}
+            </Chip>
+          ))}
+          <Chip size="sm" selected={filter === 'docker'} onClick={() => setFilter('docker')} icon={<Container />}>
+            {t('provider_modal.type.docker_group')}
+          </Chip>
+        </ChipGroup>
+
+        {types.length === 0 && filter !== 'docker' && (
+          <EmptyState compact icon={<Server />} title={t('provider_modal.type.empty')} />
+        )}
+
+        {visibleGroups.map(({ group, entries }) => (
+          <section key={group} aria-label={groupLabel(group)} className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{groupLabel(group)}</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {entries.map(([type, meta]) => {
                 const FallbackIcon = fallbackIconByType[type] || Server;
                 const selected = !isDockerMode && selectedType === type;
+                const description =
+                  getDescription(type, meta, t) ||
+                  (isDnsType(type, meta) ? t('provider_modal.type.dns_fallback') : t('provider_modal.type.proxy_fallback'));
                 return (
                   <button
                     key={type}
-                    onClick={() => onChooseProvider(type, String(meta.label || type), String(meta.placeholder_url || ''))}
-                    className={`flex items-start gap-4 p-4 rounded-xl text-left border transition-all duration-200 ${
-                      selected
-                        ? 'border-primary ring-1 ring-primary/20 bg-primary/10 shadow-md'
-                        : 'border-border bg-card hover:border-primary/30 hover:bg-muted shadow-sm'
-                    }`}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => onChooseProvider(type, meta)}
+                    className={cn(CARD, selected ? CARD_SELECTED : CARD_IDLE)}
                   >
-                    <div className={`p-2.5 rounded-lg border mt-0.5 flex-shrink-0 ${selected ? getProviderColor(type, meta) : 'bg-muted border-border text-primary'}`}>
-                      <ProviderLogo type={type} className="w-6 h-6" fallback={<FallbackIcon className="w-6 h-6" />} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className={`font-semibold text-[14px] ${selected ? 'text-primary' : 'text-foreground'}`}>
+                    <span
+                      className={cn(
+                        'mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border',
+                        selected ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border bg-muted text-primary',
+                      )}
+                    >
+                      <ProviderLogo type={type} className="h-6 w-6" fallback={<FallbackIcon className="h-6 w-6" />} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className={cn('block text-sm font-semibold', selected ? 'text-primary' : 'text-foreground')}>
                         {meta.label || type}
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
-                        {getDescription(type, meta) || (meta.category === 'dns' ? 'DNS provider' : 'Proxy provider')}
-                      </div>
-                    </div>
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{description}</span>
+                    </span>
                   </button>
                 );
               })}
             </div>
-          </div>
+          </section>
         ))}
 
-        {/* Docker Host — Container Discovery category */}
-        <div>
-          <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest mb-2">Container Discovery</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        </>
+      )}
+
+      {showDocker && (
+        <section aria-label={t('provider_modal.type.docker_group')} className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('provider_modal.type.docker_group')}</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <button
+              type="button"
+              aria-pressed={isDockerMode}
               onClick={onChooseDocker}
-              className={`flex items-start gap-4 p-4 rounded-xl text-left border transition-all duration-200 ${
-                isDockerMode
-                  ? 'border-primary ring-1 ring-primary/20 bg-primary/10 shadow-md'
-                  : 'border-border bg-card hover:border-primary/30 hover:bg-muted shadow-sm'
-              }`}
+              className={cn(CARD, isDockerMode ? CARD_SELECTED : CARD_IDLE)}
             >
-              <div className={`p-2.5 rounded-lg border mt-0.5 flex-shrink-0 ${isDockerMode ? 'bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400' : 'bg-muted border-border text-primary'}`}>
-                <Container className="w-6 h-6" />
-              </div>
-              <div className="min-w-0">
-                <div className={`font-semibold text-[14px] ${isDockerMode ? 'text-primary' : 'text-foreground'}`}>
-                  Docker Host
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
-                  Discover containers for auto-import
-                </div>
-              </div>
+              <span
+                className={cn(
+                  'mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border',
+                  isDockerMode ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border bg-muted text-primary',
+                )}
+              >
+                <Container className="h-6 w-6" />
+              </span>
+              <span className="min-w-0">
+                <span className={cn('block text-sm font-semibold', isDockerMode ? 'text-primary' : 'text-foreground')}>
+                  {t('provider_modal.type.docker_title')}
+                </span>
+                <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{t('provider_modal.type.docker_description')}</span>
+              </span>
             </button>
           </div>
-        </div>
-      </div>
+        </section>
+      )}
     </div>
   );
 }

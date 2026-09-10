@@ -1,29 +1,55 @@
-import { useState, useEffect } from 'react';
+/**
+ * First-run wizard.
+ *
+ * Nine screens, one rail. `StepName` still carries the nine, but the rail folds `restore` into
+ * `welcome` and `provider-form` into `providers` (see `steps.ts`), so opening a sub-screen does
+ * not make the progress jump backwards.
+ *
+ * Two things are load-bearing and unchanged: `useSessionState` (the wizard survives a refresh)
+ * and `withoutProviderSecrets` (the credential typed into the provider form never reaches
+ * sessionStorage). The keys it owns are listed once, in `SETUP_SESSION_KEYS`.
+ */
+
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient, useQuery } from '@tanstack/react-query';
-import { api } from '@/api/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { Monitor, Moon, Sun } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { api } from '@/api/client';
+import { BrandMark } from '@/components/layout/BrandMark';
+import { IconButton, Select, useConfirmDialog } from '@/components/ui';
+import { getErrorDetail, getHttpStatus, translateApiError } from '@/lib/errors';
+import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
+import { useTheme, type Theme } from '@/theme';
 import type { SyncResult } from '@/types/api';
 import {
+  emptyForm,
   type ProviderFormState,
   type ProviderValidationResult as ValidationResult,
-  type ProviderTypeMeta,
-  emptyForm,
-  getGuidedSteps,
 } from '@/components/features/providers/providerConstants';
-import { useProviderMutations } from '@/hooks/useProviderMutations';
 import {
-  WelcomeStep,
-  RestoreStep,
-  PasswordStep,
-  ProvidersStep,
-  ProviderFormStep,
-  NotificationsStep,
+  describeDeleteConflict,
+  isProviderDeleteConflict,
+  useProviderMutations,
+} from '@/hooks/useProviderMutations';
+import { useProviderTypes } from '@/hooks/useProviderTypes';
+import {
   DockerStep,
-  ImportStep,
   DoneStep,
+  ImportStep,
+  NotificationsStep,
+  PasswordStep,
+  ProviderFormStep,
+  ProvidersStep,
+  RestoreStep,
+  SETUP_SESSION_KEYS,
+  SetupProgress,
+  SetupStepper,
+  WelcomeStep,
 } from '@/components/features/setup';
-import type { StepName, ProviderItem, ImportableService } from '@/components/features/setup';
+import type { ImportableService, ProviderItem, StepName } from '@/components/features/setup';
+
+const THEME_ICONS: Record<Theme, ReactNode> = { light: <Sun />, dark: <Moon />, system: <Monitor /> };
 
 /* ────────────────────────────────────────────────────────────────
    Helper: persist wizard state in sessionStorage
@@ -69,6 +95,15 @@ const withoutProviderSecrets = (form: ProviderFormState): ProviderFormState => (
   form.password ? { ...form, password: '' } : form
 );
 
+/** Drops every key the wizard owns — on finish, and after a restore replaces the whole state. */
+function clearWizardSession() {
+  SETUP_SESSION_KEYS.forEach((key) => {
+    try {
+      sessionStorage.removeItem(`vauxtra.setup.${key}`);
+    } catch { /* ignore */ }
+  });
+}
+
 /* ────────────────────────────────────────────────────────────────
    Main Setup Component
    ──────────────────────────────────────────────────────────────── */
@@ -76,10 +111,12 @@ const withoutProviderSecrets = (form: ProviderFormState): ProviderFormState => (
 export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { t, lang, setLang } = useI18n();
+  const { theme, toggleTheme } = useTheme();
+  const { confirm, ConfirmDialogElement } = useConfirmDialog();
 
   // Wizard state
   const [step, setStep] = useSessionState<StepName>('step', 'welcome');
-  const [progress, setProgress] = useState(0);
 
   // Password step
   const [skipPassword, setSkipPassword] = useSessionState<boolean | null>('skipPassword', null);
@@ -94,55 +131,47 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   // Import
   const [importableServices, setImportableServices] = useState<ImportableService[]>([]);
   const [loadingImportable, setLoadingImportable] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   // Provider types
-  const { data: providerTypes } = useQuery<Record<string, ProviderTypeMeta>>({
-    queryKey: ['provider-types'],
-    queryFn: () => api.get('/providers/types'),
-    staleTime: 60_000,
-  });
-
-  const currentGuidedSteps = getGuidedSteps(formData.type, (providerTypes || {})[formData.type]);
-
-  // Progress bar
-  useEffect(() => {
-    const stepMap: Record<StepName, number> = {
-      welcome: 0, restore: 5, password: 14, providers: 28,
-      'provider-form': 42, notifications: 56, docker: 70, import: 85, done: 100,
-    };
-    setProgress(stepMap[step] || 0);
-  }, [step]);
-
-  // Auto-switch to expert mode when no guided steps available
-  useEffect(() => {
-    if (formData.type && !wizardMode && currentGuidedSteps.length === 0) {
-      setWizardMode('expert');
-    }
-  }, [formData.type, wizardMode, currentGuidedSteps.length, setWizardMode]);
+  const { data: providerTypes } = useProviderTypes();
 
   /* ─────────────────── API Calls ─────────────────── */
 
-  const refreshProviders = async () => {
-    try { setProviders(await api.get<ProviderItem[]>('/providers')); } catch { /* ignore */ }
-  };
+  const refreshProviders = useCallback(async () => {
+    try {
+      setProviders(await api.get<ProviderItem[]>('/providers'));
+    } catch { /* ignore */ }
+  }, []);
 
-  const goToProviders = () => { setStep('providers'); refreshProviders(); };
+  const goToProviders = () => {
+    setStep('providers');
+    void refreshProviders();
+  };
 
   const handleSetPassword = async (password: string) => {
     try {
       await api.post('/auth/setup-password', { password });
       queryClient.invalidateQueries({ queryKey: ['auth-status'] });
-      toast.success('Password configured');
+      toast.success(t('setup.toast.password_set'));
       goToProviders();
     } catch (err: unknown) {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || 'Failed to set password');
+      toast.error(translateApiError(err, t, t('setup.toast.password_failed')));
       throw err;
     }
   };
 
-  const loadImportableServices = async () => {
-    if (providers.length === 0) { setImportableServices([]); return; }
+  /** Provider id → declared type, so an imported host is drawn with its real provider's logo. */
+  const providerTypeById = useMemo(
+    () => new Map(providers.map((p) => [p.id, p.type])),
+    [providers],
+  );
+
+  const loadImportableServices = useCallback(async () => {
+    if (providers.length === 0) {
+      setImportableServices([]);
+      return;
+    }
     setLoadingImportable(true);
     try {
       const result = await api.post<SyncResult>('/services/sync');
@@ -157,9 +186,18 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
           ? `${host.forward_host || host.host}${(host.forward_port || host.port) ? `:${host.forward_port || host.port}` : ''}`
           : '';
         services.push({
-          kind: 'proxy', source: (host._provider_name as string) || 'proxy',
-          type: (host._provider_type as string) || 'npm', name: domain.split('.')[0] || domain,
-          domain, target, selected: false, raw: host,
+          kind: 'proxy',
+          source: (host._provider_name as string) || t('setup.import.source_proxy'),
+          // The row's icon follows the provider that served it. Defaulting to 'npm' drew an
+          // Nginx Proxy Manager logo on every Traefik or Caddy host.
+          type: (host._provider_type as string)
+            || (host._provider_id !== undefined ? providerTypeById.get(host._provider_id) : undefined)
+            || 'proxy',
+          name: domain.split('.')[0] || domain,
+          domain,
+          target,
+          selected: false,
+          raw: host,
         });
       }
 
@@ -168,48 +206,53 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
         const domain = (rewrite.domain as string) || '';
         if (!domain) continue;
         services.push({
-          kind: 'dns', source: (rewrite._provider_name as string) || 'dns',
-          type: 'dns', name: domain.split('.')[0] || domain, domain,
+          kind: 'dns',
+          source: (rewrite._provider_name as string) || t('setup.import.source_dns'),
+          type: (rewrite._provider_id !== undefined ? providerTypeById.get(rewrite._provider_id) : undefined) || 'dns',
+          name: domain.split('.')[0] || domain,
+          domain,
           target: (rewrite.answer as string) || (rewrite.target as string) || '',
-          selected: false, raw: rewrite,
+          selected: false,
+          raw: rewrite,
         });
       }
 
       setImportableServices(services);
     } catch (err) {
       if (import.meta.env.DEV) console.error('Sync error:', err);
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || 'Failed to scan providers');
+      toast.error(translateApiError(err, t, t('setup.toast.scan_failed')));
       setImportableServices([]);
     } finally {
       setLoadingImportable(false);
     }
-  };
+  }, [providers.length, providerTypeById, t]);
 
   const handleImportAndFinish = async () => {
-    const selected = importableServices.filter(s => s.selected);
+    const selected = importableServices.filter((s) => s.selected);
     if (selected.length > 0) {
+      setImporting(true);
       try {
         const payload = {
-          proxy_hosts: selected.filter(s => s.kind === 'proxy').map(s => s.raw),
-          dns_rewrites: selected.filter(s => s.kind === 'dns').map(s => s.raw),
+          proxy_hosts: selected.filter((s) => s.kind === 'proxy').map((s) => s.raw),
+          dns_rewrites: selected.filter((s) => s.kind === 'dns').map((s) => s.raw),
         };
         const result = await api.post<{ imported: number; errors?: string[] }>('/services/import', payload);
-        if (result.imported > 0) toast.success(`Imported ${result.imported} service${result.imported > 1 ? 's' : ''}`);
-        if (result.errors && result.errors.length > 0) toast.error(`${result.errors.length} service(s) skipped`);
+        if (result.imported > 0) toast.success(t('setup.toast.imported', { count: result.imported }));
+        if (result.errors && result.errors.length > 0) {
+          toast.error(t('setup.toast.import_skipped', { count: result.errors.length }));
+        }
       } catch (err) {
         if (import.meta.env.DEV) console.error('Import error:', err);
-        const axErr = err as { response?: { data?: { detail?: string } } };
-        toast.error(axErr?.response?.data?.detail || 'Import failed');
+        toast.error(translateApiError(err, t, t('setup.toast.import_failed')));
+      } finally {
+        setImporting(false);
       }
     }
     setStep('done');
   };
 
   const handleRestorePrepared = async () => {
-    ['step', 'skipPassword', 'formData', 'wizardMode', 'guidedStepIndex'].forEach((key) => {
-      sessionStorage.removeItem(`vauxtra.setup.${key}`);
-    });
+    clearWizardSession();
   };
 
   const handleRestoreFinish = async (summary: { secretsIncluded: boolean }) => {
@@ -231,11 +274,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
       queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),
     ]);
 
-    if (summary.secretsIncluded) {
-      toast.success('Backup restored successfully with encrypted secrets.');
-    } else {
-      toast.success('Backup restored. Re-enter provider credentials before running health checks.');
-    }
+    toast.success(summary.secretsIncluded ? t('setup.toast.restored') : t('setup.toast.restored_no_secrets'));
     navigate('/');
   };
 
@@ -253,16 +292,42 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     setValidationResult,
     {
       onCreated: async () => { await refreshProviders(); resetProviderForm(); setStep('providers'); },
-      onDeleted: () => refreshProviders(),
+      onDeleted: () => { void refreshProviders(); },
     },
   );
+
+  /**
+   * The wizard used to delete with `force=true` from the first click, which unlinked every
+   * service pointing at the integration without saying so. Now the plain delete goes first:
+   * the API answers 409 with the services at stake, and that list is what the second
+   * question shows, on the same screen as the Integrations page.
+   */
+  const handleDeleteProvider = async (id: number) => {
+    const name = providers.find((p) => p.id === id)?.name ?? '';
+    try {
+      await deleteProviderMutation.mutateAsync({ id });
+    } catch (error: unknown) {
+      // Anything else has already been reported by the mutation's own `onError`.
+      const detail = getErrorDetail(error);
+      if (getHttpStatus(error) !== 409 || !isProviderDeleteConflict(detail)) return;
+      const force = await confirm({
+        title: t('providers.delete.deps_title'),
+        message: t('providers.delete.deps_message', {
+          count: detail.services.length,
+          name,
+          list: describeDeleteConflict(detail, t),
+        }),
+        confirmLabel: t('providers.delete.force_confirm'),
+        variant: 'warning',
+      });
+      if (force) deleteProviderMutation.mutate({ id, force: true });
+    }
+  };
 
   /* ─────────────────── Navigation ─────────────────── */
 
   const finish = async () => {
-    ['step', 'skipPassword', 'formData', 'wizardMode', 'guidedStepIndex'].forEach((key) => {
-      sessionStorage.removeItem(`vauxtra.setup.${key}`);
-    });
+    clearWizardSession();
     queryClient.invalidateQueries({ queryKey: ['providers'] });
     queryClient.invalidateQueries({ queryKey: ['services'] });
     await onComplete();
@@ -271,109 +336,155 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   /* ─────────────────── Render ─────────────────── */
 
+  // The rail is a "you are here" for the middle of the wizard. On the first screen there is
+  // nothing to locate yet, and on the last one there is nothing left to do.
+  const showRail = step !== 'welcome' && step !== 'restore' && step !== 'done';
+
+  const themeLabel = `${t('layout.theme.toggle')} · ${t(`layout.theme.${theme}`)}`;
+
   return (
-    <div className="min-h-screen bg-background flex flex-col font-sans">
-      {/* Progress bar */}
-      <div className="fixed top-0 left-0 right-0 h-1 bg-muted z-50">
-        <div className="h-full bg-primary transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
-      </div>
+    <div className="relative min-h-screen overflow-hidden bg-background font-sans text-foreground">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-aurora" />
 
-      <div className="flex-1 flex items-center justify-center p-6 pt-8">
-        <div className="w-full max-w-2xl">
-
-          {step === 'welcome' && (
-            <WelcomeStep
-              onFreshInstall={() => setStep('password')}
-              onRestore={() => setStep('restore')}
+      <div className="relative mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-5 sm:px-6 lg:px-8">
+        <header className="flex items-center justify-between gap-4">
+          <BrandMark size="sm" />
+          <div className="flex items-center gap-1.5">
+            <IconButton
+              label={themeLabel}
+              icon={THEME_ICONS[theme]}
+              onClick={toggleTheme}
+              tooltip
+              className="h-9 w-9 text-muted-foreground"
             />
+            <Select
+              size="sm"
+              aria-label={t('layout.language')}
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+              className="w-auto bg-card"
+            >
+              {SUPPORTED_LANGUAGES.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.flag} {l.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </header>
+
+        <div
+          className={
+            showRail
+              ? 'flex flex-1 items-start gap-10 py-8 lg:py-12'
+              : 'flex flex-1 items-center justify-center py-8'
+          }
+        >
+          {showRail && (
+            <aside className="sticky top-8 hidden w-48 shrink-0 lg:block">
+              <SetupStepper current={step} />
+            </aside>
           )}
 
-          {step === 'restore' && (
-            <RestoreStep
-              onBack={() => setStep('welcome')}
-              onPrepared={handleRestorePrepared}
-              onFinish={handleRestoreFinish}
-            />
-          )}
+          <main className="mx-auto w-full max-w-2xl">
+            {showRail && <SetupProgress current={step} className="mb-8 lg:hidden" />}
 
-          {step === 'password' && (
-            <PasswordStep
-              onBack={() => setStep('welcome')}
-              onContinue={goToProviders}
-              onSetPassword={handleSetPassword}
-              skipPassword={skipPassword}
-              setSkipPassword={setSkipPassword}
-            />
-          )}
+            {step === 'welcome' && (
+              <WelcomeStep
+                onFreshInstall={() => setStep('password')}
+                onRestore={() => setStep('restore')}
+              />
+            )}
 
-          {step === 'providers' && (
-            <ProvidersStep
-              providers={providers}
-              onAdd={() => { resetProviderForm(); setStep('provider-form'); }}
-              onDelete={(id) => deleteProviderMutation.mutate(id)}
-              deleteIsPending={deleteProviderMutation.isPending}
-              onBack={() => setStep('password')}
-              onContinue={() => setStep('notifications')}
-            />
-          )}
+            {step === 'restore' && (
+              <RestoreStep
+                onBack={() => setStep('welcome')}
+                onPrepared={handleRestorePrepared}
+                onFinish={handleRestoreFinish}
+              />
+            )}
 
-          {step === 'provider-form' && (
-            <ProviderFormStep
-              formData={formData}
-              setFormData={setFormData}
-              wizardMode={wizardMode}
-              setWizardMode={setWizardMode}
-              guidedStepIndex={guidedStepIndex}
-              setGuidedStepIndex={setGuidedStepIndex}
-              validationResult={validationResult}
-              setValidationResult={setValidationResult}
-              providerTypes={providerTypes}
-              onCancel={() => { resetProviderForm(); setStep('providers'); }}
-              onValidate={() => validateDraft.mutate()}
-              validateIsPending={validateDraft.isPending}
-              onCreate={() => createProvider.mutate()}
-              createIsPending={createProvider.isPending}
-            />
-          )}
+            {step === 'password' && (
+              <PasswordStep
+                onBack={() => setStep('welcome')}
+                onContinue={goToProviders}
+                onSetPassword={handleSetPassword}
+                skipPassword={skipPassword}
+                setSkipPassword={setSkipPassword}
+              />
+            )}
 
-          {step === 'notifications' && (
-            <NotificationsStep
-              onBack={() => setStep('providers')}
-              onContinue={() => setStep('docker')}
-            />
-          )}
+            {step === 'providers' && (
+              <ProvidersStep
+                providers={providers}
+                providerTypes={providerTypes}
+                onAdd={() => { resetProviderForm(); setStep('provider-form'); }}
+                onDelete={(id) => void handleDeleteProvider(id)}
+                deleteIsPending={deleteProviderMutation.isPending}
+                onBack={() => setStep('password')}
+                onContinue={() => setStep('notifications')}
+              />
+            )}
 
-          {step === 'docker' && (
-            <DockerStep
-              onBack={() => setStep('notifications')}
-              onContinue={() => { setStep('import'); loadImportableServices(); }}
-            />
-          )}
+            {step === 'provider-form' && (
+              <ProviderFormStep
+                formData={formData}
+                setFormData={setFormData}
+                wizardMode={wizardMode}
+                setWizardMode={setWizardMode}
+                guidedStepIndex={guidedStepIndex}
+                setGuidedStepIndex={setGuidedStepIndex}
+                validationResult={validationResult}
+                setValidationResult={setValidationResult}
+                providerTypes={providerTypes}
+                onCancel={() => { resetProviderForm(); setStep('providers'); }}
+                onValidate={() => validateDraft.mutate()}
+                validateIsPending={validateDraft.isPending}
+                onCreate={() => createProvider.mutate()}
+                createIsPending={createProvider.isPending}
+              />
+            )}
 
-          {step === 'import' && (
-            <ImportStep
-              providers={providers}
-              importableServices={importableServices}
-              loadingImportable={loadingImportable}
-              onToggle={(idx) => setImportableServices(prev => prev.map((svc, i) => i === idx ? { ...svc, selected: !svc.selected } : svc))}
-              onSelectAll={() => setImportableServices(prev => prev.map(svc => ({ ...svc, selected: true })))}
-              onDeselectAll={() => setImportableServices(prev => prev.map(svc => ({ ...svc, selected: false })))}
-              onRetry={loadImportableServices}
-              onImportAndFinish={handleImportAndFinish}
-              onBack={() => setStep('docker')}
-            />
-          )}
+            {step === 'notifications' && (
+              <NotificationsStep
+                onBack={() => setStep('providers')}
+                onContinue={() => setStep('docker')}
+              />
+            )}
 
-          {step === 'done' && (
-            <DoneStep
-              skipPassword={skipPassword}
-              providers={providers}
-              onFinish={finish}
-            />
-          )}
+            {step === 'docker' && (
+              <DockerStep
+                onBack={() => setStep('notifications')}
+                onContinue={() => { setStep('import'); void loadImportableServices(); }}
+              />
+            )}
 
+            {step === 'import' && (
+              <ImportStep
+                providers={providers}
+                importableServices={importableServices}
+                loadingImportable={loadingImportable}
+                importing={importing}
+                onToggle={(idx) => setImportableServices((prev) => prev.map((svc, i) => (i === idx ? { ...svc, selected: !svc.selected } : svc)))}
+                onSelectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: true })))}
+                onDeselectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: false })))}
+                onRetry={() => void loadImportableServices()}
+                onImportAndFinish={() => void handleImportAndFinish()}
+                onBack={() => setStep('docker')}
+              />
+            )}
+
+            {step === 'done' && (
+              <DoneStep
+                skipPassword={skipPassword}
+                providers={providers}
+                onFinish={() => void finish()}
+              />
+            )}
+          </main>
         </div>
       </div>
+      {ConfirmDialogElement}
     </div>
   );
 }

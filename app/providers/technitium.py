@@ -81,6 +81,9 @@ class TechnitiumProvider(DNSProvider):
         return self._ensure_token()
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        # Every check keeps its English `detail` (logs, older clients) and adds the short
+        # `detail_code` the sentence was written from, so the panel can say the same thing in
+        # the reader's language via `providers.diag.detail.<code>`.
         checks: list[dict] = []
 
         # 1. Authentication
@@ -89,6 +92,7 @@ class TechnitiumProvider(DNSProvider):
             "name": "Login",
             "ok": login_ok,
             "detail": "Authenticated successfully" if login_ok else "Login failed — check username/password and URL",
+            "detail_code": "login_ok" if login_ok else "login_failed",
             "blocking": True,
         })
         if not login_ok:
@@ -96,17 +100,25 @@ class TechnitiumProvider(DNSProvider):
 
         # 2. List zones
         zones: list[str] = []
+        zones_params: dict = {}
         try:
             zones = self._list_zones()
             zones_ok = True
             zones_detail = f"{len(zones)} zone(s) accessible" if zones else "No zones found"
+            zones_code = "zones_found" if zones else "zones_none"
+            if zones:
+                zones_params = {"count": len(zones)}
         except Exception as exc:
             zones_ok = False
             zones_detail = str(exc)
+            zones_code = "zones_error"
+            zones_params = {"error": str(exc)}
         checks.append({
             "name": "List zones",
             "ok": zones_ok,
             "detail": zones_detail,
+            "detail_code": zones_code,
+            "detail_params": zones_params,
             "blocking": not zones_ok,
         })
 
@@ -125,6 +137,7 @@ class TechnitiumProvider(DNSProvider):
                 "name": "DNS write",
                 "ok": write_ok,
                 "detail": "Write probe passed" if write_ok else "Could not write a test record — check permissions",
+                "detail_code": "write_ok" if write_ok else "write_denied",
                 "blocking": not write_ok,
             })
 

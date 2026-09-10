@@ -437,11 +437,26 @@ def is_setup_done() -> bool:
     return count > 0
 
 
+#: The level column is free text and was written both ways: 10 call sites say "warn",
+#: 2 say "warning". One spelling reaches the database, the other is folded into it, so a
+#: filter on "warning" is not silently missing rows.
+_LEVEL_ALIASES = {"warn": "warning"}
+
+
+def normalise_log_level(level: str) -> str:
+    """The spelling stored for `level`: lowercased, trimmed, `warn` folded into `warning`."""
+    cleaned = (level or "").strip().lower()
+    return _LEVEL_ALIASES.get(cleaned, cleaned)
+
+
 def add_log(level: str, message: str, conn: sqlite3.Connection | None = None) -> None:
     own = conn is None
     if own:
         conn = get_db()
-    conn.execute("INSERT INTO logs (level, message) VALUES (?, ?)", (level, message))
+    conn.execute(
+        "INSERT INTO logs (level, message) VALUES (?, ?)",
+        (normalise_log_level(level), message),
+    )
     if own:
         conn.commit()
         conn.close()

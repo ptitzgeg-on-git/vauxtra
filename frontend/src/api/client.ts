@@ -1,7 +1,15 @@
 import axios from 'axios';
 
+/**
+ * The API root every call is relative to, without its trailing slash.
+ *
+ * Exported because `EventSource` (the log stream) cannot go through axios and would
+ * otherwise hardcode `/api`, which is wrong for any build configured with `VITE_API_URL`.
+ */
+export const API_BASE_URL: string = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
+
 const _axios = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
+  baseURL: API_BASE_URL,
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',

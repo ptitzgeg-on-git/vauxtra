@@ -1,16 +1,29 @@
-import { CircleHelp } from "lucide-react";
+import { CircleHelp } from 'lucide-react';
+import { cn } from '@/lib/cn';
+import { useT } from '@/i18n';
+import { Tooltip, type TooltipPlacement } from './Tooltip';
 
 interface FieldHintProps {
   text: string;
+  placement?: TooltipPlacement;
+  className?: string;
 }
 
-export function FieldHint({ text }: FieldHintProps) {
+/** A small "?" next to a label that explains the field on hover and keyboard focus. */
+export function FieldHint({ text, placement = 'top', className }: FieldHintProps) {
+  const t = useT();
   return (
-    <span className="relative inline-flex items-center group" tabIndex={0}>
-      <CircleHelp className="w-3.5 h-3.5 text-muted-foreground" />
-      <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 -translate-x-1/2 whitespace-normal rounded-md border border-border bg-card px-2 py-1 text-xs text-foreground shadow-md opacity-0 transition-opacity w-56 group-hover:opacity-100 group-focus-visible:opacity-100">
-        {text}
-      </span>
-    </span>
+    <Tooltip content={text} placement={placement} contentClassName="max-w-[16rem] whitespace-normal font-normal">
+      <button
+        type="button"
+        aria-label={t('ui.field_hint')}
+        className={cn(
+          'inline-flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-offset-0',
+          className,
+        )}
+      >
+        <CircleHelp aria-hidden="true" className="h-3.5 w-3.5" />
+      </button>
+    </Tooltip>
   );
 }

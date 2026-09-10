@@ -1,2 +1,2 @@
-export { StepTypeSelector } from './StepTypeSelector';
-export { StepCredentials } from './StepCredentials';
+export { StepTypeSelector, type StepTypeSelectorProps } from './StepTypeSelector';
+export { StepCredentials, type StepCredentialsProps, type WizardMode } from './StepCredentials';

@@ -231,8 +231,15 @@ class CloudflareProvider(DNSProvider):
 
         checks: list[dict] = []
 
-        def _add(name: str, ok: bool, detail: str, blocking: bool = True) -> None:
-            checks.append({"name": name, "ok": bool(ok), "detail": detail, "blocking": blocking})
+        # `code` is the short name of the sentence in `detail`; the UI reads
+        # `providers.diag.detail.<code>` so the line is not English-only.
+        def _add(name: str, ok: bool, detail: str, blocking: bool = True, code: str = "", **params) -> None:
+            entry = {"name": name, "ok": bool(ok), "detail": detail, "blocking": blocking}
+            if code:
+                entry["detail_code"] = code
+            if params:
+                entry["detail_params"] = params
+            checks.append(entry)
 
         # 1. Verify token is active
         verify = self._api_request("GET", "/user/tokens/verify")
@@ -241,6 +248,7 @@ class CloudflareProvider(DNSProvider):
             verify["ok"],
             "API token is active" if verify["ok"] else "Token verification failed",
             True,
+            code="token_active" if verify["ok"] else "token_invalid",
         )
 
         # 2. Check zone access
@@ -262,6 +270,8 @@ class CloudflareProvider(DNSProvider):
                     True,
                     f"Can access {zone_count} zone(s) via token - auto-detection will work",
                     False,
+                    code="zones_listed",
+                    count=zone_count,
                 )
             elif zones_resp["ok"]:
                 _add(
@@ -269,6 +279,7 @@ class CloudflareProvider(DNSProvider):
                     False,
                     "Token valid but no zones accessible - check token permissions",
                     True,
+                    code="zones_empty",
                 )
             else:
                 _add(
@@ -276,6 +287,7 @@ class CloudflareProvider(DNSProvider):
                     False,
                     "Cannot list zones - check token has Zone:Read permission",
                     True,
+                    code="zones_denied",
                 )
         else:
             zone = self._api_request("GET", f"/zones/{zone_id}")
@@ -284,6 +296,8 @@ class CloudflareProvider(DNSProvider):
                 zone["ok"],
                 f"Zone is readable ({zone_source})" if zone["ok"] else f"Cannot read zone ({zone_source})",
                 True,
+                code="zone_readable" if zone["ok"] else "zone_unreadable",
+                source=zone_source,
             )
 
             if zone["ok"]:
@@ -297,6 +311,7 @@ class CloudflareProvider(DNSProvider):
                     dns_read["ok"],
                     "Can list DNS records" if dns_read["ok"] else "Cannot list DNS records",
                     True,
+                    code="dns_read_ok" if dns_read["ok"] else "dns_read_failed",
                 )
 
                 _add(
@@ -304,6 +319,7 @@ class CloudflareProvider(DNSProvider):
                     False,
                     "DNS write probe skipped (non-destructive mode). Actual write is validated at runtime on first change.",
                     False,
+                    code="dns_write_skipped",
                 )
 
         blocking_failures = [c for c in checks if c["blocking"] and not c["ok"]]
