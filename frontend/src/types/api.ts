@@ -942,6 +942,9 @@ export interface AuthStatus {
   auth_required: boolean;
   setup_required: boolean;
   auth_mode?: 'password' | 'open';
+  /** Which store decides a login. `environment` means `APP_PASSWORD` wins and nothing
+   *  written through the interface would ever be read. */
+  password_source?: 'environment' | 'database';
 }
 
 export type AuthMe = AuthStatus;

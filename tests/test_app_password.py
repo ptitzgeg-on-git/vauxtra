@@ -117,6 +117,77 @@ class AllowPlaintextParsingTests(unittest.TestCase):
                 self.assertFalse(self._flag_for(value))
 
 
+class ChangingAnEnvManagedPasswordTests(_DbIsolated):
+    """The screen offered a change that could not take effect, and cost the session.
+
+    With `APP_PASSWORD` set, `check_password` returns on the variable and never reads the
+    stored hash. `POST /api/auth/change-password` wrote one anyway, then bumped the session
+    epoch: every session died -- the operator's included -- the new password was refused,
+    and the way back in was the old password they had just tried to retire.
+    """
+
+    def test_the_variable_is_reported_as_the_owner(self):
+        with patch.object(auth, "APP_PASSWORD", auth.hash_password("from-the-env-1")):
+            self.assertTrue(auth.password_is_env_managed())
+
+    def test_an_empty_variable_leaves_the_database_in_charge(self):
+        with patch.object(auth, "APP_PASSWORD", ""):
+            self.assertFalse(auth.password_is_env_managed())
+
+    def test_a_plaintext_value_nobody_honours_leaves_the_database_in_charge(self):
+        """`check_password` falls through to the stored hash here, so this screen works."""
+        with patch.object(auth, "APP_PASSWORD", "plain-text"),              patch.object(auth, "_ALLOW_PLAINTEXT_APP_PASSWORD", False):
+            self.assertFalse(auth.password_is_env_managed())
+
+    def test_the_opted_in_plaintext_value_does_own_it(self):
+        with patch.object(auth, "APP_PASSWORD", "plain-text"),              patch.object(auth, "_ALLOW_PLAINTEXT_APP_PASSWORD", True):
+            self.assertTrue(auth.password_is_env_managed())
+
+    def test_the_route_refuses_instead_of_writing_a_hash_nobody_reads(self):
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+
+        import app.api.auth as api_auth
+
+        body = api_auth.ChangePasswordBody(
+            current_password="from-the-env-1",
+            new_password="a-new-one-9876",
+        )
+        with patch.object(auth, "APP_PASSWORD", auth.hash_password("from-the-env-1")),              patch.object(api_auth, "require_auth", lambda *a, **k: None),              patch.object(api_auth, "bump_session_epoch") as bumped,              self.assertRaises(HTTPException) as ctx:
+            api_auth.change_password.__wrapped__(MagicMock(), body)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("APP_PASSWORD", ctx.exception.detail)
+        # The session epoch is what logs everyone out. It must not move for a change that
+        # was refused.
+        bumped.assert_not_called()
+
+        conn = models.get_db()
+        try:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key='app_password_hash'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(row, "a refused change must leave no hash behind")
+
+    def test_auth_me_names_the_owner_so_the_interface_can_say_so(self):
+        import app.api.auth as api_auth
+
+        with patch.object(auth, "APP_PASSWORD", auth.hash_password("from-the-env-1")),              patch.object(api_auth, "is_authenticated", lambda _r: True):
+            payload = api_auth.auth_me(MagicMockRequest())
+        self.assertEqual(payload["password_source"], "environment")
+
+        with patch.object(auth, "APP_PASSWORD", ""),              patch.object(api_auth, "is_authenticated", lambda _r: True):
+            payload = api_auth.auth_me(MagicMockRequest())
+        self.assertEqual(payload["password_source"], "database")
+
+
+class MagicMockRequest:
+    """`auth_me` only ever passes the request on to `is_authenticated`, which is patched."""
+
+
 class DocumentationMatchesTheCodeTests(unittest.TestCase):
     """The variable existed only in `app/auth.py`; an operator had no way to find it."""
 
