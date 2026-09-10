@@ -16,8 +16,8 @@ import type { Provider, ProviderCapability, ProviderTypeMeta, ProviderTypesRespo
 /** Types that shipped before `capabilities` existed in `GET /api/providers/types`. */
 const CAPABILITY_FALLBACK: Partial<Record<ProviderCapability, ReadonlySet<string>>> = {
   proxy: new Set(['npm', 'traefik', 'zoraxy']),
-  dns: new Set(['cloudflare', 'pihole', 'adguard', 'technitium']),
-  public_dns: new Set(['cloudflare']),
+  dns: new Set(['cloudflare', 'pihole', 'adguard', 'technitium', 'powerdns', 'desec']),
+  public_dns: new Set(['cloudflare', 'desec']),
   supports_tunnel: new Set(['cloudflare_tunnel']),
 };
 

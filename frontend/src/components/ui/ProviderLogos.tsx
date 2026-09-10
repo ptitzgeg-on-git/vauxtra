@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { Globe, Server, Shield, ShieldCheck, Waypoints, Box } from 'lucide-react';
+import { Database, Globe, GlobeLock, Server, Shield, ShieldCheck, Waypoints, Box } from 'lucide-react';
 
 type LogoProps = { className?: string };
 
@@ -55,6 +55,8 @@ const providerIcons: Record<string, ComponentType<LogoProps>> = {
   pihole: Shield,
   adguard: ShieldCheck,
   technitium: TechnitiumMark,
+  powerdns: Database,
+  desec: GlobeLock,
   docker: Box,
 };
 
