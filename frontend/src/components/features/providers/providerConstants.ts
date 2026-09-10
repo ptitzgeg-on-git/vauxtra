@@ -5,7 +5,23 @@
 
 import { Globe, Shield, Server, Box, ShieldCheck, Waypoints, Cpu, Route } from 'lucide-react';
 import type { ComponentType } from 'react';
-import type { ProviderCapability } from '@/types/api';
+import type { TranslateFn } from '@/i18n';
+import { metaHasCapability } from '@/lib/providers';
+import type { ProviderCapability, ProviderTypeMeta, ProviderTypesResponse } from '@/types/api';
+
+/**
+ * The locale value for `key`, or `raw` when the key is not translated.
+ *
+ * Every string in this file also exists in `src/locales/*.json`; the English prose kept here
+ * (and the prose the API serves in `guided_steps`) is the fallback shown before the locale
+ * file has finished loading, and for a key a translator has not reached yet. `t()` returns the
+ * key itself when it misses, which is what makes the comparison below work.
+ */
+function tr(t: TranslateFn | undefined, key: string, raw: string): string {
+  if (!t) return raw;
+  const out = t(key);
+  return out === key ? raw : out;
+}
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -63,25 +79,15 @@ export type ApiGuidedStep = {
   fields?: ApiGuidedField[];
 };
 
-export type ProviderTypeMeta = {
-  label?: string;
-  category?: string;
-  capabilities?: Partial<Record<ProviderCapability, boolean>>;
-  available?: boolean;
-  read_only?: boolean;
-  placeholder_url?: string;
-  user_label?: string;
-  pass_label?: string;
-  user_placeholder?: string;
-  description?: string;
-  category_label?: string;
-  category_color?: string;
-  provider_color?: string;
-  guided_steps?: ApiGuidedStep[];
-  project_url?: string;
-};
+/**
+ * `types/api.ts` owns the shape of a `GET /api/providers/types` entry; this file used to
+ * declare a second, divergent copy. Both names are kept so the provider screens do not have to
+ * change their imports, but they are one type.
+ */
+export type { ProviderTypeMeta, ProviderTypesResponse };
 
-export type ProviderTypeMap = Record<string, ProviderTypeMeta>;
+/** Alias kept for the provider screens; `ProviderTypesResponse` is the same thing. */
+export type ProviderTypeMap = ProviderTypesResponse;
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -106,27 +112,19 @@ export const fallbackIconByType: Record<string, ComponentType<{ className?: stri
 };
 
 /**
- * Types the UI must classify even when /api/providers/types has not answered
- * yet (first paint, offline setup wizard). The API metadata always wins when
- * present; these lists only decide what the fallback looks like.
+ * The three classifiers below are the `(type, meta)` face of the one capability rule in
+ * `lib/providers.ts` — `providerHasCapability` is the `(provider, map)` face of the same
+ * function. Neither carries a fallback table of its own.
  */
-const fallbackProxyTypes = new Set(['npm', 'traefik', 'zoraxy']);
-const fallbackDnsTypes = new Set(['cloudflare', 'pihole', 'adguard', 'technitium']);
 
-/** True when the type serves as a reverse proxy: API category/capabilities first, local list otherwise. */
+/** True when the type serves as a reverse proxy. */
 export function isProxyType(type: string, meta?: ProviderTypeMeta): boolean {
-  const key = (type || '').toLowerCase();
-  if (meta?.capabilities && typeof meta.capabilities.proxy === 'boolean') return meta.capabilities.proxy;
-  if (meta?.category) return meta.category.toLowerCase() === 'proxy';
-  return fallbackProxyTypes.has(key);
+  return metaHasCapability('proxy', type, meta);
 }
 
-/** True when the type manages DNS records: API category/capabilities first, local list otherwise. */
+/** True when the type manages DNS records. */
 export function isDnsType(type: string, meta?: ProviderTypeMeta): boolean {
-  const key = (type || '').toLowerCase();
-  if (meta?.capabilities && typeof meta.capabilities.dns === 'boolean') return meta.capabilities.dns;
-  if (meta?.category) return meta.category.toLowerCase() === 'dns';
-  return fallbackDnsTypes.has(key);
+  return metaHasCapability('dns', type, meta);
 }
 
 // ─── Metadata fallbacks (authoritative source is now /api/providers/types) ───
@@ -142,44 +140,30 @@ export const descByType: Record<string, string> = {
   technitium: 'Self-hosted authoritative DNS server',
 };
 
-export const categoryByType: Record<string, { label: string; color: string }> = {
-  cloudflare: { label: 'External DNS', color: 'bg-orange-500/10 text-orange-600 dark:text-orange-400' },
-  cloudflare_tunnel: { label: 'Zero Trust', color: 'bg-orange-500/10 text-orange-600 dark:text-orange-400' },
-  pihole: { label: 'Local DNS', color: 'bg-red-500/10 text-red-600 dark:text-red-400' },
-  npm: { label: 'Reverse Proxy', color: 'bg-green-500/10 text-green-700 dark:text-green-400' },
-  traefik: { label: 'Reverse Proxy', color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
-  zoraxy: { label: 'Reverse Proxy', color: 'bg-sky-500/10 text-sky-600 dark:text-sky-400' },
-  adguard: { label: 'Local DNS', color: 'bg-teal-500/10 text-teal-600 dark:text-teal-400' },
-  technitium: { label: 'Local DNS', color: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400' },
-};
-
-export const providerColor: Record<string, string> = {
-  cloudflare: 'bg-orange-500/10 text-orange-600 border-orange-500/30 dark:text-orange-400',
-  cloudflare_tunnel: 'bg-orange-500/10 text-orange-600 border-orange-500/30 dark:text-orange-400',
-  npm: 'bg-green-500/10 text-green-700 border-green-500/30 dark:text-green-400',
-  traefik: 'bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400',
-  zoraxy: 'bg-sky-500/10 text-sky-600 border-sky-500/30 dark:text-sky-400',
-  pihole: 'bg-red-500/10 text-red-600 border-red-500/30 dark:text-red-400',
-  adguard: 'bg-teal-500/10 text-teal-600 border-teal-500/30 dark:text-teal-400',
-  technitium: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/30 dark:text-indigo-400',
-};
-
-/** Resolve description from API meta first, then local fallback. */
-export function getDescription(type: string, meta?: ProviderTypeMeta): string {
-  return meta?.description || descByType[type] || '';
+/**
+ * The one-line description of a provider type, translated.
+ *
+ * `/api/providers/types` serves `description` in English on every route, so the locale value
+ * wins; the API string is the fallback for a type this build does not know (a newer backend).
+ */
+export function getDescription(type: string, meta?: ProviderTypeMeta, t?: TranslateFn): string {
+  const raw = meta?.description || descByType[type] || '';
+  if (!type) return raw;
+  return tr(t, `providers.type.${type}.desc`, raw);
 }
 
-/** Resolve category from API meta first, then local fallback. */
-export function getCategory(type: string, meta?: ProviderTypeMeta): { label: string; color: string } | undefined {
-  if (meta?.category_label) {
-    return { label: meta.category_label, color: meta.category_color || '' };
-  }
-  return categoryByType[type];
+/**
+ * What the credential fields are called for this type: "Email" for NPM, "API Token" for
+ * Cloudflare, "API key / password" for Pi-hole. The API sends those names in English
+ * (`user_label` / `pass_label`), so the per-type locale key wins over them, and the generic
+ * "Username" / "Password" is the last resort.
+ */
+export function getUserLabel(type: string, meta: ProviderTypeMeta | undefined, t: TranslateFn): string {
+  return tr(t, `provider_modal.field.${type}.user_label`, meta?.user_label || t('provider_modal.field.username'));
 }
 
-/** Resolve provider color from API meta first, then local fallback. */
-export function getProviderColor(type: string, meta?: ProviderTypeMeta): string {
-  return meta?.provider_color || providerColor[type] || 'bg-primary/10 text-primary border-primary/20';
+export function getPassLabel(type: string, meta: ProviderTypeMeta | undefined, t: TranslateFn): string {
+  return tr(t, `provider_modal.field.${type}.pass_label`, meta?.pass_label || t('provider_modal.field.password'));
 }
 
 // ─── Guided wizard steps ────────────────────────────────────────
@@ -201,259 +185,47 @@ function parseApiSteps(apiSteps: ApiGuidedStep[]): GuidedStep[] {
 }
 
 /**
- * Resolve guided steps: prefer API-served steps, fall back to local constants.
- * This is the single entry point all UI components should use.
+ * Translate a wizard: `provider_guide.<type>.step_<n>.title|body` and, per field,
+ * `provider_guide.<type>.step_<n>.<field>.label|hint|placeholder`.
+ *
+ * The keys are derived from the position of the step rather than written next to each string,
+ * so the wizards in `app/providers/factory.py` must keep the order the locale files were
+ * written from. A placeholder that is a URL, an e-mail or a UUID has no key on purpose: it
+ * stays as it is in every language.
  */
-export function getGuidedSteps(type: string, meta?: ProviderTypeMeta): GuidedStep[] {
-  if (meta?.guided_steps?.length) {
-    return parseApiSteps(meta.guided_steps);
-  }
-  return _localGuidedSteps[type] || [];
+function localizeSteps(type: string, steps: GuidedStep[], t?: TranslateFn): GuidedStep[] {
+  if (!t) return steps;
+  return steps.map((step, index) => {
+    const base = `provider_guide.${type}.step_${index + 1}`;
+    return {
+      title: tr(t, `${base}.title`, step.title),
+      body: tr(t, `${base}.body`, step.body),
+      fields: step.fields?.map((field) => ({
+        ...field,
+        label: tr(t, `${base}.${field.key}.label`, field.label),
+        hint: field.hint === undefined ? undefined : tr(t, `${base}.${field.key}.hint`, field.hint),
+        placeholder:
+          field.placeholder === undefined
+            ? undefined
+            : tr(t, `${base}.${field.key}.placeholder`, field.placeholder),
+      })),
+    };
+  });
 }
 
-/** Local fallback — kept for offline / unknown providers. */
-const _localGuidedSteps: Record<string, GuidedStep[]> = {
-  cloudflare_tunnel: [
-    {
-      title: 'Create a tunnel in Cloudflare Zero Trust',
-      body: 'Go to dash.cloudflare.com → Zero Trust → Networks → Tunnels → Create a tunnel.\nChoose the Cloudflared connector type and give it a name (e.g. "homelab").\n\nVauxtra manages ingress routes inside the tunnel — it does not run cloudflared itself.',
-    },
-    {
-      title: 'Paste your Tunnel ID',
-      body: 'From the tunnel overview page, copy the Tunnel ID (UUID format). Paste it below.',
-      fields: [
-        {
-          key: 'tunnel_id',
-          label: 'Tunnel ID',
-          placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
-          hint: 'Zero Trust → Networks → Tunnels → click your tunnel → Overview tab.',
-          inputType: 'text',
-        },
-      ],
-    },
-    {
-      title: 'Create a Cloudflare API Token',
-      body: 'My Profile → API Tokens → Create Token → Custom Token.\nRequired permissions:\n  • Account → Cloudflare Tunnel → Edit\n  • Zone → DNS → Edit (select your zone)\n\nCopy the generated token and paste it below.',
-      fields: [
-        {
-          key: 'password',
-          label: 'API Token',
-          placeholder: '(paste token here)',
-          hint: 'Never share this token — it grants Tunnel and DNS write access.',
-          inputType: 'password',
-        },
-      ],
-    },
-    {
-      title: 'Enter your Cloudflare Account ID',
-      body: 'Your Account ID is a 32-character hex string shown in the right sidebar of dash.cloudflare.com (any zone overview page).',
-      fields: [
-        {
-          key: 'username',
-          label: 'Account ID',
-          placeholder: 'a1b2c3d4e5f6… (32 hex chars)',
-          hint: 'Right sidebar on dash.cloudflare.com → select any domain.',
-          inputType: 'text',
-        },
-      ],
-    },
-  ],
-  cloudflare: [
-    {
-      title: 'Create a Cloudflare API Token',
-      body: 'Go to My Profile → API Tokens → Create Token.\nUse the "Edit zone DNS" template, or a Custom Token with:\n  • Zone → DNS → Edit (select your zone)\n\nCopy the generated token and paste it below.',
-      fields: [
-        {
-          key: 'password',
-          label: 'API Token',
-          placeholder: '(paste token here)',
-          hint: 'Zone-scoped token with DNS:Edit permission.',
-          inputType: 'password',
-        },
-      ],
-    },
-    {
-      title: 'Zone ID (usually not needed)',
-      body: 'Your API token already defines which zones it can access.\n\nLeave this blank unless you want to override the token scope.\nVauxtra will auto-detect zones from your token permissions.',
-      fields: [
-        {
-          key: 'username',
-          label: 'Zone ID',
-          placeholder: '(leave blank - auto-detected from token)',
-          hint: 'Only needed if your token covers multiple zones and you want to restrict to one.',
-          inputType: 'text',
-          optional: true,
-        },
-      ],
-    },
-  ],
-  npm: [
-    {
-      title: 'Create a dedicated NPM user',
-      body: 'Vauxtra needs a user account in Nginx Proxy Manager to manage proxy hosts.\n\n1. Open NPM at http://<npm-host>:81\n2. Go to Users (top-right menu) → Add User\n3. Fill in name, email and a strong password\n4. Under Permissions, enable Manage Proxy Hosts\n5. Save — then use that email and password in the next step\n\nTip: Using a dedicated Vauxtra user (instead of admin) limits blast radius.',
-    },
-    {
-      title: 'Enter the NPM URL',
-      body: 'Enter the URL of your NPM admin panel. The default port is 81.',
-      fields: [
-        {
-          key: 'url',
-          label: 'NPM URL',
-          placeholder: 'http://192.168.1.10:81',
-          hint: 'Use the internal IP or hostname. Include the port (default: 81).',
-          inputType: 'url',
-        },
-      ],
-    },
-    {
-      title: 'NPM Credentials',
-      body: 'Enter the email and password of the NPM user you created in step 1.',
-      fields: [
-        {
-          key: 'username',
-          label: 'Email',
-          placeholder: 'vauxtra@example.com',
-          hint: 'The email you set when creating the NPM user.',
-          inputType: 'text',
-        },
-        {
-          key: 'password',
-          label: 'Password',
-          placeholder: '(NPM user password)',
-          inputType: 'password',
-        },
-      ],
-    },
-  ],
-  pihole: [
-    {
-      title: 'Find your Pi-hole API token',
-      body: 'Vauxtra uses the Pi-hole API to manage local DNS entries.\n\nTo find your API token:\n  Pi-hole v5:  Settings → API / Web interface → Show API token\n  Pi-hole v6:  Settings → API → Create / show API key\n\nAlternatively, you can use your admin panel password directly.\nThe URL is typically http://<pi-hole-ip> (port 80, no /admin suffix).',
-    },
-    {
-      title: 'Pi-hole URL and credentials',
-      body: 'Enter the Pi-hole URL and the API token (or admin password) you located in the previous step.',
-      fields: [
-        {
-          key: 'url',
-          label: 'Pi-hole URL',
-          placeholder: 'http://192.168.1.53',
-          hint: 'IP or hostname only — no /admin suffix needed.',
-          inputType: 'url',
-        },
-        {
-          key: 'password',
-          label: 'API Token / Admin password',
-          placeholder: '(paste API token or admin password)',
-          hint: 'Settings → API / Web interface → Show API token (v5) or Settings → API (v6).',
-          inputType: 'password',
-        },
-      ],
-    },
-  ],
-  adguard: [
-    {
-      title: 'AdGuard Home connection details',
-      body: 'Vauxtra uses the AdGuard Home REST API with your web admin credentials.\n\nNo extra configuration is needed in AdGuard — just use the same username and password as the admin panel.\n\nDefault URL: http://<host>:3000\nDefault credentials set during first-run setup.',
-      fields: [
-        {
-          key: 'url',
-          label: 'AdGuard URL',
-          placeholder: 'http://192.168.1.10:3000',
-          hint: 'Default port is 3000. Use the internal IP or hostname.',
-          inputType: 'url',
-        },
-        {
-          key: 'username',
-          label: 'Username',
-          placeholder: 'admin',
-          inputType: 'text',
-        },
-        {
-          key: 'password',
-          label: 'Password',
-          placeholder: '(admin panel password)',
-          inputType: 'password',
-        },
-      ],
-    },
-  ],
-  traefik: [
-    {
-      title: 'Expose the Traefik API',
-      body: 'Vauxtra reads Traefik in read-only mode — it never modifies your routing configuration.\n\nYou need to expose the Traefik API on a reachable URL. Two common ways:\n\n  Option A — Insecure (quick test):\n    Add --api.insecure=true to your Traefik static config.\n    API will be available at http://<host>:8080/api/\n\n  Option B — Secure router (recommended):\n    Create a dedicated Traefik entrypoint/router for /api/\n    Add BasicAuth middleware if you want credentials.\n\nLeave username/password blank if no auth is configured.',
-      fields: [
-        {
-          key: 'url',
-          label: 'Traefik API URL',
-          placeholder: 'http://192.168.1.10:8080',
-          hint: 'Full URL to the Traefik API dashboard (no /api suffix needed).',
-          inputType: 'url',
-        },
-      ],
-    },
-  ],
-  zoraxy: [
-    {
-      title: 'Zoraxy connection details',
-      body: 'Vauxtra logs in to the Zoraxy web console with the same username and password you use in the browser, then manages proxy rules through its API.\n\nDefault URL: http://<host>:8000\n\nIf Zoraxy runs with -noauth, leave the username and password blank.',
-      fields: [
-        {
-          key: 'url',
-          label: 'Zoraxy URL',
-          placeholder: 'http://192.168.1.10:8000',
-          hint: 'Default port is 8000. Use the internal IP or hostname.',
-          inputType: 'url',
-        },
-        {
-          key: 'username',
-          label: 'Username',
-          placeholder: 'admin',
-          inputType: 'text',
-          optional: true,
-        },
-        {
-          key: 'password',
-          label: 'Password',
-          placeholder: '(web console password)',
-          inputType: 'password',
-          optional: true,
-        },
-      ],
-    },
-  ],
-  technitium: [
-    {
-      title: 'Prepare your DNS zones',
-      body: 'Vauxtra creates A records inside your existing Technitium zones.\n\nBefore connecting, you need at least one DNS zone set up in Technitium.\n\nTo create a zone:\n  1. Open Technitium at http://<host>:5380\n  2. Go to the Zones tab → Add Zone\n  3. Choose Primary Zone, enter your domain (e.g. home.lab or home.local)\n  4. Click Save\n\nVauxtra will auto-detect the correct zone for each service domain it manages.',
-    },
-    {
-      title: 'Technitium credentials',
-      body: 'Enter the URL of your Technitium web console and your admin credentials.\nDefault port is 5380.',
-      fields: [
-        {
-          key: 'url',
-          label: 'Technitium URL',
-          placeholder: 'http://192.168.1.10:5380',
-          hint: 'Default port is 5380. Use the internal IP or hostname.',
-          inputType: 'url',
-        },
-        {
-          key: 'username',
-          label: 'Username',
-          placeholder: 'admin',
-          inputType: 'text',
-        },
-        {
-          key: 'password',
-          label: 'Password',
-          placeholder: '(web UI password)',
-          inputType: 'password',
-        },
-      ],
-    },
-  ],
-};
+/**
+ * The guided wizard for a type, translated. The single entry point all UI components use.
+ *
+ * `GET /api/providers/types` is the only source: `PROVIDER_TYPES` ships `guided_steps` for
+ * every type it serves. There is deliberately no local copy of the prose — the one that used
+ * to live here was English only, so a French or German operator met a screen of English in the
+ * middle of onboarding. An empty list means "the types have not arrived yet" and the caller
+ * shows its loading state or the expert form, never placeholder copy.
+ */
+export function getGuidedSteps(type: string, meta?: ProviderTypeMeta, t?: TranslateFn): GuidedStep[] {
+  if (!meta?.guided_steps?.length) return [];
+  return localizeSteps(type, parseApiSteps(meta.guided_steps), t);
+}
 
 export const projectUrlByType: Record<string, string> = {
   npm: 'https://nginxproxymanager.com',
@@ -486,15 +258,67 @@ export function buildPayload(formData: ProviderFormState) {
   };
 }
 
-export function canSubmitProvider(formData: ProviderFormState): boolean {
-  const passwordOptionalTypes = new Set(['traefik', 'zoraxy']);
-  const requiresPassword = !passwordOptionalTypes.has(formData.type);
+const passwordOptionalTypes = new Set(['traefik', 'zoraxy']);
+const urlOptionalTypes = new Set(['cloudflare', 'cloudflare_tunnel']);
 
+/**
+ * Whether a secret is mandatory for this type. The API may say so explicitly
+ * (`requires_password`); otherwise the local list of auth-less proxies decides.
+ */
+export function requiresPassword(type: string, meta?: Pick<ProviderTypeMeta, 'requires_password'>): boolean {
+  if (typeof meta?.requires_password === 'boolean') return meta.requires_password;
+  return !passwordOptionalTypes.has(type);
+}
+
+/** Whether a username / account id is mandatory: API flag first, tunnel account id otherwise. */
+export function requiresUsername(type: string, meta?: Pick<ProviderTypeMeta, 'requires_username'>): boolean {
+  if (typeof meta?.requires_username === 'boolean') return meta.requires_username;
+  return type === 'cloudflare_tunnel';
+}
+
+/** Cloudflare types fall back to the public API endpoint when the URL is left empty. */
+export function isUrlOptional(type: string): boolean {
+  return urlOptionalTypes.has(type);
+}
+
+export function canSubmitProvider(
+  formData: ProviderFormState,
+  meta?: Pick<ProviderTypeMeta, 'requires_password' | 'requires_username'>,
+): boolean {
   return (
     Boolean(formData.type) &&
     Boolean(formData.name.trim()) &&
-    (!requiresPassword || Boolean(formData.password.trim())) &&
-    Boolean(formData.url.trim() || formData.type === 'cloudflare' || formData.type === 'cloudflare_tunnel') &&
-    (formData.type !== 'cloudflare_tunnel' || (Boolean(formData.tunnel_id.trim()) && Boolean(formData.username.trim())))
+    (!requiresPassword(formData.type, meta) || Boolean(formData.password.trim())) &&
+    (!requiresUsername(formData.type, meta) || Boolean(formData.username.trim())) &&
+    Boolean(formData.url.trim() || isUrlOptional(formData.type)) &&
+    (formData.type !== 'cloudflare_tunnel' || Boolean(formData.tunnel_id.trim()))
   );
+}
+
+// ─── Capabilities & grouping ────────────────────────────────────
+
+/** True when the type drives a tunnel (ingress routes rather than a classic reverse proxy). */
+export function isTunnelType(type: string, meta?: ProviderTypeMeta): boolean {
+  return metaHasCapability('supports_tunnel', type, meta);
+}
+
+/** Section a provider type belongs to on the Integrations page and in the type picker. */
+export type ProviderGroup = 'reverse' | 'tunnel' | 'dns' | 'other';
+
+export const PROVIDER_GROUPS: ProviderGroup[] = ['reverse', 'tunnel', 'dns', 'other'];
+
+export function getProviderGroup(type: string, meta?: ProviderTypeMeta): ProviderGroup {
+  if (isTunnelType(type, meta)) return 'tunnel';
+  if (isProxyType(type, meta)) return 'reverse';
+  if (isDnsType(type, meta)) return 'dns';
+  return 'other';
+}
+
+/** Capability flags shown as badges, in display order. */
+export const CAPABILITY_BADGES: ProviderCapability[] = ['proxy', 'dns', 'public_dns', 'supports_tunnel', 'certificates'];
+
+/** The capabilities a type declares true, in `CAPABILITY_BADGES` order. */
+export function listCapabilities(meta?: Pick<ProviderTypeMeta, 'capabilities'>): ProviderCapability[] {
+  const caps = meta?.capabilities || {};
+  return CAPABILITY_BADGES.filter((key) => caps[key] === true);
 }

@@ -1,6 +1,20 @@
-import { useState, useRef } from 'react';
-import { ArrowLeft, ArrowRight, Loader2, Eye, EyeOff, AlertTriangle, Upload, Key, CheckCircle2 } from 'lucide-react';
+/**
+ * Restore branch of the wizard: read a backup file in the browser, then hand it to
+ * `POST /api/restore` (admin only, rate limited 3/minute) with the export passphrase.
+ *
+ * The failure path used to print `err.message` — for an axios error that is
+ * "Request failed with status code 400", never the reason the backend gave. It now goes
+ * through `translateApiError`, which answers in the reader's language.
+ */
+
+import { useRef, useState } from 'react';
+import { CheckCircle2, Eye, EyeOff, FileJson, Key, Upload } from 'lucide-react';
 import { api } from '@/api/client';
+import { Button, Field, InlineAlert, Input } from '@/components/ui';
+import { translateApiError } from '@/lib/errors';
+import { useFormat } from '@/hooks/useFormat';
+import { useT } from '@/i18n';
+import { SetupStepShell } from './SetupStepShell';
 
 type RestoreSummary = {
   providers: number;
@@ -8,6 +22,14 @@ type RestoreSummary = {
   secretsIncluded: boolean;
   webhooksNeedingUrl: number;
 };
+
+interface BackupFileContent {
+  version?: string;
+  exported_at?: string;
+  secrets_included?: boolean;
+  providers?: unknown[];
+  services?: unknown[];
+}
 
 export function RestoreStep({
   onBack,
@@ -18,14 +40,11 @@ export function RestoreStep({
   onPrepared: () => void | Promise<void>;
   onFinish: (summary: RestoreSummary) => void | Promise<void>;
 }) {
+  const t = useT();
+  const { formatDateTime, formatNumber } = useFormat();
+
   const [backupFile, setBackupFile] = useState<File | null>(null);
-  const [backupData, setBackupData] = useState<{
-    version?: string;
-    exported_at?: string;
-    secrets_included?: boolean;
-    providers?: unknown[];
-    services?: unknown[];
-  } | null>(null);
+  const [backupData, setBackupData] = useState<BackupFileContent | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -36,38 +55,38 @@ export function RestoreStep({
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     setError('');
     setBackupFile(file);
-    
+
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
-      
+      const data = JSON.parse(text) as BackupFileContent;
+
       if (!data.version) {
-        setError('Invalid backup file: missing version');
+        setError(t('setup.restore.error_no_version'));
         setBackupData(null);
         return;
       }
-      
+
       setBackupData(data);
     } catch {
-      setError('Invalid backup file: could not parse JSON');
+      setError(t('setup.restore.error_parse'));
       setBackupData(null);
     }
   };
 
   const handleRestore = async () => {
-    if (!backupData) return;
-    
+    if (!backupData || restoring) return;
+
     if (backupData.secrets_included && !passphrase) {
-      setError('This backup contains encrypted secrets. Please enter the passphrase.');
+      setError(t('setup.restore.error_passphrase_required'));
       return;
     }
-    
+
     setRestoring(true);
     setError('');
-    
+
     try {
       const result = await api.post<{
         ok: boolean;
@@ -86,8 +105,7 @@ export function RestoreStep({
         webhooksNeedingUrl: result?.webhooks_needing_url ?? 0,
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Restore failed';
-      setError(msg);
+      setError(translateApiError(err, t, t('setup.restore.error_failed')));
     } finally {
       setRestoring(false);
     }
@@ -95,187 +113,182 @@ export function RestoreStep({
 
   if (restoreSummary) {
     return (
-      <div className="space-y-6 animate-in fade-in duration-300">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-green-500/10 text-green-600 dark:text-green-400 grid place-items-center">
-            <CheckCircle2 size={20} />
+      <SetupStepShell
+        icon={<CheckCircle2 />}
+        title={t('setup.restore.done_title')}
+        description={t('setup.restore.done_subtitle')}
+        primary={{
+          label: t('setup.restore.open_dashboard'),
+          onClick: () => void onFinish(restoreSummary),
+        }}
+      >
+        <dl className="grid grid-cols-2 gap-4">
+          <div className="rounded-xl border border-border bg-muted/40 p-4">
+            <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              {t('setup.restore.done_providers')}
+            </dt>
+            <dd className="nums mt-1 text-2xl font-bold text-foreground">{formatNumber(restoreSummary.providers)}</dd>
           </div>
-          <div>
-            <h2 className="text-xl font-bold text-foreground">Restore completed</h2>
-            <p className="text-sm text-muted-foreground">Your configuration has been restored successfully.</p>
+          <div className="rounded-xl border border-border bg-muted/40 p-4">
+            <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              {t('setup.restore.done_services')}
+            </dt>
+            <dd className="nums mt-1 text-2xl font-bold text-foreground">{formatNumber(restoreSummary.services)}</dd>
           </div>
-        </div>
+        </dl>
 
-        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
-          <ul className="text-sm text-muted-foreground space-y-1">
-            <li>Providers restored: {restoreSummary.providers}</li>
-            <li>Services restored: {restoreSummary.services}</li>
-          </ul>
+        {restoreSummary.secretsIncluded ? (
+          <InlineAlert tone="success" title={t('setup.restore.done_secrets_ok')} />
+        ) : (
+          <InlineAlert tone="warning" title={t('setup.restore.done_secrets_missing_title')}>
+            {t('setup.restore.done_secrets_missing')}
+          </InlineAlert>
+        )}
 
-          {restoreSummary.secretsIncluded ? (
-            <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-xs text-green-700 dark:text-green-300">
-              Secure backup detected: provider secrets were restored from encrypted data.
-            </div>
-          ) : (
-            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
-              Secrets were not included in this backup. Re-enter provider passwords and tokens before running health checks.
-            </div>
-          )}
-
-          {restoreSummary.webhooksNeedingUrl > 0 && (
-            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
-              {restoreSummary.webhooksNeedingUrl} notification target(s) came back without
-              their URL and are disabled. A notification URL is the credential itself, so a
-              backup without secrets cannot carry it — re-enter it to switch them back on.
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-end">
-          <button
-            onClick={() => onFinish(restoreSummary)}
-            className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
+        {restoreSummary.webhooksNeedingUrl > 0 && (
+          <InlineAlert
+            tone="warning"
+            title={t('setup.restore.done_webhooks_title', { count: restoreSummary.webhooksNeedingUrl })}
           >
-            Open dashboard
-            <ArrowRight size={16} />
-          </button>
-        </div>
-      </div>
+            {t('setup.restore.done_webhooks')}
+          </InlineAlert>
+        )}
+      </SetupStepShell>
     );
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary grid place-items-center">
-          <Upload size={20} />
-        </div>
-        <div>
-          <h2 className="text-xl font-bold text-foreground">Restore from Backup</h2>
-          <p className="text-sm text-muted-foreground">Upload a Vauxtra backup file to restore your configuration.</p>
-        </div>
-      </div>
+    <SetupStepShell
+      icon={<Upload />}
+      title={t('setup.restore.title')}
+      description={t('setup.restore.subtitle')}
+      onBack={onBack}
+      backDisabled={restoring}
+      primary={{
+        label: restoring ? t('setup.restore.submitting') : t('setup.restore.submit'),
+        onClick: handleRestore,
+        disabled: !backupData,
+        loading: restoring,
+        icon: <Upload />,
+      }}
+    >
+      {/* `sr-only` is clip-based, so this input stays in the tab order unless told otherwise: it
+          would be an invisible, unnamed stop right before the drop zone that opens it. The button
+          below is the affordance -- it carries the label, the focus ring and the click. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        onChange={handleFileSelect}
+        tabIndex={-1}
+        aria-hidden="true"
+        className="sr-only"
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={restoring}
+        className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-8 transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+      >
+        <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-xl bg-muted text-muted-foreground">
+          {backupFile ? <FileJson className="h-5 w-5" /> : <Upload className="h-5 w-5" />}
+        </span>
+        <span className="text-sm font-medium text-foreground">
+          {backupFile ? backupFile.name : t('setup.restore.choose_file')}
+        </span>
+        <span className="text-xs text-muted-foreground">{t('setup.restore.choose_file_hint')}</span>
+      </button>
 
-      <div className="bg-card border border-border rounded-xl p-6 space-y-4">
-        <div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json"
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-border rounded-xl py-8 hover:border-primary hover:bg-primary/5 transition-all"
-          >
-            <Upload size={20} className="text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">
-              {backupFile ? backupFile.name : 'Click to select backup file'}
-            </span>
-          </button>
-        </div>
-
-        {backupData && (
-          <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-            <p className="text-sm font-medium text-foreground">Backup Info</p>
-            <ul className="text-xs text-muted-foreground space-y-1">
-              <li>Version: {backupData.version}</li>
-              <li>Exported: {backupData.exported_at ? new Date(backupData.exported_at).toLocaleString() : 'Unknown'}</li>
-              <li>Providers: {backupData.providers?.length || 0}</li>
-              <li>Services: {backupData.services?.length || 0}</li>
-              <li className="flex items-center gap-1">
-                Secrets: {backupData.secrets_included ? (
-                  <span className="text-primary flex items-center gap-1"><Key size={12} /> Encrypted</span>
+      {backupData && (
+        <div className="rounded-xl border border-border bg-muted/40 p-4">
+          <p className="text-sm font-semibold text-foreground">{t('setup.restore.info_title')}</p>
+          <dl className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted-foreground">{t('setup.restore.info_version')}</dt>
+              <dd className="font-mono text-foreground">{backupData.version}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted-foreground">{t('setup.restore.info_exported')}</dt>
+              <dd className="text-foreground">
+                {backupData.exported_at ? formatDateTime(backupData.exported_at) : t('setup.restore.unknown')}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted-foreground">{t('setup.restore.info_providers')}</dt>
+              <dd className="nums text-foreground">{formatNumber(backupData.providers?.length ?? 0)}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted-foreground">{t('setup.restore.info_services')}</dt>
+              <dd className="nums text-foreground">{formatNumber(backupData.services?.length ?? 0)}</dd>
+            </div>
+            <div className="flex justify-between gap-3 sm:col-span-2">
+              <dt className="text-muted-foreground">{t('setup.restore.info_secrets')}</dt>
+              <dd className={backupData.secrets_included ? 'inline-flex items-center gap-1 text-success' : 'text-warning'}>
+                {backupData.secrets_included ? (
+                  <>
+                    <Key aria-hidden="true" className="h-3 w-3" />
+                    {t('setup.restore.secrets_encrypted')}
+                  </>
                 ) : (
-                  <span className="text-yellow-600">Not included</span>
+                  t('setup.restore.secrets_missing')
                 )}
-              </li>
-            </ul>
-          </div>
-        )}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      )}
 
-        {backupData?.secrets_included && (
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground flex items-center gap-2">
-              <Key size={14} />
-              Backup Passphrase
-            </label>
-            <div className="relative">
-              <input
-                type={showPassphrase ? 'text' : 'password'}
-                value={passphrase}
-                onChange={(e) => setPassphrase(e.target.value)}
-                placeholder="Enter the passphrase used during export"
-                className="w-full bg-input border border-border rounded-lg px-4 py-2.5 text-sm pr-10"
-              />
+      {backupData?.secrets_included && (
+        <Field
+          label={t('setup.restore.passphrase_label')}
+          htmlFor="vx-restore-passphrase"
+          hint={t('setup.restore.passphrase_hint')}
+        >
+          <Input
+            id="vx-restore-passphrase"
+            type={showPassphrase ? 'text' : 'password'}
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            placeholder={t('setup.restore.passphrase_placeholder')}
+            autoComplete="off"
+            rightIcon={
               <button
                 type="button"
-                onClick={() => setShowPassphrase(!showPassphrase)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowPassphrase((v) => !v)}
+                aria-label={showPassphrase ? t('provider_modal.field.hide_password') : t('provider_modal.field.show_password')}
+                aria-pressed={showPassphrase}
+                tabIndex={-1}
+                className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {showPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showPassphrase ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Required to decrypt provider passwords and Docker TLS certificates.
-            </p>
-          </div>
-        )}
+            }
+          />
+        </Field>
+      )}
 
-        {backupData && !backupData.secrets_included && (
-          <div className="flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3">
-            <AlertTriangle size={16} className="text-yellow-600 shrink-0 mt-0.5" />
-            <p className="text-xs text-yellow-600">
-              This backup does not include secrets. After restore, you will need to re-enter passwords for all providers.
-            </p>
-          </div>
-        )}
+      {backupData && !backupData.secrets_included && (
+        <InlineAlert tone="warning" title={t('setup.restore.no_secrets_title')}>
+          {t('setup.restore.no_secrets_warning')}
+        </InlineAlert>
+      )}
 
-        {restoring && (
-          <div className="flex items-start gap-2 bg-primary/10 border border-primary/30 rounded-lg p-3">
-            <Loader2 size={16} className="text-primary shrink-0 mt-0.5 animate-spin" />
-            <p className="text-xs text-primary">
-              Restore in progress. Do not close this page. Large backups can take a little time to finish.
-            </p>
-          </div>
-        )}
+      {restoring && <InlineAlert tone="info" title={t('setup.restore.in_progress')} />}
 
-        {error && (
-          <div className="flex items-start gap-2 bg-destructive/10 border border-destructive/30 rounded-lg p-3">
-            <AlertTriangle size={16} className="text-destructive shrink-0 mt-0.5" />
-            <p className="text-xs text-destructive">{error}</p>
-          </div>
-        )}
-      </div>
-
-      <div className="flex justify-between">
-        <button
-          onClick={onBack}
-          disabled={restoring}
-          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft size={14} />
-          Back
-        </button>
-        <button
-          onClick={handleRestore}
-          disabled={!backupData || restoring}
-          className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
-        >
-          {restoring ? (
-            <>
-              <Loader2 size={16} className="animate-spin" />
-              Restoring...
-            </>
-          ) : (
-            <>
-              Restore Backup
-              <ArrowRight size={16} />
-            </>
-          )}
-        </button>
-      </div>
-    </div>
+      {error && (
+        <InlineAlert
+          tone="danger"
+          title={error}
+          onDismiss={() => setError('')}
+          action={
+            backupData ? (
+              <Button size="sm" variant="outline" onClick={handleRestore} disabled={restoring}>
+                {t('setup.restore.try_again')}
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+    </SetupStepShell>
   );
 }

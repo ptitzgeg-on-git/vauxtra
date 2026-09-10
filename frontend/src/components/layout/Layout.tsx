@@ -1,12 +1,35 @@
-import { useState, useEffect } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Menu, X, PanelLeftClose, PanelLeftOpen, ShieldAlert } from "lucide-react";
-import { Sidebar } from "./Sidebar";
-import { api } from "@/api/client";
-import { useI18n } from "@/i18n";
+import { useEffect, useState } from 'react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { Menu, Search, ShieldAlert } from 'lucide-react';
+import { api } from '@/api/client';
+import { useT } from '@/i18n';
+import { cn } from '@/lib/cn';
+import { Button, Drawer, IconButton, InlineAlert } from '@/components/ui';
+import { BrandMark } from './BrandMark';
+import { CommandPalette } from './CommandPalette';
+import { ShortcutsHelp } from './ShortcutsHelp';
+import { Sidebar } from './Sidebar';
 
-const STORAGE_KEY = "vauxtra_sidebar_collapsed";
+const STORAGE_KEY = 'vauxtra_sidebar_collapsed';
+
+/** `g` then one of these keys navigates; the pair must land within 1.2 s. */
+const CHORDS: Record<string, string> = {
+  d: '/',
+  e: '/services',
+  p: '/providers',
+  s: '/settings?tab=general',
+  m: '/monitoring',
+  c: '/certificates',
+  t: '/templates',
+  ',': '/settings',
+};
+
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+}
 
 /**
  * The wizard offers a *Skip* button on the password step, and nothing ever mentioned it
@@ -15,46 +38,57 @@ const STORAGE_KEY = "vauxtra_sidebar_collapsed";
  * deliberately not dismissible.
  */
 function OpenAccessBanner() {
-  const { t } = useI18n();
+  const t = useT();
   const navigate = useNavigate();
   const { data } = useQuery<{ auth_mode?: string }>({
-    queryKey: ["auth-status"],
-    queryFn: () => api.get("/auth/me"),
+    queryKey: ['auth-status'],
+    queryFn: () => api.get('/auth/me'),
     staleTime: 60_000,
     retry: false,
   });
 
-  if (data?.auth_mode !== "open") return null;
+  if (data?.auth_mode !== 'open') return null;
 
   return (
-    <div
+    <InlineAlert
+      tone="warning"
+      banner
       role="status"
-      className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-700 dark:text-amber-400 text-sm"
+      icon={<ShieldAlert />}
+      title={t('security.open_access.title')}
+      action={
+        <Button variant="outline" size="sm" onClick={() => navigate('/settings?tab=apikeys')}>
+          {t('security.open_access.action')}
+        </Button>
+      }
     >
-      <ShieldAlert size={16} className="shrink-0" />
-      <span className="font-medium">{t("security.open_access.title")}</span>
-      <span className="text-amber-700/80 dark:text-amber-400/80">
-        {t("security.open_access.body")}
-      </span>
-      <button
-        onClick={() => navigate("/settings?tab=apikeys")}
-        className="ml-auto underline underline-offset-2 hover:no-underline font-medium"
-      >
-        {t("security.open_access.action")}
-      </button>
-    </div>
+      {t('security.open_access.body')}
+    </InlineAlert>
   );
 }
 
+/** The application shell: sidebar, mobile header + drawer, main region, palette and shortcuts. */
 export function Layout() {
   const navigate = useNavigate();
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const location = useLocation();
+  const t = useT();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem(STORAGE_KEY) === "true"; } catch { return false; }
+    try {
+      return localStorage.getItem(STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
   });
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, String(collapsed)); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(STORAGE_KEY, String(collapsed));
+    } catch {
+      /* ignore */
+    }
   }, [collapsed]);
 
   useEffect(() => {
@@ -69,113 +103,121 @@ export function Layout() {
       }
     };
 
-    const isTypingTarget = (el: EventTarget | null) => {
-      if (!(el instanceof HTMLElement)) return false;
-      const tag = el.tagName.toLowerCase();
-      return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
-    };
-
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      // Ctrl/⌘ K opens the palette from anywhere, a text field included.
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
       if (isTypingTarget(event.target)) return;
+
+      if (event.key === '?' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 
       const key = event.key.toLowerCase();
 
       if (!awaitingSecondKey) {
-        if (key === "g") {
+        if (key === 'g') {
           awaitingSecondKey = true;
           resetTimer = window.setTimeout(resetCombo, 1200);
         }
         return;
       }
 
-      if (key === "d") {
-        navigate("/");
+      const target = CHORDS[key];
+      if (target) {
+        navigate(target);
         event.preventDefault();
-        resetCombo();
-        return;
       }
-      if (key === "p") {
-        navigate("/providers");
-        event.preventDefault();
-        resetCombo();
-        return;
-      }
-      if (key === "s") {
-        navigate("/settings?tab=general");
-        event.preventDefault();
-        resetCombo();
-        return;
-      }
-
       resetCombo();
     };
 
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener('keydown', onKeyDown);
     return () => {
       resetCombo();
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener('keydown', onKeyDown);
     };
   }, [navigate]);
 
+  const closeMobile = () => setMobileOpen(false);
+  const openPalette = () => setPaletteOpen(true);
+  const openShortcuts = () => setShortcutsOpen(true);
+
   return (
-    <div className="flex h-screen bg-background text-foreground font-sans scroll-smooth">
-      {/* Desktop Sidebar */}
-      <div
-        className={`hidden md:block shadow-[1px_0_0_0_rgba(0,0,0,0.05)] z-10 relative transition-all duration-200 ${
-          collapsed ? "w-[60px]" : "w-72"
-        }`}
+    <div className="flex h-screen bg-background text-foreground">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-xl focus:border focus:border-border focus:bg-card focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:shadow-elevated"
       >
-        <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((v) => !v)} />
+        {t('layout.skip_to_content')}
+      </a>
+
+      {/* Desktop sidebar */}
+      <div
+        className={cn(
+          'relative z-10 hidden shrink-0 transition-[width] duration-200 ease-out-expo md:block',
+          collapsed ? 'w-16' : 'w-72',
+        )}
+      >
+        <Sidebar
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((v) => !v)}
+          onOpenPalette={openPalette}
+          onOpenShortcuts={openShortcuts}
+        />
       </div>
 
-      {/* Mobile Header / Hamburger */}
-      <div className="md:hidden fixed top-0 w-full z-50 bg-card/85 backdrop-blur-md border-b border-border shadow-sm flex items-center justify-between p-4 h-14">
-        <div className="flex items-center gap-2">
-           <div className="w-7 h-7 bg-primary rounded-md flex items-center justify-center text-primary-foreground font-bold text-sm tracking-tighter">
-             VX
-           </div>
-           <h1 className="text-sm font-bold text-foreground tracking-tight">Vauxtra</h1>
+      {/* Mobile header */}
+      <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-card/85 px-3 backdrop-blur-md md:hidden">
+        <BrandMark size="sm" withWordmark />
+        <div className="flex items-center gap-1">
+          <IconButton label={t('layout.search')} icon={<Search />} onClick={openPalette} />
+          <IconButton label={t('layout.menu.open')} icon={<Menu />} onClick={() => setMobileOpen(true)} aria-expanded={mobileOpen} />
         </div>
-        <button
-          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-          className="text-muted-foreground hover:text-foreground focus:outline-none p-1 rounded-md hover:bg-accent transition-colors"
-        >
-          {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-        </button>
-      </div>
+      </header>
 
-      {/* Mobile Sidebar Overlay */}
-      {isMobileMenuOpen && (
-        <div className="md:hidden fixed inset-0 z-40 bg-background/70 backdrop-blur-sm transition-opacity">
-          <div className="fixed inset-y-0 left-0 w-72 bg-card shadow-2xl animate-in slide-in-from-left duration-200">
-            <Sidebar isMobile onToggleCollapse={() => {}} />
-          </div>
-          {/* Invisible click-away zone */}
-          <div className="fixed inset-y-0 right-0 w-[calc(100%-18rem)]" onClick={() => setIsMobileMenuOpen(false)}></div>
-        </div>
-      )}
+      {/* Mobile navigation drawer */}
+      <Drawer
+        open={mobileOpen}
+        onClose={closeMobile}
+        side="left"
+        size="sm"
+        hideClose
+        aria-label={t('layout.mobile_nav')}
+        bodyClassName="overflow-hidden p-0"
+      >
+        <Sidebar
+          isMobile
+          onClose={closeMobile}
+          onNavigate={closeMobile}
+          onOpenPalette={() => {
+            closeMobile();
+            openPalette();
+          }}
+          onOpenShortcuts={() => {
+            closeMobile();
+            openShortcuts();
+          }}
+        />
+      </Drawer>
 
-      {/* Main Content Area */}
-      <main className="flex-1 overflow-x-hidden overflow-y-auto scroll-smooth">
-        <div className="mt-14 md:mt-0">
+      {/* Main content */}
+      <main id="main" tabIndex={-1} className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden outline-none focus-visible:ring-0">
+        <div className="pt-14 md:pt-0">
           <OpenAccessBanner />
         </div>
-        <div className="p-4 sm:p-6 lg:p-8 min-h-[calc(100vh)]">
+        <div key={location.pathname} className="animate-in fade-in-up animate-duration-300 p-4 sm:p-6 lg:p-8">
           <Outlet />
         </div>
       </main>
 
-      {/* Collapse toggle button — visible on desktop, outside sidebar edge */}
-      <button
-        onClick={() => setCollapsed((v) => !v)}
-        className="hidden md:flex fixed bottom-8 left-0 z-20 items-center justify-center w-5 h-10 bg-card border border-border rounded-r-lg shadow-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200"
-        style={{ left: collapsed ? "52px" : "276px" }}
-        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-      >
-        {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
-      </button>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }

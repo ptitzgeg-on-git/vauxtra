@@ -1,69 +1,112 @@
-import React from 'react';
-import {
-  Globe,
-  Server,
-  ShieldCheck,
-  ArrowRight,
-  Activity,
-  AlertTriangle,
-  ShieldAlert,
-  RefreshCw,
-  WifiOff,
-} from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle, LayoutDashboard, LockOpen, Plug, PlugZap, Plus, RefreshCw, ShieldAlert } from 'lucide-react';
 import { api } from '@/api/client';
-import { Link } from 'react-router-dom';
+import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
+import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { Button, InlineAlert, PageHeader } from '@/components/ui';
 import { ExposeModal } from '@/components/features/expose/ExposeModal';
 import { ProviderModal } from '@/components/features/ProviderModal';
-import type { Service, Provider, CertificateExpiryResponse, CertificateExpiry } from '@/types/api';
+import { StatusPill } from '@/components/features/dashboard/StatusPill';
+import { StatRow } from '@/components/features/dashboard/StatRow';
+import { NeedsAttention, type AttentionItem } from '@/components/features/dashboard/NeedsAttention';
+import { RecentActivity } from '@/components/features/dashboard/RecentActivity';
+import { IntegrationsGlance } from '@/components/features/dashboard/IntegrationsGlance';
+import { QuickActions } from '@/components/features/dashboard/QuickActions';
+import type {
+  AuthStatus,
+  CertificateExpiryResponse,
+  LogsResponse,
+  Provider,
+  ProvidersHealthMap,
+  Service,
+  Stats,
+} from '@/types/api';
 
-type LogItem = { id: number; level: string; message: string; created_at: string };
-type LogsResponse = { items: LogItem[]; total: number };
+const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
+const PROVIDERS_CACHE_KEY = 'vauxtra.cache.providers';
+
+/** How many rows the "logs today" count reads; the backend caps `per_page` at 200. */
+const TODAY_LOGS_SAMPLE = 200;
+
+function readArrayCache<T>(key: string): T[] | undefined {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `GET /providers/health` answers a map keyed by id; older builds wrapped it in `{items}`. */
+function unwrapHealth(raw: unknown): ProvidersHealthMap | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const maybe = raw as { items?: unknown };
+  if (maybe.items && typeof maybe.items === 'object') return maybe.items as ProvidersHealthMap;
+  return raw as ProvidersHealthMap;
+}
+
+function greetingKey(hour: number): string {
+  if (hour < 12) return 'dashboard.greeting.morning';
+  if (hour < 18) return 'dashboard.greeting.afternoon';
+  return 'dashboard.greeting.evening';
+}
 
 export function Dashboard() {
-  const [isCreateServiceOpen, setIsCreateServiceOpen] = React.useState(false);
-  const [isCreateProviderOpen, setIsCreateProviderOpen] = React.useState(false);
-  const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
-  const PROVIDERS_CACHE_KEY = 'vauxtra.cache.providers';
+  const t = useT();
+  const { formatDate, formatTime, formatNumber } = useFormat();
 
-  const parseBackendTimestamp = (dateRaw: string | null): number | null => {
-    if (!dateRaw) return null;
-    const normalized = dateRaw.includes('T') ? dateRaw : dateRaw.replace(' ', 'T');
-    const utcLike = /(?:Z|[+-]\d\d:\d\d)$/.test(normalized) ? normalized : `${normalized}Z`;
-    const ts = Date.parse(utcLike);
-    return Number.isFinite(ts) ? ts : null;
-  };
+  const [isCreateServiceOpen, setIsCreateServiceOpen] = useState(false);
+  const [isCreateProviderOpen, setIsCreateProviderOpen] = useState(false);
 
-  const { data: services, isError: servicesError, refetch: refetchServices } = useQuery<Service[]>({
+  // One "now" for the whole page so relative times agree; ticks every 30 s.
+  const [now, setNow] = useState(() => Date.now());
+  const [hour] = useState(() => new Date().getHours());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // -- Queries ---------------------------------------------------------------
+  const {
+    data: services,
+    isError: servicesError,
+    refetch: refetchServices,
+    dataUpdatedAt: servicesUpdatedAt,
+  } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
     refetchInterval: 30000,
-    initialData: () => {
-      try {
-        const raw = sessionStorage.getItem(SERVICES_CACHE_KEY);
-        if (!raw) return undefined;
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as Service[]) : undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    initialData: () => readArrayCache<Service>(SERVICES_CACHE_KEY),
   });
 
-  const { data: providers, isError: providersError, refetch: refetchProviders } = useQuery<Provider[]>({
+  const {
+    data: providers,
+    isError: providersError,
+    refetch: refetchProviders,
+  } = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     refetchInterval: 60000,
-    initialData: () => {
-      try {
-        const raw = sessionStorage.getItem(PROVIDERS_CACHE_KEY);
-        if (!raw) return undefined;
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as Provider[]) : undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    initialData: () => readArrayCache<Provider>(PROVIDERS_CACHE_KEY),
+  });
+
+  const { data: providersHealthRaw, isError: providersHealthError } = useQuery<unknown>({
+    queryKey: ['providers-health'],
+    queryFn: () => api.get<unknown>('/providers/health'),
+    refetchInterval: 60000,
+  });
+  const providersHealth = useMemo(() => unwrapHealth(providersHealthRaw), [providersHealthRaw]);
+
+  const { data: providerTypes } = useProviderTypes();
+
+  const { data: stats } = useQuery<Stats>({
+    queryKey: ['stats'],
+    queryFn: () => api.get<Stats>('/stats'),
+    refetchInterval: 30000,
   });
 
   const { data: certExpiry } = useQuery<CertificateExpiryResponse>({
@@ -75,11 +118,74 @@ export function Dashboard() {
     refetchInterval: 5 * 60 * 1000,
   });
 
-  const { data: logsResp } = useQuery<LogsResponse>({
+  const {
+    data: logsResp,
+    isPending: logsPending,
+    isError: logsError,
+    refetch: refetchLogs,
+  } = useQuery<LogsResponse>({
     queryKey: ['logs', 'dashboard'],
-    queryFn: () => api.get<LogsResponse>('/logs?per_page=6'),
+    queryFn: () => api.get<LogsResponse>('/logs?per_page=8'),
     refetchInterval: 15000,
   });
+
+  const { data: todayLogsResp } = useQuery<LogsResponse>({
+    queryKey: ['logs', 'dashboard-today'],
+    queryFn: () => api.get<LogsResponse>(`/logs?per_page=${TODAY_LOGS_SAMPLE}`),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+
+  const { data: authStatus } = useQuery<AuthStatus>({
+    queryKey: ['auth-status'],
+    queryFn: () => api.get<AuthStatus>('/auth/me'),
+    staleTime: 120_000,
+    retry: false,
+  });
+
+  // -- Session cache (survives a reload within the tab) ----------------------
+  useEffect(() => {
+    if (!Array.isArray(services)) return;
+    try {
+      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(services));
+    } catch {
+      // Ignore storage errors in private mode/quota limits.
+    }
+  }, [services]);
+
+  useEffect(() => {
+    if (!Array.isArray(providers)) return;
+    try {
+      sessionStorage.setItem(PROVIDERS_CACHE_KEY, JSON.stringify(providers));
+    } catch {
+      // Ignore storage errors in private mode/quota limits.
+    }
+  }, [providers]);
+
+  // -- Derived numbers -------------------------------------------------------
+  const servicesReady = Array.isArray(services);
+  const providersReady = Array.isArray(providers);
+  const allServices = useMemo(() => (Array.isArray(services) ? services : []), [services]);
+  const allProviders = useMemo(() => (Array.isArray(providers) ? providers : []), [providers]);
+
+  const enabledServices = allServices.filter((s) => Boolean(s.enabled));
+  const servicesInError = enabledServices.filter((s) => s.status === 'error').length;
+  const servicesOk = enabledServices.filter((s) => s.status === 'ok').length;
+
+  const enabledProviders = allProviders.filter((p) => Boolean(p.enabled)).length;
+  const healthEntries = providersHealth ? Object.values(providersHealth) : [];
+  const providersHealthy = healthEntries.filter((h) => h?.status === 'healthy').length;
+  const providersFailing = healthEntries.filter((h) => h?.status === 'unhealthy').length;
+
+  const expiringCerts = certExpiry?.expiring_soon_count ?? 0;
+  const totalCerts = certExpiry?.total ?? certExpiry?.certificates?.length ?? 0;
+  const warnDays = certExpiry?.warn_threshold_days ?? 30;
+
+  const todayKey = formatDate(now, 'short');
+  const todayItems = Array.isArray(todayLogsResp?.items) ? todayLogsResp.items : [];
+  const logsToday = todayItems.filter((log) => formatDate(log.created_at, 'short') === todayKey).length;
+  const logsTodayCapped = todayItems.length >= TODAY_LOGS_SAMPLE && logsToday === todayItems.length;
+  const logsTotal = stats?.logs ?? todayLogsResp?.total ?? logsResp?.total ?? 0;
 
   const hasError = servicesError || providersError;
   const handleRetry = () => {
@@ -87,292 +193,164 @@ export function Dashboard() {
     refetchProviders();
   };
 
-  const servicesReady = Array.isArray(services);
-  const providersReady = Array.isArray(providers);
-
-  const allServices = React.useMemo(() => services ?? [], [services]);
-  const enabledServices = allServices.filter((s) => s.enabled);
-  const errorServicesCount = enabledServices.filter((s) => s.status === 'error').length;
-  const okServicesCount = enabledServices.filter((s) => s.status === 'ok').length;
-  const activeProvidersCount = providers?.filter((p) => p.enabled).length ?? 0;
-  const totalProvidersCount = providers?.length ?? 0;
-  const expiringSoonCount = certExpiry?.expiring_soon_count ?? 0;
-  const totalCerts = certExpiry?.certificates?.length ?? 0;
-  const logs = Array.isArray(logsResp?.items) ? logsResp.items : [];
-
-  React.useEffect(() => {
-    try {
-      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(allServices));
-    } catch {
-      // Ignore storage errors in private mode/quota limits.
-    }
-  }, [allServices]);
-
-  React.useEffect(() => {
-    try {
-      sessionStorage.setItem(PROVIDERS_CACHE_KEY, JSON.stringify(providers ?? []));
-    } catch {
-      // Ignore storage errors in private mode/quota limits.
-    }
-  }, [providers]);
-
-  // Certs sorted by urgency (lowest days_remaining first)
-  const urgentCerts: CertificateExpiry[] = (certExpiry?.certificates ?? [])
-    .filter((c) => c.expiring_soon || c.expired)
-    .sort((a, b) => (a.days_remaining ?? 999) - (b.days_remaining ?? 999))
-    .slice(0, 5);
-
-  const getProviderName = (id: number | null | undefined): string => {
-    if (!providers || id == null) return '—';
-    const p = providers.find((prov) => prov.id === id);
-    return p ? p.name : '—';
-  };
-
-  const formatAge = (dateRaw: string): string => {
-    const ts = parseBackendTimestamp(dateRaw);
-    if (ts === null) return dateRaw;
-    const deltaSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-    if (deltaSec < 60) return `${deltaSec}s ago`;
-    if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`;
-    if (deltaSec < 86400) return `${Math.floor(deltaSec / 3600)}h ago`;
-    return `${Math.floor(deltaSec / 86400)}d ago`;
-  };
-
-  const logDot = (level: string) => {
-    if (level === 'error') return 'bg-destructive';
-    if (level === 'info') return 'bg-blue-500';
-    if (level === 'warning') return 'bg-yellow-500';
-    return 'bg-emerald-500';
-  };
+  // -- Needs attention -------------------------------------------------------
+  const attentionItems: AttentionItem[] = [];
+  if (servicesInError > 0) {
+    attentionItems.push({
+      id: 'services-error',
+      tone: 'danger',
+      icon: <AlertTriangle />,
+      title: t(servicesInError === 1 ? 'dashboard.attention.services_error_one' : 'dashboard.attention.services_error_other', {
+        count: formatNumber(servicesInError),
+      }),
+      hint: t('dashboard.attention.services_error_hint'),
+      to: '/services?status=error',
+    });
+  }
+  if (providersFailing > 0) {
+    attentionItems.push({
+      id: 'providers-failing',
+      tone: 'danger',
+      icon: <PlugZap />,
+      title: t(providersFailing === 1 ? 'dashboard.attention.providers_failing_one' : 'dashboard.attention.providers_failing_other', {
+        count: formatNumber(providersFailing),
+      }),
+      to: '/providers',
+    });
+  } else if (providersHealthError && enabledProviders > 0) {
+    attentionItems.push({
+      id: 'providers-health-unknown',
+      tone: 'warning',
+      icon: <PlugZap />,
+      title: t('dashboard.attention.providers_health_unknown'),
+      hint: t('dashboard.attention.providers_health_unknown_hint'),
+      to: '/providers',
+    });
+  }
+  if (expiringCerts > 0) {
+    attentionItems.push({
+      id: 'certs-expiring',
+      tone: 'warning',
+      icon: <ShieldAlert />,
+      title: t(expiringCerts === 1 ? 'dashboard.attention.certs_expiring_one' : 'dashboard.attention.certs_expiring_other', {
+        count: formatNumber(expiringCerts),
+        days: formatNumber(warnDays),
+      }),
+      hint: t('dashboard.attention.certs_expiring_hint'),
+      to: '/certificates',
+    });
+  }
+  if (authStatus?.auth_mode === 'open') {
+    attentionItems.push({
+      id: 'open-access',
+      tone: 'warning',
+      icon: <LockOpen />,
+      title: t('security.open_access.title'),
+      hint: t('security.open_access.body'),
+      to: '/settings?tab=apikeys',
+      actionLabel: t('security.open_access.action'),
+    });
+  }
+  if (providersReady && allProviders.length === 0) {
+    attentionItems.push({
+      id: 'no-providers',
+      tone: 'info',
+      icon: <Plug />,
+      title: t('dashboard.attention.no_providers'),
+      hint: t('dashboard.attention.no_providers_hint'),
+      to: '/providers?new=1',
+    });
+  }
 
   return (
-    <div className="space-y-5 pb-8 animate-in fade-in duration-200">
-      {/* Header row */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">Overview</h1>
-      </div>
+    <div className="mx-auto max-w-7xl space-y-6 pb-8 animate-in fade-in animate-duration-300">
+      <PageHeader
+        eyebrow={t('nav.dashboard')}
+        icon={<LayoutDashboard />}
+        title={t(greetingKey(hour))}
+        description={t('dashboard.description')}
+        meta={
+          <>
+            <StatusPill />
+            {servicesUpdatedAt > 0 && (
+              <span className="tabular-nums">{t('dashboard.meta.updated', { time: formatTime(servicesUpdatedAt) })}</span>
+            )}
+          </>
+        }
+        actions={
+          <>
+            <Button variant="outline" leftIcon={<Plug />} onClick={() => setIsCreateProviderOpen(true)}>
+              {t('dashboard.quick_actions.add_integration')}
+            </Button>
+            <Button variant="primary" leftIcon={<Plus />} onClick={() => setIsCreateServiceOpen(true)}>
+              {t('dashboard.actions.route_service')}
+            </Button>
+          </>
+        }
+      />
 
-      {/* Backend connectivity error */}
       {hasError && (
-        <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-sm">
-          <WifiOff className="w-4 h-4 shrink-0" />
-          <span className="font-medium">Unable to reach the Vauxtra backend. Data may be stale.</span>
-          <button onClick={handleRetry} className="ml-auto flex items-center gap-1.5 text-xs font-semibold hover:underline">
-            <RefreshCw className="w-3.5 h-3.5" /> Retry
-          </button>
-        </div>
+        <InlineAlert
+          tone="danger"
+          title={t('dashboard.offline.title')}
+          action={
+            <Button variant="outline" size="sm" leftIcon={<RefreshCw />} onClick={handleRetry}>
+              {t('ui.error.retry')}
+            </Button>
+          }
+        >
+          {t('dashboard.offline.body')}
+        </InlineAlert>
       )}
 
-      {/* Alert banners — compact */}
-      {(errorServicesCount > 0 || expiringSoonCount > 0) && (
-        <div className="flex flex-wrap gap-2">
-          {errorServicesCount > 0 && (
-            <Link to="/monitoring?status=error" className="flex items-center gap-2 px-3 py-2 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors">
-              <AlertTriangle className="w-3.5 h-3.5" />
-              {errorServicesCount} route{errorServicesCount > 1 ? 's' : ''} in error
-            </Link>
-          )}
-          {expiringSoonCount > 0 && (
-            <Link to="/certificates" className="flex items-center gap-2 px-3 py-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 text-yellow-600 dark:text-yellow-400 text-xs font-semibold hover:bg-yellow-500/10 transition-colors">
-              <ShieldAlert className="w-3.5 h-3.5" />
-              {expiringSoonCount} cert{expiringSoonCount > 1 ? 's' : ''} expiring soon
-            </Link>
-          )}
+      <StatRow
+        loading={{
+          services: !servicesReady && !stats,
+          providers: !providersReady,
+          certificates: !certExpiry,
+          logs: !todayLogsResp,
+        }}
+        services={{
+          total: stats?.services ?? allServices.length,
+          enabled: enabledServices.length,
+          ok: stats?.services_ok ?? servicesOk,
+          error: stats?.services_error ?? servicesInError,
+        }}
+        providers={{ total: allProviders.length, enabled: enabledProviders, healthy: providersHealthy }}
+        certificates={{ expiring: expiringCerts, total: totalCerts, thresholdDays: warnDays }}
+        logs={{ today: logsToday, todayCapped: logsTodayCapped, total: logsTotal }}
+      />
+
+      <NeedsAttention items={attentionItems} loading={!servicesReady || !providersReady} />
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
+        <div className="space-y-6 xl:col-span-3">
+          <RecentActivity
+            logs={Array.isArray(logsResp?.items) ? logsResp.items : undefined}
+            loading={logsPending && !logsResp}
+            error={logsError && !logsResp}
+            onRetry={() => refetchLogs()}
+            now={now}
+          />
         </div>
-      )}
-
-      {/* KPI row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Link to="/services" className="bg-card border border-border rounded-lg p-4 hover:border-foreground/20 transition-colors group">
-          <div className="flex items-center justify-between mb-2">
-            <Globe className="w-4 h-4 text-muted-foreground" />
-            {servicesReady && errorServicesCount > 0 && <span className="w-2 h-2 rounded-full bg-destructive" />}
-          </div>
-          <p className="text-2xl font-bold text-foreground">
-            {servicesReady ? (
-              <>
-                {enabledServices.length}<span className="text-sm font-normal text-muted-foreground ml-1">/ {allServices.length}</span>
-              </>
-            ) : (
-              <span className="text-muted-foreground">--</span>
-            )}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">Active endpoints</p>
-        </Link>
-
-        <Link to="/monitoring" className="bg-card border border-border rounded-lg p-4 hover:border-foreground/20 transition-colors group">
-          <div className="flex items-center justify-between mb-2">
-            <Activity className="w-4 h-4 text-muted-foreground" />
-            <span className={`text-xs font-mono font-semibold ${okServicesCount === enabledServices.length && enabledServices.length > 0 ? 'text-emerald-600 dark:text-emerald-400' : errorServicesCount > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
-              {servicesReady && enabledServices.length > 0 ? `${Math.round((okServicesCount / enabledServices.length) * 100)}%` : '—'}
-            </span>
-          </div>
-          <p className="text-2xl font-bold text-foreground">
-            {servicesReady ? (
-              <>
-                {okServicesCount}<span className="text-sm font-normal text-muted-foreground ml-1">ok</span>
-              </>
-            ) : (
-              <span className="text-muted-foreground">--</span>
-            )}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">Route health</p>
-        </Link>
-
-        <Link to="/providers" className="bg-card border border-border rounded-lg p-4 hover:border-foreground/20 transition-colors group">
-          <div className="flex items-center justify-between mb-2">
-            <Server className="w-4 h-4 text-muted-foreground" />
-          </div>
-          <p className="text-2xl font-bold text-foreground">
-            {providersReady ? (
-              <>
-                {activeProvidersCount}<span className="text-sm font-normal text-muted-foreground ml-1">/ {totalProvidersCount}</span>
-              </>
-            ) : (
-              <span className="text-muted-foreground">--</span>
-            )}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">Integrations</p>
-        </Link>
-
-        <Link to="/certificates" className="bg-card border border-border rounded-lg p-4 hover:border-foreground/20 transition-colors group">
-          <div className="flex items-center justify-between mb-2">
-            <ShieldCheck className="w-4 h-4 text-muted-foreground" />
-            {expiringSoonCount > 0 && <span className="w-2 h-2 rounded-full bg-yellow-500" />}
-          </div>
-          <p className="text-2xl font-bold text-foreground">{totalCerts}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Certificates</p>
-        </Link>
-      </div>
-
-      {/* Main content */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Endpoints table */}
-        <div className="lg:col-span-3 bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-foreground">Endpoints</h3>
-            <Link to="/services" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-              All <ArrowRight className="w-3 h-3" />
-            </Link>
-          </div>
-          {!servicesReady ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">Loading endpoints...</div>
-          ) : allServices.length > 0 ? (
-            <div className="divide-y divide-border/60">
-              {allServices.slice(0, 8).map((srv) => {
-                const fqdn = srv.subdomain ? `${srv.subdomain}.${srv.domain}` : srv.domain;
-                return (
-                  <div key={srv.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-accent/50 transition-colors text-sm">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${srv.enabled ? (srv.status === 'ok' ? 'bg-emerald-500' : srv.status === 'error' ? 'bg-destructive' : 'bg-yellow-500') : 'bg-muted-foreground/30'}`} />
-                    <span className="font-medium text-foreground truncate min-w-0 flex-1">{fqdn}</span>
-                    <span className="text-xs text-muted-foreground font-mono shrink-0 hidden sm:block">{srv.target_ip}:{srv.target_port}</span>
-                    <span className="text-[11px] text-muted-foreground shrink-0">{getProviderName(srv.proxy_provider_id)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="p-8 text-center text-sm text-muted-foreground">
-              No endpoints configured.{' '}
-              <Link to="/services" className="text-foreground hover:underline">Create one →</Link>
-            </div>
-          )}
-        </div>
-
-        {/* Right column */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Expiring certificates — only when there are urgent ones */}
-          {urgentCerts.length > 0 && (
-            <div className="bg-card border border-border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-foreground">Expiring certificates</h3>
-                <Link to="/certificates" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-                  All <ArrowRight className="w-3 h-3" />
-                </Link>
-              </div>
-              <div className="divide-y divide-border/60">
-                {urgentCerts.map((cert) => {
-                  const days = cert.days_remaining;
-                  const isExpired = cert.expired;
-                  const names = cert.domain_names ?? cert.domains ?? [];
-                  return (
-                    <div key={cert.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isExpired ? 'bg-destructive' : 'bg-yellow-500'}`} />
-                      <span className="font-medium text-foreground truncate flex-1" title={names.join(', ')}>
-                        {names[0] || '—'}
-                        {names.length > 1 && <span className="text-muted-foreground ml-1">+{names.length - 1}</span>}
-                      </span>
-                      <span className={`text-xs font-semibold shrink-0 ${isExpired ? 'text-destructive' : (days !== null && days <= 7) ? 'text-destructive' : 'text-yellow-600 dark:text-yellow-400'}`}>
-                        {isExpired ? 'Expired' : days !== null ? `${days}d left` : '—'}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Provider list */}
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-foreground">Integrations</h3>
-              <Link to="/providers" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-                Manage <ArrowRight className="w-3 h-3" />
-              </Link>
-            </div>
-            {providers && providers.length > 0 ? (
-              <div className="divide-y divide-border/60">
-                {providers.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'}`} />
-                    <span className="font-medium text-foreground truncate flex-1">{p.name}</span>
-                    <span className="text-[11px] text-muted-foreground uppercase tracking-wide">{p.type}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="p-6 text-center text-sm text-muted-foreground">
-                No providers.{' '}
-                <Link to="/providers" className="text-foreground hover:underline">Add one →</Link>
-              </div>
-            )}
-          </div>
-
-          {/* Recent activity logs */}
-          {logs.length > 0 && (
-            <div className="bg-card border border-border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-foreground">Recent activity</h3>
-                <Link to="/settings?tab=logs" className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-                  Logs <ArrowRight className="w-3 h-3" />
-                </Link>
-              </div>
-              <div className="divide-y divide-border/60">
-                {logs.map((log) => (
-                  <div key={log.id} className="flex items-start gap-3 px-4 py-2 text-sm">
-                    <span className={`shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full ${logDot(log.level)}`} />
-                    <p className="flex-1 min-w-0 text-xs text-foreground break-words leading-relaxed">{log.message}</p>
-                    <span className="shrink-0 text-[10px] text-muted-foreground whitespace-nowrap">{formatAge(log.created_at)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+        <div className="space-y-6 xl:col-span-2">
+          <IntegrationsGlance
+            providers={providersReady ? allProviders : undefined}
+            loading={!providersReady}
+            health={providersHealth}
+            healthError={providersHealthError}
+            types={providerTypes}
+            onAddProvider={() => setIsCreateProviderOpen(true)}
+          />
+          <QuickActions
+            onCreateService={() => setIsCreateServiceOpen(true)}
+            onAddProvider={() => setIsCreateProviderOpen(true)}
+          />
         </div>
       </div>
 
-      {/* Service creation modal */}
-      <ExposeModal
-        isOpen={isCreateServiceOpen}
-        onClose={() => setIsCreateServiceOpen(false)}
-        mode="create"
-      />
-
-      {/* Provider creation modal */}
-      <ProviderModal
-        isOpen={isCreateProviderOpen}
-        onClose={() => setIsCreateProviderOpen(false)}
-      />
+      <ExposeModal isOpen={isCreateServiceOpen} onClose={() => setIsCreateServiceOpen(false)} mode="create" />
+      <ProviderModal isOpen={isCreateProviderOpen} onClose={() => setIsCreateProviderOpen(false)} />
     </div>
   );
 }

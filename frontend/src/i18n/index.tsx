@@ -26,6 +26,21 @@ export const SUPPORTED_LANGUAGES: { code: Lang; label: string; flag: string }[] 
   { code: 'zh', label: '中文',        flag: '🇨🇳' },
 ];
 
+/**
+ * BCP-47 tag per language: what Intl and document.documentElement.lang receive.
+ * useFormat() formats every date and number with these.
+ */
+export const LOCALE_TAGS: Record<Lang, string> = {
+  en: 'en-US',
+  fr: 'fr-FR',
+  de: 'de-DE',
+  es: 'es-ES',
+  pt: 'pt-BR',
+  nl: 'nl-NL',
+  ja: 'ja-JP',
+  zh: 'zh-CN',
+};
+
 type Translations = Record<string, string>;
 const cache: Partial<Record<Lang, Translations>> = {};
 
@@ -46,10 +61,13 @@ function getKey(obj: Translations, key: string): string | undefined {
   return obj[key];
 }
 
+/** The translate function as `useT()` hands it out, for code that takes it as an argument. */
+export type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+
 interface I18nContextValue {
   lang: Lang;
   setLang: (lang: Lang) => void;
-  t: (key: string, params?: Record<string, string | number>) => string;
+  t: TranslateFn;
   isLoading: boolean;
 }
 
@@ -87,6 +105,12 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
+  }, [lang]);
+
+  // Screen readers pick their voice, and browsers their hyphenation and CJK glyphs, from
+  // the document language; index.html ships with "en" and Vite never rewrites it.
+  useEffect(() => {
+    document.documentElement.lang = LOCALE_TAGS[lang];
   }, [lang]);
 
   const setLang = useCallback((l: Lang) => {

@@ -1,101 +1,108 @@
-import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Settings, X, ChevronRight, BookOpen, Zap, Server, Container, ExternalLink } from 'lucide-react';
-import { api } from '@/api/client';
-import { ProviderLogo } from '@/components/ui/ProviderLogos';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Container, Pencil, Plug } from 'lucide-react';
+import { Button, Field, Input, Modal } from '@/components/ui';
 import {
   type ProviderFormState,
-  type ProviderTypeMap,
+  type ProviderTypeMeta,
   type ProviderValidationResult,
-  emptyForm,
-  fallbackIconByType,
-  providerColor,
-  getGuidedSteps,
-  getProjectUrl,
   canSubmitProvider,
-  isDnsType,
-  isProxyType,
+  emptyForm,
+  getGuidedSteps,
+  isUrlOptional,
+  requiresUsername,
 } from '@/components/features/providers/providerConstants';
-import { StepTypeSelector, StepCredentials } from '@/components/features/provider-modal';
+import { StepCredentials, StepTypeSelector, type WizardMode } from '@/components/features/provider-modal';
 import { useProviderMutations } from '@/hooks/useProviderMutations';
+import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { useDockerEndpoints } from '@/hooks/useDockerEndpoints';
-import { useModalDialog } from '@/hooks/useModalDialog';
+import { useT } from '@/i18n';
+import type { Provider, ProviderUpdate } from '@/types/api';
 
-interface ProviderModalProps {
+const DEFAULT_DOCKER_HOST = 'unix:///var/run/docker.sock';
+
+export interface ProviderModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** When given, the modal edits this provider instead of creating one. */
+  provider?: Provider | null;
 }
 
-export function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [wizardMode, setWizardMode] = useState<'guided' | 'expert' | null>(null);
+function formFromProvider(provider: Provider): ProviderFormState {
+  const extra = (provider.extra || {}) as Record<string, unknown>;
+  return {
+    name: provider.name || '',
+    type: String(provider.type || ''),
+    url: provider.url || '',
+    username: provider.username || '',
+    password: '',
+    tunnel_id: typeof extra.tunnel_id === 'string' ? extra.tunnel_id : '',
+  };
+}
+
+export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModalProps) {
+  const t = useT();
+  const editMode = Boolean(provider);
+  const editingId = provider?.id ?? null;
+  const providerRef = useRef(provider);
+  useEffect(() => {
+    providerRef.current = provider;
+  }, [provider]);
+
+  const [step, setStep] = useState<1 | 2>(1);
+  const [wizardMode, setWizardMode] = useState<WizardMode>('guided');
   const [guidedStepIndex, setGuidedStepIndex] = useState(0);
   const [formData, setFormData] = useState<ProviderFormState>(emptyForm);
   const [validationResult, setValidationResult] = useState<ProviderValidationResult | null>(null);
-
-  // Docker endpoint
   const [isDockerMode, setIsDockerMode] = useState(false);
   const docker = useDockerEndpoints();
 
-  const { data: providerTypes } = useQuery<ProviderTypeMap>({
-    queryKey: ['provider-types'],
-    queryFn: () => api.get('/providers/types'),
-    enabled: isOpen,
-  });
+  const { data: providerTypes, isLoading: typesLoading } = useProviderTypes({ enabled: isOpen });
 
-  const availableProviderTypes = useMemo(() => {
+  const availableTypes = useMemo(() => {
     const entries = Object.entries(providerTypes || {}).filter(([, meta]) => Boolean(meta?.available));
     return entries.sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])));
   }, [providerTypes]);
 
-  // Group providers by functional role for display (DNS vs Reverse/Tunnel)
-  const groupedProviders = useMemo(() => {
-    const groups: Record<string, Array<[string, ProviderTypeMap[string]]>> = {
-      'DNS Providers': [],
-      'Reverse & Tunnel Providers': [],
-      Other: [],
-    };
+  const selectedMeta: ProviderTypeMeta | undefined = (providerTypes || {})[formData.type];
+  const guidedSteps = useMemo(
+    () => getGuidedSteps(formData.type, selectedMeta, t),
+    [formData.type, selectedMeta, t],
+  );
 
-    const tunnelTypes = new Set(['cloudflare_tunnel']);
-
-    for (const entry of availableProviderTypes) {
-      const [type, meta] = entry;
-
-      if (isDnsType(type, meta)) {
-        groups['DNS Providers'].push(entry);
-      } else if (isProxyType(type, meta) || meta?.capabilities?.supports_tunnel || tunnelTypes.has(type)) {
-        groups['Reverse & Tunnel Providers'].push(entry);
-      } else {
-        groups.Other.push(entry);
-      }
-    }
-
-    return [
-      { category: 'DNS Providers', providers: groups['DNS Providers'] },
-      { category: 'Reverse & Tunnel Providers', providers: groups['Reverse & Tunnel Providers'] },
-      { category: 'Other', providers: groups.Other },
-    ].filter((group) => group.providers.length > 0);
-  }, [availableProviderTypes]);
-
-  const selectedMeta = (providerTypes || {})[formData.type] || {};
-  const userLabel = selectedMeta.user_label || 'Username';
-  const passLabel = selectedMeta.pass_label || 'Password / token';
+  // Edit mode: seed the form from the provider each time the modal opens on one.
+  useEffect(() => {
+    if (!isOpen) return;
+    const current = providerRef.current;
+    if (!current) return;
+    setFormData(formFromProvider(current));
+    setStep(2);
+    setWizardMode('expert');
+    setGuidedStepIndex(0);
+    setIsDockerMode(false);
+    setValidationResult(null);
+  }, [isOpen, editingId]);
 
   const resetAndClose = () => {
     setStep(1);
-    setWizardMode(null);
+    setWizardMode('guided');
     setGuidedStepIndex(0);
     setFormData(emptyForm);
     setValidationResult(null);
     setIsDockerMode(false);
     docker.setName('');
-    docker.setHost('unix:///var/run/docker.sock');
+    docker.setHost(DEFAULT_DOCKER_HOST);
     onClose();
   };
 
-  const { validateDraft, createProvider } = useProviderMutations(
-    formData, setValidationResult, { onCreated: resetAndClose },
-  );
+  const { validateDraft, createProvider, updateProvider } = useProviderMutations(formData, setValidationResult, {
+    onCreated: resetAndClose,
+    onUpdated: resetAndClose,
+  });
+
+  const updateField = (key: keyof ProviderFormState, value: string) => {
+    setFormData((prev) => ({ ...prev, [key]: value }));
+    setValidationResult(null);
+  };
 
   const chooseDockerType = () => {
     setIsDockerMode(true);
@@ -103,301 +110,198 @@ export function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     setValidationResult(null);
   };
 
-  const handleAddDockerEndpoint = async () => {
-    try {
-      await docker.addEndpoint.mutateAsync();
-      resetAndClose();
-    } catch { /* toast already shown by hook */ }
-  };
-
-  const chooseProviderType = (type: string, label: string, placeholderUrl: string) => {
+  const chooseProviderType = (type: string, meta: ProviderTypeMeta) => {
     setIsDockerMode(false);
     setFormData((prev) => ({
       ...prev,
       type,
-      name: prev.name.trim() ? prev.name : label,
-      url: prev.url.trim() ? prev.url : (placeholderUrl || ''),
+      name: prev.type === type && prev.name.trim() ? prev.name : String(meta.label || type),
+      url: prev.type === type && prev.url.trim() ? prev.url : String(meta.placeholder_url || ''),
     }));
+    setGuidedStepIndex(0);
     setValidationResult(null);
   };
 
+  const handleAddDockerEndpoint = async () => {
+    try {
+      await docker.addEndpoint.mutateAsync();
+      resetAndClose();
+    } catch {
+      /* toast already shown by the hook */
+    }
+  };
+
+  const handleSave = () => {
+    const current = provider;
+    if (!current) return;
+    const data: ProviderUpdate = {
+      name: formData.name.trim(),
+      url: formData.url.trim(),
+      username: formData.username.trim(),
+      password: formData.password || undefined,
+    };
+    if (formData.type === 'cloudflare_tunnel') {
+      data.extra = { ...(current.extra || {}), tunnel_id: formData.tunnel_id.trim() };
+    }
+    updateProvider.mutate({ id: current.id, data });
+  };
+
   const canContinue = Boolean(formData.type) || isDockerMode;
-  const canSubmit = canSubmitProvider(formData);
+  const canSubmit = canSubmitProvider(formData, selectedMeta);
+  const canSave =
+    Boolean(formData.name.trim()) &&
+    Boolean(formData.url.trim() || isUrlOptional(formData.type)) &&
+    (!requiresUsername(formData.type, selectedMeta) || Boolean(formData.username.trim())) &&
+    (formData.type !== 'cloudflare_tunnel' || Boolean(formData.tunnel_id.trim()));
 
-  const currentGuidedSteps = getGuidedSteps(formData.type, selectedMeta);
-  const totalSteps = isDockerMode ? 2 : (currentGuidedSteps.length > 0 ? 3 : 2);
+  const busy = validateDraft.isPending || createProvider.isPending || updateProvider.isPending || docker.addEndpoint.isPending;
 
-  // Escape closes it, Tab stays inside it, and focus goes back to whatever opened it.
-  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, resetAndClose);
+  const title = editMode ? t('provider_modal.edit_title') : t('provider_modal.title');
+  const description = editMode
+    ? t('provider_modal.edit.description', { name: provider?.name || '' })
+    : t('provider_modal.step', { step, total: 2 });
 
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/70 backdrop-blur-sm animate-in fade-in duration-200">
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="provider-modal-title"
-        className="bg-card border border-border rounded-xl shadow-2xl max-w-xl w-full flex flex-col font-sans animate-in zoom-in-95 duration-200"
-      >
-        <div className="flex items-center justify-between px-6 py-5 border-b border-border">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg">
-              <Settings className="w-5 h-5 text-primary" />
-            </div>
-            <div>
-              <h2 id="provider-modal-title" className="text-lg font-bold text-foreground">Add Integration</h2>
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mt-0.5">Step {step} of {totalSteps}</p>
-            </div>
-          </div>
-          <button
-            onClick={resetAndClose}
-            className="p-2 text-muted-foreground hover:text-foreground bg-muted hover:bg-accent rounded-lg transition-colors border border-transparent hover:border-border"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-8 overflow-y-auto max-h-[70vh]">
-          {step === 1 ? (
-            <StepTypeSelector
-              groupedProviders={groupedProviders}
-              selectedType={formData.type}
-              isDockerMode={isDockerMode}
-              onChooseProvider={chooseProviderType}
-              onChooseDocker={chooseDockerType}
-            />
-          ) : step === 2 && isDockerMode ? (
-            /* ── Step 2 (Docker): Connection form ── */
-            <div className="space-y-5">
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-semibold bg-blue-500/10 text-blue-600 border-blue-500/30 dark:text-blue-400">
-                <Container className="w-4 h-4" />
-                Docker Host
-              </div>
-
-              <div>
-                <h3 className="text-[15px] font-bold text-foreground mb-1">Docker Endpoint</h3>
-                <p className="text-sm text-muted-foreground">
-                  Connect a Docker daemon to discover and import containers as services.
-                </p>
-              </div>
-
-              <div className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-foreground uppercase tracking-wider">Name</label>
-                  <input
-                    type="text"
-                    value={docker.name}
-                    onChange={(e) => docker.setName(e.target.value)}
-                    className="w-full bg-card border border-border focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-lg px-4 py-2.5 text-sm font-medium text-foreground placeholder:text-muted-foreground outline-none transition-all shadow-sm"
-                    placeholder="e.g. Local Docker"
-                    autoComplete="off"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-foreground uppercase tracking-wider">Docker Host</label>
-                  <input
-                    type="text"
-                    value={docker.host}
-                    onChange={(e) => docker.setHost(e.target.value)}
-                    className="w-full bg-card border border-border focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-lg px-4 py-2.5 text-sm font-medium text-foreground placeholder:text-muted-foreground outline-none transition-all shadow-sm font-mono"
-                    placeholder="unix:///var/run/docker.sock"
-                    autoComplete="off"
-                  />
-                  <div className="text-xs text-muted-foreground space-y-1 pt-1">
-                    <p><span className="font-semibold text-foreground">Local</span> — <code className="bg-muted px-1 py-0.5 rounded font-mono">unix:///var/run/docker.sock</code> (requires socket mount in compose)</p>
-                    <p><span className="font-semibold text-foreground">TCP</span> — <code className="bg-muted px-1 py-0.5 rounded font-mono">tcp://192.168.1.10:2375</code> (plaintext) or <code className="bg-muted px-1 py-0.5 rounded font-mono">:2376</code> for TLS</p>
-                    <p><span className="font-semibold text-foreground">SSH</span> — <code className="bg-muted px-1 py-0.5 rounded font-mono">ssh://user@host</code> (passwordless SSH key in Vauxtra's <code className="bg-muted px-1 rounded">~/.ssh/</code>)</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : step === 2 ? (
-            /* ── Step 2: Setup mode (Guided vs Expert) ── */
-            <div className="space-y-6">
-              {/* Provider badge + project link */}
-              {formData.type && (() => {
-                const FallbackIcon = fallbackIconByType[formData.type] || Server;
-                const color = providerColor[formData.type] || 'bg-primary/10 text-primary border-primary/20';
-                const projectUrl = getProjectUrl(formData.type, selectedMeta);
-                return (
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-semibold ${color}`}>
-                      <ProviderLogo type={formData.type} className="w-4 h-4" fallback={<FallbackIcon className="w-4 h-4" />} />
-                      {selectedMeta.label || formData.type}
-                    </div>
-                    {projectUrl && (
-                      <a
-                        href={projectUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        Project website
-                      </a>
-                    )}
-                  </div>
-                );
-              })()}
-
-              <div>
-                <h3 className="text-[15px] font-bold text-foreground mb-1">How do you want to set this up?</h3>
-                <p className="text-sm text-muted-foreground">
-                  {currentGuidedSteps.length > 0
-                    ? 'Choose guided mode to walk through prerequisites step by step, or jump straight to the credentials form.'
-                    : 'Fill in the connection details to link this provider.'}
-                </p>
-              </div>
-
-              {currentGuidedSteps.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <button
-                    onClick={() => { setWizardMode('guided'); setGuidedStepIndex(0); setStep(3); }}
-                    className="flex flex-col items-start gap-3 p-5 rounded-xl border-2 border-primary/30 bg-primary/5 hover:bg-primary/10 hover:border-primary/50 transition-all text-left shadow-sm"
-                  >
-                    <div className="p-2 rounded-lg bg-primary/10 border border-primary/20 text-primary">
-                      <BookOpen className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-foreground">Guided setup</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Walk through {currentGuidedSteps.length} prerequisite steps with instructions before entering credentials.
-                      </p>
-                    </div>
-                    <span className="text-xs text-primary font-semibold flex items-center gap-1">
-                      Start guide <ChevronRight className="w-3.5 h-3.5" />
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => { setWizardMode('expert'); setStep(3); }}
-                    className="flex flex-col items-start gap-3 p-5 rounded-xl border border-border bg-card hover:bg-muted hover:border-border transition-all text-left shadow-sm"
-                  >
-                    <div className="p-2 rounded-lg bg-muted border border-border text-muted-foreground">
-                      <Zap className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-foreground">Expert mode</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Skip the guide and fill in credentials directly. Use this if you already have everything ready.
-                      </p>
-                    </div>
-                    <span className="text-xs text-muted-foreground font-semibold flex items-center gap-1">
-                      Go to form <ChevronRight className="w-3.5 h-3.5" />
-                    </span>
-                  </button>
-                </div>
-              ) : (
-                /* No guided steps for this provider — go straight to form */
-                <div className="pt-2">
-                  <p className="text-sm text-muted-foreground mb-4">No prerequisites needed for this provider. Click Continue to enter connection details.</p>
-                </div>
-              )}
-            </div>
-          ) : (
-            /* ── Step 3: Guided wizard (field-per-step) OR Expert form ── */
-            <StepCredentials
-              formData={formData}
-              setFormData={setFormData}
-              wizardMode={wizardMode}
-              guidedStepIndex={guidedStepIndex}
-              setGuidedStepIndex={setGuidedStepIndex}
-              currentGuidedSteps={currentGuidedSteps}
-              selectedMeta={selectedMeta}
-              userLabel={userLabel}
-              passLabel={passLabel}
-              validationResult={validationResult}
-              setValidationResult={setValidationResult}
-            />
-          )}
-        </div>
-
-        {/* Footer — adapts to step */}
-        <div className="bg-muted/50 px-8 py-5 border-t border-border flex items-center justify-between rounded-b-xl">
-          {step === 1 ? (
+  let footer: React.ReactNode;
+  if (editMode) {
+    footer = (
+      <div className="flex w-full items-center justify-end gap-2">
+        <Button variant="outline" onClick={resetAndClose} disabled={updateProvider.isPending}>
+          {t('common.cancel')}
+        </Button>
+        <Button onClick={handleSave} loading={updateProvider.isPending} disabled={!canSave}>
+          {updateProvider.isPending ? t('provider_modal.footer.saving') : t('common.save')}
+        </Button>
+      </div>
+    );
+  } else if (step === 1) {
+    footer = (
+      <div className="flex w-full items-center justify-between gap-2">
+        <Button variant="outline" onClick={resetAndClose}>
+          {t('common.cancel')}
+        </Button>
+        <Button onClick={() => setStep(2)} disabled={!canContinue}>
+          {t('provider_modal.footer.continue')}
+        </Button>
+      </div>
+    );
+  } else if (isDockerMode) {
+    footer = (
+      <div className="flex w-full items-center justify-between gap-2">
+        <Button variant="outline" onClick={() => setStep(1)} disabled={docker.addEndpoint.isPending}>
+          {t('common.back')}
+        </Button>
+        <Button onClick={handleAddDockerEndpoint} loading={docker.addEndpoint.isPending} disabled={!docker.canSubmit}>
+          {docker.addEndpoint.isPending ? t('provider_modal.docker.submitting') : t('provider_modal.docker.submit')}
+        </Button>
+      </div>
+    );
+  } else {
+    footer = (
+      <div className="flex w-full items-center justify-between gap-2">
+        <Button variant="outline" onClick={() => setStep(1)} disabled={busy}>
+          {t('common.back')}
+        </Button>
+        <div className="flex items-center gap-2">
+          {validationResult?.ok ? (
             <>
-              <button
-                onClick={resetAndClose}
-                className="px-5 py-2.5 hover:bg-accent bg-card border border-border text-foreground text-sm rounded-lg font-semibold transition-colors shadow-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => setStep(2)}
-                disabled={!canContinue}
-                className={`px-5 py-2.5 bg-primary hover:opacity-90 text-primary-foreground text-sm rounded-lg font-semibold transition-all shadow-sm ${!canContinue ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-md'}`}
-              >
-                Continue
-              </button>
-            </>
-          ) : step === 2 && isDockerMode ? (
-            <>
-              <button
-                onClick={() => setStep(1)}
-                className="px-5 py-2.5 hover:bg-accent bg-card border border-border text-foreground text-sm rounded-lg font-semibold transition-colors shadow-sm"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleAddDockerEndpoint}
-                disabled={!docker.canSubmit || docker.addEndpoint.isPending}
-                className={`px-5 py-2.5 bg-primary hover:opacity-90 text-primary-foreground text-sm rounded-lg font-semibold transition-all shadow-sm ${(!docker.canSubmit || docker.addEndpoint.isPending) ? 'opacity-60 cursor-not-allowed' : 'hover:shadow-md'}`}
-              >
-                {docker.addEndpoint.isPending ? 'Adding...' : 'Add Docker Endpoint'}
-              </button>
-            </>
-          ) : step === 2 ? (
-            <>
-              <button
-                onClick={() => setStep(1)}
-                className="px-5 py-2.5 hover:bg-accent bg-card border border-border text-foreground text-sm rounded-lg font-semibold transition-colors shadow-sm"
-              >
-                Back
-              </button>
-              {/* If no guided steps, skip to credentials directly */}
-              {currentGuidedSteps.length === 0 && (
-                <button
-                  onClick={() => { setWizardMode('expert'); setStep(3); }}
-                  className="px-5 py-2.5 bg-primary hover:opacity-90 text-primary-foreground text-sm rounded-lg font-semibold transition-all shadow-sm hover:shadow-md"
-                >
-                  Continue
-                </button>
-              )}
+              <Button variant="ghost" onClick={() => validateDraft.mutate()} loading={validateDraft.isPending} disabled={busy || !canSubmit}>
+                {t('provider_modal.footer.revalidate')}
+              </Button>
+              <Button onClick={() => createProvider.mutate()} loading={createProvider.isPending} disabled={busy || !canSubmit}>
+                {createProvider.isPending ? t('provider_modal.footer.connecting') : t('provider_modal.footer.connect')}
+              </Button>
             </>
           ) : (
-            <>
-              <button
-                onClick={() => setStep(2)}
-                className="px-5 py-2.5 hover:bg-accent bg-card border border-border text-foreground text-sm rounded-lg font-semibold transition-colors shadow-sm"
-              >
-                Back
-              </button>
-              {/* Show Validate button until validation passes, then show Connect */}
-              {validationResult?.ok ? (
-                <button
-                  onClick={() => createProvider.mutate()}
-                  disabled={createProvider.isPending || !canSubmit}
-                  className={`px-5 py-2.5 bg-primary hover:opacity-90 text-primary-foreground text-sm rounded-lg font-semibold transition-all shadow-sm flex items-center gap-2 ${(createProvider.isPending || !canSubmit) ? 'opacity-70 cursor-not-allowed' : 'hover:shadow-md'}`}
-                >
-                  {createProvider.isPending ? 'Connecting...' : 'Connect Integration'}
-                </button>
-              ) : (
-                <button
-                  onClick={() => validateDraft.mutate()}
-                  disabled={validateDraft.isPending || !canSubmit || createProvider.isPending}
-                  className={`px-5 py-2.5 bg-primary hover:opacity-90 text-primary-foreground text-sm rounded-lg font-semibold transition-all shadow-sm ${(validateDraft.isPending || !canSubmit || createProvider.isPending) ? 'opacity-60 cursor-not-allowed' : ''}`}
-                >
-                  {validateDraft.isPending ? 'Validating...' : 'Validate & Connect'}
-                </button>
-              )}
-            </>
+            <Button onClick={() => validateDraft.mutate()} loading={validateDraft.isPending} disabled={busy || !canSubmit}>
+              {validateDraft.isPending ? t('provider_modal.footer.validating') : t('provider_modal.footer.validate')}
+            </Button>
           )}
         </div>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <Modal
+      open={isOpen}
+      onClose={resetAndClose}
+      size="lg"
+      title={title}
+      description={description}
+      icon={editMode ? <Pencil /> : isDockerMode && step === 2 ? <Container /> : <Plug />}
+      footer={footer}
+      persistent={busy}
+    >
+      {step === 1 && !editMode ? (
+        <StepTypeSelector
+          types={availableTypes}
+          loading={typesLoading}
+          selectedType={formData.type}
+          isDockerMode={isDockerMode}
+          onChooseProvider={chooseProviderType}
+          onChooseDocker={chooseDockerType}
+        />
+      ) : isDockerMode && !editMode ? (
+        <div className="space-y-5">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">{t('provider_modal.docker.title')}</h3>
+            <p className="mt-1 text-sm text-muted-foreground">{t('provider_modal.docker.description')}</p>
+          </div>
+          <Field label={t('provider_modal.docker.name')} required>
+            <Input
+              type="text"
+              value={docker.name}
+              onChange={(e) => docker.setName(e.target.value)}
+              placeholder={t('provider_modal.docker.name_placeholder')}
+              autoComplete="off"
+              autoFocus
+            />
+          </Field>
+          <Field
+            label={t('provider_modal.docker.host')}
+            required
+            hint={
+              <span className="block space-y-1">
+                <span className="block">
+                  <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_local')}</span>{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono">unix:///var/run/docker.sock</code>
+                </span>
+                <span className="block">
+                  <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_tcp')}</span>{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono">tcp://192.168.1.10:2375</code>
+                </span>
+                <span className="block">
+                  <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_ssh')}</span>{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono">ssh://user@host</code>
+                </span>
+              </span>
+            }
+          >
+            <Input
+              type="text"
+              value={docker.host}
+              onChange={(e) => docker.setHost(e.target.value)}
+              placeholder={DEFAULT_DOCKER_HOST}
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono"
+            />
+          </Field>
+        </div>
+      ) : (
+        <StepCredentials
+          formData={formData}
+          onChange={updateField}
+          meta={selectedMeta}
+          guidedSteps={guidedSteps}
+          mode={wizardMode}
+          onModeChange={setWizardMode}
+          guidedStepIndex={guidedStepIndex}
+          onGuidedStepChange={setGuidedStepIndex}
+          validationResult={validationResult}
+          editMode={editMode}
+        />
+      )}
+    </Modal>
   );
 }

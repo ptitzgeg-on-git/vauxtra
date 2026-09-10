@@ -4,7 +4,32 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Vauxtra keeps your self-hosted services exposed, monitored and reachable." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#030712" media="(prefers-color-scheme: dark)" />
     <title>Vauxtra</title>
+    <!--
+      Dark mode before first paint. `theme.tsx` applies `.dark` from a useEffect, which runs after
+      the browser has already painted `:root`'s light background: every load flashed white at a user
+      who chose dark. This blocking script reads the same key (`vauxtra.theme`) and the same
+      light/dark/system rule, so the very first frame is already the right colour. The provider
+      keeps ownership of every runtime change.
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('vauxtra.theme');
+          var dark =
+            saved === 'dark' ||
+            ((!saved || saved === 'system') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', dark);
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (e) {
+          /* storage blocked (private mode) — the provider settles it after mount */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

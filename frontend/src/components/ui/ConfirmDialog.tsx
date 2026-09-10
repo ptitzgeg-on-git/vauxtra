@@ -1,197 +1,289 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useEffect, useRef, useCallback } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import { AlertTriangle, Info, X } from 'lucide-react';
+import { useModalDialog } from '../../hooks/useModalDialog';
+import { useT } from '../../i18n';
+import { cn } from '@/lib/cn';
+import { Button, type ButtonVariant } from './Button';
+import { useScrollLock } from './_internal';
+
+export type ConfirmVariant = 'danger' | 'warning' | 'info';
 
 export interface ConfirmDialogProps {
   open: boolean;
   title: string;
-  message: string;
+  /** A string keeps its line breaks; pass a node for emphasis, a list, or a name in bold. */
+  message?: ReactNode;
+  /** Defaults to `common.confirm`. */
   confirmLabel?: string;
+  /** Defaults to `common.cancel`. */
   cancelLabel?: string;
-  variant?: 'danger' | 'warning' | 'info';
+  variant?: ConfirmVariant;
+  /**
+   * The exact text the user has to type before the confirm button enables -- for the
+   * actions that cannot be undone (reset, restore, deleting a provider with services).
+   */
+  requireText?: string;
+  /** While true the confirm button spins and neither Escape, the backdrop nor the buttons close the dialog. */
+  loading?: boolean;
+  /** Replaces the variant's icon. */
+  icon?: ReactNode;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
 /**
- * Styled confirmation dialog to replace native window.confirm().
- * Supports danger (red), warning (yellow), and info (blue) variants.
+ * The confirm button is a `Button` like every other button in the app; `warning` and `info` have
+ * no Button variant of their own, so they borrow `primary`'s shape and repaint it on their token.
  */
-export function ConfirmDialog({
-  open,
+const VARIANT_STYLES: Record<ConfirmVariant, { icon: string; variant: ButtonVariant; buttonClass?: string }> = {
+  danger: {
+    icon: 'bg-destructive/10 text-destructive',
+    variant: 'danger',
+  },
+  warning: {
+    icon: 'bg-warning/10 text-warning',
+    variant: 'primary',
+    buttonClass: 'bg-warning text-warning-foreground hover:bg-warning/90 hover:shadow-sm',
+  },
+  info: {
+    icon: 'bg-info/10 text-info',
+    variant: 'primary',
+    buttonClass: 'bg-info text-info-foreground hover:bg-info/90 hover:shadow-sm',
+  },
+};
+
+/**
+ * Styled confirmation dialog in place of `window.confirm()`.
+ *
+ * Danger opens with focus on Cancel so a stray Enter cannot delete anything; the other
+ * variants focus Confirm. Escape, the backdrop and the close button all cancel, unless
+ * `loading` says the confirmed action is still running. The panel is mounted fresh on
+ * every opening, so the typed confirmation text never carries over.
+ */
+export function ConfirmDialog({ open, ...panel }: ConfirmDialogProps) {
+  if (!open) return null;
+  return <ConfirmDialogPanel {...panel} />;
+}
+
+function ConfirmDialogPanel({
   title,
   message,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   variant = 'danger',
+  requireText,
+  loading = false,
+  icon,
   onConfirm,
   onCancel,
-}: ConfirmDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
+}: Omit<ConfirmDialogProps, 'open'>) {
+  const t = useT();
+  const titleId = useId();
+  const messageId = useId();
+  const inputId = useId();
+  const [typed, setTyped] = useState('');
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus confirm button when dialog opens
+  // Read inside the handlers so the Escape listener in useModalDialog sees the live value.
+  const loadingRef = useRef(loading);
   useEffect(() => {
-    if (open) {
-      confirmRef.current?.focus();
-    }
-  }, [open]);
+    loadingRef.current = loading;
+  });
+  const requestCancel = useCallback(() => {
+    if (!loadingRef.current) onCancel();
+  }, [onCancel]);
 
-  // Handle Escape key
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onCancel();
-      }
-    },
-    [onCancel]
-  );
+  const dialogRef = useModalDialog<HTMLDivElement>(true, requestCancel);
+  // Same contract as Modal and Drawer; the hook nests, so a confirm opened over a modal does not
+  // release the modal's lock when it closes.
+  useScrollLock(true);
 
+  // useModalDialog focuses the box first (so the title is announced); the safest control next.
   useEffect(() => {
-    if (open) {
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
+    const target = requireText
+      ? inputRef.current
+      : variant === 'danger'
+        ? cancelRef.current
+        : confirmRef.current;
+    target?.focus({ preventScroll: true });
+  }, [requireText, variant]);
+
+  const textMatches = !requireText || typed.trim() === requireText.trim();
+  const canConfirm = textMatches && !loading;
+
+  const handleConfirm = () => {
+    if (canConfirm) onConfirm();
+  };
+
+  const handleBackdropClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) requestCancel();
+  };
+
+  const handleInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleConfirm();
     }
-  }, [open, handleKeyDown]);
-
-  // Handle click outside
-  const handleBackdropClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onCancel();
-    }
   };
 
-  if (!open) return null;
-
-  const iconStyles = {
-    danger: 'bg-destructive/10 text-destructive',
-    warning: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400',
-    info: 'bg-primary/10 text-primary',
-  };
-
-  const buttonStyles = {
-    danger: 'bg-destructive text-white hover:bg-destructive/90',
-    warning: 'bg-yellow-600 text-white hover:bg-yellow-700',
-    info: 'bg-primary text-primary-foreground hover:opacity-90',
-  };
-
+  const styles = VARIANT_STYLES[variant];
   const Icon = variant === 'info' ? Info : AlertTriangle;
+  const confirmText = confirmLabel ?? t('common.confirm');
+  const cancelText = cancelLabel ?? t('common.cancel');
+  const hasMessage = message !== undefined && message !== null && message !== '';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm animate-in fade-in animate-duration-150"
       onClick={handleBackdropClick}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="confirm-dialog-title"
     >
       <div
         ref={dialogRef}
-        className="w-full max-w-md bg-card border border-border rounded-xl shadow-2xl animate-in zoom-in-95 duration-150"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={hasMessage ? messageId : undefined}
+        aria-busy={loading || undefined}
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-elevated outline-none animate-in zoom-in-95 fade-in animate-duration-200"
       >
-        {/* Header */}
-        <div className="flex items-start gap-4 p-5 border-b border-border">
-          <div className={`p-2.5 rounded-xl ${iconStyles[variant]}`}>
-            <Icon className="w-5 h-5" />
+        <div className="flex items-start gap-4 p-5">
+          <div className={`shrink-0 rounded-xl p-2.5 ${styles.icon}`} aria-hidden="true">
+            {icon ?? <Icon className="h-5 w-5" />}
           </div>
-          <div className="flex-1 min-w-0">
-            <h2 id="confirm-dialog-title" className="text-base font-semibold text-foreground">
+          <div className="min-w-0 flex-1 pt-1">
+            <h2 id={titleId} className="text-base font-semibold leading-snug text-foreground">
               {title}
             </h2>
+            {hasMessage && (
+              <div id={messageId} className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                {typeof message === 'string' ? <p className="whitespace-pre-wrap">{message}</p> : message}
+              </div>
+            )}
+            {requireText && (
+              <div className="mt-4">
+                <label htmlFor={inputId} className="block text-xs font-medium text-foreground">
+                  {t('ui.confirm.type_to_confirm', { text: requireText })}
+                </label>
+                <input
+                  ref={inputRef}
+                  id={inputId}
+                  type="text"
+                  value={typed}
+                  onChange={(e) => setTyped(e.target.value)}
+                  onKeyDown={handleInputKeyDown}
+                  disabled={loading}
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  placeholder={requireText}
+                  aria-invalid={typed.length > 0 && !textMatches ? true : undefined}
+                  className="mt-1.5 w-full rounded-xl border border-border bg-input px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground disabled:opacity-60"
+                />
+              </div>
+            )}
           </div>
           <button
-            onClick={onCancel}
-            className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted transition-colors"
-            aria-label="Close"
+            type="button"
+            onClick={requestCancel}
+            disabled={loading}
+            className="-mr-1.5 -mt-1.5 shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            aria-label={t('ui.modal.close')}
           >
-            <X className="w-4 h-4" />
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 
-        {/* Body */}
-        <div className="p-5">
-          <p className="text-sm text-muted-foreground whitespace-pre-wrap">{message}</p>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-4 border-t border-border bg-muted/30 rounded-b-xl">
-          <button
-            onClick={onCancel}
-            className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-accent rounded-lg transition-colors"
-          >
-            {cancelLabel}
-          </button>
-          <button
+        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/40 px-5 py-3.5">
+          <Button ref={cancelRef} variant="outline" onClick={requestCancel} disabled={loading}>
+            {cancelText}
+          </Button>
+          <Button
             ref={confirmRef}
-            onClick={onConfirm}
-            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${buttonStyles[variant]}`}
+            variant={styles.variant}
+            onClick={handleConfirm}
+            disabled={!canConfirm}
+            loading={loading}
+            className={cn('font-semibold', styles.buttonClass)}
           >
-            {confirmLabel}
-          </button>
+            {confirmText}
+          </Button>
         </div>
       </div>
     </div>
   );
 }
 
-/**
- * Helper hook to manage confirm dialog state.
- * Usage:
- *   const { confirm, ConfirmDialogElement } = useConfirmDialog();
- *   const handleDelete = async () => {
- *     if (await confirm({ title: 'Delete?', message: 'Are you sure?' })) {
- *       // proceed
- *     }
- *   };
- *   return <>{ConfirmDialogElement}</>;
- */
-import { useState } from 'react';
-
-interface ConfirmOptions {
+export interface ConfirmOptions {
   title: string;
-  message: string;
+  message?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
-  variant?: 'danger' | 'warning' | 'info';
+  variant?: ConfirmVariant;
+  requireText?: string;
+  icon?: ReactNode;
 }
 
+/**
+ * Promise-style confirmation.
+ *
+ *   const { confirm, ConfirmDialogElement } = useConfirmDialog();
+ *   if (await confirm({ title: t('services.confirm.delete_title'), message: ..., variant: 'danger' })) { ... }
+ *   return <>{ConfirmDialogElement}</>;
+ *
+ * Asking a second question while the first is open answers the first with `false`; so does
+ * unmounting (a route change) -- no caller is left awaiting forever.
+ */
 export function useConfirmDialog() {
-  const [state, setState] = useState<{
-    open: boolean;
-    options: ConfirmOptions;
-    resolve: ((value: boolean) => void) | null;
-  }>({
-    open: false,
-    options: { title: '', message: '' },
-    resolve: null,
-  });
+  const [options, setOptions] = useState<ConfirmOptions | null>(null);
+  const resolveRef = useRef<((value: boolean) => void) | null>(null);
 
-  const confirm = (options: ConfirmOptions): Promise<boolean> => {
-    return new Promise((resolve) => {
-      setState({ open: true, options, resolve });
+  const settle = useCallback((value: boolean) => {
+    const resolve = resolveRef.current;
+    resolveRef.current = null;
+    setOptions(null);
+    resolve?.(value);
+  }, []);
+
+  const confirm = useCallback((next: ConfirmOptions): Promise<boolean> => {
+    resolveRef.current?.(false);
+    return new Promise<boolean>((resolve) => {
+      resolveRef.current = resolve;
+      setOptions(next);
     });
-  };
+  }, []);
 
-  const handleConfirm = () => {
-    state.resolve?.(true);
-    setState((s) => ({ ...s, open: false, resolve: null }));
-  };
-
-  const handleCancel = () => {
-    state.resolve?.(false);
-    setState((s) => ({ ...s, open: false, resolve: null }));
-  };
+  useEffect(
+    () => () => {
+      resolveRef.current?.(false);
+      resolveRef.current = null;
+    },
+    [],
+  );
 
   const ConfirmDialogElement = (
     <ConfirmDialog
-      open={state.open}
-      title={state.options.title}
-      message={state.options.message}
-      confirmLabel={state.options.confirmLabel}
-      cancelLabel={state.options.cancelLabel}
-      variant={state.options.variant}
-      onConfirm={handleConfirm}
-      onCancel={handleCancel}
+      open={options !== null}
+      title={options?.title ?? ''}
+      message={options?.message}
+      confirmLabel={options?.confirmLabel}
+      cancelLabel={options?.cancelLabel}
+      variant={options?.variant}
+      requireText={options?.requireText}
+      icon={options?.icon}
+      onConfirm={() => settle(true)}
+      onCancel={() => settle(false)}
     />
   );
 

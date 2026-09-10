@@ -1,191 +1,379 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/api/client";
-import { Shield, CalendarClock, ShieldCheck, AlertTriangle, Clock, CheckCircle2, WifiOff, RefreshCw } from "lucide-react";
-import type { Certificate } from "@/types/api";
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { CircleHelp, Clock, Lock, RefreshCw, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react';
+import { api } from '@/api/client';
+import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
+import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { translateApiError } from '@/lib/errors';
+import {
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Chip,
+  ChipGroup,
+  InlineAlert,
+  PageHeader,
+  SearchInput,
+  Select,
+  StatCard,
+  buttonVariants,
+} from '@/components/ui';
+import { CertificateTable } from '@/components/features/certificates/CertificateTable';
+import {
+  BUCKET_LABEL_KEY,
+  CERT_FILTERS,
+  WARN_DAYS,
+  certBucket,
+  certDays,
+  countBuckets,
+  matchesSearch,
+  sortCertificates,
+  toCertFilter,
+  type CertFilter,
+  type CertificateExpiryPayload,
+  type CertificateRow,
+  type CertificateSource,
+} from '@/components/features/certificates/certificates';
+import type { Provider } from '@/types/api';
 
-function getDaysUntilExpiry(expiresOn: string | null | undefined): number | null {
-  if (!expiresOn) return null;
-  const expiry = new Date(expiresOn);
-  if (isNaN(expiry.getTime())) return null;
-  const now = new Date();
-  return Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-}
-
-function getExpiryStatus(days: number | null): { color: string; label: string; bgColor: string } {
-  if (days === null) return { color: 'text-muted-foreground', label: 'Unknown', bgColor: 'bg-muted' };
-  if (days < 0) return { color: 'text-destructive', label: 'Expired', bgColor: 'bg-destructive/10' };
-  if (days <= 7) return { color: 'text-destructive', label: 'Critical', bgColor: 'bg-destructive/10' };
-  if (days <= 30) return { color: 'text-yellow-600 dark:text-yellow-400', label: 'Expiring soon', bgColor: 'bg-yellow-500/10' };
-  return { color: 'text-emerald-600 dark:text-emerald-400', label: 'Valid', bgColor: 'bg-emerald-500/10' };
-}
+/**
+ * Certificates — what is about to expire, and where to go and renew it.
+ *
+ * Vauxtra issues nothing: every row is read live from a proxy integration that keeps its
+ * own certificate store (NPM, Zoraxy). Traefik manages ACME internally and exposes no
+ * store, which is why a Traefik-only setup legitimately shows an empty page.
+ *
+ *  - `GET /api/certificates/expiry`  the rows plus `days_remaining` and the warn threshold
+ *  - `GET /api/certificates`         the same rows without the maths — fallback only
+ *  - `GET /api/providers`            names, logos and the console URL to renew at
+ *  - `GET /api/providers/types`      which integrations expose certificates at all
+ *
+ * Both certificate routes contact every provider on each call, so the fallback is enabled
+ * only once the primary has failed — the page never doubles the load on NPM.
+ */
 
 export function Certificates() {
-  const { data: certificates, isLoading, isError, refetch } = useQuery<Certificate[]>({
-    queryKey: ['certificates'],
-    queryFn: () => api.get<Certificate[]>('/certificates'),
+  const t = useT();
+  const { formatNumber } = useFormat();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const statusFilter = toCertFilter(searchParams.get('status'));
+  const [providerFilter, setProviderFilter] = useState<string>('all');
+  const [search, setSearch] = useState('');
+
+  // One instant per tick: every countdown on the page is measured from the same "now".
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const expiryQuery = useQuery<CertificateExpiryPayload>({
+    queryKey: ['certificates-expiry'],
+    queryFn: () => api.get<CertificateExpiryPayload>('/certificates/expiry'),
   });
 
-  if (isLoading) {
-    return (
-      <div className="space-y-6 max-w-7xl mx-auto">
-        <div className="h-8 w-64 bg-muted rounded animate-pulse" />
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {[1, 2, 3].map(i => <div key={i} className="h-24 bg-card rounded-xl border border-border animate-pulse" />)}
-        </div>
-        <div className="h-64 bg-card rounded-xl border border-border animate-pulse" />
-      </div>
-    );
-  }
+  const listQuery = useQuery<CertificateRow[]>({
+    queryKey: ['certificates'],
+    queryFn: () => api.get<CertificateRow[]>('/certificates'),
+    enabled: expiryQuery.isError,
+  });
 
-  if (isError) {
-    return (
-      <div className="space-y-6 max-w-7xl mx-auto">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">Certificates</h1>
-        <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-sm">
-          <WifiOff className="w-4 h-4 shrink-0" />
-          <span className="font-medium">Unable to load certificates from the backend.</span>
-          <button onClick={() => refetch()} className="ml-auto flex items-center gap-1.5 text-xs font-semibold hover:underline">
-            <RefreshCw className="w-3.5 h-3.5" /> Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const providersQuery = useQuery<Provider[]>({
+    queryKey: ['providers'],
+    queryFn: () => api.get<Provider[]>('/providers'),
+  });
 
-  const items: Certificate[] = Array.isArray(certificates) ? certificates : [];
-  
-  // Calculate stats
-  const validCerts = items.filter(c => {
-    const days = getDaysUntilExpiry(c.expires_on);
-    return days !== null && days > 30;
-  }).length;
-  const expiringSoon = items.filter(c => {
-    const days = getDaysUntilExpiry(c.expires_on);
-    return days !== null && days > 0 && days <= 30;
-  }).length;
-  const expired = items.filter(c => {
-    const days = getDaysUntilExpiry(c.expires_on);
-    return days !== null && days <= 0;
-  }).length;
+  const providerTypesQuery = useProviderTypes();
+
+  const usingFallback = expiryQuery.isError;
+  const warnDays = expiryQuery.data?.warn_threshold_days ?? WARN_DAYS;
+
+  const certificates = useMemo(() => {
+    const rows = usingFallback ? listQuery.data : expiryQuery.data?.certificates;
+    return Array.isArray(rows) ? rows : [];
+  }, [usingFallback, listQuery.data, expiryQuery.data]);
+
+  const providers = useMemo(
+    () => (Array.isArray(providersQuery.data) ? providersQuery.data : []),
+    [providersQuery.data],
+  );
+
+  const sources = useMemo(() => {
+    const map = new Map<number, CertificateSource>();
+    for (const provider of providers) {
+      map.set(provider.id, { id: provider.id, name: provider.name, type: provider.type, url: provider.url });
+    }
+    return map;
+  }, [providers]);
+
+  /** Enabled integrations whose type declares the `certificates` capability; `null` until known. */
+  const capableProviders = useMemo(() => {
+    const meta = providerTypesQuery.data;
+    if (!meta) return null;
+    const capable = new Set(
+      Object.entries(meta)
+        .filter(([, entry]) => Boolean(entry?.capabilities?.certificates))
+        .map(([type]) => type),
+    );
+    return providers.filter((provider) => Boolean(provider.enabled) && capable.has(provider.type));
+  }, [providerTypesQuery.data, providers]);
+
+  const counts = useMemo(() => countBuckets(certificates, now, warnDays), [certificates, now, warnDays]);
+
+  /** Only the integrations that actually answered with a certificate get a filter entry. */
+  const providerOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const cert of certificates) {
+      const key = cert.provider_id === undefined ? cert.provider_name || cert.provider || '' : String(cert.provider_id);
+      if (!key) continue;
+      const name =
+        (cert.provider_id !== undefined ? sources.get(cert.provider_id)?.name : undefined) ||
+        cert.provider_name ||
+        cert.provider ||
+        key;
+      if (!seen.has(key)) seen.set(key, name);
+    }
+    return [...seen.entries()].map(([value, label]) => ({ value, label }));
+  }, [certificates, sources]);
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const rows = certificates.filter((cert) => {
+      if (statusFilter !== 'all' && certBucket(certDays(cert, now), warnDays) !== statusFilter) return false;
+      if (providerFilter !== 'all') {
+        const key =
+          cert.provider_id === undefined ? cert.provider_name || cert.provider || '' : String(cert.provider_id);
+        if (key !== providerFilter) return false;
+      }
+      return matchesSearch(cert, needle);
+    });
+    return sortCertificates(rows, now, warnDays);
+  }, [certificates, statusFilter, providerFilter, search, now, warnDays]);
+
+  const setStatusFilter = (next: CertFilter) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'all') params.delete('status');
+    else params.set('status', next);
+    setSearchParams(params, { replace: true });
+  };
+
+  const clearFilters = () => {
+    setProviderFilter('all');
+    setSearch('');
+    setStatusFilter('all');
+  };
+
+  /**
+   * One provider round-trip at a time: the flat list is only re-read if the expiry route
+   * failed again, so a refresh never asks NPM for its certificates twice.
+   */
+  const refresh = async () => {
+    const result = await expiryQuery.refetch();
+    if (result.isError) await listQuery.refetch();
+    void providersQuery.refetch();
+  };
+
+  const loading = usingFallback ? listQuery.isPending : expiryQuery.isPending;
+  const refreshing = expiryQuery.isFetching || listQuery.isFetching;
+  // Only a real dead end: the expiry route failed *and* the flat list could not stand in.
+  const failed = expiryQuery.isError && listQuery.isError;
+  const filtersActive = statusFilter !== 'all' || providerFilter !== 'all' || search.trim().length > 0;
+
+  const emptyState = (() => {
+    if (failed) {
+      return {
+        title: t('certificates.load_failed'),
+        description: t('certificates.load_failed_hint'),
+        action: (
+          <Button variant="outline" size="sm" onClick={() => void refresh()}>
+            {t('common.retry')}
+          </Button>
+        ),
+      };
+    }
+    if (filtersActive && certificates.length > 0) {
+      return {
+        title: t('certificates.empty.filtered'),
+        description: t('certificates.empty.filtered_hint'),
+        action: (
+          <Button variant="outline" size="sm" onClick={clearFilters}>
+            {t('certificates.empty.clear_filters')}
+          </Button>
+        ),
+      };
+    }
+    if (capableProviders !== null && capableProviders.length === 0) {
+      return {
+        title: t('certificates.empty.no_integration'),
+        description: t('certificates.empty.no_integration_hint'),
+        action: (
+          <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+            {t('certificates.empty.open_providers')}
+          </Link>
+        ),
+      };
+    }
+    return {
+      title: t('certificates.empty.none'),
+      description: t('certificates.empty.none_hint', {
+        providers: (capableProviders ?? []).map((provider) => provider.name).join(', '),
+      }),
+      action: (
+        <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+          {t('certificates.empty.open_providers')}
+        </Link>
+      ),
+    };
+  })();
 
   return (
-    <div className="space-y-4 pb-8 animate-in fade-in duration-200">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Certificates</h1>
-          <span className="text-sm text-muted-foreground font-medium">{items.length} total</span>
-        </div>
+    <div className="mx-auto max-w-7xl space-y-6 pb-8 duration-200 animate-in fade-in">
+      <PageHeader
+        eyebrow={t('nav.group.operations')}
+        title={t('nav.certificates')}
+        description={t('certificates.page_description')}
+        icon={<Lock />}
+        meta={
+          <span className="text-xs text-muted-foreground">
+            {t('certificates.meta', { count: formatNumber(certificates.length), days: warnDays })}
+          </span>
+        }
+        actions={
+          <Button variant="outline" leftIcon={<RefreshCw />} loading={refreshing} onClick={() => void refresh()}>
+            {t('certificates.refresh')}
+          </Button>
+        }
+      />
+
+      {failed && (
+        <InlineAlert
+          tone="danger"
+          title={t('certificates.load_failed')}
+          action={
+            <Button variant="outline" size="sm" onClick={() => void refresh()}>
+              {t('common.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(expiryQuery.error, t, t('certificates.load_failed_hint'))}
+        </InlineAlert>
+      )}
+
+      {usingFallback && !failed && (
+        <InlineAlert tone="warning" title={t('certificates.fallback_notice')}>
+          {t('certificates.fallback_notice_hint')}
+        </InlineAlert>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <StatCard
+          label={t('certificates.stat.valid')}
+          value={counts.valid}
+          hint={t('certificates.stat.valid_hint', { days: warnDays })}
+          icon={<ShieldCheck />}
+          tone="success"
+          loading={loading}
+          onClick={() => setStatusFilter(statusFilter === 'valid' ? 'all' : 'valid')}
+        />
+        <StatCard
+          label={t('certificates.stat.expiring')}
+          value={counts.expiring}
+          hint={t('certificates.stat.expiring_hint', { days: warnDays })}
+          icon={<Clock />}
+          tone={counts.expiring > 0 ? 'warning' : 'neutral'}
+          loading={loading}
+          onClick={() => setStatusFilter(statusFilter === 'expiring' ? 'all' : 'expiring')}
+        />
+        <StatCard
+          label={t('certificates.stat.critical')}
+          value={counts.critical}
+          hint={t('certificates.stat.critical_hint')}
+          icon={<ShieldAlert />}
+          tone={counts.critical > 0 ? 'danger' : 'neutral'}
+          loading={loading}
+          onClick={() => setStatusFilter(statusFilter === 'critical' ? 'all' : 'critical')}
+        />
+        <StatCard
+          label={t('certificates.stat.expired')}
+          value={counts.expired}
+          hint={t('certificates.stat.expired_hint')}
+          icon={<ShieldX />}
+          tone={counts.expired > 0 ? 'danger' : 'neutral'}
+          loading={loading}
+          onClick={() => setStatusFilter(statusFilter === 'expired' ? 'all' : 'expired')}
+        />
+        <StatCard
+          label={t('certificates.stat.unknown')}
+          value={counts.unknown}
+          hint={t('certificates.stat.unknown_hint')}
+          icon={<CircleHelp />}
+          tone={counts.unknown > 0 ? 'warning' : 'neutral'}
+          loading={loading}
+          onClick={() => setStatusFilter(statusFilter === 'unknown' ? 'all' : 'unknown')}
+        />
       </div>
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-card p-4 rounded-lg border border-border flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="w-5 h-5" />
+      <Card>
+        <CardHeader className="gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle>{t('certificates.list_title')}</CardTitle>
+            <div className="flex flex-wrap items-center gap-2">
+              {providerOptions.length > 1 && (
+                <Select
+                  size="sm"
+                  aria-label={t('certificates.provider_filter')}
+                  value={providerFilter}
+                  onChange={(event) => setProviderFilter(event.target.value)}
+                  wrapperClassName="w-auto"
+                >
+                  <option value="all">{t('certificates.all_providers')}</option>
+                  {providerOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              <SearchInput
+                size="sm"
+                value={search}
+                onChange={setSearch}
+                placeholder={t('certificates.search_placeholder')}
+                aria-label={t('certificates.search_placeholder')}
+                wrapperClassName="w-full max-w-xs"
+              />
+            </div>
           </div>
-          <div>
-            <p className="text-xs font-medium text-muted-foreground">Valid</p>
-            <p className="text-xl font-bold text-foreground">{validCerts}</p>
-          </div>
-        </div>
+          <ChipGroup label={t('certificates.filters_label')}>
+            {CERT_FILTERS.map((key) => (
+              <Chip
+                key={key}
+                selected={statusFilter === key}
+                count={key === 'all' ? counts.all : counts[key]}
+                onClick={() => setStatusFilter(key)}
+              >
+                {key === 'all' ? t('certificates.filter.all') : t(BUCKET_LABEL_KEY[key])}
+              </Chip>
+            ))}
+          </ChipGroup>
+        </CardHeader>
 
-        <div className="bg-card p-4 rounded-lg border border-border flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-yellow-500/10 text-yellow-600 dark:text-yellow-400">
-            <Clock className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-xs font-medium text-muted-foreground">Expiring soon</p>
-            <p className="text-xl font-bold text-foreground">{expiringSoon}</p>
-          </div>
-        </div>
-
-        <div className="bg-card p-4 rounded-lg border border-border flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-destructive/10 text-destructive">
-            <AlertTriangle className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-xs font-medium text-muted-foreground">Expired</p>
-            <p className="text-xl font-bold text-foreground">{expired}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Certificate list */}
-      <section className="bg-card border border-border rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Shield className="w-4 h-4" />
-            All Certificates
-          </h3>
-        </div>
-
-        {items.length === 0 ? (
-          <div className="p-12 flex flex-col items-center justify-center">
-            <Shield className="w-12 h-12 text-muted-foreground opacity-50 mb-4" />
-            <h3 className="text-lg font-semibold text-foreground">No Certificates Found</h3>
-            <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-              Certificates are synced from your reverse proxy providers. Connect NPM or Zoraxy to see certificates here.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-border/70">
-            {items.map((cert) => {
-              const daysLeft = getDaysUntilExpiry(cert.expires_on);
-              const status = getExpiryStatus(daysLeft);
-              const domains = cert.domain_names?.join(', ') || cert.nice_name || 'Certificate';
-              const isWildcard = domains.includes('*.');
-              
-              return (
-                <div key={cert.id} className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className={`p-2.5 rounded-lg ${status.bgColor}`}>
-                      <ShieldCheck className={`w-5 h-5 ${status.color}`} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-semibold text-foreground truncate">{domains}</h3>
-                        {isWildcard && (
-                          <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">
-                            Wildcard
-                          </span>
-                        )}
-                        {cert.provider && (
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-primary/10 text-primary border border-primary/20">
-                            via {cert.provider}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center text-xs text-muted-foreground gap-3 mt-1">
-                        <span className="flex items-center gap-1">
-                          <CalendarClock className="w-3 h-3" />
-                          {cert.expires_on ? `Expires ${cert.expires_on}` : 'No expiry date'}
-                        </span>
-                        {cert.issuer && (
-                          <span className="hidden sm:inline">Issuer: {cert.issuer}</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 shrink-0">
-                    <div className="text-right hidden sm:block">
-                      {daysLeft !== null && (
-                        <p className={`text-sm font-semibold ${status.color}`}>
-                          {daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d left`}
-                        </p>
-                      )}
-                    </div>
-                    <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold ${status.bgColor} ${status.color} border border-current/20`}>
-                      {status.label}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+        <CardContent className="p-0">
+          <CertificateTable
+            certificates={filtered}
+            sources={sources}
+            warnDays={warnDays}
+            now={now}
+            loading={loading}
+            empty={emptyState}
+          />
+        </CardContent>
+      </Card>
     </div>
   );
 }

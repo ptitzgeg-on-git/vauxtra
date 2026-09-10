@@ -5,7 +5,7 @@ walked out of the box into the form underneath. A screen reader announced nothin
 opened and went on reading the page behind; a keyboard user could tab into that page, type
 into it, and have no way back.
 
-Nothing compiles or lints this away, so it is checked here: any file that paints a centred
+Nothing compiles or lints this away, so it is checked here: any file that paints a
 full-screen overlay is a modal, and a modal says what it is.
 """
 
@@ -16,10 +16,15 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 _SRC = _ROOT / "frontend" / "src"
 
-# The signature of a modal overlay in this codebase: full-screen, above everything, and
-# centring its content. The mobile sidebar backdrop in `Layout.tsx` is `z-40` and centres
-# nothing, which is why it is not caught here -- it is a scrim, not a dialog.
-_OVERLAY = re.compile(r'className="[^"]*fixed inset-0 z-50[^"]*items-center justify-center')
+# The signature of a modal overlay in this codebase: full-screen, in the top layer.
+# Centring used to be part of the signature, back when every dialog painted its own
+# centred box. It no longer is: a command palette sits at `items-start` near the top of
+# the viewport, and a drawer is flush against one edge -- both are still dialogs that
+# must be announced and escapable, and both were skipped while this asked for
+# `items-center justify-center`.
+# `z-50` is what keeps the scrims out: the mobile chrome in `Layout.tsx` is `z-30`,
+# below the dialog layer, and nothing under `z-50` is a dialog.
+_OVERLAY = re.compile(r'className="[^"]*\bfixed inset-0 z-50\b')
 
 
 def _modal_files() -> list[Path]:

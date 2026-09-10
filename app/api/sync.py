@@ -345,6 +345,10 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
     }
 
 
+#: Drift details used to be English sentences built here, which is the one place they can
+#: never be translated. Each templated shape now also carries the key its sentence was
+#: written from and the values it was built out of, so the UI can say the same thing in the
+#: reader's language. `detail` stays as the plain-text fallback (logs, older clients).
 def _compute_service_drift(conn, svc, sid: int) -> dict:
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
     issues: list[dict] = []
@@ -369,6 +373,8 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                         "type": "missing_proxy_route",
                         "provider": row["name"],
                         "detail": f"Route {public_host} missing on provider",
+                        "detail_key": "route_missing",
+                        "detail_params": {"host": public_host},
                     }
                 )
                 continue
@@ -381,6 +387,8 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                         "type": "proxy_origin_mismatch",
                         "provider": row["name"],
                         "detail": f"Expected {expected_origin}, found {current_origin}",
+                        "detail_key": "origin_mismatch",
+                        "detail_params": {"expected": expected_origin, "found": current_origin},
                     }
                 )
         except Exception as e:
@@ -406,6 +414,8 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                             "type": "missing_dns_rewrite",
                             "provider": row["name"],
                             "detail": f"Rewrite {public_host} missing on provider",
+                            "detail_key": "rewrite_missing",
+                            "detail_params": {"host": public_host},
                         }
                     )
                 else:
@@ -418,6 +428,8 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                                 "type": "dns_target_mismatch",
                                 "provider": row["name"],
                                 "detail": f"Expected {expected}, found {answer}",
+                                "detail_key": "answer_mismatch",
+                                "detail_params": {"expected": expected, "found": answer},
                             }
                         )
             except Exception as e:
