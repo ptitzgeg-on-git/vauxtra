@@ -20,6 +20,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   that is worth saying. A malformed origin still raises too, and still refuses the whole
   list rather than widening back to the defaults.
 
+### Changed
+- **Example addresses in the interface no longer show a real network.** The local DNS and
+  reverse-proxy target placeholders shipped in all eight locales were copied from a real
+  LAN. They are now `192.168.1.10` and `192.168.1.20`.
+
 ---
 
 ## [1.3.0] — 2026-09-10
