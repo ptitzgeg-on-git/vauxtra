@@ -23,7 +23,7 @@
 
 | Category | What you get |
 |---|---|
-| **Multi-provider routing** | Manage proxy hosts (NPM, Traefik, Zoraxy) and DNS rewrites (Cloudflare, Pi-hole, AdGuard) from a single service record |
+| **Multi-provider routing** | Manage proxy hosts (NPM, Traefik, Zoraxy) and DNS records (Cloudflare, deSEC, Pi-hole, AdGuard, Technitium, PowerDNS) from a single service record |
 | **Exposure modes** | Choose DNS-only, DNS + Reverse Proxy, or Tunnel with capability-aware guidance |
 | **Cloudflare Tunnel** | Expose services without port-forwarding via Cloudflare Tunnel integration |
 | **Docker discovery** | Auto-detect running containers with Traefik label parsing and confidence scoring |
@@ -57,6 +57,7 @@
 │   │  NPM  Zoraxy  Traefik         │                     │
 │   │  Cloudflare DNS  CF Tunnel    │                     │
 │   │  Pi-hole  AdGuard  Technitium │                     │
+│   │  PowerDNS  deSEC              │                     │
 │   └───────────────────────────────┘                     │
 └─────────────────────────────────────────────────────────┘
           │
@@ -210,6 +211,24 @@ TLS globally, so there is no per-host "force SSL" switch.
 1. Retrieve the API password from your Pi-hole or AdGuard Home admin panel.
 2. In Vauxtra, add a provider of the appropriate type with URL and credentials.
 3. For Pi-hole, use the base URL (e.g. `http://pihole` or `http://localhost:18081`), not `/admin`.
+
+### PowerDNS Authoritative
+
+1. Enable the API in `pdns.conf`: `api=yes`, `api-key=<key>`, `webserver=yes`, and a
+   `webserver-allow-from` that includes Vauxtra. The API listens on `:8081` by default.
+2. In Vauxtra, add a provider: type = `powerdns`, URL = `http://your-pdns:8081`,
+   server id = `localhost` (the stock value), API key = `<key>`.
+3. The record has to fall inside a zone the server hosts — create the zone in PowerDNS
+   first. Vauxtra picks the longest zone that contains the name.
+
+### deSEC
+
+1. Create a free account at [desec.io](https://desec.io/) and generate a token in
+   **Token management**. A token limited to your domain is enough.
+2. In Vauxtra, add a provider: type = `desec`, token = `<token>`. Leave the URL empty
+   unless you run your own deSEC instance.
+3. The domain field is optional: leave it blank to let Vauxtra pick the matching domain
+   out of your account, or set it to pin every record to one domain.
 
 ---
 
