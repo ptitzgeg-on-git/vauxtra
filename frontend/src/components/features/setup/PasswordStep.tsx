@@ -1,8 +1,18 @@
+/**
+ * How the panel is protected: a password (`POST /api/auth/setup-password`, rate limited
+ * 3/minute) or open access.
+ *
+ * The meter grades length only, because that is the whole of the backend rule
+ * (`validate_password_strength`: twelve characters, no character classes). Grading symbols
+ * would hand out a full bar for `Password1!` while the server counts the same twelve.
+ */
+
 import { useState } from 'react';
-import {
-  ArrowLeft, ArrowRight, Lock, Globe, Eye, EyeOff, AlertTriangle, Loader2, ChevronRight,
-} from 'lucide-react';
+import { AlertTriangle, ChevronRight, Eye, EyeOff, Globe, Lock } from 'lucide-react';
+import { Button, Field, InlineAlert, Input, cn } from '@/components/ui';
 import { MIN_PASSWORD_LENGTH } from '@/constants';
+import { useT } from '@/i18n';
+import { SetupStepShell } from './SetupStepShell';
 
 interface PasswordStepProps {
   onBack: () => void;
@@ -12,237 +22,249 @@ interface PasswordStepProps {
   setSkipPassword: (v: boolean | null) => void;
 }
 
+/** Four levels, all derived from length — the only thing the server checks. */
+const STRENGTH_TONES = ['bg-destructive', 'bg-warning', 'bg-primary', 'bg-success'] as const;
+
+function ModeCard({
+  selected,
+  onClick,
+  icon,
+  title,
+  body,
+  footer,
+  tone,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  footer: React.ReactNode;
+  tone: 'primary' | 'warning';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={cn(
+        'flex h-full flex-col items-start gap-3 rounded-xl border-2 p-5 text-left transition-all',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        selected
+          ? tone === 'primary'
+            ? 'border-primary bg-primary/5'
+            : 'border-warning/50 bg-warning/10'
+          : 'border-transparent bg-muted/50 hover:border-border hover:bg-muted',
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          'grid h-10 w-10 place-items-center rounded-lg border [&>svg]:h-5 [&>svg]:w-5',
+          selected
+            ? tone === 'primary'
+              ? 'border-primary/20 bg-primary/10 text-primary'
+              : 'border-warning/30 bg-warning/10 text-warning'
+            : 'border-border bg-muted text-muted-foreground',
+        )}
+      >
+        {icon}
+      </span>
+      <span className="block">
+        <span className="block text-sm font-semibold text-foreground">{title}</span>
+        <span className="mt-1 block text-xs text-muted-foreground">{body}</span>
+      </span>
+      <span className="mt-auto pt-1">{footer}</span>
+    </button>
+  );
+}
+
 export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, setSkipPassword }: PasswordStepProps) {
+  const t = useT();
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [settingPassword, setSettingPassword] = useState(false);
 
+  const tooShort = password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
+  const mismatch = confirmPassword.length > 0 && password !== confirmPassword;
+  const canSubmit = password.length >= MIN_PASSWORD_LENGTH && password === confirmPassword;
+
   const setupPassword = async () => {
+    if (!canSubmit || settingPassword) return;
     setSettingPassword(true);
     try {
       await onSetPassword(password);
+    } catch {
+      /* the toast is raised by the caller; stay on the step */
     } finally {
       setSettingPassword(false);
     }
   };
 
-  // The backend rule is `validate_password_strength`: twelve characters, no character
-  // classes. The meter grades what that rule cares about -- length -- instead of handing
-  // out a full bar for `Password1!`.
-  const strength = password.length >= 20
-    ? 4
-    : password.length >= 16
-    ? 3
-    : password.length >= MIN_PASSWORD_LENGTH
-    ? 2
-    : 1;
+  const strength = password.length >= 20 ? 4 : password.length >= 16 ? 3 : password.length >= MIN_PASSWORD_LENGTH ? 2 : 1;
+
+  const strengthLabel = tooShort
+    ? t('setup.password.too_short', { min: MIN_PASSWORD_LENGTH })
+    : strength === 4
+      ? t('setup.password.strength_strong')
+      : strength === 3
+        ? t('setup.password.strength_good')
+        : t('setup.password.strength_ok');
+
+  const primary =
+    skipPassword === true
+      ? {
+          label: t('setup.password.continue_open'),
+          onClick: onContinue,
+          variant: 'secondary' as const,
+          icon: <Globe />,
+        }
+      : skipPassword === false
+        ? {
+            label: settingPassword ? t('setup.password.submitting') : t('setup.password.submit'),
+            onClick: () => void setupPassword(),
+            disabled: !canSubmit,
+            loading: settingPassword,
+            icon: <Lock />,
+          }
+        : undefined;
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary grid place-items-center">
-          <Lock size={20} />
-        </div>
-        <div>
-          <h2 className="text-xl font-bold text-foreground">Secure Your Panel</h2>
-          <p className="text-sm text-muted-foreground">Choose how you want to protect access to Vauxtra.</p>
-        </div>
-      </div>
-
-      {/* Mode selection cards */}
-      {skipPassword === null || (skipPassword !== null && !password) ? (
-        <div className="bg-card border border-border rounded-xl p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <button
+    <SetupStepShell
+      icon={<Lock />}
+      title={t('setup.password.title')}
+      description={t('setup.password.subtitle')}
+      onBack={onBack}
+      backDisabled={settingPassword}
+      primary={primary}
+      bare
+    >
+      <div className="space-y-5">
+        {(skipPassword === null || !password) && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <ModeCard
+              selected={skipPassword === false}
               onClick={() => setSkipPassword(false)}
-              className={`flex flex-col items-start gap-3 p-5 rounded-xl border-2 transition-all text-left ${
-                skipPassword === false
-                  ? 'border-primary bg-primary/5'
-                  : 'border-transparent bg-muted/50 hover:bg-muted hover:border-border'
-              }`}
-            >
-              <div className={`p-2 rounded-lg border ${
-                skipPassword === false
-                  ? 'bg-primary/10 border-primary/20 text-primary'
-                  : 'bg-muted border-border text-muted-foreground'
-              }`}>
-                <Lock className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-semibold text-foreground">Protect with password</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Require authentication to access the panel
-                </p>
-              </div>
-              {skipPassword === false ? (
-                <span className="text-xs text-primary font-semibold flex items-center gap-1">
-                  Selected <ChevronRight className="w-3.5 h-3.5" />
-                </span>
-              ) : (
-                <span className="text-xs text-muted-foreground font-medium">Recommended</span>
-              )}
-            </button>
-
-            <button
+              icon={<Lock />}
+              title={t('setup.password.protect_title')}
+              body={t('setup.password.protect_body')}
+              tone="primary"
+              footer={
+                skipPassword === false ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
+                    {t('setup.password.selected')}
+                    <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+                  </span>
+                ) : (
+                  <span className="text-xs font-medium text-muted-foreground">{t('setup.password.recommended')}</span>
+                )
+              }
+            />
+            <ModeCard
+              selected={skipPassword === true}
               onClick={() => setSkipPassword(true)}
-              className={`flex flex-col items-start gap-3 p-5 rounded-xl border-2 transition-all text-left ${
-                skipPassword === true
-                  ? 'border-yellow-500/50 bg-yellow-500/10'
-                  : 'border-transparent bg-muted/50 hover:bg-muted hover:border-border'
-              }`}
-            >
-              <div className={`p-2 rounded-lg border ${
-                skipPassword === true
-                  ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-600 dark:text-yellow-400'
-                  : 'bg-muted border-border text-muted-foreground'
-              }`}>
-                <Globe className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-semibold text-foreground">Open access</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Anyone on your network can access Vauxtra
-                </p>
-              </div>
-              {skipPassword === true && (
-                <span className="text-xs text-yellow-600 dark:text-yellow-400 font-medium flex items-center gap-1">
-                  <AlertTriangle size={12} />
-                  Not recommended
-                </span>
-              )}
-            </button>
+              icon={<Globe />}
+              title={t('setup.password.open_title')}
+              body={t('setup.password.open_body')}
+              tone="warning"
+              footer={
+                skipPassword === true ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-warning">
+                    <AlertTriangle aria-hidden="true" className="h-3 w-3" />
+                    {t('setup.password.not_recommended')}
+                  </span>
+                ) : (
+                  <span className="text-xs font-medium text-muted-foreground">{t('setup.password.open_hint')}</span>
+                )
+              }
+            />
           </div>
-        </div>
-      ) : null}
+        )}
 
-      {/* Password form */}
-      {skipPassword === false && (
-        <div className="bg-card border border-border rounded-xl p-6 space-y-5 animate-in fade-in duration-200">
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">Password</label>
-            <div className="relative">
-              <input
+        {skipPassword === false && (
+          <div className="animate-in fade-in space-y-5 rounded-2xl border border-border bg-card p-5 shadow-card sm:p-6">
+            <Field
+              label={t('setup.password.password_label')}
+              htmlFor="vx-setup-password"
+              error={tooShort ? t('setup.password.too_short', { min: MIN_PASSWORD_LENGTH }) : undefined}
+            >
+              <Input
+                id="vx-setup-password"
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Choose a strong password"
-                className="w-full bg-background border border-input rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder={t('setup.password.password_placeholder')}
+                autoComplete="new-password"
+                size="lg"
                 autoFocus
+                rightIcon={
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? t('provider_modal.field.hide_password') : t('provider_modal.field.show_password')}
+                    aria-pressed={showPassword}
+                    tabIndex={-1}
+                    className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                }
               />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                tabIndex={-1}
-              >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
+            </Field>
+
             {password.length > 0 && (
-              <div className="space-y-1.5 pt-1">
-                <div className="flex gap-1">
-                  {[1, 2, 3, 4].map((level) => {
-                    const colors = ['bg-destructive', 'bg-yellow-500', 'bg-primary', 'bg-green-500'];
-                    return (
-                      <div
-                        key={level}
-                        className={`h-1 flex-1 rounded-full transition-colors ${
-                          level <= strength ? colors[strength - 1] : 'bg-muted'
-                        }`}
-                      />
-                    );
-                  })}
+              <div className="space-y-1.5">
+                <div className="flex gap-1" aria-hidden="true">
+                  {[1, 2, 3, 4].map((level) => (
+                    <span
+                      key={level}
+                      className={cn(
+                        'h-1 flex-1 rounded-full transition-colors',
+                        level <= strength ? STRENGTH_TONES[strength - 1] : 'bg-muted',
+                      )}
+                    />
+                  ))}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {password.length < MIN_PASSWORD_LENGTH
-                    ? `Too short (min. ${MIN_PASSWORD_LENGTH} characters)`
-                    : strength === 4
-                    ? 'Strong password'
-                    : strength === 3
-                    ? 'Good password'
-                    : 'Acceptable (a few unrelated words beat added symbols)'}
+                <p className="text-xs text-muted-foreground" role="status">
+                  {strengthLabel}
                 </p>
               </div>
             )}
-          </div>
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">Confirm password</label>
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Repeat your password"
-              className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              onKeyDown={(e) => { if (e.key === 'Enter' && password === confirmPassword && password.length >= MIN_PASSWORD_LENGTH) setupPassword(); }}
-            />
-          </div>
-          {confirmPassword.length > 0 && password !== confirmPassword && (
-            <p className="text-xs text-destructive flex items-center gap-1.5">
-              <AlertTriangle size={12} />
-              Passwords do not match
-            </p>
-          )}
-          <button
-            onClick={() => setSkipPassword(null)}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            ← Choose a different option
-          </button>
-        </div>
-      )}
 
-      {/* Open access confirmation */}
-      {skipPassword === true && (
-        <div className="bg-yellow-500/5 border border-yellow-500/30 rounded-xl p-6 animate-in fade-in duration-200">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-lg bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 grid place-items-center shrink-0">
-              <AlertTriangle size={20} />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground">Open access mode</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Anyone on your network will be able to access Vauxtra without authentication.
-                This is only recommended for isolated networks.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setSkipPassword(null)}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors mt-4"
-          >
-            ← Choose a different option
-          </button>
-        </div>
-      )}
+            <Field
+              label={t('setup.password.confirm_label')}
+              htmlFor="vx-setup-password-confirm"
+              error={mismatch ? t('setup.password.mismatch') : undefined}
+            >
+              <Input
+                id="vx-setup-password-confirm"
+                type={showPassword ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder={t('setup.password.confirm_placeholder')}
+                autoComplete="new-password"
+                size="lg"
+              />
+            </Field>
 
-      <div className="flex justify-between">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft size={14} />
-          Back
-        </button>
-        {skipPassword === true ? (
-          <button
-            onClick={onContinue}
-            className="inline-flex items-center gap-2 bg-yellow-600 text-white hover:bg-yellow-700 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
-          >
-            Continue without password
-            <ArrowRight size={16} />
-          </button>
-        ) : skipPassword === false ? (
-          <button
-            onClick={setupPassword}
-            disabled={settingPassword || password.length < MIN_PASSWORD_LENGTH || password !== confirmPassword}
-            className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
-          >
-            {settingPassword ? <Loader2 size={16} className="animate-spin" /> : <Lock size={16} />}
-            Set password & continue
-          </button>
-        ) : null}
+            <Button variant="link" size="sm" onClick={() => setSkipPassword(null)} className="text-muted-foreground">
+              {t('setup.password.change_choice')}
+            </Button>
+          </div>
+        )}
+
+        {skipPassword === true && (
+          <div className="animate-in fade-in space-y-4">
+            <InlineAlert tone="warning" title={t('setup.password.open_warning_title')}>
+              {t('setup.password.open_warning_body')}
+            </InlineAlert>
+            <Button variant="link" size="sm" onClick={() => setSkipPassword(null)} className="text-muted-foreground">
+              {t('setup.password.change_choice')}
+            </Button>
+          </div>
+        )}
       </div>
-    </div>
+    </SetupStepShell>
   );
 }

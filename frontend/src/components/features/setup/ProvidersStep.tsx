@@ -1,12 +1,29 @@
-import { ArrowLeft, ArrowRight, GitMerge, Server, Plus, Trash2, CheckCircle2, Shield, type LucideIcon } from 'lucide-react';
-import { ProviderLogo } from '@/components/ui/ProviderLogos';
+/**
+ * The integrations the wizard has collected so far, grouped the way the Integrations page
+ * groups them (`getProviderGroup`), so the two screens never disagree.
+ *
+ * Colours come from `toneClasses`, never from the `provider_color` the API sends — that field
+ * carries raw palette classes (`bg-orange-500/10`), which would be the only hardcoded colours
+ * left on the screen.
+ */
+
+import { GitMerge, Plus, Server, Trash2 } from 'lucide-react';
+import { Badge, Button, EmptyState, ProviderLogo, cn, toneClasses, useConfirmDialog, type Tone } from '@/components/ui';
 import {
-  fallbackIconByType as iconByType, descByType, providerColor, categoryByType, isDnsType, isProxyType,
+  PROVIDER_GROUPS,
+  fallbackIconByType,
+  getDescription,
+  getProviderGroup,
+  type ProviderGroup,
+  type ProviderTypeMeta,
 } from '@/components/features/providers/providerConstants';
+import { useT } from '@/i18n';
+import { SetupStepShell } from './SetupStepShell';
 import type { ProviderItem } from './types';
 
 interface ProvidersStepProps {
   providers: ProviderItem[];
+  providerTypes?: Record<string, ProviderTypeMeta>;
   onAdd: () => void;
   onDelete: (id: number) => void;
   deleteIsPending: boolean;
@@ -14,122 +31,133 @@ interface ProvidersStepProps {
   onContinue: () => void;
 }
 
-function renderProviderCard(provider: ProviderItem, onDelete: (id: number) => void, deleteIsPending: boolean) {
-  const FallbackIcon = iconByType[provider.type] || Server;
-  const color = providerColor[provider.type] || 'bg-primary/10 text-primary border-primary/20';
+const GROUP_TITLE_KEY: Record<ProviderGroup, string> = {
+  reverse: 'providers.section.reverse',
+  tunnel: 'providers.section.tunnel',
+  dns: 'providers.section.dns',
+  other: 'providers.section.other',
+};
+
+const GROUP_TONE: Record<ProviderGroup, Tone> = {
+  reverse: 'primary',
+  tunnel: 'primary',
+  dns: 'info',
+  other: 'neutral',
+};
+
+export function ProvidersStep({
+  providers,
+  providerTypes,
+  onAdd,
+  onDelete,
+  deleteIsPending,
+  onBack,
+  onContinue,
+}: ProvidersStepProps) {
+  const t = useT();
+  const { confirm, ConfirmDialogElement } = useConfirmDialog();
+
+  const metaOf = (type: string) => providerTypes?.[type];
+
+  const askDelete = async (provider: ProviderItem) => {
+    const ok = await confirm({
+      title: t('providers.delete.title'),
+      message: t('providers.delete.message', { name: provider.name }),
+      confirmLabel: t('common.delete'),
+      variant: 'danger',
+    });
+    if (ok) onDelete(provider.id);
+  };
+
+  const grouped = PROVIDER_GROUPS.map((group) => ({
+    group,
+    items: providers.filter((p) => getProviderGroup(p.type, metaOf(p.type)) === group),
+  })).filter((entry) => entry.items.length > 0);
 
   return (
-    <div key={provider.id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-background border border-border group hover:border-primary/30 transition-colors">
-      <div className={`p-2 rounded-lg border ${color}`}>
-        <ProviderLogo type={provider.type} className="w-4 h-4" fallback={<FallbackIcon className="w-4 h-4" />} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-foreground">{provider.name}</p>
-        <p className="text-xs text-muted-foreground">{descByType[provider.type] || provider.type}</p>
-      </div>
+    <SetupStepShell
+      icon={<GitMerge />}
+      title={t('setup.providers.title')}
+      description={t('setup.providers.subtitle')}
+      onBack={onBack}
+      primary={{
+        label: providers.length > 0 ? t('setup.providers.continue') : t('setup.providers.skip'),
+        onClick: onContinue,
+      }}
+    >
+      {providers.length === 0 ? (
+        <EmptyState
+          compact
+          icon={<Server />}
+          title={t('setup.providers.empty_title')}
+          description={t('setup.providers.empty_body')}
+        />
+      ) : (
+        <div className="space-y-6">
+          {grouped.map(({ group, items }) => {
+            const tone = toneClasses(GROUP_TONE[group]);
+            return (
+              <section key={group} className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                    {t(GROUP_TITLE_KEY[group])}
+                  </h3>
+                  <Badge size="sm" tone="neutral" className="ml-auto nums">
+                    {items.length}
+                  </Badge>
+                </div>
+                <ul className="space-y-2">
+                  {items.map((provider) => {
+                    const meta = metaOf(provider.type);
+                    const FallbackIcon = fallbackIconByType[provider.type] || Server;
+                    return (
+                      <li
+                        key={provider.id}
+                        className="group flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3 transition-colors hover:border-primary/30"
+                      >
+                        <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-lg border', tone.bg, tone.text, tone.border)}>
+                          <ProviderLogo
+                            type={provider.type}
+                            className="h-4 w-4"
+                            fallback={<FallbackIcon className="h-4 w-4" />}
+                          />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-foreground">{provider.name}</span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {meta?.label || getDescription(provider.type, meta, t)}
+                          </span>
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void askDelete(provider)}
+                          disabled={deleteIsPending}
+                          leftIcon={<Trash2 />}
+                          className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+                        >
+                          {t('common.delete')}
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
+      )}
+
       <button
-        onClick={() => onDelete(provider.id)}
-        disabled={deleteIsPending}
-        className="text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-        title="Remove provider"
+        type="button"
+        onClick={onAdd}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-4 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <Trash2 size={16} />
+        <Plus aria-hidden="true" className="h-4 w-4" />
+        {t('setup.providers.add')}
       </button>
-      <CheckCircle2 size={18} className="text-primary shrink-0" />
-    </div>
-  );
-}
 
-function renderProviderCategory(
-  label: string,
-  Icon: LucideIcon,
-  providers: ProviderItem[],
-  onDelete: (id: number) => void,
-  deleteIsPending: boolean,
-) {
-  if (providers.length === 0) return null;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Icon size={16} className="text-muted-foreground" />
-        <h3 className="text-sm font-semibold text-foreground">{label}</h3>
-        <span className="ml-auto text-xs font-medium text-muted-foreground bg-muted px-2 py-1 rounded-full">
-          {providers.length}
-        </span>
-      </div>
-      <div className="space-y-2 pl-6 border-l border-border">
-        {providers.map((provider) => renderProviderCard(provider, onDelete, deleteIsPending))}
-      </div>
-    </div>
-  );
-}
-
-export function ProvidersStep({ providers, onAdd, onDelete, deleteIsPending, onBack, onContinue }: ProvidersStepProps) {
-  // Group providers by category
-  const dnsProviders = providers.filter(p => {
-    const category = categoryByType[p.type];
-    return category?.label?.includes('DNS') || category?.label?.includes('Zero Trust') || isDnsType(p.type);
-  });
-
-  const proxyProviders = providers.filter(p => {
-    const category = categoryByType[p.type];
-    return category?.label?.includes('Proxy') || isProxyType(p.type);
-  });
-
-  return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary grid place-items-center">
-          <GitMerge size={20} />
-        </div>
-        <div>
-          <h2 className="text-xl font-bold text-foreground">Add Integrations</h2>
-          <p className="text-sm text-muted-foreground">Connect your reverse proxies and DNS providers.</p>
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-6 space-y-4">
-        {providers.length === 0 ? (
-          <div className="text-center py-8">
-            <Server className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">No integrations added yet.</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Add at least one reverse proxy (NPM, Traefik, Zoraxy) or DNS provider to get started.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {renderProviderCategory('DNS Providers', Shield, dnsProviders, onDelete, deleteIsPending)}
-            {renderProviderCategory('Reverse Proxies', Server, proxyProviders, onDelete, deleteIsPending)}
-          </div>
-        )}
-
-        <button
-          onClick={onAdd}
-          className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-border rounded-xl py-4 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-primary/40 hover:bg-primary/5 transition-all"
-        >
-          <Plus size={18} />
-          Add a provider
-        </button>
-      </div>
-
-      <div className="flex justify-between">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft size={14} />
-          Back
-        </button>
-        <button
-          onClick={onContinue}
-          className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all"
-        >
-          {providers.length > 0 ? 'Continue' : 'Skip for now'}
-          <ArrowRight size={16} />
-        </button>
-      </div>
-    </div>
+      {ConfirmDialogElement}
+    </SetupStepShell>
   );
 }

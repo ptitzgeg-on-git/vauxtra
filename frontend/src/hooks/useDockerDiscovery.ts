@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '@/api/client';
+import { useT } from '@/i18n';
+import { translateApiError } from '@/lib/errors';
 import type { DockerEndpoint } from '@/types/api';
 
 export type { DockerEndpoint };
@@ -37,6 +39,7 @@ export type DockerContainer = {
 
 export function useDockerDiscovery() {
   const queryClient = useQueryClient();
+  const t = useT();
 
   const [dockerContainers, setDockerContainers] = useState<DockerContainer[]>([]);
   const [selectedDockerIds, setSelectedDockerIds] = useState<string[]>([]);
@@ -77,10 +80,10 @@ export function useDockerDiscovery() {
       setDockerEndpointId(String(data?.id ?? ''));
       setNewDockerEndpointName('');
       setNewDockerEndpointHost('');
-      toast.success('Docker endpoint added');
+      toast.success(t('settings.docker.endpoint_added'));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(err?.response?.data?.detail ?? 'Unable to add Docker endpoint');
+    onError: (err: unknown) => {
+      toast.error(translateApiError(err, t, t('settings.docker.endpoint_add_failed')));
     },
   });
 
@@ -89,10 +92,10 @@ export function useDockerDiscovery() {
       api.post<{ containers: number }>(`/docker/endpoints/${endpointId}/test`),
     onSuccess: (data) => {
       const count = Number(data?.containers ?? 0);
-      toast.success(`Endpoint reachable (${count} container${count !== 1 ? 's' : ''})`);
+      toast.success(t('settings.docker.endpoint_reachable', { count }));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(err?.response?.data?.detail ?? 'Docker endpoint test failed');
+    onError: (err: unknown) => {
+      toast.error(translateApiError(err, t, t('settings.docker.endpoint_test_failed')));
     },
   });
 
@@ -101,10 +104,10 @@ export function useDockerDiscovery() {
       api.post<{ ok: boolean }>(`/docker/endpoints/${endpointId}/default`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['docker-endpoints'] });
-      toast.success('Default Docker endpoint updated');
+      toast.success(t('settings.docker.default_updated'));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(err?.response?.data?.detail ?? 'Unable to update default endpoint');
+    onError: (err: unknown) => {
+      toast.error(translateApiError(err, t, t('settings.docker.default_update_failed')));
     },
   });
 
@@ -114,10 +117,10 @@ export function useDockerDiscovery() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['docker-endpoints'] });
       setDockerEndpointId('');
-      toast.success('Docker endpoint deleted');
+      toast.success(t('settings.docker.endpoint_deleted'));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(err?.response?.data?.detail ?? 'Unable to delete Docker endpoint');
+    onError: (err: unknown) => {
+      toast.error(translateApiError(err, t, t('settings.docker.endpoint_delete_failed')));
     },
   });
 
@@ -131,16 +134,16 @@ export function useDockerDiscovery() {
     onSuccess: (data) => {
       setDockerContainers(data);
       setSelectedDockerIds(data.filter((c) => c.target_port !== null).map((c) => c.id));
-      toast.success(`${data.length} container(s) discovered`);
+      toast.success(t('settings.docker.toast_discovered', { count: data.length }));
     },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      toast.error(err?.response?.data?.detail ?? 'Docker discovery failed');
+    onError: (err: unknown) => {
+      toast.error(translateApiError(err, t, t('settings.docker.discovery_failed')));
     },
   });
 
   const importMutation = useMutation({
     mutationFn: () => {
-      if (!effectiveDomain) throw new Error('A target domain is required');
+      if (!effectiveDomain) throw new Error(t('settings.docker.domain_required'));
       const selected = dockerContainers.filter((c) => selectedDockerIds.includes(c.id));
       return api.post<{ imported: number; skipped: number; errors: string[] }>('/docker/import', {
         endpoint_id: effectiveEndpointId ? Number(effectiveEndpointId) : null,
@@ -164,11 +167,14 @@ export function useDockerDiscovery() {
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
       toast.success(
-        `Docker import done: ${data?.imported ?? 0} imported, ${data?.skipped ?? 0} skipped`,
+        t('settings.docker.import_done', {
+          imported: data?.imported ?? 0,
+          skipped: data?.skipped ?? 0,
+        }),
       );
     },
-    onError: (err: { response?: { data?: { detail?: string } }; message?: string }) => {
-      toast.error(err?.response?.data?.detail ?? err?.message ?? 'Docker import failed');
+    onError: (err: unknown) => {
+      toast.error(translateApiError(err, t, t('settings.docker.import_failed')));
     },
   });
 

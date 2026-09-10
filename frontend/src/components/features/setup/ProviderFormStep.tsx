@@ -1,23 +1,46 @@
-import { useMemo } from 'react';
+/**
+ * Adding one integration, inside the wizard: pick a type, choose guided or expert, fill it in,
+ * validate, connect.
+ *
+ * The wording is shared with the Integrations modal (`provider_modal.*`) so the same screen
+ * never has two names, and the grouping comes from `getProviderGroup`, the same function the
+ * Integrations page uses. Colours come from `toneClasses`: the `provider_color` and
+ * `category_color` the API sends are raw palette classes (`bg-orange-500/10`, `text-blue-600`)
+ * and no screen reads them.
+ */
+
+import { useMemo, useState } from 'react';
+import { AlertTriangle, BookOpen, CheckCircle2, ChevronRight, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
 import {
-  ArrowLeft, ArrowRight, GitMerge, Server, X, Loader2, CheckCircle2, AlertTriangle,
-  BookOpen, Zap, ChevronRight, Shield, Plus,
-} from 'lucide-react';
-import { ProviderLogo } from '@/components/ui/ProviderLogos';
+  Badge,
+  Card,
+  CardContent,
+  Field,
+  IconButton,
+  InlineAlert,
+  Input,
+  ProviderLogo,
+  cn,
+  toneClasses,
+  type Tone,
+} from '@/components/ui';
 import {
-  type ProviderFormState,
-  type ProviderValidationResult,
-  type ProviderTypeMeta,
-  type GuidedStep,
-  fallbackIconByType as iconByType,
-  getDescription,
-  getCategory,
-  getProviderColor,
-  getGuidedSteps,
+  PROVIDER_GROUPS,
   canSubmitProvider as canSubmitProviderFn,
-  isDnsType,
-  isProxyType,
+  fallbackIconByType,
+  getDescription,
+  getGuidedSteps,
+  getPassLabel,
+  getProviderGroup,
+  getUserLabel,
+  type GuidedStep,
+  type ProviderFormState,
+  type ProviderGroup,
+  type ProviderTypeMeta,
+  type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { useT } from '@/i18n';
+import { SetupStepShell } from './SetupStepShell';
 
 interface ProviderFormStepProps {
   formData: ProviderFormState;
@@ -36,439 +59,434 @@ interface ProviderFormStepProps {
   createIsPending: boolean;
 }
 
+const GROUP_TITLE_KEY: Record<ProviderGroup, string> = {
+  reverse: 'providers.section.reverse',
+  tunnel: 'providers.section.tunnel',
+  dns: 'providers.section.dns',
+  other: 'providers.section.other',
+};
+
+const GROUP_TONE: Record<ProviderGroup, Tone> = {
+  reverse: 'primary',
+  tunnel: 'primary',
+  dns: 'info',
+  other: 'neutral',
+};
+
+/** True when a guided step still has a required field the user has not filled. */
+function stepIncomplete(step: GuidedStep | undefined, formData: ProviderFormState): boolean {
+  if (!step?.fields) return false;
+  return step.fields.some((f) => !f.optional && !formData[f.key]?.trim());
+}
+
 export function ProviderFormStep({
-  formData, setFormData,
-  wizardMode, setWizardMode,
-  guidedStepIndex, setGuidedStepIndex,
-  validationResult, setValidationResult,
+  formData,
+  setFormData,
+  wizardMode,
+  setWizardMode,
+  guidedStepIndex,
+  setGuidedStepIndex,
+  validationResult,
+  setValidationResult,
   providerTypes,
-  onCancel, onValidate, validateIsPending, onCreate, createIsPending,
+  onCancel,
+  onValidate,
+  validateIsPending,
+  onCreate,
+  createIsPending,
 }: ProviderFormStepProps) {
-  const availableProviderTypes = useMemo(() => {
-    const entries = Object.entries(providerTypes || {}).filter(([, meta]) => Boolean(meta?.available));
-    return entries.sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])));
+  const t = useT();
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+
+  const grouped = useMemo(() => {
+    const available = Object.entries(providerTypes || {})
+      .filter(([, meta]) => Boolean(meta?.available))
+      .sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])));
+
+    return PROVIDER_GROUPS.map((group) => ({
+      group,
+      items: available.filter(([type, meta]) => getProviderGroup(type, meta) === group),
+    })).filter((entry) => entry.items.length > 0);
   }, [providerTypes]);
 
-  const groupedProviderTypes = useMemo(() => {
-    const tunnelTypes = new Set(['cloudflare_tunnel']);
-    const groups: Record<string, Array<[string, ProviderTypeMeta]>> = {
-      'DNS Providers': [],
-      'Reverse & Tunnel Providers': [],
-      Other: [],
-    };
+  const selectedMeta: ProviderTypeMeta = (providerTypes || {})[formData.type] || {};
+  const selectedLabel = String(selectedMeta.label || formData.type);
+  const guidedSteps = getGuidedSteps(formData.type, selectedMeta, t);
+  const currentGuidedStep = guidedSteps[guidedStepIndex];
+  const canSubmitProvider = canSubmitProviderFn(formData, selectedMeta);
 
-    for (const [type, meta] of availableProviderTypes) {
-      if (isDnsType(type, meta)) {
-        groups['DNS Providers'].push([type, meta]);
-      } else if (isProxyType(type, meta) || meta?.capabilities?.supports_tunnel || tunnelTypes.has(type)) {
-        groups['Reverse & Tunnel Providers'].push([type, meta]);
-      } else {
-        groups.Other.push([type, meta]);
-      }
-    }
-
-    return [
-      { title: 'DNS Providers', items: groups['DNS Providers'] },
-      { title: 'Reverse & Tunnel Providers', items: groups['Reverse & Tunnel Providers'] },
-      { title: 'Other', items: groups.Other },
-    ].filter((group) => group.items.length > 0);
-  }, [availableProviderTypes]);
-
-  const selectedMeta = (providerTypes || {})[formData.type] || {};
-  const currentGuidedSteps: GuidedStep[] = getGuidedSteps(formData.type, selectedMeta);
-  const currentGuidedStep = currentGuidedSteps[guidedStepIndex];
-  const canSubmitProvider = canSubmitProviderFn(formData);
+  const isLastGuided = guidedStepIndex === guidedSteps.length - 1;
+  const showExpert = wizardMode === 'expert' || (wizardMode === null && formData.type !== '' && guidedSteps.length === 0);
+  const showGuided = wizardMode === 'guided' && Boolean(currentGuidedStep);
+  const showModeChoice = Boolean(formData.type) && wizardMode === null && guidedSteps.length > 0;
 
   const chooseProviderType = (type: string, label: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      type,
-      name: prev.name.trim() ? prev.name : label,
-    }));
+    setFormData((prev) => ({ ...prev, type, name: prev.name.trim() ? prev.name : label }));
     setValidationResult(null);
   };
 
-  return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary grid place-items-center">
-            <GitMerge size={20} />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold text-foreground">
-              {formData.type ? (selectedMeta.label || formData.type) : 'Choose Provider'}
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              {formData.type
-                ? wizardMode === 'guided'
-                  ? `Step ${guidedStepIndex + 1} of ${currentGuidedSteps.length}`
-                  : 'Enter connection details'
-                : 'Select the service you want to connect'}
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={onCancel}
-          className="p-2 text-muted-foreground hover:text-foreground bg-muted hover:bg-accent rounded-lg transition-colors"
-          aria-label="Cancel"
-        >
-          <X size={18} />
-        </button>
-      </div>
+  const clearType = () => {
+    setFormData((prev) => ({ ...prev, type: '' }));
+    setWizardMode(null);
+    setGuidedStepIndex(0);
+    setValidationResult(null);
+  };
 
-      {/* Type selection */}
+  const setValue = (key: keyof ProviderFormState, value: string) => {
+    setFormData((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const toggleReveal = (key: string) => setRevealed((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  const passwordToggle = (key: string) => (
+    <button
+      type="button"
+      onClick={() => toggleReveal(key)}
+      aria-label={revealed[key] ? t('provider_modal.field.hide_password') : t('provider_modal.field.show_password')}
+      aria-pressed={Boolean(revealed[key])}
+      tabIndex={-1}
+      className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {revealed[key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+    </button>
+  );
+
+  // ─── header ────────────────────────────────────────────────────
+  const title = formData.type ? selectedLabel : t('provider_modal.type.title');
+  const description = !formData.type
+    ? t('provider_modal.type.description')
+    : showGuided
+      ? t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })
+      : showModeChoice
+        ? t('provider_modal.mode.label')
+        : t('setup.provider_form.expert_subtitle');
+
+  // ─── back ──────────────────────────────────────────────────────
+  const back = !formData.type
+    ? onCancel
+    : showGuided && guidedStepIndex > 0
+      ? () => {
+          setGuidedStepIndex(guidedStepIndex - 1);
+          setValidationResult(null);
+        }
+      : guidedSteps.length > 0 && wizardMode !== null
+        ? () => setWizardMode(null)
+        : clearType;
+
+  const backLabel = formData.type ? undefined : t('common.cancel');
+
+  // ─── primary ───────────────────────────────────────────────────
+  const busy = validateIsPending || createIsPending;
+
+  const primary = showGuided
+    ? !isLastGuided
+      ? {
+          label: t('provider_modal.guided.next'),
+          onClick: () => setGuidedStepIndex(guidedStepIndex + 1),
+          disabled: stepIncomplete(currentGuidedStep, formData),
+        }
+      : validationResult?.ok
+        ? {
+            label: t('provider_modal.footer.connect'),
+            onClick: onCreate,
+            disabled: !canSubmitProvider || busy,
+            loading: createIsPending,
+            icon: <Plus />,
+          }
+        : {
+            label: validateIsPending ? t('provider_modal.footer.validating') : t('provider_modal.footer.validate'),
+            onClick: onValidate,
+            disabled: !canSubmitProvider || busy || stepIncomplete(currentGuidedStep, formData),
+            loading: validateIsPending,
+            icon: <Shield />,
+          }
+    : showExpert
+      ? validationResult?.ok
+        ? {
+            label: t('provider_modal.footer.connect'),
+            onClick: onCreate,
+            disabled: !canSubmitProvider || busy,
+            loading: createIsPending,
+            icon: <Plus />,
+          }
+        : {
+            label: validateIsPending ? t('provider_modal.footer.validating') : t('provider_modal.footer.validate'),
+            onClick: onValidate,
+            disabled: !canSubmitProvider || busy,
+            loading: validateIsPending,
+            icon: <Shield />,
+          }
+      : undefined;
+
+  const validationBlock = validationResult ? (
+    <InlineAlert
+      tone={validationResult.ok ? 'success' : 'danger'}
+      title={validationResult.ok ? t('provider_modal.validation.title_ok') : t('provider_modal.validation.title_failed')}
+    >
+      {validationResult.validation?.checks && validationResult.validation.checks.length > 0 && (
+        <ul className="space-y-1">
+          {validationResult.validation.checks
+            .filter((check) => (validationResult.ok ? true : !check.ok))
+            .map((check, i) => (
+              <li key={i} className="flex items-start gap-1.5">
+                {check.ok ? (
+                  <CheckCircle2 aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-success" />
+                ) : (
+                  <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
+                )}
+                <span>
+                  <span className="font-medium">{check.name || t('provider_modal.validation.check_fallback')}</span>
+                  {check.detail ? ` — ${check.detail}` : ''}
+                </span>
+              </li>
+            ))}
+        </ul>
+      )}
+      {validationResult.health?.status && (
+        <p className="mt-1">{t('provider_modal.validation.health', { status: validationResult.health.status })}</p>
+      )}
+    </InlineAlert>
+  ) : null;
+
+  return (
+    <SetupStepShell
+      icon={<GitMerge />}
+      title={title}
+      description={description}
+      headerAside={<IconButton label={t('common.cancel')} icon={<X />} tooltip onClick={onCancel} className="text-muted-foreground" />}
+      onBack={back}
+      backLabel={backLabel}
+      backDisabled={busy}
+      primary={primary}
+      bare
+    >
+      {/* 1 ─ type picker */}
       {!formData.type && (
-        <div className="bg-card border border-border rounded-xl p-6">
-          <div className="space-y-4">
-            {groupedProviderTypes.map((group) => (
-              <div key={group.title} className="space-y-2">
-                <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest">{group.title}</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {group.items.map(([type, meta]) => {
-                    const FallbackIcon = iconByType[type] || Server;
+        <div className="space-y-6">
+          {grouped.length === 0 && (
+            <Card>
+              <CardContent className="p-6">
+                <p className="text-sm text-muted-foreground">{t('provider_modal.type.empty')}</p>
+              </CardContent>
+            </Card>
+          )}
+          {grouped.map(({ group, items }) => {
+            const tone = toneClasses(GROUP_TONE[group]);
+            return (
+              <section key={group} className="space-y-3">
+                <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                  {t(GROUP_TITLE_KEY[group])}
+                </h3>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {items.map(([type, meta]) => {
+                    const FallbackIcon = fallbackIconByType[type] || Server;
                     return (
                       <button
                         key={type}
+                        type="button"
                         onClick={() => chooseProviderType(type, String(meta.label || type))}
-                        className="flex items-start gap-4 p-4 rounded-xl text-left border border-border bg-background hover:border-primary/40 hover:bg-primary/5 transition-all"
+                        className="flex items-start gap-3 rounded-xl border border-border bg-card p-4 text-left shadow-card transition-[transform,box-shadow,border-color] duration-200 ease-out-expo hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <div className={`p-2.5 rounded-lg border ${getProviderColor(type, meta)}`}>
-                          <ProviderLogo type={type} className="w-6 h-6" fallback={<FallbackIcon className="w-6 h-6" />} />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-semibold text-sm text-foreground">{meta.label || type}</div>
-                          <div className="text-xs text-muted-foreground mt-0.5">{getDescription(type, meta)}</div>
-                          {getCategory(type, meta) && (
-                            <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${getCategory(type, meta)!.color}`}>
-                              {getCategory(type, meta)!.label}
-                            </span>
-                          )}
-                        </div>
+                        <span className={cn('grid h-11 w-11 shrink-0 place-items-center rounded-lg border', tone.bg, tone.text, tone.border)}>
+                          <ProviderLogo type={type} className="h-5 w-5" fallback={<FallbackIcon className="h-5 w-5" />} />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-semibold text-foreground">{meta.label || type}</span>
+                          <span className="mt-0.5 block text-xs text-muted-foreground">{getDescription(type, meta, t)}</span>
+                        </span>
                       </button>
                     );
                   })}
                 </div>
-              </div>
-            ))}
-          </div>
+              </section>
+            );
+          })}
         </div>
       )}
 
-      {/* Mode selection */}
-      {formData.type && !wizardMode && currentGuidedSteps.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
-          <p className="text-sm text-muted-foreground">How do you want to set this up?</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <button
-              onClick={() => { setWizardMode('guided'); setGuidedStepIndex(0); }}
-              className="flex flex-col items-start gap-3 p-5 rounded-xl border-2 border-primary/30 bg-primary/5 hover:bg-primary/10 hover:border-primary/50 transition-all text-left"
-            >
-              <div className="p-2 rounded-lg bg-primary/10 border border-primary/20 text-primary">
-                <BookOpen className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-semibold text-foreground">Guided setup</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Step-by-step instructions ({currentGuidedSteps.length} steps)
-                </p>
-              </div>
-              <span className="text-xs text-primary font-semibold flex items-center gap-1">
-                Recommended <ChevronRight className="w-3.5 h-3.5" />
+      {/* 2 ─ guided or expert */}
+      {showModeChoice && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => {
+              setWizardMode('guided');
+              setGuidedStepIndex(0);
+            }}
+            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-primary/30 bg-primary/5 p-5 text-left transition-colors hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
+              <BookOpen className="h-5 w-5" />
+            </span>
+            <span className="block">
+              <span className="block text-sm font-semibold text-foreground">{t('provider_modal.mode.guided')}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {t('setup.provider_form.guided_hint', { count: guidedSteps.length })}
               </span>
-            </button>
+            </span>
+            <span className="mt-auto inline-flex items-center gap-1 pt-1 text-xs font-semibold text-primary">
+              {t('setup.password.recommended')}
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+            </span>
+          </button>
 
-            <button
-              onClick={() => setWizardMode('expert')}
-              className="flex flex-col items-start gap-3 p-5 rounded-xl border border-border bg-background hover:bg-muted transition-all text-left"
-            >
-              <div className="p-2 rounded-lg bg-muted border border-border text-muted-foreground">
-                <Zap className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="font-semibold text-foreground">Quick setup</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  I already have my credentials ready
-                </p>
-              </div>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setWizardMode('expert')}
+            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-transparent bg-muted/50 p-5 text-left transition-colors hover:border-border hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-border bg-muted text-muted-foreground">
+              <Zap className="h-5 w-5" />
+            </span>
+            <span className="block">
+              <span className="block text-sm font-semibold text-foreground">{t('provider_modal.mode.expert')}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{t('setup.provider_form.expert_hint')}</span>
+            </span>
+          </button>
         </div>
       )}
 
-      {/* No guided steps available */}
-      {formData.type && !wizardMode && currentGuidedSteps.length === 0 && (
-        <div className="bg-card border border-border rounded-xl p-6">
-          <p className="text-sm text-muted-foreground mb-4">Enter connection details for {selectedMeta.label || formData.type}:</p>
-        </div>
-      )}
-
-      {/* Guided mode */}
-      {formData.type && wizardMode === 'guided' && currentGuidedStep && (
-        <div className="bg-card border border-border rounded-xl p-6 space-y-5">
-          <div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide mb-2">
-              <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">
-                Step {guidedStepIndex + 1}/{currentGuidedSteps.length}
-              </span>
+      {/* 3 ─ guided */}
+      {showGuided && currentGuidedStep && (
+        <Card>
+          <CardContent className="space-y-5 p-5 sm:p-6">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="primary" size="sm" className="nums">
+                {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
+              </Badge>
+              <h3 className="text-base font-semibold text-foreground">{currentGuidedStep.title}</h3>
             </div>
-            <h3 className="text-lg font-bold text-foreground">{currentGuidedStep.title}</h3>
-          </div>
 
-          <div className="bg-muted/50 border border-border rounded-lg p-4">
-            <pre className="text-sm text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
+            <p className="whitespace-pre-wrap rounded-xl border border-border bg-muted/50 p-4 text-sm leading-relaxed text-muted-foreground">
               {currentGuidedStep.body}
-            </pre>
-          </div>
+            </p>
 
-          {currentGuidedStep.fields && (
-            <div className="space-y-4">
-              {currentGuidedStep.fields.map((field) => (
-                <div key={field.key} className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                    {field.label}
-                  </label>
-                  <input
-                    type={field.inputType || 'text'}
+            {currentGuidedStep.fields?.map((field) => {
+              const id = `vx-guided-${field.key}`;
+              const isSecret = field.inputType === 'password';
+              return (
+                <Field
+                  key={field.key}
+                  label={field.label}
+                  htmlFor={id}
+                  hint={field.hint}
+                  labelAddon={
+                    field.optional ? (
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {t('provider_modal.guided.optional')}
+                      </span>
+                    ) : undefined
+                  }
+                >
+                  <Input
+                    id={id}
+                    type={isSecret && !revealed[field.key] ? 'password' : field.inputType === 'url' ? 'url' : 'text'}
                     value={formData[field.key]}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                    onChange={(e) => setValue(field.key, e.target.value)}
                     placeholder={field.placeholder}
-                    className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                    className={isSecret ? undefined : 'font-mono'}
+                    autoComplete={isSecret ? 'off' : undefined}
+                    spellCheck={false}
+                    rightIcon={isSecret ? passwordToggle(field.key) : undefined}
                   />
-                  {field.hint && (
-                    <p className="text-xs text-muted-foreground">{field.hint}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                </Field>
+              );
+            })}
 
-          {/* Display name — shown only on the last guided step */}
-          {guidedStepIndex === currentGuidedSteps.length - 1 && (
-            <div className="space-y-1.5 border-t border-border pt-4">
-              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Display Name
-              </label>
-              <input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder={selectedMeta.label || formData.type}
-                className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-              <p className="text-xs text-muted-foreground">Friendly name shown in Vauxtra.</p>
-            </div>
-          )}
-
-          {/* Validation result inline */}
-          {guidedStepIndex === currentGuidedSteps.length - 1 && validationResult && (
-            <div className={`p-4 rounded-lg border ${validationResult.ok ? 'bg-green-500/5 border-green-500/30' : 'bg-destructive/5 border-destructive/30'}`}>
-              <div className="flex items-center gap-2">
-                {validationResult.ok ? (
-                  <CheckCircle2 size={16} className="text-green-600 dark:text-green-400" />
-                ) : (
-                  <AlertTriangle size={16} className="text-destructive" />
-                )}
-                <span className={`text-sm font-semibold ${validationResult.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'}`}>
-                  {validationResult.ok ? 'Connection successful!' : 'Connection failed'}
-                </span>
+            {isLastGuided && (
+              <div className="space-y-5 border-t border-border pt-5">
+                <Field label={t('provider_modal.field.name')} htmlFor="vx-guided-name" hint={t('provider_modal.field.name_hint')}>
+                  <Input
+                    id="vx-guided-name"
+                    value={formData.name}
+                    onChange={(e) => setValue('name', e.target.value)}
+                    placeholder={t('provider_modal.field.name_placeholder', { label: selectedLabel })}
+                  />
+                </Field>
+                {validationBlock}
               </div>
-              {!validationResult.ok && validationResult.validation?.checks && (
-                <ul className="text-xs space-y-1 text-muted-foreground mt-2">
-                  {validationResult.validation.checks.filter(c => !c.ok).map((check, i) => (
-                    <li key={i} className="flex items-center gap-1.5">
-                      <X size={12} className="text-destructive" />
-                      {check.name}: {check.detail}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-
-          <div className="flex justify-between pt-2">
-            <button
-              onClick={() => {
-                if (guidedStepIndex > 0) {
-                  setGuidedStepIndex(guidedStepIndex - 1);
-                  setValidationResult(null);
-                } else {
-                  setWizardMode(null);
-                }
-              }}
-              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft size={14} />
-              Back
-            </button>
-            {guidedStepIndex < currentGuidedSteps.length - 1 ? (
-              <button
-                onClick={() => setGuidedStepIndex(guidedStepIndex + 1)}
-                disabled={
-                  currentGuidedStep.fields &&
-                  currentGuidedStep.fields.some((f) => !f.optional && !formData[f.key]?.trim())
-                }
-                className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-              >
-                Next
-                <ArrowRight size={16} />
-              </button>
-            ) : validationResult?.ok ? (
-              <button
-                onClick={onCreate}
-                disabled={createIsPending}
-                className="inline-flex items-center gap-2 bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-              >
-                {createIsPending ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-                Add {selectedMeta.label || formData.type}
-              </button>
-            ) : (
-              <button
-                onClick={() => { if (canSubmitProvider) onValidate(); }}
-                disabled={
-                  !canSubmitProvider || validateIsPending ||
-                  (currentGuidedStep.fields && currentGuidedStep.fields.some((f) => !f.optional && !formData[f.key]?.trim()))
-                }
-                className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-              >
-                {validateIsPending ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-                Validate & Connect
-              </button>
             )}
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Expert mode */}
-      {formData.type && wizardMode === 'expert' && (
-        <div className="bg-card border border-border rounded-xl p-6 space-y-5">
-          <div className="grid grid-cols-1 gap-4">
-            <div className="space-y-1.5">
-              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">Display name</label>
-              <input
-                type="text"
+      {/* 4 ─ expert */}
+      {showExpert && (
+        <Card>
+          <CardContent className="space-y-5 p-5 sm:p-6">
+            <Field label={t('provider_modal.field.name')} htmlFor="vx-expert-name" hint={t('provider_modal.field.name_hint')}>
+              <Input
+                id="vx-expert-name"
                 value={formData.name}
-                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder={selectedMeta.label || formData.type}
-                className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                onChange={(e) => setValue('name', e.target.value)}
+                placeholder={t('provider_modal.field.name_placeholder', { label: selectedLabel })}
               />
-            </div>
+            </Field>
 
             {formData.type !== 'cloudflare' && formData.type !== 'cloudflare_tunnel' && (
-              <div className="space-y-1.5">
-                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">URL</label>
-                <input
+              <Field label={t('provider_modal.field.url')} htmlFor="vx-expert-url">
+                <Input
+                  id="vx-expert-url"
                   type="url"
                   value={formData.url}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, url: e.target.value }))}
-                  placeholder={selectedMeta.placeholder_url || 'http://...'}
-                  className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                  onChange={(e) => setValue('url', e.target.value)}
+                  placeholder={selectedMeta.placeholder_url || 'http://'}
+                  className="font-mono"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
-              </div>
+              </Field>
             )}
 
             {formData.type === 'cloudflare_tunnel' && (
-              <div className="space-y-1.5">
-                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tunnel ID</label>
-                <input
-                  type="text"
+              <Field
+                label={t('provider_modal.field.tunnel_id')}
+                htmlFor="vx-expert-tunnel"
+                hint={t('provider_modal.field.tunnel_id_hint')}
+              >
+                <Input
+                  id="vx-expert-tunnel"
                   value={formData.tunnel_id}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, tunnel_id: e.target.value }))}
+                  onChange={(e) => setValue('tunnel_id', e.target.value)}
                   placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                  className="font-mono"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
-              </div>
+              </Field>
             )}
 
-            {(formData.type !== 'traefik' || formData.username) && (
-              <div className="space-y-1.5">
-                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  {selectedMeta.user_label || (formData.type === 'cloudflare' ? 'Email' : formData.type === 'cloudflare_tunnel' ? 'Account ID' : 'Username')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.username}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, username: e.target.value }))}
-                  placeholder={selectedMeta.user_label || 'Username or email'}
-                  className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                {selectedMeta.pass_label || (formData.type.startsWith('cloudflare') ? 'API Token' : 'Password / Token')}
-              </label>
-              <input
-                type="password"
-                value={formData.password}
-                onChange={(e) => setFormData((prev) => ({ ...prev, password: e.target.value }))}
-                placeholder="••••••••"
-                className="w-full bg-background border border-input rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            <Field label={getUserLabel(formData.type, selectedMeta, t)} htmlFor="vx-expert-user">
+              <Input
+                id="vx-expert-user"
+                value={formData.username}
+                onChange={(e) => setValue('username', e.target.value)}
+                autoComplete="off"
               />
-            </div>
-          </div>
+            </Field>
 
-          {validationResult && (
-            <div className={`p-4 rounded-lg border ${validationResult.ok ? 'bg-green-500/5 border-green-500/30' : 'bg-destructive/5 border-destructive/30'}`}>
-              <div className="flex items-center gap-2 mb-2">
-                {validationResult.ok ? (
-                  <CheckCircle2 size={16} className="text-green-600 dark:text-green-400" />
-                ) : (
-                  <AlertTriangle size={16} className="text-destructive" />
-                )}
-                <span className={`text-sm font-semibold ${validationResult.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'}`}>
-                  {validationResult.ok ? 'Validation passed' : 'Validation failed'}
-                </span>
-              </div>
-              {validationResult.validation?.checks && (
-                <ul className="text-xs space-y-1 text-muted-foreground">
-                  {validationResult.validation.checks.map((check, i) => (
-                    <li key={i} className="flex items-center gap-1.5">
-                      {check.ok ? (
-                        <CheckCircle2 size={12} className="text-green-600 dark:text-green-400" />
-                      ) : (
-                        <X size={12} className="text-destructive" />
-                      )}
-                      {check.name}: {check.detail}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
+            <Field label={getPassLabel(formData.type, selectedMeta, t)} htmlFor="vx-expert-pass">
+              <Input
+                id="vx-expert-pass"
+                type={revealed.password ? 'text' : 'password'}
+                value={formData.password}
+                onChange={(e) => setValue('password', e.target.value)}
+                autoComplete="off"
+                rightIcon={passwordToggle('password')}
+              />
+            </Field>
 
-          <div className="flex justify-between pt-2">
-            <button
-              onClick={() => setWizardMode(null)}
-              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft size={14} />
-              Back
-            </button>
-            {validationResult?.ok ? (
-              <button
-                onClick={onCreate}
-                disabled={!canSubmitProvider || createIsPending}
-                className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-50"
-              >
-                {createIsPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                Add provider
-              </button>
-            ) : (
-              <button
-                onClick={onValidate}
-                disabled={!canSubmitProvider || validateIsPending}
-                className="inline-flex items-center gap-2 bg-primary text-primary-foreground hover:opacity-90 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-50"
-              >
-                {validateIsPending ? <Loader2 size={14} className="animate-spin" /> : <Shield size={14} />}
-                Validate & Connect
-              </button>
+            {!canSubmitProvider && !validationResult && (
+              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <AlertTriangle aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
+                {t('setup.provider_form.missing_fields')}
+              </p>
             )}
-          </div>
-        </div>
+
+            {validationBlock}
+          </CardContent>
+        </Card>
       )}
-    </div>
+    </SetupStepShell>
   );
 }
