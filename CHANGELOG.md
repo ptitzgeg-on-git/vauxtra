@@ -101,6 +101,23 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
   `settings.api_keys.create_failed`.
 - **The three big modals were plain divs stacked over the page**: no `role="dialog"`, no
   `aria-modal`, no Escape, and Tab walked out of the box into the form underneath.
+- **The log filter queried a level the backend never writes.** The chips asked for
+  `ok`, which no code path records, and offered no `warn`, which several do — so
+  two filters returned an empty table and one class of log was unreachable. Levels
+  are now normalised on write and the same set is used on both sides.
+- **The DNS suffix field accepted names the server rejects.** A single label passed
+  the browser regex and came back as a 400 from the API.
+- **Monitoring poisoned the shared endpoints cache.** It wrote its normalised list to
+  session storage on every render, including the empty list that exists before the
+  query resolves — so a reload could paint an empty Endpoints page from the cache.
+- **A certificate expiring near midnight UTC was counted a day off**, in one direction
+  west of Greenwich and the other east: the fallback route serves a naive timestamp and
+  the browser read it as local time.
+- **Deleting an integration forced the delete without asking.** The call sent
+  `force=true` up front, so the 409 listing the endpoints that depend on it was never
+  shown. The confirmation now names them before anything is removed.
+- Writing to an integration left its inspector panel stale — health, proxy hosts and DNS
+  records were keyed per id and never invalidated.
 
 ### Changed
 - `ServiceIn` now rejects unknown keys (`extra="forbid"`). **Breaking** for any client that
@@ -114,6 +131,12 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
 - Docs follow the code: a Scopes section in HOWTO, `APP_PASSWORD` /
   `ALLOW_PLAINTEXT_APP_PASSWORD` documented in `.env.example` and DEPLOYMENT, and
   `vauxtra_mcp/README.md` no longer advertises an "all" scope that does not exist.
+- Errors the API returns for a preflight refusal, a drift issue or a provider
+  diagnostic now carry a `detail_key` and its parameters beside the English
+  `detail` (60 codes), so the UI shows them in the user's language instead of an
+  English sentence. Old clients keep reading `detail`.
+- The interface is fully translated: 297 to 1783 keys per language, the same keys
+  in the same order in all eight locales, and no English string left in the code.
 
 ### Added
 - **Zoraxy provider** (`zoraxy`, Reverse Proxy). Drives host rules through the management
@@ -128,6 +151,18 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
   parity, no accent lost to a `?`, every `t('…')` key defined, and every full-screen
   overlay declaring itself a dialog. CI runs `i18n:quality` but never `i18n:check`, so
   key parity was ungated until now.
+- **Rebuilt interface.** One design system behind every screen: 26 primitives
+  (buttons, cards, modals, drawers, fields, tabs, empty states, skeletons,
+  tooltips), light/dark tokens, a single focus ring, and animations that stand
+  down under `prefers-reduced-motion`. The shell gained a collapsible sidebar
+  whose badges count what needs attention (enabled endpoints, integrations,
+  expiring certificates, endpoints in error), a Ctrl/Cmd+K command palette over
+  pages, settings tabs, endpoints, integrations and languages, a shortcuts sheet
+  (`?`) with `g`-chords, and a mobile header with a navigation drawer. The theme
+  is applied before the first paint, so a dark instance no longer flashes white.
+- **Templates page** (`/templates`) — the saved service templates now have a screen.
+- Settings split into nine tabs across their own files (`Settings.tsx`: 1909 lines
+  to 134), and the data tab into four sections (sync, Docker, export, restore).
 
 ---
 
