@@ -52,6 +52,65 @@ jobs:
       - name: Repo hygiene gate
         run: python scripts/check_repo_hygiene.py
 
+  # Two gaps, one job. Nothing in this repository ever ran `docker build` outside the
+  # publish step, so a Dockerfile that does not build was discovered at the worst possible
+  # moment: on a tag, after tests and this scan had both gone green, with the version
+  # already public in git and no image to go with it. And every scanner here reads the
+  # *source tree* -- Trivy over the working copy, Grype over an SBOM of the working copy --
+  # so the thing operators actually run was the one thing nobody looked at. `python:
+  # 3.13-slim` is a Debian userland: a critical openssl or zlib advisory lands in the
+  # shipped image without touching a single line of this repository, and none of the steps
+  # below the source scan would have said a word about it.
+  #
+  # One platform on purpose. This proves the build and scans the userland, both of which
+  # are architecture-independent here; the multi-arch build stays where the publish is, and
+  # shares this job's layer cache when it gets there.
+  image-scan:
+    name: Image build & scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build the image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: vauxtra:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy — image scan (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: vauxtra:scan
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: CRITICAL,HIGH
+          # Same reasoning as the filesystem scan: without this, trivy never receives
+          # `--exit-code` and reports success whatever it finds.
+          exit-code: "1"
+          # A base-image CVE with no fixed version yet is not something this repository can
+          # act on, and a gate nobody can turn green is a gate people learn to bypass. The
+          # finding still reaches the Security tab through the upload below.
+          ignore-unfixed: true
+
+      - name: Upload image scan results to Security tab
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always() && hashFiles('trivy-image-results.sarif') != '' && !startsWith(github.ref, 'refs/tags/')
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
+
   vuln-scan:
     name: Vulnerability scan (Trivy + Grype)
     runs-on: ubuntu-latest
