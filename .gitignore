@@ -31,7 +31,9 @@ frontend/dist/
 /reports/
 *.log
 /vauxtra-dev/
-/lab/
+# The lab's tooling is tracked; its container state is not.
+/lab/providers/
+/lab/state/
 
 # Editor and OS
 .DS_Store

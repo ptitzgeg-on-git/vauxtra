@@ -1,0 +1,29 @@
+# Minimal AdGuard Home configuration, copied into ./state/adguard/conf by up.sh.
+#
+# AdGuard's first-run wizard is four HTML screens with no API behind them, so a container
+# that starts empty cannot be seeded from a script. Shipping a config that already has a
+# user in it skips the wizard entirely: AdGuard fills every other key with its own
+# defaults on first boot, and rewrites this file as it goes -- which is why the harness
+# never mounts this copy directly.
+#
+# The hash is bcrypt of `vauxtra-lab-pw`, the lab fixture password. It guards a throwaway
+# container bound to 127.0.0.1 and nothing else.
+http:
+  address: 0.0.0.0:80
+  session_ttl: 720h
+users:
+  - name: admin
+    password: $2b$12$Kdquwq.nMWNECju0E7Z9F.MR8.e4ibKzLQdItOjYUkuIPOHnZjgfi
+auth_attempts: 5
+block_auth_min: 15
+dns:
+  bind_hosts: [0.0.0.0]
+  port: 53
+  upstream_dns: [1.1.1.1]
+  bootstrap_dns: [1.1.1.1]
+  rewrites: []
+filtering:
+  rewrites: []
+  protection_enabled: true
+  filtering_enabled: true
+schema_version: 29
