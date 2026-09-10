@@ -28,6 +28,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **The interface stopped reporting a healthy state it had not verified.** Two places, one
+  defect: the server did not answer and the UI rendered the reassuring answer.
+  `AuthGate` never read `isError`. With `retry: false` a single failed `/auth/me` ends the
+  query — `isLoading` drops, `auth` stays `undefined`, and both guards below it are written
+  with `auth?.`, so both are falsy and `<AppRoutes />` renders. On a password-protected
+  instance a backend hiccup showed the entire app shell to somebody who never signed in
+  (the API still refused every request behind it, but the screen said otherwise); on a fresh
+  install it walked straight past the setup wizard onto an empty dashboard, which reads as
+  "setup is broken". It did not recover on its own either: `refetchOnWindowFocus` is off,
+  `staleTime` is 60 s, and the `vauxtra:auth-expired` interceptor deliberately ignores
+  `/auth/` URLs. There is now an error screen with a retry.
+  Certificate expiry was worse, because the failure was rewritten as data. The dashboard and
+  sidebar queries caught the error and *resolved* with a fabricated `expiring_soon_count: 0`,
+  so the query never reported an error at all: the tile read "0 of 0", the warning badge
+  disappeared, and an operator whose certificate expires in three days was actively told
+  everything was fine. All three consumers share the `['certificates-expiry']` key — sidebar,
+  dashboard, Certificates page — so that invented zero landed in the cache the other two
+  read, and the Certificates page, which never had a `.catch`, never showed its own error
+  state because the query had already "succeeded". Both `.catch` blocks are gone: the tile
+  shows `—` and says the check is unavailable, "Needs attention" gains an entry saying so,
+  and the sidebar badge stays off because the count is unknown rather than zero.
 - **PowerDNS no longer deletes the records it could not read.** PowerDNS writes a record
   *set*: `add_rewrite()` reads the existing values, appends one, and sends the whole set
   back with `changetype: REPLACE`. `_zone_rrsets()` returned an empty list for *every*
