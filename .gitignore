@@ -7,8 +7,10 @@
 *.db
 *.sqlite
 
-# Application data (DB, uploaded files)
-data/
+# Application data (DB, uploaded files). Anchored: without the leading `/`, the
+# pattern also swallows any source directory named `data` at any depth, and
+# `git add -A` skips it without a word. It did — four settings components.
+/data/
 
 # Python
 __pycache__/
@@ -23,13 +25,13 @@ frontend/dist/
 *.tsbuildinfo
 
 # Local artifacts
-local/
-.local/
-tmp/
-reports/
+/local/
+/.local/
+/tmp/
+/reports/
 *.log
-vauxtra-dev/
-lab/
+/vauxtra-dev/
+/lab/
 
 # Editor and OS
 .DS_Store
