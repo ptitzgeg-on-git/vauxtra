@@ -1,0 +1,90 @@
+# Real provider instances for the Vauxtra harness -- the actual images an operator runs,
+# not mocks. `lab/harness.py` drives a real Vauxtra against them.
+#
+# Ports are bound to 127.0.0.1 only. Every one of these ships an admin panel, and Pi-hole
+# and Technitium also answer DNS: none of it belongs on the LAN. The password is the same
+# throughout (`vauxtra-lab-pw`) because it is a fixture, not a secret -- these containers
+# are disposable and unreachable from anywhere but this machine.
+#
+# Bring it up with `./up.sh`, which seeds AdGuard and runs `bootstrap.sh`. Nothing here is
+# meant to survive: `docker compose down -v` and start again.
+name: vauxtra-lab
+
+services:
+  # Password set at first boot from the environment. No wizard.
+  technitium:
+    image: technitium/dns-server:13.6.0
+    container_name: vxlab-technitium
+    environment:
+      DNS_SERVER_DOMAIN: vxlab.local
+      DNS_SERVER_ADMIN_PASSWORD: vauxtra-lab-pw
+      DNS_SERVER_FORWARDERS: 1.1.1.1
+    ports:
+      - "127.0.0.1:5380:5380"
+    restart: unless-stopped
+
+  # `state/adguard/conf` is seeded by up.sh from `seed/adguard`: the container otherwise
+  # stops at a four-step setup wizard that has no API. AdGuard rewrites that file as it
+  # runs, so the seed is copied rather than mounted.
+  adguard:
+    image: adguard/adguardhome:v0.107.68
+    container_name: vxlab-adguard
+    volumes:
+      - ./state/adguard/conf:/opt/adguardhome/conf
+    ports:
+      - "127.0.0.1:3080:80"
+    restart: unless-stopped
+
+  # 2.13 no longer ships admin@example.com / changeme. While `GET /api/` reports
+  # `"setup": false`, `POST /api/users` is open and creates the first administrator --
+  # that is what bootstrap.sh does.
+  npm:
+    image: jc21/nginx-proxy-manager:2.13.1
+    container_name: vxlab-npm
+    environment:
+      DISABLE_IPV6: "true"
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+    ports:
+      - "127.0.0.1:3081:81"
+    restart: unless-stopped
+
+  pihole:
+    image: pihole/pihole:2025.08.0
+    container_name: vxlab-pihole
+    environment:
+      TZ: UTC
+      FTLCONF_webserver_api_password: vauxtra-lab-pw
+      FTLCONF_dns_listeningMode: all
+    ports:
+      - "127.0.0.1:3082:80"
+    restart: unless-stopped
+
+  # Starts with no account at all; bootstrap.sh registers the first one.
+  zoraxy:
+    image: zoraxydocker/zoraxy:v3.3.4
+    container_name: vxlab-zoraxy
+    volumes:
+      - zoraxy-config:/opt/zoraxy/config
+    environment:
+      PORT: 8000
+      FASTGEOIP: "true"
+    ports:
+      - "127.0.0.1:3083:8000"
+    restart: unless-stopped
+
+  # Something for the proxies to actually point at, so a route can be proved to serve.
+  # The proxies dial it as `vxlab-upstream` over the compose network: from inside a proxy
+  # container, 127.0.0.1 is the proxy itself.
+  upstream:
+    image: traefik/whoami:v1.11
+    container_name: vxlab-upstream
+    ports:
+      - "127.0.0.1:3090:80"
+    restart: unless-stopped
+
+volumes:
+  npm-data:
+  npm-letsencrypt:
+  zoraxy-config:
