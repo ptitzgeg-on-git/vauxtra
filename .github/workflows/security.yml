@@ -102,6 +102,11 @@ jobs:
           ./.sbom-venv/bin/python -m pip install --quiet --upgrade pip
           ./.sbom-venv/bin/python -m pip install --quiet -r requirements.txt
 
+      # `upload-release-assets` defaults to true, and on a tag ref the action then tries to
+      # attach the SBOM to the GitHub release. It cannot work here whatever the permissions:
+      # this job is the gate that runs BEFORE build-and-push, which runs before the release
+      # is created -- so the asset has no release to land on, and the step fails the whole
+      # publish. The SBOM already leaves as a workflow artifact, which is what we read.
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
@@ -109,6 +114,7 @@ jobs:
           format: cyclonedx-json
           output-file: sbom.cyclonedx.json
           artifact-name: sbom.cyclonedx.json
+          upload-release-assets: false
 
       # The defect this pipeline shipped with was not a wrong number, it was an empty
       # section nobody thought to look at: a scanner reporting success over a blind spot.
