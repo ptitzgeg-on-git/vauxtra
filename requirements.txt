@@ -1,6 +1,6 @@
 fastapi>=0.135
 uvicorn[standard]>=0.44
-python-multipart>=0.0.26
+python-multipart>=0.0.32
 itsdangerous>=2.2
 requests>=2.32
 cryptography>=46
