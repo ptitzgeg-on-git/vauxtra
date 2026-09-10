@@ -32,6 +32,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   publishes `1.3.0`, without the `v`. Every release since the first handed users a command
   that fails. The publish job now exports the tag it actually pushed and the release body
   quotes that.
+- **The weekly GHCR cleanup was making released images unpullable.** A `docker buildx` push
+  writes one tagged manifest list and several untagged manifests under it — one per
+  platform, plus provenance and SBOM attestations — and those children are what a tag
+  resolves to. `actions/delete-package-versions` cannot see that structure: with
+  `min-versions-to-keep: 10` it kept the ten most recent untagged versions, which is about
+  three builds' worth, and deleted the per-platform manifests of everything older while
+  their tags survived. **`1.0.1` and `1.0.2` are already in that state on GHCR** — listed on
+  the package page, named in their release notes, cosign signature still verifying, and
+  every child manifest returning 404. Replaced with `dataaxiom/ghcr-cleanup-action`, which
+  resolves the manifest lists before deleting anything and, with `validate: true`, fails
+  the run if a surviving tag no longer resolves. Re-publishing `v1.0.1` and `v1.0.2` is
+  what repairs the two already broken.
 - **The recommended deployment no longer logs an error at every boot.** Vauxtra serves its
   own interface, so the configuration the documentation recommends allows no cross-origin
   caller at all — and that is exactly the case `validate_cors_origins()` treated as a

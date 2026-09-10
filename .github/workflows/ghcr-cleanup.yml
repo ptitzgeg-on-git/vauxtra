@@ -1,25 +1,61 @@
+# Deleting "untagged" versions from a multi-arch package is not the housekeeping it looks
+# like. Every `docker buildx` push writes one *tagged* manifest list -- `1.3.0`, `latest` --
+# and several untagged manifests underneath it: one per platform, plus the provenance and
+# SBOM attestations. Those children are what the tag actually resolves to, and the registry
+# lists them as untagged because nothing points a name at them directly.
+#
+# `actions/delete-package-versions` cannot see that structure. With
+# `delete-only-untagged-versions: true` and `min-versions-to-keep: 10` it kept the ten most
+# recent untagged versions and deleted the rest -- and a single build produces three or four
+# of them, so ten covers roughly the last three pushes. Everything older lost its per-platform
+# manifests while the tag survived, which is the worst of the two possible failures: `docker
+# pull ghcr.io/ptitzgeg-on-git/vauxtra:1.2.0` fails with `manifest unknown` on a tag the
+# package page still lists, whose release notes still name it, and whose cosign signature
+# still verifies. The signature was never a claim that the image is *there*.
+#
+# `dataaxiom/ghcr-cleanup-action` reads the manifest lists before deleting anything, so a
+# child referenced by any surviving tag is never a candidate. `validate: true` then walks
+# every remaining tag and fails the run if one no longer resolves -- the check that would
+# have caught the old behaviour the first Sunday it ran.
 name: GHCR Cleanup
 
 on:
   schedule:
     - cron: "0 4 * * 0"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted without deleting it"
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   cleanup:
-    name: Delete untagged container versions
+    name: Delete orphaned container versions
     runs-on: ubuntu-latest
     permissions:
       packages: write
 
     steps:
-      - name: Delete untagged GHCR versions
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+      - name: Delete GHCR versions no tag references
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
-          package-name: vauxtra
-          package-type: container
-          delete-only-untagged-versions: true
-          min-versions-to-keep: 10
+          token: ${{ secrets.GITHUB_TOKEN }}
+          package: vauxtra
+          # Untagged *and* unreferenced. This action resolves every manifest list first, so
+          # a platform manifest belonging to a live tag is not a candidate however untagged
+          # the registry reports it. Tagged versions are never touched: nothing here sets
+          # `delete-tags`, so the `sha-<short>` breadcrumbs from `main` and every semver tag
+          # survive on their own.
+          delete-untagged: true
+          # A margin against racing a push that is still settling. Sunday at 04:00 should
+          # not be looking at Saturday night's build at all.
+          older-than: 7 days
+          # Walks every multi-architecture manifest afterwards and fails the run if a digest
+          # it references is missing -- the check that would have caught the old behaviour
+          # the first Sunday it ran.
+          validate: true
+          dry-run: ${{ inputs.dry_run == true }}
