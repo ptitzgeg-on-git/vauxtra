@@ -5,7 +5,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
-## [Unreleased]
+## [1.3.0] — 2026-09-10
 
 Two DNS providers, chosen to answer the gap the v1.2.0 provider audit named: three
 capability flags, one implementation each, all of them Cloudflare. deSEC is the second
@@ -31,6 +31,23 @@ integration lab can drive whose write path is a record *set*. 858 tests, up from
   Vauxtra's back, detect the drift, reconcile, delete. The bench is at 94 probes, up from
   74. deSEC is not there and cannot be: like Cloudflare, testing it means a real account
   and a real zone.
+
+### Changed
+- **The dependency lot of 2026-09-10.** `requests` >= 2.34.2, `python-multipart` >= 0.0.32,
+  `docker` >= 7.2.0, `@types/node` ^26.5.0, and ten SHA-pinned GitHub Actions each a major
+  version on: `checkout` v7, `setup-python` v7, `setup-node` v7, `docker/login` v4,
+  `docker/metadata` v6, `docker/build-push` v7, `cosign-installer` v4,
+  `attest-build-provenance` v4, `gh-release` v3, `sbom-action` 0.24.2. Taken as one lot
+  because `main` requires an up-to-date branch -- five separate merges would have meant
+  five rebases -- and because the three Python bumps all edit `requirements.txt`.
+
+### Fixed
+- **The SBOM step no longer kills a tag publish.** `anchore/sbom-action` defaults
+  `upload-release-assets` to true, so on a tag ref it tried to attach the SBOM to a GitHub
+  release the pipeline had not created yet: the scan is the gate that runs before the
+  build, and the build runs before the release. Permissions were never the problem, and no
+  pull-request CI could have caught it -- `security.yml` runs on branches, on pull requests
+  and on a weekly cron, but never on a tag.
 
 ### Notes
 - **Both APIs model a record *set*, and neither add nor delete may write blind.** PowerDNS
@@ -380,7 +397,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.2
