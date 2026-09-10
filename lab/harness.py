@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Drive a real Vauxtra against the five lab providers, over its own HTTP API.
+"""Drive a real Vauxtra against the six lab providers, over its own HTTP API.
 
 This is not a unit test with a mocked provider. It boots the actual FastAPI application on
 an isolated temporary database, registers the containers from `compose.yaml` as providers,
@@ -47,6 +47,10 @@ PROVIDERS = [
      "username": "", "password": PW, "kind": "dns"},
     {"name": "lab-technitium", "type": "technitium", "url": "http://127.0.0.1:5380",
      "username": "admin", "password": PW, "kind": "dns"},
+    # PowerDNS has no user: `username` carries the server id, which is "localhost" on
+    # every stock install, and the password is the API key.
+    {"name": "lab-powerdns", "type": "powerdns", "url": "http://127.0.0.1:3084",
+     "username": "localhost", "password": PW, "kind": "dns"},
     {"name": "lab-npm", "type": "npm", "url": "http://127.0.0.1:3081",
      "username": "admin@example.com", "password": PW, "kind": "proxy"},
     {"name": "lab-zoraxy", "type": "zoraxy", "url": "http://127.0.0.1:3083",
@@ -257,7 +261,7 @@ def main() -> int:
 
     # ------------------------------------------------- 4. service lifecycle + drift
     pairs = [("lab-npm", "lab-adguard"), ("lab-zoraxy", "lab-technitium"),
-             ("lab-npm", "lab-pihole")]
+             ("lab-npm", "lab-pihole"), ("lab-zoraxy", "lab-powerdns")]
 
     for n, (proxy_name, dns_name) in enumerate(pairs, start=1):
         proxy_id, dns_id = ids.get(proxy_name), ids.get(dns_name)
