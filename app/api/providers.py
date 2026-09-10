@@ -15,11 +15,20 @@ router = APIRouter()
 
 _CLOUDFLARE_DEFAULT_URL = "https://api.cloudflare.com/client/v4"
 
+# Provider types whose endpoint is a hosted service rather than something the operator
+# runs: the form leaves the URL blank and the well-known address is filled in here, so a
+# missing URL is a default and not a validation error.
+_DEFAULT_PROVIDER_URLS = {
+    "cloudflare": _CLOUDFLARE_DEFAULT_URL,
+    "cloudflare_tunnel": _CLOUDFLARE_DEFAULT_URL,
+    "desec": "https://desec.io/api/v1",
+}
+
 
 def _normalize_provider_url(provider_type: str, url_value: str) -> str:
     val = (url_value or "").strip()
-    if provider_type in {"cloudflare", "cloudflare_tunnel"} and not val:
-        return _CLOUDFLARE_DEFAULT_URL
+    if not val and provider_type in _DEFAULT_PROVIDER_URLS:
+        return _DEFAULT_PROVIDER_URLS[provider_type]
     if not is_valid_url(val):
         raise ValueError("Invalid URL (must start with http:// or https://)")
     return val.rstrip("/")

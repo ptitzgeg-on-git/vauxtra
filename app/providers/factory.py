@@ -8,8 +8,10 @@ from app.config import decrypt_secret
 from app.providers.adguard import AdGuardProvider
 from app.providers.cloudflare import CloudflareProvider
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
+from app.providers.desec import DesecProvider
 from app.providers.npm import NPMProvider
 from app.providers.pihole import PiholeProvider
+from app.providers.powerdns import PowerDNSProvider
 from app.providers.technitium import TechnitiumProvider
 from app.providers.traefik import TraefikProvider
 from app.providers.zoraxy import ZoraxyProvider
@@ -271,6 +273,94 @@ PROVIDER_TYPES = {
             },
         ],
     },
+    "powerdns": {
+        "label": "PowerDNS", "category": "dns", "available": True,
+        "description": "PowerDNS Authoritative Server zone records",
+        "category_label": "Local DNS",
+        "category_color": "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+        "provider_color": "bg-violet-500/10 text-violet-600 border-violet-500/30 dark:text-violet-400",
+        "capabilities": {
+            "proxy": False,
+            "dns": True,
+            # PowerDNS Authoritative *can* serve a public zone, but only if the zone is
+            # delegated to it at a registrar — something Vauxtra cannot see from the API.
+            # Declaring it public would relabel the address field "public WAN IP" for every
+            # operator running it on a LAN, so the honest default is local.
+            "public_dns": False,
+            "supports_auto_public_target": False,
+            "supports_tunnel": False,
+        },
+        "icon": "ti-database", "color": "violet",
+        "placeholder_url": "http://192.168.1.10:8081",
+        "user_label": "Server ID (optional)", "pass_label": "API Key",
+        "user_placeholder": "localhost",
+        "guided_steps": [
+            {
+                "title": "Enable the PowerDNS HTTP API",
+                "body": "The API is off by default. Add this to pdns.conf:\n\n  api=yes\n  api-key=<a long random string>\n  webserver=yes\n  webserver-address=0.0.0.0\n  webserver-port=8081\n  webserver-allow-from=<the IP running Vauxtra>/32\n\nRestart pdns, then keep the API key — it is the only credential Vauxtra needs.\n\nKeep webserver-allow-from as narrow as you can: anyone who reaches this API can rewrite every zone on the server.",
+            },
+            {
+                "title": "Create at least one zone",
+                "body": "Vauxtra writes records inside zones PowerDNS already hosts. It never creates a zone.\n\n  pdnsutil create-zone home.lab\n  pdnsutil add-record home.lab @ A 3600 192.168.1.10\n\nFor each service hostname, Vauxtra picks the longest hosted zone that contains it.",
+            },
+            {
+                "title": "PowerDNS API details",
+                "body": "Enter the address of the PowerDNS webserver and the API key you set above.\n\nLeave the server id blank unless you changed it — almost every install answers to \"localhost\".",
+                "fields": [
+                    {"key": "url", "label": "PowerDNS API URL", "placeholder": "http://192.168.1.10:8081",
+                     "hint": "The webserver address and port, without /api/v1.", "input_type": "url"},
+                    {"key": "username", "label": "Server ID", "placeholder": "localhost",
+                     "hint": "Leave blank for the default.", "input_type": "text", "optional": True},
+                    {"key": "password", "label": "API Key", "placeholder": "(the api-key from pdns.conf)",
+                     "input_type": "password"},
+                ],
+            },
+        ],
+    },
+    "desec": {
+        "label": "deSEC", "category": "dns", "available": True,
+        "description": "Public DNS records via the deSEC API",
+        "category_label": "External DNS",
+        "category_color": "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+        "provider_color": "bg-emerald-500/10 text-emerald-600 border-emerald-500/30 dark:text-emerald-400",
+        "capabilities": {
+            "proxy": False,
+            "dns": True,
+            "public_dns": True,
+            "supports_auto_public_target": True,
+            "supports_tunnel": False,
+        },
+        "icon": "ti-shield-lock", "color": "emerald",
+        "placeholder_url": "https://desec.io/api/v1",
+        "user_label": "Domain (optional)", "pass_label": "API Token",
+        "user_placeholder": "example.dedyn.io",
+        "guided_steps": [
+            {
+                "title": "Register a domain with deSEC",
+                "body": "deSEC is free, non-profit DNS hosting with DNSSEC on by default.\n\n  1. Create an account at https://desec.io/\n  2. Add your domain under Domain Management\n  3. At your registrar, point the nameservers at deSEC:\n       ns1.desec.io\n       ns2.desec.org\n\nA free dynDNS name under dedyn.io works too, and needs no registrar.\n\nVauxtra writes A, AAAA and CNAME records inside the domains this account holds.",
+            },
+            {
+                "title": "Create an API token",
+                "body": "In the deSEC interface, open Token Management → Create Token.\n\nName it (e.g. \"vauxtra\") and leave the permissions alone — a plain token already reads and writes DNS records. Do not tick \"Can manage tokens\".\n\nThe token is shown once. Copy it now and paste it below.",
+                "fields": [
+                    {"key": "password", "label": "API Token", "placeholder": "(paste token here)",
+                     "hint": "Shown once, at creation. It grants write access to your DNS.",
+                     "input_type": "password"},
+                ],
+            },
+            {
+                "title": "Domain and endpoint (usually blank)",
+                "body": "Leave both fields empty for the public deSEC service — Vauxtra detects your domains from the token itself.\n\nFill the domain in only to pin this provider to one domain when the account holds several. Fill the URL in only if you run your own deSEC stack.",
+                "fields": [
+                    {"key": "username", "label": "Domain", "placeholder": "example.dedyn.io",
+                     "hint": "Leave blank to use every domain the token can reach.",
+                     "input_type": "text", "optional": True},
+                    {"key": "url", "label": "API URL", "placeholder": "https://desec.io/api/v1",
+                     "hint": "Leave blank for the public service.", "input_type": "url", "optional": True},
+                ],
+            },
+        ],
+    },
     "cloudflare_tunnel": {
         "label": "Cloudflare Tunnel", "category": "proxy", "available": True,
         "description": "Cloudflare Zero Trust Tunnel",
@@ -336,6 +426,8 @@ _PROVIDER_REGISTRY: dict[str, tuple[type, bool]] = {
     "cloudflare":        (CloudflareProvider,         True),
     "cloudflare_tunnel": (CloudflareTunnelProvider,   True),
     "technitium":        (TechnitiumProvider,         False),
+    "powerdns":          (PowerDNSProvider,           False),
+    "desec":             (DesecProvider,              False),
 }
 
 
