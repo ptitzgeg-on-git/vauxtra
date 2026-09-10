@@ -5,6 +5,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [Unreleased]
+
+Two DNS providers, chosen to answer the gap the v1.2.0 provider audit named: three
+capability flags, one implementation each, all of them Cloudflare. deSEC is the second
+`public_dns`; PowerDNS is the second authoritative server, and the first provider the
+integration lab can drive whose write path is a record *set*. 858 tests, up from 738.
+
+### Added
+- **deSEC provider (`desec`) — public DNS without a Cloudflare account.** Free, nonprofit,
+  DNSSEC by default; a token in an `Authorization: Token` header, one RRset per
+  `(subname, type)` under `/api/v1/domains/{name}/rrsets/`. It declares `public_dns` and
+  `supports_auto_public_target`, so the external-DNS branch of the expose form and the
+  "resolve my public IP" radio now work for an operator who never signs up to Cloudflare.
+  The URL is optional (blank means `https://desec.io/api/v1`, for the hosted service) and
+  so is the domain: leave it empty and Vauxtra picks the longest domain in the account that
+  covers the hostname, or set it to pin every record to one domain.
+- **PowerDNS Authoritative provider (`powerdns`).** API key in `X-API-Key`, the server id
+  in the username column — `localhost` on every stock install — and records through a
+  single `PATCH` on the zone. Zones are matched longest-first, so `app.lab.example.com`
+  goes to `lab.example.com` rather than to `example.com` when both are hosted.
+- **PowerDNS in the integration lab.** `vxlab-powerdns` on `127.0.0.1:3084`, seeded with
+  the `vxlab.test` zone by `bootstrap.sh`, driven through the same lifecycle as the rest:
+  register, test, direct record CRUD, publish a service, break the provider behind
+  Vauxtra's back, detect the drift, reconcile, delete. The bench is at 94 probes, up from
+  74. deSEC is not there and cannot be: like Cloudflare, testing it means a real account
+  and a real zone.
+
+### Notes
+- **Both APIs model a record *set*, and neither add nor delete may write blind.** PowerDNS
+  `REPLACE` drops every existing value for a `(name, type)` pair before writing the ones it
+  is given, and a deSEC `records: [...]` is the whole RRset. A name with two A records
+  would lose one on the next write. Both providers read the current set, merge, and write
+  back; both drop the set only once it is empty.
+- **A refused read is not an empty read.** deSEC rate-limits hard, and a 429 answered as
+  "no records" would have made the merge above delete the very records it exists to
+  protect. The listing helper reports refusal separately from emptiness, and both write
+  paths give up rather than guess.
+- **PowerDNS and Technitium both ship as local DNS on purpose.** An authoritative server is
+  public only if its zone is delegated to it at a registrar, and no API says whether that
+  happened. Declaring them public would relabel the address field "public WAN IP" for every
+  operator running one on a LAN. `docs/PROVIDERS.md` records the reasoning and why the
+  row-level override that would express it stays unbuilt.
+
+---
+
 ## [1.2.0] — 2026-09-10
 
 Security audit of v1.1.0 and the fixes it produced, the interface pass that followed,
