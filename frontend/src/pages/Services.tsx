@@ -275,13 +275,26 @@ export function Services() {
     }
     const editId = searchParams.get('edit');
     if (editId) {
-      if (servicesQuery.isPending) return; // wait for the list before deciding
+      // Pending and failed both mean "the list is not here yet". Only pending was checked,
+      // so a failed load left `services` empty, fell through to the else, and told the
+      // operator the endpoint does not exist -- while `setParam('edit', null)` had already
+      // destroyed the deep link, so Retry could not reopen it either.
+      if (servicesQuery.isPending || servicesQuery.isError) return;
       setParam('edit', null);
       const service = services.find((s) => String(s.id) === editId);
       if (service) openEdit(service);
       else toast.error(t('services.toast.not_found', { id: editId }));
     }
-  }, [searchParams, services, servicesQuery.isPending, setParam, openCreate, openEdit, t]);
+  }, [
+    searchParams,
+    services,
+    servicesQuery.isPending,
+    servicesQuery.isError,
+    setParam,
+    openCreate,
+    openEdit,
+    t,
+  ]);
 
   // --- filtering ----------------------------------------------------------
   const baseFiltered = useMemo(

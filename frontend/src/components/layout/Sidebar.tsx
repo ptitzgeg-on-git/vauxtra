@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import {
   Activity,
   Bell,
@@ -32,6 +33,7 @@ import { api } from '@/api/client';
 import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
 import { cn } from '@/lib/cn';
+import { translateApiError } from '@/lib/errors';
 import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, toneClasses, type Tone } from '@/components/ui';
 import { isMacPlatform } from '@/components/ui/_internal';
 import type { HealthResponse, Provider, Service } from '@/types/api';
@@ -222,10 +224,15 @@ export function Sidebar({
     setLang(SUPPORTED_LANGUAGES[(index + 1) % SUPPORTED_LANGUAGES.length].code);
   };
 
-  const signOut = async () => {
-    await api.post('/auth/logout');
-    qc.invalidateQueries({ queryKey: ['auth-status'] });
-  };
+  // This used to be a bare `async` handler wired straight to onClick, so React discarded the
+  // promise: a failing logout became an unhandled rejection with no toast, the invalidation
+  // never ran, and the interface stayed signed in. Somebody walking away from a shared
+  // machine had every reason to believe they had signed out.
+  const signOut = useMutation({
+    mutationFn: () => api.post('/auth/logout'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['auth-status'] }),
+    onError: (err) => toast.error(translateApiError(err, t, t('nav.signout_failed'))),
+  });
 
   // ── Collapsed: 64px icon rail ────────────────────────────────────────────────
   if (isCollapsed) {
@@ -310,7 +317,7 @@ export function Sidebar({
           </Tooltip>
           <IconButton label={t('layout.shortcuts')} icon={<Keyboard />} onClick={onOpenShortcuts} tooltip tooltipPlacement="right" className="h-8 w-8 text-muted-foreground" />
           {authStatus?.auth_required && (
-            <IconButton label={t('nav.signout')} icon={<LogOut />} onClick={signOut} tooltip tooltipPlacement="right" className="h-8 w-8 text-muted-foreground" />
+            <IconButton label={t('nav.signout')} icon={<LogOut />} onClick={() => signOut.mutate()} loading={signOut.isPending} tooltip tooltipPlacement="right" className="h-8 w-8 text-muted-foreground" />
           )}
           <span className="pt-1 font-mono text-[10px] text-muted-foreground">{version}</span>
         </div>
@@ -419,7 +426,7 @@ export function Sidebar({
             ))}
           </Select>
           {authStatus?.auth_required && (
-            <IconButton label={t('nav.signout')} icon={<LogOut />} onClick={signOut} tooltip className="h-8 w-8 shrink-0 text-muted-foreground" />
+            <IconButton label={t('nav.signout')} icon={<LogOut />} onClick={() => signOut.mutate()} loading={signOut.isPending} tooltip className="h-8 w-8 shrink-0 text-muted-foreground" />
           )}
         </div>
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
