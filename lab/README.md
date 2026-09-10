@@ -1,6 +1,6 @@
 # Integration lab
 
-Five real provider containers and a harness that drives a real Vauxtra against them over
+Six real provider containers and a harness that drives a real Vauxtra against them over
 its own HTTP API. Not a unit test with a mocked provider: the actual images an operator
 runs, answering on their actual APIs.
 
@@ -31,19 +31,21 @@ The harness installs nothing.
 | `vxlab-pihole` | `pihole/pihole:2025.08.0` | 3082 | DNS |
 | `vxlab-zoraxy` | `zoraxydocker/zoraxy:v3.3.4` | 3083 | Proxy |
 | `vxlab-technitium` | `technitium/dns-server:13.6.0` | 5380 | DNS |
+| `vxlab-powerdns` | `powerdns/pdns-auth-49:4.9.17` | 3084 | DNS |
 | `vxlab-upstream` | `traefik/whoami:v1.11` | 3090 | Something to point at |
 
-Every port is bound to loopback. Each of these ships an admin panel, and Pi-hole and
-Technitium also answer DNS: none of it belongs on the LAN. The password is
+Every port is bound to loopback, and the ones listed are the admin APIs only —
+Pi-hole, Technitium and PowerDNS all answer DNS as well, and port 53 is deliberately
+left inside the compose network. None of this belongs on the LAN. The password is
 `vauxtra-lab-pw` throughout — a fixture, not a secret.
 
-Cloudflare and Cloudflare Tunnel are absent because they cannot be faked: testing them
-means pointing at a real account and a real zone.
+Cloudflare, Cloudflare Tunnel and deSEC are absent because they cannot be faked:
+testing them means pointing at a real account and a real zone.
 
 ## What the harness checks
 
-Seventy-four probes across six phases, for every provider and for three proxy+DNS pairs
-(`npm+adguard`, `zoraxy+technitium`, `npm+pihole`):
+Ninety-four probes across six phases, for every provider and for four proxy+DNS pairs
+(`npm+adguard`, `zoraxy+technitium`, `npm+pihole`, `zoraxy+powerdns`):
 
 0. **Clean slate** — remove anything a previous run left behind. A leftover is not
    harmless: NPM refuses a second host for a domain it already serves, so one aborted run
@@ -65,7 +67,7 @@ whether or not the code works.
 
 ## Seeding
 
-Three of the five cannot be seeded from `compose.yaml` alone, and each refuses in its own
+Four of the six cannot be seeded from `compose.yaml` alone, and each refuses in its own
 way. `bootstrap.sh` handles them and documents why:
 
 - **Zoraxy** starts with no account at all. `/api/auth/login` answers 403 "CSRF token not
@@ -76,6 +78,9 @@ way. `bootstrap.sh` handles them and documents why:
   administrator.
 - **Technitium** accepts a record only inside a zone it hosts, and Vauxtra derives the
   zone from the last two labels — so `vxlab.test` has to exist first.
+- **PowerDNS** starts with an empty database and no zone at all, and its API answers 404
+  for a name no hosted zone covers. `vxlab.test` is created through the API; a re-run
+  gets a 409, which is the success case.
 
 AdGuard's four-step wizard has no API at all, so `up.sh` copies a pre-hashed config into
 place before the container starts. Pi-hole takes its password from the environment.
