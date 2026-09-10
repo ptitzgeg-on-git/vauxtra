@@ -19,10 +19,12 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
         default_origins: Fallback if origins_str is empty
     
     Returns:
-        List of validated CORS origins
-    
+        List of validated CORS origins -- empty when nothing was configured, which is
+        the same-origin deployment and not a failure.
+
     Raises:
-        ValueError: If any origin is malformed or dangerous
+        ValueError: If any origin is malformed or dangerous, or if a non-blank setting
+            names no origin at all
     """
     origins_to_check = origins_str or default_origins
     parsed_origins = []
@@ -68,8 +70,16 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
         except Exception as e:
             raise ValueError(f"Error parsing CORS origin '{origin}': {e}")
 
-    if not parsed_origins:
-        raise ValueError("No valid CORS origins provided")
+    # Nothing configured is an answer, not an accident: the interface is served by this
+    # same application, so the deployment the documentation recommends allows no
+    # cross-origin caller and reaches this line with an empty list. Raising here made that
+    # recommended configuration write an `error` at every single boot -- an alarm nobody
+    # can silence by fixing anything, which is the fastest way to teach an operator to
+    # stop reading the log. A setting that is *not* blank and still names no origin is a
+    # different animal: something was asked for and nothing took effect, so it still
+    # raises.
+    if not parsed_origins and origins_to_check.strip():
+        raise ValueError(f"No valid CORS origins in: {origins_to_check!r}")
 
     return parsed_origins
 

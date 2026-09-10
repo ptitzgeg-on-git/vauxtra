@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **The recommended deployment no longer logs an error at every boot.** Vauxtra serves its
+  own interface, so the configuration the documentation recommends allows no cross-origin
+  caller at all — and that is exactly the case `validate_cors_origins()` treated as a
+  failure. It raised `No valid CORS origins provided` on an empty list, `app/main.py`
+  caught it and wrote `Invalid CORS configuration` at `error`, and every correctly
+  configured install started with an alarm nobody could clear by fixing anything. An
+  absent setting now returns an empty list and logs `No CORS origin configured:
+  same-origin callers only` at `info`. A setting that is present but names no origin —
+  `CORS_ORIGINS=","` — still raises: something was asked for and nothing took effect, and
+  that is worth saying. A malformed origin still raises too, and still refuses the whole
+  list rather than widening back to the defaults.
+
+---
+
 ## [1.3.0] — 2026-09-10
 
 Two DNS providers, chosen to answer the gap the v1.2.0 provider audit named: three

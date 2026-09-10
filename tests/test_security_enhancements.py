@@ -38,6 +38,37 @@ class TestCORSValidation(unittest.TestCase):
         result = validate_cors_origins("", default)
         self.assertEqual(len(result), 2)
 
+    def test_nothing_configured_is_not_an_error(self):
+        """The production deployment the documentation recommends lands here.
+
+        The interface is served by this same application, so `CORS_ORIGINS` empty and no
+        default is the *correct* answer: allow no cross-origin caller. This used to raise,
+        and `app/main.py` logged the exception at `error` -- so every recommended install
+        wrote an alarm at every boot that no operator could ever clear.
+        """
+        self.assertEqual(validate_cors_origins("", ""), [])
+        # Whitespace is not a request either -- an operator who typed a space meant
+        # "unset", and telling them otherwise helps nobody.
+        self.assertEqual(validate_cors_origins("   ", ""), [])
+        self.assertEqual(validate_cors_origins("", "   "), [])
+
+    def test_blank_but_present_setting_still_raises(self):
+        """A setting that names nothing is a different animal from an absent setting.
+
+        `CORS_ORIGINS=","` means somebody asked for something and got nothing. That still
+        deserves to be said out loud.
+        """
+        for setting in (",", "  ,  ", ",,,"):
+            with self.subTest(setting=setting):
+                with self.assertRaises(ValueError) as cm:
+                    validate_cors_origins(setting, "")
+                self.assertIn("No valid CORS origins", str(cm.exception))
+
+    def test_malformed_origin_never_widens_to_the_default(self):
+        """The fallback must not rescue a list that does not parse."""
+        with self.assertRaises(ValueError):
+            validate_cors_origins("https://ok.example.com,ftp://bad", "https://fallback.example.com")
+
 
 class TestDomainSanitization(unittest.TestCase):
     def test_valid_domain(self):
