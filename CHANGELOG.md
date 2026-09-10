@@ -5,10 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
-## [Unreleased]
+## [1.2.0] — 2026-09-10
 
-Security audit of v1.1.0 and the fixes it produced. Everything below is on
-`fix/audit-securite-v1.1.0`; the test suite went from 284 to 728.
+Security audit of v1.1.0 and the fixes it produced, the interface pass that followed,
+and an integration lab that drives a real Vauxtra against the real provider containers
+— which promptly found a Pi-hole session leak no mock could have had an opinion about.
+The test suite went from 284 tests to 738.
 
 ### Security
 - **Path traversal in the SPA catch-all route.** `/{full_path:path}` does not strip `..`
@@ -333,7 +335,8 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.2
 [1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.1
