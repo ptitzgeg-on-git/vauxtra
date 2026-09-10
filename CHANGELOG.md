@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 ## [Unreleased]
 
 Security audit of v1.1.0 and the fixes it produced. Everything below is on
-`fix/audit-securite-v1.1.0`; the test suite went from 284 to 718.
+`fix/audit-securite-v1.1.0`; the test suite went from 284 to 728.
 
 ### Security
 - **Path traversal in the SPA catch-all route.** `/{full_path:path}` does not strip `..`
@@ -42,8 +42,23 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
 - **The setup wizard mirrored the provider password into `sessionStorage`** so the form
   would survive a reload — including the proxy admin password or Cloudflare API token.
   Everything else in the form still comes back; that field is typed again.
+- **Changing the admin password logged everyone out and changed nothing.** With
+  `APP_PASSWORD` set, `check_password` returns on the variable and never reads the stored
+  hash — but `POST /api/auth/change-password` wrote one anyway and then bumped the session
+  epoch. Every session died, the operator's included, the new password was refused, and the
+  way back in was the password they had just tried to retire. The route answers 409 before
+  verifying or writing anything, `GET /api/auth/me` carries `password_source`, and the
+  Security screen explains instead of offering a form that cannot work.
 
 ### Fixed
+- **Four Settings components were never committed.** The `.gitignore` rule `data/` was
+  unanchored, so it matched `frontend/src/components/features/settings/data/` as well as
+  the SQLite directory it was written for, and `git add -A` skipped them without a word.
+  The build passed on any machine that had them on disk. The rules are anchored to the
+  repository root, and the hygiene gate now refuses any source file `.gitignore` hides.
+- **CI could not collect the test suite.** `tests/test_mcp_*.py` import fastmcp, which
+  lives only in `vauxtra_mcp/requirements.txt`; the workflow installed
+  `requirements.txt pytest ruff`. It installs `requirements-dev.txt`, which pulls both.
 - **Deleting a service left its routes serving.** `delete_service` walked only
   `proxy_provider_id` and `dns_provider_id`; the extra targets in `service_push_targets`
   were never told, so the hostname stayed resolvable and the proxy kept forwarding with
@@ -137,6 +152,21 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
   English sentence. Old clients keep reading `detail`.
 - The interface is fully translated: 297 to 1783 keys per language, the same keys
   in the same order in all eight locales, and no English string left in the code.
+- Six environment variables the code reads are documented in `.env.example`:
+  `VAUXTRA_PROVIDER_PLUGINS` (an extension mechanism that imports the Python modules named
+  in it), `VAUXTRA_REWRITE_LOCALHOST` and `VAUXTRA_LOCALHOST_ALIAS` (whether a provider URL
+  on `localhost` is rewritten to `host.docker.internal`, and to what), and the bridge's
+  `VAUXTRA_MCP_HOST` / `VAUXTRA_MCP_PORT` / `VAUXTRA_TIMEOUT`. A test holds the sync both
+  ways: a variable read without documentation fails, and so does a documented one nothing
+  reads.
+- `DOCKER_HOST` said "override if using a non-standard location". It only seeds the first
+  Docker endpoint on an empty database; afterwards the endpoint list owns the value and the
+  variable does nothing. The text says so now.
+- Grype is pinned to v0.118.0. At v0.96.0 it could no longer read the vulnerability
+  database anchore publishes, so the weekly scan was red on `grype db update` for a reason
+  unrelated to this repository.
+- `.github/dependabot.yml` is back, grouped. It was deleted in the v1.1.0 release commit
+  and nothing watched the dependencies for the three months that followed.
 
 ### Added
 - **Zoraxy provider** (`zoraxy`, Reverse Proxy). Drives host rules through the management
