@@ -123,9 +123,16 @@ jobs:
             exit 1
           fi
 
+      # A pinned scanner expires the way a certificate does. v0.96.0 could no longer
+      # read the vulnerability database anchore publishes -- `grype db update` died on
+      # `UNIQUE constraint failed: operating_systems...` while migrating it -- so the
+      # weekly scan was red for a reason that had nothing to do with this repository.
+      # Dependabot does not watch this: `github-actions` follows `uses:` refs, not a
+      # version in an `env:` block. Check it by hand when this job goes red on a
+      # database error rather than on a finding.
       - name: Install Grype
         env:
-          GRYPE_VERSION: v0.96.0
+          GRYPE_VERSION: v0.118.0
         run: |
           # The installer used to be piped straight from the `main` branch: the grype
           # version was pinned, the script that fetches it was not, so a change pushed to

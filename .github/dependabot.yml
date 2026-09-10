@@ -1,0 +1,43 @@
+# Deleted in 18392d1 (the v1.1.0 release commit) and not replaced. Nothing watched the
+# dependencies for the three months that followed: main reached 27 advisories, 10 of them
+# high, and `npm audit --audit-level=high` -- a required step of the weekly scan -- was red
+# the whole time for a fix that was one `npm update` away.
+#
+# The reason it was deleted was noise: three ecosystems at five PRs each is a flood nobody
+# reads, and a flood nobody reads is the same as no alert at all. So everything below is
+# grouped -- one PR per ecosystem per week for the routine version bumps, and separate PRs
+# only for major versions, which are the ones that actually need a human.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, python]
+    groups:
+      python-minor:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, javascript]
+    groups:
+      npm-minor:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies, ci]
+    groups:
+      actions:
+        patterns: ["*"]
