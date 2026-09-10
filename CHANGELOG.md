@@ -8,6 +8,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 ## [Unreleased]
 
 ### Fixed
+- **PowerDNS no longer deletes the records it could not read.** PowerDNS writes a record
+  *set*: `add_rewrite()` reads the existing values, appends one, and sends the whole set
+  back with `changetype: REPLACE`. `_zone_rrsets()` returned an empty list for *every*
+  failure — a 403 from a zone-scoped API key, a 500, a connection reset, a proxy answering
+  HTML — so a refused read was indistinguishable from an empty zone, and the write that
+  followed replaced the real record set with the single new value. Every sibling address
+  of that name was destroyed: the second A record of a round-robin, the AAAA nobody
+  remembered. The call returned `True`. `_zone_rrsets()` now answers `None` when the API
+  refused, `_find_rrset()` answers `False`, and both `add_rewrite()` and `delete_rewrite()`
+  refuse rather than write blind — the guard deSEC has carried since it was added.
+  `list_rewrites()` is unchanged in effect: it is read-only, so a zone it cannot open just
+  contributes nothing.
 - **The recommended deployment no longer logs an error at every boot.** Vauxtra serves its
   own interface, so the configuration the documentation recommends allows no cross-origin
   caller at all — and that is exactly the case `validate_cors_origins()` treated as a

@@ -374,6 +374,89 @@ class TestPowerDNSDeleteRewrite(unittest.TestCase):
         self.assertFalse(self.provider.delete_rewrite("app.example.com", "192.168.1.10"))
 
 
+class _RefusesTheZoneBody(_FakePowerDNS):
+    """Lists zones normally, but will not hand over the contents of one.
+
+    This is not a contrived shape. A PowerDNS API key scoped to a subset of zones lists
+    them all and 403s on the body of the others; a server under load 500s; a proxy in
+    front of it returns HTML. In every one of those cases the zone list still answers.
+    """
+
+    def __init__(self, zones: dict, *, status: int = 403, network_error: bool = False):
+        super().__init__(zones)
+        self.status = status
+        self.network_error = network_error
+
+    def get(self, url: str, *a, **kw):
+        if "/zones/" in url:
+            if self.network_error:
+                raise requests.ConnectionError("connection reset")
+            return _response(self.status, {"error": "Not allowed"})
+        return super().get(url, *a, **kw)
+
+
+class TestPowerDNSRefusedRead(unittest.TestCase):
+    """A read the server refused is not a zone with nothing in it.
+
+    PowerDNS writes a record *set*: `add_rewrite` reads what is there, appends, and sends
+    the whole set back with `changetype: REPLACE`. So the value the read returns is the
+    value the write preserves, and a read that flattens a 403 to an empty list makes the
+    write delete every sibling address of the name -- the second A record of a
+    round-robin, the AAAA nobody remembered -- and report success. deSEC already had this
+    guard; this is the same one.
+    """
+
+    def setUp(self) -> None:
+        self.provider = PowerDNSProvider("http://pdns:8081", "", "key")
+
+    def test_add_refuses_rather_than_replacing_a_set_it_could_not_read(self):
+        fake = _wire(self.provider, _RefusesTheZoneBody({"home.lab.": [
+            _rrset("app.home.lab.", "A", "192.168.1.10", "192.168.1.11"),
+        ]}))
+        self.assertFalse(self.provider.add_rewrite("app.home.lab", "192.168.1.12"))
+        # Nothing was sent, so nothing was lost. The caller sees the failure and can retry.
+        self.assertEqual(fake.patches, [])
+
+    def test_a_network_error_on_the_read_is_refused_too(self):
+        fake = _wire(self.provider, _RefusesTheZoneBody(
+            {"home.lab.": [_rrset("app.home.lab.", "A", "192.168.1.10")]}, network_error=True,
+        ))
+        self.assertFalse(self.provider.add_rewrite("app.home.lab", "192.168.1.11"))
+        self.assertEqual(fake.patches, [])
+
+    def test_a_server_error_on_the_read_is_refused_too(self):
+        fake = _wire(self.provider, _RefusesTheZoneBody(
+            {"home.lab.": [_rrset("app.home.lab.", "A", "192.168.1.10")]}, status=500,
+        ))
+        self.assertFalse(self.provider.add_rewrite("app.home.lab", "192.168.1.11"))
+        self.assertEqual(fake.patches, [])
+
+    def test_delete_does_not_claim_success_on_a_set_it_could_not_read(self):
+        """This one destroys nothing, but it lies, and the lie is what gets acted on.
+
+        `delete_rewrite` returning True is how the caller learns the record is gone. On a
+        refused read the record is very much still there.
+        """
+        fake = _wire(self.provider, _RefusesTheZoneBody({"home.lab.": [
+            _rrset("app.home.lab.", "A", "192.168.1.10"),
+        ]}))
+        self.assertFalse(self.provider.delete_rewrite("app.home.lab", "192.168.1.10"))
+        self.assertEqual(fake.patches, [])
+
+    def test_listing_still_skips_a_zone_it_cannot_read(self):
+        """Listing is read-only, so a zone it cannot open simply contributes nothing."""
+        _wire(self.provider, _RefusesTheZoneBody({"home.lab.": [
+            _rrset("app.home.lab.", "A", "192.168.1.10"),
+        ]}))
+        self.assertEqual(self.provider.list_rewrites(), [])
+
+    def test_an_empty_zone_is_still_writable(self):
+        """The guard must not turn a genuinely empty zone into a failure."""
+        fake = _wire(self.provider, _FakePowerDNS({"home.lab.": []}))
+        self.assertTrue(self.provider.add_rewrite("app.home.lab", "192.168.1.10"))
+        self.assertEqual(fake.contents("home.lab.", "app.home.lab.", "A"), ["192.168.1.10"])
+
+
 class TestPowerDNSUpdateRewrite(unittest.TestCase):
     """`update_rewrite` is the base class's add-then-delete, over a real zone."""
 
