@@ -109,12 +109,14 @@ export function Dashboard() {
     refetchInterval: 30000,
   });
 
-  const { data: certExpiry } = useQuery<CertificateExpiryResponse>({
+  // No `.catch` here, deliberately. It used to resolve the promise with a synthetic
+  // `expiring_soon_count: 0`, so the query never reported an error and this card told an
+  // operator whose certificate expires in three days that nothing was expiring. Worse, the
+  // key is shared with the sidebar and the Certificates page: whichever observer fetched
+  // first wrote that fabricated zero into the cache the other two read.
+  const { data: certExpiry, isError: certExpiryFailed } = useQuery<CertificateExpiryResponse>({
     queryKey: ['certificates-expiry'],
-    queryFn: () =>
-      api.get<CertificateExpiryResponse>('/certificates/expiry').catch(
-        (): CertificateExpiryResponse => ({ certificates: [], total: 0, expiring_soon_count: 0, warn_threshold_days: 30 }),
-      ),
+    queryFn: () => api.get<CertificateExpiryResponse>('/certificates/expiry'),
     refetchInterval: 5 * 60 * 1000,
   });
 
@@ -227,7 +229,16 @@ export function Dashboard() {
       to: '/providers',
     });
   }
-  if (expiringCerts > 0) {
+  if (certExpiryFailed) {
+    attentionItems.push({
+      id: 'certs-unknown',
+      tone: 'warning',
+      icon: <ShieldAlert />,
+      title: t('dashboard.attention.certs_unknown'),
+      hint: t('dashboard.attention.certs_unknown_hint'),
+      to: '/certificates',
+    });
+  } else if (expiringCerts > 0) {
     attentionItems.push({
       id: 'certs-expiring',
       tone: 'warning',
@@ -307,7 +318,7 @@ export function Dashboard() {
         loading={{
           services: !servicesReady && !stats,
           providers: !providersReady,
-          certificates: !certExpiry,
+          certificates: !certExpiry && !certExpiryFailed,
           logs: !todayLogsResp,
         }}
         services={{
@@ -317,7 +328,12 @@ export function Dashboard() {
           error: stats?.services_error ?? servicesInError,
         }}
         providers={{ total: allProviders.length, enabled: enabledProviders, healthy: providersHealthy }}
-        certificates={{ expiring: expiringCerts, total: totalCerts, thresholdDays: warnDays }}
+        certificates={{
+          expiring: expiringCerts,
+          total: totalCerts,
+          thresholdDays: warnDays,
+          failed: certExpiryFailed,
+        }}
         logs={{ today: logsToday, todayCapped: logsTodayCapped, total: logsTotal }}
       />
 

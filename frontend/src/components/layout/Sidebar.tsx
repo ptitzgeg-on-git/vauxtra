@@ -138,19 +138,21 @@ export function Sidebar({
     staleTime: 60_000,
   });
 
-  const { data: certExpiry } = useQuery<CertExpiryResponse>({
+  // This query shares its key with the dashboard and the Certificates page. It used to
+  // `.catch` into `{ expiring_soon_count: 0 }`, which resolved the promise -- so the shared
+  // cache entry held a fabricated zero, the warning badge vanished on a backend hiccup, and
+  // whichever of the three observers happened to fetch first decided what the other two
+  // read. A failed check now leaves the badge off because the count is unknown, not zero.
+  const { data: certExpiry, isSuccess: certExpiryKnown } = useQuery<CertExpiryResponse>({
     queryKey: ['certificates-expiry'],
-    queryFn: () =>
-      api
-        .get<CertExpiryResponse>('/certificates/expiry')
-        .catch((): CertExpiryResponse => ({ expiring_soon_count: 0 })),
+    queryFn: () => api.get<CertExpiryResponse>('/certificates/expiry'),
     staleTime: 5 * 60_000,
   });
 
   const enabledServicesCount = services?.filter((s) => s.enabled).length ?? 0;
   const errorServicesCount = services?.filter((s) => s.enabled && s.status === 'error').length ?? 0;
   const healthyProvidersCount = providers?.filter((p) => p.enabled).length ?? 0;
-  const expiringSoonCount = certExpiry?.expiring_soon_count ?? 0;
+  const expiringSoonCount = certExpiryKnown ? (certExpiry?.expiring_soon_count ?? 0) : 0;
 
   const settingsTab = new URLSearchParams(location.search).get('tab') || 'general';
 

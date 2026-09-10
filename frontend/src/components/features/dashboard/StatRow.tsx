@@ -13,7 +13,10 @@ export interface StatRowProps {
   };
   services: { total: number; enabled: number; ok: number; error: number };
   providers: { total: number; enabled: number; healthy: number };
-  certificates: { expiring: number; total: number; thresholdDays: number };
+  // `failed` is what stops this tile reporting a confident zero when the expiry check did
+  // not come back. Zero expiring and "we could not ask" look identical as a number, and
+  // only one of them means everything is fine.
+  certificates: { expiring: number; total: number; thresholdDays: number; failed?: boolean };
   logs: { today: number; todayCapped: boolean; total: number };
 }
 
@@ -68,13 +71,17 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
       />
       <StatCard
         label={t('dashboard.stats.certificates')}
-        value={formatNumber(certificates.expiring)}
-        hint={t('dashboard.stats.certificates_hint', {
-          total: formatNumber(certificates.total),
-          days: formatNumber(certificates.thresholdDays),
-        })}
+        value={certificates.failed ? '—' : formatNumber(certificates.expiring)}
+        hint={
+          certificates.failed
+            ? t('dashboard.stats.certificates_unknown')
+            : t('dashboard.stats.certificates_hint', {
+                total: formatNumber(certificates.total),
+                days: formatNumber(certificates.thresholdDays),
+              })
+        }
         icon={<ShieldCheck />}
-        tone={certificates.expiring > 0 ? 'warning' : 'neutral'}
+        tone={certificates.failed || certificates.expiring > 0 ? 'warning' : 'neutral'}
         loading={loading.certificates}
         onClick={() => navigate('/certificates')}
       />

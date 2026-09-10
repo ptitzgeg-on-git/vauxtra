@@ -2,10 +2,13 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
+import { RefreshCw } from 'lucide-react';
 import { Layout } from './components/layout/Layout';
 import { ThemeProvider } from './theme';
 import { RouteErrorBoundary } from './components/ui/ErrorBoundary';
+import { Button } from './components/ui/Button';
 import { api } from './api/client';
+import { translateApiError } from './lib/errors';
 import { useT } from './i18n';
 import type { AuthStatus } from './types/api';
 
@@ -53,9 +56,43 @@ function FullPageLoader() {
   );
 }
 
+/**
+ * Shown when the first auth check does not come back at all.
+ *
+ * The alternative is worse than an error screen. With no answer from `/auth/me` there is no
+ * way to know whether this instance is protected, so rendering the app is a guess -- and it
+ * is the guess that fails open: it shows the whole shell to somebody who never signed in,
+ * and it walks a fresh install straight past its own setup wizard onto an empty dashboard,
+ * which reads as "setup is broken".
+ */
+function BootError({ error, onRetry, busy }: { error: unknown; onRetry: () => void; busy: boolean }) {
+  const t = useT();
+  return (
+    <div
+      role="alert"
+      className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background px-6 text-center"
+    >
+      <h1 className="text-lg font-semibold text-foreground">{t('dashboard.offline.title')}</h1>
+      <p className="max-w-md text-sm text-muted-foreground">
+        {translateApiError(error, t, t('login.unreachable'))}
+      </p>
+      <Button variant="outline" leftIcon={<RefreshCw />} loading={busy} onClick={onRetry}>
+        {t('ui.error.retry')}
+      </Button>
+    </div>
+  );
+}
+
 function AuthGate() {
   const qc = useQueryClient();
-  const { data: auth, isLoading } = useQuery<AuthStatus>({
+  const {
+    data: auth,
+    isLoading,
+    isError,
+    isFetching,
+    error,
+    refetch,
+  } = useQuery<AuthStatus>({
     queryKey: ['auth-status'],
     queryFn: () => api.get<AuthStatus>('/auth/me'),
     staleTime: 60_000,
@@ -73,13 +110,20 @@ function AuthGate() {
     return <FullPageLoader />;
   }
 
+  // No answer is not the same as "no password set". `retry: false` means one failed request
+  // ends the query, and every guard below reads `auth` with `?.`, so an undefined answer
+  // used to fall through all of them and render the app.
+  if (isError || !auth) {
+    return <BootError error={error} busy={isFetching} onRetry={() => void refetch()} />;
+  }
+
   // Show login if password is required and not authenticated
-  if (auth?.auth_required && !auth?.authenticated) {
+  if (auth.auth_required && !auth.authenticated) {
     return <Login onSuccess={() => qc.invalidateQueries({ queryKey: ['auth-status'] })} />;
   }
 
   // Show setup wizard if server says setup is required
-  if (auth?.setup_required) {
+  if (auth.setup_required) {
     return (
       <Setup
         onComplete={async () => {
