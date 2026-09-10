@@ -243,13 +243,26 @@ export function Providers() {
     }
     const editId = searchParams.get('edit');
     if (editId) {
-      if (providersQuery.isPending) return; // wait for the list before deciding
+      // Pending and failed both mean "the list is not here yet". Only pending was checked,
+      // so a failed load left `providers` empty, fell through to the else, and told the
+      // operator the integration does not exist -- while `setParam('edit', null)` had
+      // already destroyed the deep link, so Retry could not reopen it either.
+      if (providersQuery.isPending || providersQuery.isError) return;
       setParam('edit', null);
       const provider = providers.find((p) => String(p.id) === editId);
       if (provider) openEdit(provider);
       else toast.error(t('providers.toast.not_found', { id: editId }));
     }
-  }, [searchParams, providers, providersQuery.isPending, setParam, openCreate, openEdit, t]);
+  }, [
+    searchParams,
+    providers,
+    providersQuery.isPending,
+    providersQuery.isError,
+    setParam,
+    openCreate,
+    openEdit,
+    t,
+  ]);
 
   // --- actions ------------------------------------------------------------
   const handleRefresh = async () => {
