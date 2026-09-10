@@ -33,6 +33,7 @@ Symptoms:
 
 - Login fails despite expected password
 - Setup wizard reappears unexpectedly
+- Every request returns 401 saying the hash is no longer in the database
 
 Checks:
 
@@ -42,13 +43,27 @@ Checks:
 Actions:
 
 - If `APP_PASSWORD` is set, it overrides wizard-managed password behavior.
-- If locked out and no env password is intended:
+- If locked out and no env password is intended, delete **both** rows:
 
 ```bash
-sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='app_password_hash';"
+sqlite3 data/vauxtra.db \
+  "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"
 ```
 
 Restart container after change.
+
+> **Delete both, or the instance stays locked.** This page used to name
+> `app_password_hash` alone, which is the one recipe that makes things worse: `auth_mode`
+> is the row that records *that* this instance was protected, so with the hash gone and the
+> marker still there Vauxtra refuses every single request rather than falling back to
+> anonymous access. That refusal is deliberate — it is what stops a database restored from
+> the wrong file from quietly opening a protected instance — but an operator who ran the
+> old one-row command reached it while trying to get back in.
+>
+> If you are already in that state, the two rows disagree and you have two ways out: run
+> the command above to reopen the wizard, or keep the protection by setting `APP_PASSWORD`
+> to a `pbkdf2:`-prefixed hash and restarting. See
+> [HOWTO — Forgot your password?](HOWTO.md#forgot-your-password) for both, in full.
 
 ## 3. Provider Test Fails
 

@@ -20,6 +20,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   refuse rather than write blind — the guard deSEC has carried since it was added.
   `list_rewrites()` is unchanged in effect: it is read-only, so a zone it cannot open just
   contributes nothing.
+- **`docs/TROUBLESHOOTING.md` gave the one password recovery that makes things worse.** It
+  told a locked-out operator to delete `app_password_hash`, which is precisely what
+  `docs/HOWTO.md` says is **not** enough: `auth_mode` is the row recording that the
+  instance was protected, so with the hash gone and the marker still there Vauxtra refuses
+  every request rather than falling back to anonymous access. Following the page written
+  for people who are locked out left them locked out harder. Both rows are named now, with
+  the reason and a link to the full procedure.
 - **The recommended deployment no longer logs an error at every boot.** Vauxtra serves its
   own interface, so the configuration the documentation recommends allows no cross-origin
   caller at all — and that is exactly the case `validate_cors_origins()` treated as a
