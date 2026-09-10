@@ -7,6 +7,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Added
+- **The image is now built and scanned on every branch, and shipping pip is what that
+  caught.** Nothing in this repository ever ran `docker build` outside the publish step, so
+  a Dockerfile that does not build surfaced on a tag — after tests and the security scan had
+  both gone green, with the version already public in git and no image to go with it. And
+  every scanner here read the *source tree*, never the artifact: `python:3.13-slim` is a
+  Debian userland, so an openssl or zlib advisory landed in the shipped image without
+  touching a line of this repository and nothing said a word. A new `image-scan` job builds
+  `linux/amd64` and runs Trivy over the result. One platform on purpose: it proves the build
+  and scans the userland, both architecture-independent, and shares its layer cache with the
+  multi-arch publish.
+  Its first run found two HIGH, and both came from `pip` rather than from `requirements.txt`
+  — msgpack `GHSA-6v7p-g79w-8964` and setuptools `CVE-2025-47273`. Neither package is
+  installed in the image. Both are lines in `pip/_vendor/vendor.txt`, the manifest pip
+  carries for its own dependency tree, which no scanner can tell apart from a real install
+  list; the setuptools module the CVE is about is not even shipped. Nothing was pinnable, so
+  pip is removed after the install instead, along with the ensurepip wheel that is a full
+  copy of it. That drops both findings, takes a working package installer out of a
+  network-facing container, and saves 7 MB. The Debian layer was clean.
+
 ### Fixed
 - **PowerDNS no longer deletes the records it could not read.** PowerDNS writes a record
   *set*: `add_rewrite()` reads the existing values, appends one, and sends the whole set
