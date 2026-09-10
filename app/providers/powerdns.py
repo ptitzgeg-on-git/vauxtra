@@ -102,20 +102,35 @@ class PowerDNSProvider(DNSProvider):
                 best = (len(name), self._zone_id(zone))
         return best[1] if best else None
 
-    def _zone_rrsets(self, zone_id: str) -> list[dict]:
+    def _zone_rrsets(self, zone_id: str) -> list[dict] | None:
+        """Every record set in the zone, or None when the API refused to say.
+
+        The difference matters on the write path and only there: PowerDNS writes a record
+        *set*, so "this zone holds no A record for the name" and "I could not read the
+        zone" lead to opposite actions. Flattening both to an empty list is what made a
+        403 look like an empty RRset.
+        """
         try:
             r = self.session.get(f"{self._api('/zones')}/{zone_id}")
             if r.status_code != 200:
-                return []
+                return None
             data = r.json()
             rrsets = data.get("rrsets") if isinstance(data, dict) else None
-            return [s for s in rrsets if isinstance(s, dict)] if isinstance(rrsets, list) else []
+            return [s for s in rrsets if isinstance(s, dict)] if isinstance(rrsets, list) else None
         except (requests.RequestException, ValueError):
-            return []
+            return None
 
-    def _find_rrset(self, zone_id: str, name: str, rtype: str) -> dict | None:
+    def _find_rrset(self, zone_id: str, name: str, rtype: str) -> dict | None | bool:
+        """The record set, None when it does not exist, False when the API refused.
+
+        Three answers, the same three deSEC returns, because the caller has to tell them
+        apart before it replaces anything.
+        """
+        rrsets = self._zone_rrsets(zone_id)
+        if rrsets is None:
+            return False
         wanted = self._relative(name)
-        for rrset in self._zone_rrsets(zone_id):
+        for rrset in rrsets:
             if rrset.get("type") == rtype and self._relative(rrset.get("name", "")) == wanted:
                 return rrset
         return None
@@ -172,7 +187,9 @@ class PowerDNSProvider(DNSProvider):
     def list_rewrites(self) -> list[dict]:
         records: list[dict] = []
         for zone in self._list_zones():
-            for rrset in self._zone_rrsets(self._zone_id(zone)):
+            # A zone this token cannot read contributes nothing here. That is the one
+            # place the distinction is safely ignorable: listing is read-only.
+            for rrset in self._zone_rrsets(self._zone_id(zone)) or []:
                 rtype = rrset.get("type")
                 if rtype not in MANAGED_TYPES:
                     continue
@@ -198,6 +215,13 @@ class PowerDNSProvider(DNSProvider):
             return False
 
         existing = self._find_rrset(zone_id, domain, rtype)
+        if existing is False:
+            # The state is unknown, and the write below is a whole-set REPLACE. Sending it
+            # blind would delete every sibling address of this name -- the second A record
+            # of a round-robin, the AAAA nobody remembered -- and report success. Refusing
+            # is the only answer that cannot destroy anything.
+            return False
+
         ttl = int(existing.get("ttl") or DEFAULT_TTL) if existing else DEFAULT_TTL
         contents = [
             str(r.get("content", "")).strip()
@@ -223,6 +247,8 @@ class PowerDNSProvider(DNSProvider):
         content = self._content(rtype, ip)
 
         existing = self._find_rrset(zone_id, domain, rtype)
+        if existing is False:
+            return False  # unknown state: claiming the record is gone would be a guess
         if not existing:
             return True  # nothing there; the postcondition already holds
         ttl = int(existing.get("ttl") or DEFAULT_TTL)
