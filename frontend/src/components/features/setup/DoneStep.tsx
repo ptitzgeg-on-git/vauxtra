@@ -19,6 +19,8 @@ interface DoneStepProps {
   skipPassword: boolean | null;
   providers: ProviderItem[];
   onFinish: () => void;
+  /** The wizard is still waiting on the server; the button says so instead of looking idle. */
+  finishing?: boolean;
 }
 
 const DOCS_URL = 'https://github.com/ptitzgeg-on-git/vauxtra/blob/main/docs/HOWTO.md';
@@ -77,7 +79,7 @@ function Celebration({ drawn }: { drawn: boolean }) {
   );
 }
 
-export function DoneStep({ skipPassword, providers, onFinish }: DoneStepProps) {
+export function DoneStep({ skipPassword, providers, onFinish, finishing }: DoneStepProps) {
   const t = useT();
   const { formatNumber } = useFormat();
   const { endpoints } = useDockerEndpoints();
@@ -164,7 +166,7 @@ export function DoneStep({ skipPassword, providers, onFinish }: DoneStepProps) {
       </Card>
 
       <div className="flex flex-col items-center gap-3">
-        <Button size="lg" onClick={onFinish} rightIcon={<ArrowRight />} className="w-full max-w-xs">
+        <Button size="lg" onClick={onFinish} loading={finishing} rightIcon={<ArrowRight />} className="w-full max-w-xs">
           {t('setup.done.go_dashboard')}
         </Button>
         <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs">

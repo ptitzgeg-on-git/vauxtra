@@ -132,6 +132,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const [importableServices, setImportableServices] = useState<ImportableService[]>([]);
   const [loadingImportable, setLoadingImportable] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [finishing, setFinishing] = useState(false);
 
   // Provider types
   const { data: providerTypes } = useProviderTypes();
@@ -267,12 +268,22 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     // The setup wizard may cache an empty services list before restore.
     // Drop it so the first dashboard paint reflects restored data.
     queryClient.removeQueries({ queryKey: ['services'], exact: true });
-    await Promise.all([
-      queryClient.fetchQuery({ queryKey: ['auth-status'], queryFn: () => api.get('/auth/me') }),
-      queryClient.fetchQuery({ queryKey: ['providers'], queryFn: () => api.get('/providers') }),
-      queryClient.fetchQuery({ queryKey: ['services'], queryFn: () => api.get('/services'), staleTime: 0 }),
-      queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),
-    ]);
+    // A prefetch decides whether the dashboard paints instantly or with a spinner. This one
+    // used to decide something else: a single rejected request threw out of this handler, so a
+    // restore that had already succeeded on the server never showed its toast and never left
+    // the restore screen -- which reads as "the restore failed" for an operator who just got
+    // their data back. Every query below refetches on mount; losing the head start costs a
+    // spinner, nothing more.
+    try {
+      await Promise.all([
+        queryClient.fetchQuery({ queryKey: ['auth-status'], queryFn: () => api.get('/auth/me') }),
+        queryClient.fetchQuery({ queryKey: ['providers'], queryFn: () => api.get('/providers') }),
+        queryClient.fetchQuery({ queryKey: ['services'], queryFn: () => api.get('/services'), staleTime: 0 }),
+        queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),
+      ]);
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('Post-restore prefetch failed:', err);
+    }
 
     toast.success(summary.secretsIncluded ? t('setup.toast.restored') : t('setup.toast.restored_no_secrets'));
     navigate('/');
@@ -326,11 +337,27 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   /* ─────────────────── Navigation ─────────────────── */
 
+  /**
+    * `clearWizardSession()` used to run first. So when `onComplete()` failed -- it refetches
+    * `/auth/me`, which is a network call like any other -- the wizard had already erased every
+    * answer the operator had just given, and the call site discards the promise (`void
+    * finish()`), so the rejection went nowhere: no toast, no navigation, a button that looked
+    * like it had not been clicked. Nothing is thrown away now until the server has confirmed,
+    * and the button says it is working.
+    */
   const finish = async () => {
+    setFinishing(true);
+    try {
+      await onComplete();
+    } catch (err) {
+      toast.error(translateApiError(err, t, t('setup.toast.finish_failed')));
+      setFinishing(false);
+      return;
+    }
     clearWizardSession();
     queryClient.invalidateQueries({ queryKey: ['providers'] });
     queryClient.invalidateQueries({ queryKey: ['services'] });
-    await onComplete();
+    setFinishing(false);
     navigate('/');
   };
 
@@ -479,6 +506,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
                 skipPassword={skipPassword}
                 providers={providers}
                 onFinish={() => void finish()}
+                finishing={finishing}
               />
             )}
           </main>

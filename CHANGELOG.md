@@ -28,6 +28,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Four operations could fail without a single word on screen.** Signing out was a bare
+  `async` function wired straight to `onClick`, so React discarded the promise: a failed
+  `POST /auth/logout` became an unhandled rejection, the `auth-status` invalidation never
+  ran, and the sidebar still showed a signed-in session. Somebody walking away from a shared
+  machine had every reason to believe they had signed out. It is a mutation now — the button
+  shows it working, and a failure says so.
+  The setup wizard's Finish button called `clearWizardSession()` *before* `onComplete()`, and
+  `onComplete()` refetches `/auth/me`, which is a network call like any other. One failure
+  and the wizard had already erased every answer just given, while `void finish()` swallowed
+  the rejection: no toast, no navigation, a button that looked unclicked. Nothing is discarded
+  now until the server confirms. The restore path had the mirror-image defect: four
+  `fetchQuery` prefetches — a paint optimisation — were awaited unguarded, so one rejected
+  request threw out of the handler and a restore that had *already succeeded on the server*
+  never showed its toast and never left the restore screen.
+  Finally, the `?edit=<id>` deep links on Services and Integrations only checked `isPending`.
+  A failed list load fell through to the lookup, told the operator the item did not exist, and
+  `setParam('edit', null)` had already destroyed the deep link — so Retry could not reopen it
+  either.
 - **The interface stopped reporting a healthy state it had not verified.** Two places, one
   defect: the server did not answer and the UI rendered the reassuring answer.
   `AuthGate` never read `isError`. With `retry: false` a single failed `/auth/me` ends the
