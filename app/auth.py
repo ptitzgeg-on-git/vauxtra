@@ -261,6 +261,23 @@ def check_password(candidate: str) -> bool:
     return False
 
 
+def password_is_env_managed() -> bool:
+    """True when `APP_PASSWORD` decides logins, so nothing written to the database can.
+
+    `check_password` returns on the variable and never reaches the stored hash. That made
+    `POST /api/auth/change-password` a trap: it wrote a hash nobody would ever read, then
+    bumped the session epoch -- so the operator was logged out of every session, the new
+    password was refused, and the only way back in was the old one they had just tried to
+    retire. Right after a suspected compromise, which is when that button gets pressed.
+
+    The plaintext case is deliberately included only when the opt-in is on: without it
+    `check_password` falls through to the stored hash, and the database really is in charge.
+    """
+    if not APP_PASSWORD:
+        return False
+    return APP_PASSWORD.startswith("pbkdf2:") or _ALLOW_PLAINTEXT_APP_PASSWORD
+
+
 def get_session(request: Request) -> dict:
     try:
         return request.session
