@@ -35,6 +35,8 @@ export function SecurityTab() {
         >
           {translateApiError(authQuery.error, t, t('common.error'))}
         </InlineAlert>
+      ) : authQuery.data?.password_source === 'environment' ? (
+        <EnvManagedPasswordCard />
       ) : authQuery.data && !authQuery.data.auth_required ? (
         <SetPasswordCard />
       ) : (
@@ -142,6 +144,28 @@ function SetPasswordCard() {
         <Checkbox label={t('settings.auth.show_passwords')} checked={show} onChange={(e) => setShow(e.target.checked)} />
       </SettingsSection>
     </form>
+  );
+}
+
+/** `APP_PASSWORD` decides logins, so this screen explains rather than offering a form.
+ *
+ * The form used to be shown here too. Submitting it wrote a hash `check_password` never
+ * reads and bumped the session epoch, so the operator was logged out of everything and the
+ * password they had just chosen was refused. The API returns 409 now; this says why before
+ * anyone gets that far.
+ */
+function EnvManagedPasswordCard() {
+  const t = useT();
+  return (
+    <SettingsSection
+      icon={<Lock />}
+      title={t('settings.security.env_password_title')}
+      description={t('settings.security.env_password_desc')}
+    >
+      <InlineAlert tone="info" title={t('settings.security.env_password_how_title')}>
+        {t('settings.security.env_password_how')}
+      </InlineAlert>
+    </SettingsSection>
   );
 }
 
