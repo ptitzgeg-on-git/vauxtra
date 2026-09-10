@@ -47,6 +47,7 @@ wait_for() {
 }
 
 wait_for technitium "http://127.0.0.1:5380/api/user/login?user=admin&pass=vauxtra-lab-pw"
+wait_for powerdns   "http://127.0.0.1:3084/api/v1/servers/localhost" 401
 wait_for adguard    "http://127.0.0.1:3080/control/status" 401
 wait_for npm        "http://127.0.0.1:3081/api/"
 wait_for pihole     "http://127.0.0.1:3082/api/auth" 401
