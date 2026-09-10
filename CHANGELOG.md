@@ -204,6 +204,14 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
 - **Templates page** (`/templates`) — the saved service templates now have a screen.
 - Settings split into nine tabs across their own files (`Settings.tsx`: 1909 lines
   to 134), and the data tab into four sections (sync, Docker, export, restore).
+- **Integration lab** (`lab/`) — the five self-hostable providers as the container images
+  an operator actually runs, and a harness that drives a real Vauxtra against them over its
+  own HTTP API: register, test the connection, direct record CRUD, publish a service, break
+  the provider behind Vauxtra's back, reconcile, delete. Seventy-four probes over
+  `npm+adguard`, `zoraxy+technitium` and `npm+pihole`. `lab/up.sh --fresh` rebuilds the
+  whole thing from nothing. Cloudflare and Cloudflare Tunnel are absent because they cannot
+  be faked: testing them means a real account and a real zone. This is what found the
+  Pi-hole seat leak listed above, and `lab/repro_pihole_seats.py` stays as its witness.
 
 ---
 
