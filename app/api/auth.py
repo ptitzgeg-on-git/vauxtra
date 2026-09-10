@@ -12,6 +12,7 @@ from app.auth import (
     hash_password,
     is_authenticated,
     mark_password_configured,
+    password_is_env_managed,
     require_auth,
     require_auth_or_setup,
 )
@@ -57,6 +58,9 @@ def auth_me(request: Request):
         # credential at all. The wizard lets you choose that, and until now nothing in the
         # interface ever mentioned it again.
         "auth_mode": "password" if has_password_configured() else "open",
+        # Which of the two stores actually decides a login. The interface offered a
+        # change-password form in both cases; in one of them the form could not work.
+        "password_source": "environment" if password_is_env_managed() else "database",
     }
 
 
@@ -151,6 +155,19 @@ def change_password(request: Request, body: ChangePasswordBody):
     # has no business attempting the admin password, even though the current password is
     # still required below -- each attempt also burns the shared 3/minute rate limit.
     require_auth(request, scope="admin")
+
+    # Before anything is verified or written: with `APP_PASSWORD` set, `check_password`
+    # never reads the stored hash, so this route used to write one nobody would read and
+    # then bump the session epoch -- logging the operator out of everything and refusing
+    # the password they had just chosen.
+    if password_is_env_managed():
+        raise HTTPException(
+            409,
+            "This instance takes its admin password from the APP_PASSWORD environment "
+            "variable, so a password changed here would never be read. Change the value of "
+            "APP_PASSWORD and restart, or remove the variable to let this screen own the "
+            "password.",
+        )
 
     if not check_password(body.current_password):
         raise HTTPException(401, "Current password is incorrect")

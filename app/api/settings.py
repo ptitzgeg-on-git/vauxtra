@@ -52,9 +52,12 @@ _SETTING_RANGES = {
     "webhook_retry_retention_days": (1, 90),  # the bounds `_read_retention_days` clamps to
 }
 
-# `timezone` has no reader anywhere -- not in Python, not in the frontend. It is validated
-# for shape rather than against the IANA database on purpose: `zoneinfo` needs the `tzdata`
-# package on Windows, and a missing package would otherwise reject every value there.
+# `timezone` is read by the frontend (`hooks/useFormat.ts`) and by nothing on this side: the
+# server stores UTC and this decides how it is rendered. `TZ`, the container variable, is
+# the separate one -- it sets the clock the scheduler and the log lines are written from.
+# The value is validated for shape rather than against the IANA database on purpose:
+# `zoneinfo` needs the `tzdata` package on Windows, and a missing package would otherwise
+# reject every value there.
 _TIMEZONE_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){0,2}$")
 
 _BOOLEAN_WORDS = {"true", "false", "1", "0", "yes", "no", "on", "off"}
