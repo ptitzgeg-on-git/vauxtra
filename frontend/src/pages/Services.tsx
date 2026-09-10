@@ -1,735 +1,970 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { Plus, Globe, Search, LayoutGrid, LayoutList, Pencil, Trash2, RefreshCw, ShieldCheck, CheckSquare, Square, Power, PowerOff, X, Waypoints, ArrowRightLeft, AlertTriangle, Loader2 } from "lucide-react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/api/client";
-import { ExposeModal } from "@/components/features/expose/ExposeModal";
-import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
-import toast from "react-hot-toast";
-import type { Service, Provider, Tag, Environment } from "@/types/api";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Activity,
+  ArrowRightLeft,
+  CircleAlert,
+  FilterX,
+  Globe,
+  Import,
+  LayoutGrid,
+  LayoutList,
+  Plus,
+  Power,
+  PowerOff,
+  RefreshCw,
+  Trash2,
+  Waypoints,
+  X,
+} from 'lucide-react';
+import { toast } from 'react-hot-toast';
+import { api } from '@/api/client';
+import { useT } from '@/i18n';
+import { cn } from '@/lib/cn';
+import { translateApiError } from '@/lib/errors';
+import {
+  Badge,
+  Button,
+  buttonVariants,
+  Checkbox,
+  EmptyState,
+  IconButton,
+  Kbd,
+  PageHeader,
+  SearchInput,
+  Select,
+  SkeletonCard,
+  SkeletonRow,
+  Tab,
+  TabList,
+  TabPanel,
+  Tabs,
+  useConfirmDialog,
+} from '@/components/ui';
+import { ExposeModal } from '@/components/features/expose/ExposeModal';
+import { templateToFormState, type FormState } from '@/components/features/expose/types';
+import { DriftDrawer } from '@/components/features/services/DriftDrawer';
+import { ServiceCard } from '@/components/features/services/ServiceCard';
+import { ServiceRow } from '@/components/features/services/ServiceRow';
+import {
+  MODE_FILTERS,
+  buildServicePayload,
+  isStatusFilter,
+  matchesMode,
+  matchesSearch,
+  publicHostOf,
+  type ModeFilter,
+  type StatusFilter,
+} from '@/components/features/services/helpers';
+import type {
+  BulkActionResult,
+  DriftResult,
+  Environment,
+  Provider,
+  ReconcileResult,
+  Service,
+  ServiceCheckResult,
+  Tag,
+  TemplateApplyResult,
+} from '@/types/api';
 
-type ModeFilter = 'all' | 'tunnel' | 'proxy' | 'dns' | 'disabled';
-
-function toErrorMessage(detail: unknown, fallback: string): string {
-  if (typeof detail === 'string' && detail.trim()) return detail;
-  if (Array.isArray(detail) && detail.length > 0) {
-    const first = detail[0] as Record<string, unknown> | undefined;
-    const msg = typeof first?.msg === 'string' ? first.msg : '';
-    if (msg) return msg;
-  }
-  if (detail && typeof detail === 'object') {
-    const msg = (detail as Record<string, unknown>).msg;
-    if (typeof msg === 'string' && msg.trim()) return msg;
-  }
-  return fallback;
-}
+// ---------------------------------------------------------------------------
+// Local persistence (keys are part of the page's contract — keep them)
+// ---------------------------------------------------------------------------
 
 function useLocalStorage<T>(key: string, fallback: T): [T, (v: T | ((prev: T) => T)) => void] {
   const [value, setValue] = useState<T>(() => {
-    try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; }
-    catch { return fallback; }
+    try {
+      const raw = localStorage.getItem(key);
+      return raw !== null ? (JSON.parse(raw) as T) : fallback;
+    } catch {
+      return fallback;
+    }
   });
-  const set = useCallback((v: T | ((prev: T) => T)) => {
-    setValue(prev => {
-      const next = typeof v === 'function' ? (v as (prev: T) => T)(prev) : v;
-      localStorage.setItem(key, JSON.stringify(next));
-      return next;
-    });
-  }, [key]);
+  const set = useCallback(
+    (v: T | ((prev: T) => T)) => {
+      setValue((prev) => {
+        const next = typeof v === 'function' ? (v as (prev: T) => T)(prev) : v;
+        try {
+          localStorage.setItem(key, JSON.stringify(next));
+        } catch {
+          // Private mode or quota: the in-memory value still wins.
+        }
+        return next;
+      });
+    },
+    [key],
+  );
   return [value, set];
 }
 
-/* ────────────────────────────────────────────────────────────────
-   Provider Sync Panel
-   ──────────────────────────────────────────────────────────────── */
+type ViewMode = 'list' | 'grid';
+
+type RouteModal = {
+  key: string;
+  mode: 'create' | 'edit';
+  service?: Service;
+  initialState?: FormState;
+  templateName?: string;
+};
+
+type DeleteResult = { ok: boolean; errors?: string[] };
+
+const MODE_ICONS: Record<ModeFilter, ReactElement | undefined> = {
+  all: undefined,
+  tunnel: <Waypoints />,
+  proxy: <ArrowRightLeft />,
+  dns: <Globe />,
+  disabled: <PowerOff />,
+};
+
+const isEditable = (target: EventTarget | null): boolean => {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+};
+
+const isModeFilter = (value: string): value is ModeFilter => (MODE_FILTERS as string[]).includes(value);
 
 export function Services() {
+  const t = useT();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
-  const [isExposeModalOpen, setIsExposeModalOpen] = useState(false);
-  const [createModalNonce, setCreateModalNonce] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // --- persisted UI state -------------------------------------------------
   const [search, setSearch] = useLocalStorage('vauxtra.services.search', '');
-  const [viewMode, setViewMode] = useLocalStorage<'list' | 'grid'>('vauxtra.services.viewMode', 'list');
+  const [viewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
   const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all');
-  const [editingService, setEditingService] = useState<Service | null>(null);
-  const [driftByService, setDriftByService] = useState<Record<number, Record<string, unknown>>>({});
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [actioningIds, setActioningIds] = useState<Set<number>>(new Set());
+
+  // --- URL-driven filters (shared links from the dashboard) ---------------
+  const tagFilter = Number(searchParams.get('tag')) || null;
+  const envFilter = Number(searchParams.get('env')) || null;
+  const statusParam = searchParams.get('status');
+  const statusFilter: StatusFilter | null = isStatusFilter(statusParam) ? statusParam : null;
+
+  const setParam = useCallback(
+    (name: string, value: string | null) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (value) next.set(name, value);
+          else next.delete(name);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // --- transient state ----------------------------------------------------
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [actioningIds, setActioningIds] = useState<Set<number>>(() => new Set());
+  const [checkById, setCheckById] = useState<Record<number, ServiceCheckResult>>({});
+  const [driftByService, setDriftByService] = useState<Record<number, DriftResult>>({});
+  const [driftErrorById, setDriftErrorById] = useState<Record<number, string>>({});
+  const [reconcileByService, setReconcileByService] = useState<Record<number, ReconcileResult>>({});
+  const [driftDrawerId, setDriftDrawerId] = useState<number | null>(null);
+  const [routeModal, setRouteModal] = useState<RouteModal | null>(null);
+  const createNonce = useRef(0);
   const searchRef = useRef<HTMLInputElement>(null);
+  const templateFetchRef = useRef<string | null>(null);
 
-  const { data: services, isLoading } = useQuery({
-    queryKey: ['services'],
-    queryFn: () => api.get('/services')
-  });
-
-  const { data: providers } = useQuery({
-    queryKey: ['providers'],
-    queryFn: () => api.get('/providers')
-  });
-
-  const getProvider = (id: number | string | null | undefined) =>
-    Array.isArray(providers) ? providers.find((p: Provider) => String(p.id) === String(id ?? '')) : null;
-
-  const isNavigablePublicHost = (host: string) => !!host && !host.includes('*');
-
-  const buildServicePayload = (service: Service | null, overrides: Record<string, unknown> = {}) => {
-    const tagIds = Array.isArray(service?.tags)
-      ? service.tags.map((t: Tag) => Number(t?.id)).filter((id: number) => Number.isFinite(id))
-      : [];
-
-    const environmentIds = Array.isArray(service?.environments)
-      ? service.environments.map((e: Environment) => Number(e?.id)).filter((id: number) => Number.isFinite(id))
-      : [];
-
-    return {
-      // No `id`: it is already in the URL, and the API rejects unknown keys.
-      subdomain: String(overrides.subdomain ?? service?.subdomain ?? '').trim().toLowerCase(),
-      domain: String(overrides.domain ?? service?.domain ?? '').trim().toLowerCase(),
-      target_ip: String(overrides.target_ip ?? service?.target_ip ?? '').trim(),
-      target_port: Number(overrides.target_port ?? service?.target_port ?? 80),
-      forward_scheme: (overrides.forward_scheme ?? service?.forward_scheme ?? 'http') === 'https' ? 'https' : 'http',
-      websocket: Boolean(overrides.websocket ?? service?.websocket ?? false),
-      expose_mode: String(overrides.expose_mode ?? service?.expose_mode ?? 'proxy_dns'),
-      public_target_mode: (overrides.public_target_mode ?? service?.public_target_mode ?? 'manual') === 'auto' ? 'auto' : 'manual',
-      auto_update_dns: Boolean(overrides.auto_update_dns ?? service?.auto_update_dns ?? false),
-      tunnel_provider_id: (overrides.tunnel_provider_id ?? service?.tunnel_provider_id)
-        ? Number(overrides.tunnel_provider_id ?? service?.tunnel_provider_id)
-        : null,
-      tunnel_hostname: String(overrides.tunnel_hostname ?? service?.tunnel_hostname ?? ''),
-      enabled: Boolean(overrides.enabled ?? service?.enabled ?? true),
-      proxy_provider_id: (overrides.proxy_provider_id ?? service?.proxy_provider_id)
-        ? Number(overrides.proxy_provider_id ?? service?.proxy_provider_id)
-        : null,
-      dns_provider_id: (overrides.dns_provider_id ?? service?.dns_provider_id)
-        ? Number(overrides.dns_provider_id ?? service?.dns_provider_id)
-        : null,
-      dns_ip: String(overrides.dns_ip ?? service?.dns_ip ?? '').trim(),
-      tag_ids: tagIds,
-      environment_ids: environmentIds,
-      icon_url: String(overrides.icon_url ?? service?.icon_url ?? ''),
-      extra_proxy_provider_ids: Array.isArray(service?.extra_proxy_provider_ids)
-        ? service.extra_proxy_provider_ids.map((id: number) => Number(id)).filter((id: number) => Number.isFinite(id))
-        : [],
-      extra_dns_provider_ids: Array.isArray(service?.extra_dns_provider_ids)
-        ? service.extra_dns_provider_ids.map((id: number) => Number(id)).filter((id: number) => Number.isFinite(id))
-        : [],
-    };
-  };
-
-  const _startAction = (id: number) => setActioningIds((prev) => new Set(prev).add(id));
-  const _endAction = (id: number) => setActioningIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-
-  const toggleStatus = useMutation({
-    mutationFn: (data: {service: Service, enabled: boolean}) => {
-      _startAction(data.service.id);
-      return api.put(`/services/${data.service.id}`, buildServicePayload(data.service, { enabled: data.enabled }));
-    },
-    onSuccess: (_d, vars) => {
-      _endAction(vars.service.id);
-      queryClient.invalidateQueries({ queryKey: ['services'] });
-      const host = vars.service.subdomain ? `${vars.service.subdomain}.${vars.service.domain}` : vars.service.domain;
-      toast.success(`${host} ${vars.enabled ? 'enabled' : 'disabled'}`);
-    },
-    onError: (err: { response?: { data?: { detail?: unknown } } }, vars) => {
-      _endAction(vars.service.id);
-      toast.error(toErrorMessage(err?.response?.data?.detail, 'Unable to update service status'));
-    },
-  });
-
-  const deleteService = useMutation({
-    mutationFn: (id: number) => {
-      _startAction(id);
-      return api.delete(`/services/${id}`) as Promise<{ ok: boolean; errors?: string[] }>;
-    },
-    onSuccess: (data, id) => {
-      _endAction(id);
-      queryClient.invalidateQueries({ queryKey: ['services'] });
-      queryClient.invalidateQueries({ queryKey: ['logs'] });
-      // A 200 does not mean the exposure is gone. The row is removed either way, and any
-      // provider that refused to withdraw the route is listed in `errors`; dropping them
-      // left a hostname answering from the internet with nothing on screen to say so.
-      const errors = data?.errors || [];
-      if (errors.length === 0) {
-        toast.success('Service deleted');
-      } else {
-        const summary = errors.slice(0, 2).join('; ');
-        const moreCount = errors.length > 2 ? ` (+${errors.length - 2} more)` : '';
-        toast(`Service deleted, but its route is still up somewhere: ${summary}${moreCount}`, { icon: '\u26a0\ufe0f', duration: 8000 });
-      }
-    },
-    onError: (err: { response?: { data?: { detail?: unknown } } }, id) => {
-      _endAction(id);
-      toast.error(toErrorMessage(err?.response?.data?.detail, 'Delete failed'));
-    },
-  });
-
-  const checkDrift = useMutation({
-    mutationFn: (id: number) => { _startAction(id); return api.get(`/services/${id}/drift`) as Promise<Record<string, unknown>>; },
-    onSuccess: (data: Record<string, unknown>) => {
-      const serviceId = Number(data?.service_id || 0);
-      if (serviceId) {
-        _endAction(serviceId);
-        setDriftByService((prev) => ({ ...prev, [serviceId]: data }));
-      }
-      const issues = Array.isArray(data?.issues) ? data.issues : [];
-      if (issues.length === 0) {
-        toast.success('No drift detected');
-      } else {
-        toast.error(`${issues.length} drift issue(s) detected`);
-      }
-    },
-    onError: (err: { response?: { data?: { detail?: unknown } } }, id) => {
-      _endAction(id);
-      toast.error(toErrorMessage(err?.response?.data?.detail, 'Drift check failed'));
-    },
-  });
-
-  const reconcileService = useMutation({
-    mutationFn: (id: number) => { _startAction(id); return api.post(`/services/${id}/reconcile`) as Promise<Record<string, unknown>>; },
-    onSuccess: (data: Record<string, unknown>, id) => {
-      _endAction(id);
-      const after = data?.after as Record<string, unknown> | undefined;
-      const serviceId = Number(after?.service_id || 0);
-      if (serviceId) {
-        setDriftByService((prev) => ({ ...prev, [serviceId]: after as Record<string, unknown> }));
-      }
-      queryClient.invalidateQueries({ queryKey: ['services'] });
-      queryClient.invalidateQueries({ queryKey: ['logs'] });
-      if (data?.ok) {
-        toast.success('Reconcile completed');
-      } else {
-        toast.error('Reconcile finished with issues');
-      }
-    },
-    onError: (err: { response?: { data?: { detail?: unknown } } }, id) => {
-      _endAction(id);
-      toast.error(toErrorMessage(err?.response?.data?.detail, 'Reconcile failed'));
-    },
-  });
-
-  const bulkAction = useMutation({
-    mutationFn: (data: { ids: number[]; action: string }) =>
-      api.post('/services/bulk', data) as Promise<{ ok: boolean; affected: number; errors?: string[] }>,
-    onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['services'] });
-      setSelectedIds(new Set());
-      const labels: Record<string, string> = { enable: 'enabled', disable: 'disabled', delete: 'deleted' };
-      const errors = data.errors || [];
-      if (errors.length === 0) {
-        toast.success(`${data.affected} service(s) ${labels[variables.action] || variables.action}`);
-      } else {
-        const errorSummary = errors.slice(0, 2).join('; ');
-        const moreCount = errors.length > 2 ? ` (+${errors.length - 2} more)` : '';
-        toast(`${data.affected} service(s) ${labels[variables.action] || variables.action} with warnings: ${errorSummary}${moreCount}`, { icon: '⚠️', duration: 8000 });
-      }
-    },
-    onError: (err: { response?: { data?: { detail?: unknown } } }) => {
-      toast.error(toErrorMessage(err?.response?.data?.detail, 'Bulk action failed'));
-    },
-  });
-
-  const allServices = useMemo<Service[]>(() => (Array.isArray(services) ? services : []), [services]);
-
-  const modeCounts = useMemo(() => ({
-    all: allServices.length,
-    tunnel: allServices.filter(s => Boolean(s.enabled) && s.expose_mode === 'tunnel').length,
-    proxy: allServices.filter(s => Boolean(s.enabled) && s.expose_mode !== 'tunnel' && Boolean(s.proxy_provider_id)).length,
-    dns: allServices.filter(s => Boolean(s.enabled) && s.expose_mode !== 'tunnel' && !s.proxy_provider_id && Boolean(s.dns_provider_id)).length,
-    disabled: allServices.filter(s => !s.enabled).length,
-  }), [allServices]);
-
-  const filteredServices = useMemo(() => {
-    return allServices.filter((s: Service) => {
-      const fqdn = s.subdomain ? `${s.subdomain}.${s.domain}` : s.domain;
-      const matchSearch = !search ||
-        fqdn.toLowerCase().includes(search.toLowerCase()) ||
-        (s.subdomain && s.subdomain.toLowerCase().includes(search.toLowerCase())) ||
-        s.domain.toLowerCase().includes(search.toLowerCase());
-      if (!matchSearch) return false;
-      if (modeFilter === 'disabled') return !s.enabled;
-      if (modeFilter === 'tunnel') return Boolean(s.enabled) && s.expose_mode === 'tunnel';
-      if (modeFilter === 'proxy') return Boolean(s.enabled) && s.expose_mode !== 'tunnel' && Boolean(s.proxy_provider_id);
-      if (modeFilter === 'dns') return Boolean(s.enabled) && s.expose_mode !== 'tunnel' && !s.proxy_provider_id && Boolean(s.dns_provider_id);
-      return true; // 'all'
-    });
-  }, [allServices, search, modeFilter]);
-
-  const toggleSelect = (id: number) => {
-    setSelectedIds(prev => {
+  const startAction = useCallback((id: number) => {
+    setActioningIds((prev) => new Set(prev).add(id));
+  }, []);
+  const endAction = useCallback((id: number) => {
+    setActioningIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      next.delete(id);
       return next;
     });
-  };
+  }, []);
 
-  const toggleSelectAll = useCallback(() => {
-    if (selectedIds.size === filteredServices.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(filteredServices.map(s => s.id)));
-    }
-  }, [filteredServices, selectedIds.size]);
+  // --- data ---------------------------------------------------------------
+  const servicesQuery = useQuery<Service[]>({
+    queryKey: ['services'],
+    queryFn: () => api.get<Service[]>('/services'),
+  });
+  const providersQuery = useQuery<Provider[]>({
+    queryKey: ['providers'],
+    queryFn: () => api.get<Provider[]>('/providers'),
+  });
+  const tagsQuery = useQuery<Tag[]>({ queryKey: ['tags'], queryFn: () => api.get<Tag[]>('/tags') });
+  const environmentsQuery = useQuery<Environment[]>({
+    queryKey: ['environments'],
+    queryFn: () => api.get<Environment[]>('/environments'),
+  });
 
-  // Keyboard shortcuts
+  const services = useMemo(() => (Array.isArray(servicesQuery.data) ? servicesQuery.data : []), [servicesQuery.data]);
+  const providers = useMemo(() => (Array.isArray(providersQuery.data) ? providersQuery.data : []), [providersQuery.data]);
+  const tags = useMemo(() => (Array.isArray(tagsQuery.data) ? tagsQuery.data : []), [tagsQuery.data]);
+  const environments = useMemo(
+    () => (Array.isArray(environmentsQuery.data) ? environmentsQuery.data : []),
+    [environmentsQuery.data],
+  );
+
+  const invalidateServices = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['services'] });
+  }, [queryClient]);
+  const invalidateAfterPush = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['services'] });
+    queryClient.invalidateQueries({ queryKey: ['logs'] });
+    queryClient.invalidateQueries({ queryKey: ['health'] });
+  }, [queryClient]);
+
+  /**
+   * Anything that pushes to a provider makes a cached drift report obsolete, and those reports
+   * live in component state that no query invalidation can reach. Forget them so the row badge
+   * stops asserting a state that is no longer true and the drawer re-checks when next opened.
+   */
+  const forgetDrift = useCallback((ids: number[]) => {
+    const drop = <T,>(prev: Record<number, T>) => {
+      if (!ids.some((id) => id in prev)) return prev;
+      const next = { ...prev };
+      ids.forEach((id) => delete next[id]);
+      return next;
+    };
+    setDriftByService(drop);
+    setDriftErrorById(drop);
+    setReconcileByService(drop);
+  }, []);
+
+  // --- modal helpers ------------------------------------------------------
+  const openCreate = useCallback((seed?: { initialState: FormState; templateName?: string; templateId?: string }) => {
+    createNonce.current += 1;
+    const suffix = seed?.templateId ? `template-${seed.templateId}-${createNonce.current}` : `create-${createNonce.current}`;
+    setRouteModal({ key: suffix, mode: 'create', initialState: seed?.initialState, templateName: seed?.templateName });
+  }, []);
+  const openEdit = useCallback((service: Service) => {
+    setRouteModal({ key: `edit-${service.id}`, mode: 'edit', service });
+  }, []);
+  const closeRouteModal = useCallback(() => setRouteModal(null), []);
+
+  // --- URL contract: ?new=1, ?edit=<id>, ?template=<id> -------------------
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+    if (searchParams.get('new')) {
+      setParam('new', null);
+      openCreate();
+      return;
+    }
+    const templateId = searchParams.get('template');
+    if (templateId) {
+      if (templateFetchRef.current === templateId) return;
+      templateFetchRef.current = templateId;
+      setParam('template', null);
+      api
+        .get<TemplateApplyResult>(`/templates/${encodeURIComponent(templateId)}/apply`)
+        .then((tpl) => {
+          openCreate({
+            initialState: templateToFormState(tpl),
+            templateName: tpl?._template_name ? String(tpl._template_name) : undefined,
+            templateId,
+          });
+        })
+        .catch((err) => {
+          toast.error(translateApiError(err, t, t('services.toast.template_load_failed')));
+        })
+        .finally(() => {
+          templateFetchRef.current = null;
+        });
+      return;
+    }
+    const editId = searchParams.get('edit');
+    if (editId) {
+      if (servicesQuery.isPending) return; // wait for the list before deciding
+      setParam('edit', null);
+      const service = services.find((s) => String(s.id) === editId);
+      if (service) openEdit(service);
+      else toast.error(t('services.toast.not_found', { id: editId }));
+    }
+  }, [searchParams, services, servicesQuery.isPending, setParam, openCreate, openEdit, t]);
 
-      if (e.key === '/' && !isInput) {
+  // --- filtering ----------------------------------------------------------
+  const baseFiltered = useMemo(
+    () =>
+      services.filter((s) => {
+        if (!matchesSearch(s, search)) return false;
+        if (tagFilter && !(Array.isArray(s.tags) && s.tags.some((tag) => tag.id === tagFilter))) return false;
+        if (envFilter && !(Array.isArray(s.environments) && s.environments.some((env) => env.id === envFilter))) return false;
+        if (statusFilter && (s.status || 'unknown') !== statusFilter) return false;
+        return true;
+      }),
+    [services, search, tagFilter, envFilter, statusFilter],
+  );
+
+  const modeCounts = useMemo(() => {
+    const counts: Record<ModeFilter, number> = { all: 0, tunnel: 0, proxy: 0, dns: 0, disabled: 0 };
+    for (const s of baseFiltered) {
+      for (const mode of MODE_FILTERS) if (matchesMode(s, mode)) counts[mode] += 1;
+    }
+    return counts;
+  }, [baseFiltered]);
+
+  const filteredServices = useMemo(
+    () => baseFiltered.filter((s) => matchesMode(s, modeFilter)),
+    [baseFiltered, modeFilter],
+  );
+
+  const hasFilters = Boolean(search.trim()) || Boolean(tagFilter) || Boolean(envFilter) || Boolean(statusFilter) || modeFilter !== 'all';
+  const clearFilters = useCallback(() => {
+    setSearch('');
+    setModeFilter('all');
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('tag');
+        next.delete('env');
+        next.delete('status');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearch, setModeFilter, setSearchParams]);
+
+  // --- selection ----------------------------------------------------------
+  const visibleIds = useMemo(() => filteredServices.map((s) => s.id), [filteredServices]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected = visibleIds.some((id) => selectedIds.has(id));
+
+  const toggleSelect = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const everySelected = visibleIds.length > 0 && visibleIds.every((id) => prev.has(id));
+      return everySelected ? new Set() : new Set(visibleIds);
+    });
+  }, [visibleIds]);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Drop ids that no longer exist (deleted elsewhere, or a refetch).
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const known = new Set(services.map((s) => s.id));
+    if ([...selectedIds].every((id) => known.has(id))) return;
+    setSelectedIds((prev) => new Set([...prev].filter((id) => known.has(id))));
+  }, [services, selectedIds]);
+
+  // --- keyboard shortcuts -------------------------------------------------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (routeModal || driftDrawerId !== null) return;
+      const editing = isEditable(e.target);
+      if (e.key === '/' && !editing) {
         e.preventDefault();
         searchRef.current?.focus();
         return;
       }
       if (e.key === 'Escape') {
-        if (selectedIds.size > 0) { setSelectedIds(new Set()); return; }
-        if (document.activeElement === searchRef.current) { searchRef.current?.blur(); return; }
+        if (selectedIds.size > 0) {
+          clearSelection();
+        } else if (document.activeElement === searchRef.current) {
+          searchRef.current?.blur();
+        }
         return;
       }
-      if (e.key === 'n' && !isInput && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        setCreateModalNonce(v => v + 1);
-        setIsExposeModalOpen(true);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !isInput && filteredServices.length > 0) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !editing && visibleIds.length > 0) {
         e.preventDefault();
         toggleSelectAll();
         return;
       }
+      if (e.key.toLowerCase() === 'n' && !editing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        openCreate();
+      }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [selectedIds.size, filteredServices.length, toggleSelectAll]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [routeModal, driftDrawerId, selectedIds.size, visibleIds.length, clearSelection, toggleSelectAll, openCreate]);
 
-  const isRouteModalOpen = isExposeModalOpen || Boolean(editingService);
-  const routeModalMode = editingService ? 'edit' : 'create';
-  const routeModalKey = editingService ? `edit-${editingService.id}` : `create-${createModalNonce}`;
-  const closeRouteModal = () => {
-    setIsExposeModalOpen(false);
-    setEditingService(null);
-  };
+  // --- mutations ----------------------------------------------------------
+  const toggleStatus = useMutation({
+    mutationFn: (service: Service) =>
+      api.put<Service>(`/services/${service.id}`, buildServicePayload(service, { enabled: !service.enabled })),
+    onMutate: (service) => startAction(service.id),
+    onSuccess: (_data, service) => {
+      invalidateAfterPush();
+      forgetDrift([service.id]);
+      const host = publicHostOf(service);
+      toast.success(service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host }));
+    },
+    onError: (err, service) => {
+      toast.error(translateApiError(err, t, t('services.toast.update_failed', { host: publicHostOf(service) })));
+    },
+    onSettled: (_data, _err, service) => endAction(service.id),
+  });
 
-  const activeCount = allServices.filter((s: Service) => s.enabled).length;
-  
-  // Shared structural styles
-  const cardClass = "bg-card border border-border rounded-xl shadow-sm";
+  const deleteService = useMutation({
+    mutationFn: (service: Service) => api.delete<DeleteResult>(`/services/${service.id}`),
+    onMutate: (service) => startAction(service.id),
+    onSuccess: (result, service) => {
+      invalidateAfterPush();
+      forgetDrift([service.id]);
+      setSelectedIds((prev) => {
+        if (!prev.has(service.id)) return prev;
+        const next = new Set(prev);
+        next.delete(service.id);
+        return next;
+      });
+      const host = publicHostOf(service);
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      if (errors.length > 0) {
+        const shown = errors.slice(0, 2).join(' · ');
+        const more = errors.length > 2 ? t('services.toast.more', { count: errors.length - 2 }) : '';
+        toast(t('services.toast.deleted_warnings', { host, errors: shown, more }), { icon: '⚠️', duration: 8000 });
+      } else {
+        toast.success(t('services.toast.deleted', { host }));
+      }
+    },
+    onError: (err, service) => {
+      toast.error(translateApiError(err, t, t('services.toast.delete_failed', { host: publicHostOf(service) })));
+    },
+    onSettled: (_data, _err, service) => endAction(service.id),
+  });
 
-  const LOCAL_DNS_TYPES = ['pihole', 'adguard'];
+  const checkService = useMutation({
+    mutationFn: (service: Service) => api.get<ServiceCheckResult>(`/services/${service.id}/check`),
+    onMutate: (service) => startAction(service.id),
+    onSuccess: (result, service) => {
+      setCheckById((prev) => ({ ...prev, [service.id]: result }));
+      invalidateServices();
+    },
+    onError: (err, service) => {
+      toast.error(translateApiError(err, t, t('services.toast.check_failed', { host: publicHostOf(service) })));
+    },
+    onSettled: (_data, _err, service) => endAction(service.id),
+  });
 
-  const getDnsLabel = (srv: Service): { label: string; isLocal: boolean } => {
-    const dnsP = getProvider(srv.dns_provider_id);
-    if (!dnsP) return { label: 'DNS', isLocal: false };
-    const pType = String(dnsP.type || '').toLowerCase();
-    if (LOCAL_DNS_TYPES.includes(pType)) return { label: 'Local DNS', isLocal: true };
-    return { label: 'External DNS', isLocal: false };
-  };
+  const checkDrift = useMutation({
+    mutationFn: (service: Service) => api.get<DriftResult>(`/services/${service.id}/drift`),
+    onMutate: (service) => {
+      setDriftErrorById((prev) => {
+        if (!(service.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[service.id];
+        return next;
+      });
+    },
+    onSuccess: (result, service) => {
+      setDriftByService((prev) => ({ ...prev, [service.id]: result }));
+    },
+    onError: (err, service) => {
+      const message = translateApiError(err, t, t('services.drift.check_failed'));
+      setDriftErrorById((prev) => ({ ...prev, [service.id]: message }));
+      if (driftDrawerId !== service.id) toast.error(message);
+    },
+  });
 
-  const modeBadge = (srv: Service) => {
-    if (!srv.enabled) return <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-muted text-muted-foreground border border-border">Disabled</span>;
-    if (srv.expose_mode === 'tunnel') return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"><Waypoints className="w-2.5 h-2.5" />Tunnel</span>;
-    if (srv.proxy_provider_id && srv.dns_provider_id) {
-      const dns = getDnsLabel(srv);
-      return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-500/20"><ArrowRightLeft className="w-2.5 h-2.5" />Proxy + {dns.label}</span>;
-    }
-    if (srv.proxy_provider_id) return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-500/20"><ArrowRightLeft className="w-2.5 h-2.5" />Proxy</span>;
-    if (srv.dns_provider_id) {
-      const dns = getDnsLabel(srv);
-      if (dns.isLocal) return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"><Globe className="w-2.5 h-2.5" />{dns.label}</span>;
-      return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20"><Globe className="w-2.5 h-2.5" />{dns.label}</span>;
-    }
-    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20"><AlertTriangle className="w-2.5 h-2.5" />No provider target</span>;
-  };
+  const reconcileService = useMutation({
+    mutationFn: (service: Service) => api.post<ReconcileResult>(`/services/${service.id}/reconcile`),
+    onMutate: (service) => startAction(service.id),
+    onSuccess: (result, service) => {
+      setReconcileByService((prev) => ({ ...prev, [service.id]: result }));
+      if (result?.after) setDriftByService((prev) => ({ ...prev, [service.id]: result.after }));
+      invalidateAfterPush();
+      const host = publicHostOf(service);
+      if (result?.ok) toast.success(t('services.toast.reconciled', { host }));
+      else toast.error(t('services.toast.reconcile_partial', { host }));
+    },
+    onError: (err, service) => {
+      toast.error(translateApiError(err, t, t('services.toast.reconcile_failed', { host: publicHostOf(service) })));
+    },
+    onSettled: (_data, _err, service) => endAction(service.id),
+  });
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-col space-y-4 max-w-7xl mx-auto pt-10">
-        <div className="h-8 w-48 bg-muted rounded animate-pulse mb-4"></div>
-        <div className="h-64 bg-card rounded-xl shadow-sm border border-border animate-pulse"></div>
+  const bulkAction = useMutation({
+    mutationFn: ({ ids, action }: { ids: number[]; action: 'enable' | 'disable' | 'delete' }) =>
+      api.post<BulkActionResult>('/services/bulk', { ids, action }),
+    onMutate: ({ ids }) => setActioningIds((prev) => new Set([...prev, ...ids])),
+    onSuccess: (result, { action, ids }) => {
+      invalidateAfterPush();
+      forgetDrift(ids);
+      clearSelection();
+      const affected = Number(result?.affected ?? 0);
+      const label =
+        action === 'enable'
+          ? t('services.bulk.result.enabled', { count: affected })
+          : action === 'disable'
+            ? t('services.bulk.result.disabled', { count: affected })
+            : t('services.bulk.result.deleted', { count: affected });
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      if (errors.length > 0) {
+        const shown = errors.slice(0, 2).join(' · ');
+        const more = errors.length > 2 ? t('services.toast.more', { count: errors.length - 2 }) : '';
+        toast(t('services.bulk.result.with_errors', { label, errors: shown, more }), { icon: '⚠️', duration: 8000 });
+      } else {
+        toast.success(label);
+      }
+    },
+    onError: (err) => {
+      toast.error(translateApiError(err, t, t('services.bulk.failed')));
+    },
+    onSettled: (_data, _err, { ids }) =>
+      setActioningIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      }),
+  });
+
+  // Bulk "check" has no server endpoint — checks run one by one so the backend is not flooded.
+  const [bulkChecking, setBulkChecking] = useState(false);
+  const runBulkCheck = useCallback(
+    async (targets: Service[]) => {
+      setBulkChecking(true);
+      let ok = 0;
+      let failed = 0;
+      for (const service of targets) {
+        startAction(service.id);
+        try {
+          const result = await api.get<ServiceCheckResult>(`/services/${service.id}/check`);
+          setCheckById((prev) => ({ ...prev, [service.id]: result }));
+          if (result.status === 'ok') ok += 1;
+          else failed += 1;
+        } catch {
+          failed += 1;
+        } finally {
+          endAction(service.id);
+        }
+      }
+      setBulkChecking(false);
+      invalidateServices();
+      clearSelection();
+      if (failed === 0) toast.success(t('services.bulk.result.checked', { count: ok }));
+      else toast(t('services.bulk.result.checked_mixed', { ok, failed }), { icon: '⚠️', duration: 6000 });
+    },
+    [startAction, endAction, invalidateServices, clearSelection, t],
+  );
+
+  // --- confirmed actions --------------------------------------------------
+  const handleToggleStatus = useCallback(
+    async (service: Service) => {
+      const host = publicHostOf(service);
+      const enabling = !service.enabled;
+      const ok = await confirm({
+        title: enabling ? t('services.confirm.enable_title') : t('services.confirm.disable_title'),
+        message: enabling ? t('services.confirm.enable_body', { host }) : t('services.confirm.disable_body', { host }),
+        confirmLabel: enabling ? t('services.action.enable') : t('services.action.disable'),
+        variant: enabling ? 'info' : 'warning',
+      });
+      if (ok) toggleStatus.mutate(service);
+    },
+    [confirm, t, toggleStatus],
+  );
+
+  const handleDelete = useCallback(
+    async (service: Service) => {
+      const host = publicHostOf(service);
+      const ok = await confirm({
+        title: t('services.confirm.delete_title'),
+        message: t('services.confirm.delete_body', { host }),
+        confirmLabel: t('common.delete'),
+        variant: 'danger',
+      });
+      if (ok) deleteService.mutate(service);
+    },
+    [confirm, t, deleteService],
+  );
+
+  const selectedServices = useMemo(() => services.filter((s) => selectedIds.has(s.id)), [services, selectedIds]);
+
+  const handleBulk = useCallback(
+    async (action: 'enable' | 'disable' | 'delete' | 'check') => {
+      const count = selectedServices.length;
+      if (count === 0) return;
+      const ids = selectedServices.map((s) => s.id);
+      if (action === 'check') {
+        const ok = await confirm({
+          title: t('services.confirm.bulk_check_title', { count }),
+          message: t('services.confirm.bulk_check_body', { count }),
+          confirmLabel: t('services.action.check'),
+          variant: 'info',
+        });
+        if (ok) void runBulkCheck(selectedServices);
+        return;
+      }
+      if (action === 'delete') {
+        const ok = await confirm({
+          title: t('services.confirm.bulk_delete_title', { count }),
+          message: t('services.confirm.bulk_delete_body', { count }),
+          confirmLabel: t('common.delete'),
+          variant: 'danger',
+          requireText: count > 3 ? String(count) : undefined,
+        });
+        if (ok) bulkAction.mutate({ ids, action });
+        return;
+      }
+      const ok = await confirm({
+        title: action === 'enable' ? t('services.confirm.bulk_enable_title', { count }) : t('services.confirm.bulk_disable_title', { count }),
+        message: action === 'enable' ? t('services.confirm.bulk_enable_body', { count }) : t('services.confirm.bulk_disable_body', { count }),
+        confirmLabel: action === 'enable' ? t('services.action.enable') : t('services.action.disable'),
+        variant: action === 'enable' ? 'info' : 'warning',
+      });
+      if (ok) bulkAction.mutate({ ids, action });
+    },
+    [selectedServices, confirm, t, runBulkCheck, bulkAction],
+  );
+
+  // --- drift drawer -------------------------------------------------------
+  const driftService = useMemo(
+    () => (driftDrawerId === null ? null : services.find((s) => s.id === driftDrawerId) ?? null),
+    [driftDrawerId, services],
+  );
+
+  const openDrift = useCallback(
+    (service: Service) => {
+      setDriftDrawerId(service.id);
+      if (!driftByService[service.id]) checkDrift.mutate(service);
+    },
+    [driftByService, checkDrift],
+  );
+
+  const handleReconcile = useCallback(async () => {
+    if (!driftService) return;
+    const host = publicHostOf(driftService);
+    const ok = await confirm({
+      title: t('services.drift.reconcile_confirm_title'),
+      message: t('services.drift.reconcile_confirm_body', { host }),
+      confirmLabel: t('services.drift.reconcile'),
+      variant: 'warning',
+    });
+    if (ok) reconcileService.mutate(driftService);
+  }, [driftService, confirm, t, reconcileService]);
+
+  // --- taxonomy click-through ---------------------------------------------
+  const onTagClick = useCallback((tag: Tag) => setParam('tag', tagFilter === tag.id ? null : String(tag.id)), [setParam, tagFilter]);
+  const onEnvClick = useCallback((env: Environment) => setParam('env', envFilter === env.id ? null : String(env.id)), [setParam, envFilter]);
+
+  // --- render helpers -----------------------------------------------------
+  const isBusy = (id: number) => actioningIds.has(id);
+  const itemProps = (service: Service) => ({
+    service,
+    providers,
+    selected: selectedIds.has(service.id),
+    onToggleSelect: toggleSelect,
+    busy: isBusy(service.id),
+    checkResult: checkById[service.id],
+    drift: driftByService[service.id],
+    onToggleStatus: handleToggleStatus,
+    onEdit: openEdit,
+    onDelete: handleDelete,
+    onCheck: (s: Service) => checkService.mutate(s),
+    onDrift: openDrift,
+    onTagClick,
+    onEnvClick,
+    activeTagId: tagFilter,
+    activeEnvId: envFilter,
+  });
+
+  const modeLabel = (mode: ModeFilter) => t(`services.tab.${mode}`);
+  const total = services.length;
+  const shown = filteredServices.length;
+  const bulkBusy = bulkAction.isPending || bulkChecking;
+
+  let listBody: ReactElement;
+  if (servicesQuery.isPending) {
+    listBody =
+      viewMode === 'grid' ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-busy="true" aria-label={t('common.loading')}>
+          {Array.from({ length: 6 }, (_, i) => (
+            <SkeletonCard key={i} />
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3 rounded-2xl border border-border bg-card p-4 shadow-card" aria-busy="true" aria-label={t('common.loading')}>
+          {Array.from({ length: 6 }, (_, i) => (
+            <SkeletonRow key={i} columns={5} />
+          ))}
+        </div>
+      );
+  } else if (servicesQuery.isError) {
+    listBody = (
+      <EmptyState
+        icon={<CircleAlert />}
+        title={t('services.error_title')}
+        description={translateApiError(servicesQuery.error, t, t('services.error_body'))}
+        action={
+          <Button variant="primary" leftIcon={<RefreshCw />} loading={servicesQuery.isFetching} onClick={() => servicesQuery.refetch()}>
+            {t('ui.error.retry')}
+          </Button>
+        }
+      />
+    );
+  } else if (total === 0) {
+    listBody = (
+      <EmptyState
+        icon={<Globe />}
+        title={t('services.empty_title')}
+        description={t('services.empty_body')}
+        action={
+          <Button variant="primary" leftIcon={<Plus />} onClick={() => openCreate()}>
+            {t('services.new')}
+          </Button>
+        }
+        actions={
+          <Link to="/settings?tab=data" className={buttonVariants({ variant: 'outline' })}>
+            {t('services.import')}
+          </Link>
+        }
+      />
+    );
+  } else if (shown === 0) {
+    listBody = (
+      <EmptyState
+        icon={<FilterX />}
+        title={t('services.no_match_title')}
+        description={t('services.no_match_body')}
+        action={
+          <Button variant="outline" leftIcon={<FilterX />} onClick={clearFilters}>
+            {t('services.clear_filters')}
+          </Button>
+        }
+      />
+    );
+  } else if (viewMode === 'grid') {
+    listBody = (
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 animate-in fade-in animate-duration-200">
+        {filteredServices.map((service) => (
+          <ServiceCard key={service.id} {...itemProps(service)} />
+        ))}
+      </div>
+    );
+  } else {
+    listBody = (
+      <div className="overflow-x-auto rounded-2xl border border-border bg-card shadow-card animate-in fade-in animate-duration-200">
+        <table className="w-full min-w-[56rem] text-sm">
+          <thead className="border-b border-border bg-muted/40 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <tr>
+              <th scope="col" className="w-10 px-3 py-2.5">
+                <Checkbox
+                  checked={allVisibleSelected}
+                  indeterminate={!allVisibleSelected && someVisibleSelected}
+                  onChange={toggleSelectAll}
+                  aria-label={t('services.select_all')}
+                />
+              </th>
+              <th scope="col" className="w-12 px-1 py-2.5">
+                <span className="sr-only">{t('services.column.enabled')}</span>
+              </th>
+              <th scope="col" className="px-3 py-2.5">
+                {t('services.column.endpoint')}
+              </th>
+              <th scope="col" className="px-3 py-2.5">
+                {t('services.column.target')}
+              </th>
+              <th scope="col" className="px-3 py-2.5">
+                {t('services.column.providers')}
+              </th>
+              <th scope="col" className="px-3 py-2.5">
+                {t('services.column.status')}
+              </th>
+              <th scope="col" className="px-3 py-2.5 text-right">
+                <span className="sr-only">{t('services.column.actions')}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredServices.map((service) => (
+              <ServiceRow key={service.id} {...itemProps(service)} />
+            ))}
+          </tbody>
+        </table>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 pb-8 animate-in fade-in duration-200">
-      
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Endpoints</h1>
-          <span className="text-sm text-muted-foreground font-medium">{activeCount} active</span>
-        </div>
-        
-        <div className="flex items-center gap-2 shrink-0">
-          <button 
-            onClick={() => {
-              setCreateModalNonce((v) => v + 1);
-              setIsExposeModalOpen(true);
-            }}
-            className="flex items-center justify-center gap-2 bg-primary hover:opacity-90 text-primary-foreground px-5 py-2.5 text-sm rounded-lg font-semibold transition-all shadow-sm focus:ring-2 focus:ring-primary/30 outline-none"
-          >
-            <Plus className="w-4 h-4" />
-            Route new service
-          </button>
-        </div>
-      </div>
+    <div className="mx-auto max-w-7xl space-y-6">
+      <PageHeader
+        icon={<Globe />}
+        title={t('services.title')}
+        description={t('services.description')}
+        meta={
+          !servicesQuery.isPending && !servicesQuery.isError ? (
+            <span className="text-xs text-muted-foreground">{t('services.meta', { shown, total })}</span>
+          ) : undefined
+        }
+        actions={
+          <>
+            <Link to="/settings?tab=data" className={buttonVariants({ variant: 'outline' })}>
+              <span className="inline-flex shrink-0 [&>svg]:h-4 [&>svg]:w-4">
+                <Import aria-hidden="true" />
+              </span>
+              {t('services.import')}
+            </Link>
+            <Button variant="primary" leftIcon={<Plus />} onClick={() => openCreate()}>
+              {t('services.new')}
+              <Kbd size="sm" className="ml-1 hidden sm:inline-flex border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground">
+                n
+              </Kbd>
+            </Button>
+          </>
+        }
+      />
 
-      {/* Mode filter tabs */}
-      <div className="flex flex-wrap gap-2">
-        {([ 
-          { key: 'all' as ModeFilter, label: 'All', color: '' },
-          { key: 'tunnel' as ModeFilter, label: 'Tunnel', color: 'purple' },
-          { key: 'proxy' as ModeFilter, label: 'Proxy / Reverse', color: 'teal' },
-          { key: 'dns' as ModeFilter, label: 'DNS only', color: 'blue' },
-          { key: 'disabled' as ModeFilter, label: 'Disabled', color: 'muted' },
-        ] as const).map(({ key, label, color }) => {
-          const count = modeCounts[key];
-          const active = modeFilter === key;
-          const colorMap: Record<string, string> = {
-            purple: active ? 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40' : 'text-muted-foreground border-border hover:border-purple-500/30 hover:text-purple-600',
-            teal: active ? 'bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/40' : 'text-muted-foreground border-border hover:border-teal-500/30 hover:text-teal-600',
-            blue: active ? 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/40' : 'text-muted-foreground border-border hover:border-blue-500/30 hover:text-blue-600',
-            muted: active ? 'bg-muted text-foreground border-border' : 'text-muted-foreground border-border hover:text-foreground',
-            '': active ? 'bg-primary/10 text-primary border-primary/30' : 'text-muted-foreground border-border hover:text-foreground',
-          };
-          return (
-            <button
-              key={key}
-              onClick={() => { setModeFilter(key); setSelectedIds(new Set()); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all ${colorMap[color]}`}
+      <Tabs
+        value={modeFilter}
+        onValueChange={(value) => {
+          if (isModeFilter(value)) setModeFilter(value);
+        }}
+        variant="pill"
+        className="space-y-4"
+      >
+        <div className="space-y-4 rounded-2xl border border-border bg-card p-4 shadow-card">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative min-w-[14rem] flex-1">
+              <SearchInput
+                ref={searchRef}
+                value={search}
+                onChange={setSearch}
+                placeholder={t('services.search_placeholder')}
+                aria-label={t('services.search_label')}
+                wrapperClassName="w-full"
+              />
+              {!search && (
+                <Kbd size="sm" className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 sm:inline-flex">
+                  /
+                </Kbd>
+              )}
+            </div>
+            <Select
+              aria-label={t('services.filter.tag')}
+              value={tagFilter ? String(tagFilter) : ''}
+              onChange={(e) => setParam('tag', e.target.value || null)}
+              wrapperClassName="w-40"
             >
-              {label}
-              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${active ? 'bg-white/20' : 'bg-muted'}`}>{count}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Toolbar */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div className="relative w-full sm:w-[350px] group">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors" />
-          <input 
-            ref={searchRef}
-            type="text"
-            placeholder="Search endpoints... (press /)"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-input border border-border focus:border-primary focus:ring-4 focus:ring-primary/10 rounded-lg pl-10 pr-4 py-2 text-sm outline-none transition-all shadow-sm font-medium placeholder:font-normal text-foreground placeholder:text-muted-foreground"
-          />
+              <option value="">{t('services.filter.all_tags')}</option>
+              {tags.map((tag) => (
+                <option key={tag.id} value={tag.id}>
+                  {tag.name}
+                </option>
+              ))}
+            </Select>
+            <Select
+              aria-label={t('services.filter.environment')}
+              value={envFilter ? String(envFilter) : ''}
+              onChange={(e) => setParam('env', e.target.value || null)}
+              wrapperClassName="w-40"
+            >
+              <option value="">{t('services.filter.all_environments')}</option>
+              {environments.map((env) => (
+                <option key={env.id} value={env.id}>
+                  {env.name}
+                </option>
+              ))}
+            </Select>
+            <Select
+              aria-label={t('services.filter.status')}
+              value={statusFilter ?? ''}
+              onChange={(e) => setParam('status', e.target.value || null)}
+              wrapperClassName="w-36"
+            >
+              <option value="">{t('services.filter.all_statuses')}</option>
+              <option value="ok">{t('services.status.ok')}</option>
+              <option value="error">{t('services.status.error')}</option>
+            </Select>
+            {hasFilters && (
+              <Button variant="ghost" size="sm" leftIcon={<FilterX />} onClick={clearFilters}>
+                {t('services.clear_filters')}
+              </Button>
+            )}
+            <div className="ml-auto inline-flex items-center gap-1 rounded-xl bg-muted p-1" role="group" aria-label={t('services.view.label')}>
+              <IconButton
+                label={t('services.view.list')}
+                icon={<LayoutList />}
+                tooltip
+                size="sm"
+                variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+                aria-pressed={viewMode === 'list'}
+                className="h-8 w-8"
+                onClick={() => setViewMode('list')}
+              />
+              <IconButton
+                label={t('services.view.grid')}
+                icon={<LayoutGrid />}
+                tooltip
+                size="sm"
+                variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+                aria-pressed={viewMode === 'grid'}
+                className="h-8 w-8"
+                onClick={() => setViewMode('grid')}
+              />
+            </div>
+          </div>
+          <TabList aria-label={t('services.tab.label')}>
+            {MODE_FILTERS.map((mode) => (
+              <Tab key={mode} value={mode} icon={MODE_ICONS[mode]} count={modeCounts[mode]}>
+                {modeLabel(mode)}
+              </Tab>
+            ))}
+          </TabList>
         </div>
 
-        <div className="flex items-center gap-1 bg-muted p-1 rounded-lg border border-border">
-          <button 
-            onClick={() => setViewMode("list")}
-            className={`p-1.5 rounded-md transition-all ${viewMode === 'list' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            <LayoutList className="w-4 h-4" />
-          </button>
-          <button 
-            onClick={() => setViewMode("grid")}
-            className={`p-1.5 rounded-md transition-all ${viewMode === 'grid' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            <LayoutGrid className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Services List / Grid */}
-      {filteredServices.length === 0 ? (
-        <div className={`${cardClass} flex flex-col items-center justify-center py-24 bg-muted/30`}>
-           <div className="w-12 h-12 rounded-2xl bg-card border border-border shadow-sm flex items-center justify-center mb-5">
-             <Globe className="w-6 h-6 text-muted-foreground" />
-           </div>
-           <h3 className="text-base font-semibold text-foreground">No endpoints found</h3>
-           <p className="text-muted-foreground text-sm mt-1.5 mb-6 text-center max-w-sm">
-             You haven't routed any traffic yet or your search didn't match anything in the database.
-           </p>
-           <button
-             onClick={() => {
-               setCreateModalNonce((v) => v + 1);
-               setIsExposeModalOpen(true);
-             }}
-             className="text-sm text-primary font-semibold hover:opacity-80 transition-colors bg-card border border-border shadow-sm rounded-lg px-4 py-2"
-           >
-             Create a Route
-           </button>
-        </div>
-      ) : viewMode === 'list' ? (
-        <div className={`${cardClass} overflow-hidden`}>
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-muted/60 border-b border-border">
-              <tr>
-                <th className="px-3 py-3 w-10 text-center">
-                  <button onClick={toggleSelectAll} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors" title="Select all">
-                    {selectedIds.size === filteredServices.length && filteredServices.length > 0
-                      ? <CheckSquare className="w-4 h-4 text-primary" />
-                      : <Square className="w-4 h-4" />}
-                  </button>
-                </th>
-                <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider w-10 text-center">On</th>
-                <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider w-32">Mode</th>
-                <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Endpoint</th>
-                <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Target</th>
-                <th className="px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Provider(s)</th>
-                <th className="px-4 py-3 w-24"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/70">
-              {filteredServices.map((srv: Service) => {
-                const fullUrl = srv.subdomain ? `${srv.subdomain}.${srv.domain}` : srv.domain;
-                const publicHost = srv.expose_mode === 'tunnel' && srv.tunnel_hostname ? srv.tunnel_hostname : fullUrl;
-                const canOpenPublicHost = isNavigablePublicHost(publicHost);
-                const proxyProvider = getProvider(srv.expose_mode === 'tunnel' ? srv.tunnel_provider_id : srv.proxy_provider_id);
-                const dnsProvider = srv.expose_mode !== 'tunnel' ? getProvider(srv.dns_provider_id) : null;
-                const drift = driftByService[Number(srv.id)];
-                const driftIssues = Array.isArray(drift?.issues) ? drift.issues.length : 0;
-                
-                return (
-                  <tr key={srv.id} className={`hover:bg-accent/50 transition-colors group ${selectedIds.has(srv.id) ? 'bg-primary/5' : ''} ${!srv.enabled ? 'opacity-60' : ''} ${actioningIds.has(srv.id) ? 'opacity-70' : ''}`}>
-                    <td className="px-3 py-3.5 text-center">
-                      <button onClick={() => toggleSelect(srv.id)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors">
-                        {selectedIds.has(srv.id) ? <CheckSquare className="w-4 h-4 text-primary" /> : <Square className="w-4 h-4" />}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <button 
-                        onClick={() => toggleStatus.mutate({ service: srv, enabled: !srv.enabled })}
-                        disabled={toggleStatus.isPending}
-                        className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md transition-colors text-xs font-semibold hover:bg-muted/50 disabled:opacity-50"
-                        title={srv.enabled ? "Click to disable" : "Click to enable"}
-                      >
-                        <div className={`w-2.5 h-2.5 rounded-full ${srv.enabled ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' : 'bg-muted-foreground/30'}`} />
-                        <span className={srv.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}>
-                          {srv.enabled ? 'Enabled' : 'Disabled'}
-                        </span>
-                      </button>
-                    </td>
-                    <td className="px-4 py-3.5">{modeBadge(srv)}</td>
-                    <td className="px-4 py-3.5">
-                      <div>
-                        <p className="font-semibold text-sm text-foreground flex items-center gap-1">
-                          {srv.expose_mode === 'tunnel' ? publicHost : (srv.subdomain || srv.domain)}
-                          {srv.status === 'error' && srv.enabled && (
-                            <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
-                          )}
-                        </p>
-                        {canOpenPublicHost ? (
-                          <a href={`https://${publicHost}`} target="_blank" rel="noreferrer" className="text-xs font-mono text-muted-foreground hover:text-primary transition-colors hover:underline truncate block max-w-[220px]">
-                            {publicHost}
-                          </a>
-                        ) : (
-                          <span className="text-xs font-mono text-muted-foreground/80 truncate block max-w-[220px]" title="Wildcard host (not directly navigable)">
-                            {publicHost}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      <div className="flex items-center gap-1 text-xs font-mono">
-                        <span className="text-foreground bg-muted border border-border px-1.5 py-0.5 rounded">{srv.target_ip}</span>
-                        <span className="text-muted-foreground">:</span>
-                        <span className="text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded">{srv.target_port}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      <div className="flex flex-col gap-1">
-                        {proxyProvider && (
-                          <span className="text-[11px] font-medium text-muted-foreground">{proxyProvider.name}</span>
-                        )}
-                        {dnsProvider && dnsProvider.id !== proxyProvider?.id && (
-                          <span className="text-[11px] font-medium text-muted-foreground opacity-70">{dnsProvider.name} <span className="text-[10px]">(DNS)</span></span>
-                        )}
-                        {!proxyProvider && !dnsProvider && <span className="text-xs text-muted-foreground/50">—</span>}
-                        {drift && (
-                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border w-fit ${driftIssues === 0 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' : 'bg-destructive/10 text-destructive border-destructive/20'}`}>
-                            drift {driftIssues > 0 ? `${driftIssues} issue` : 'ok'}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 text-right opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                      <div className="flex items-center justify-end gap-1">
-                        {actioningIds.has(srv.id) ? (
-                          <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                        ) : (
-                          <>
-                            <button onClick={() => checkDrift.mutate(Number(srv.id))} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="Check drift">
-                              <RefreshCw className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={() => reconcileService.mutate(Number(srv.id))} className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-colors" title="Reconcile">
-                              <ShieldCheck className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={() => setEditingService(srv)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="Edit">
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={async () => { if (await confirm({ title: 'Delete service', message: `Delete route for ${publicHost}?`, confirmLabel: 'Delete', variant: 'danger' })) deleteService.mutate(srv.id); }} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors" title="Delete">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {filteredServices.map((srv: Service) => {
-            const fullUrl = srv.subdomain ? `${srv.subdomain}.${srv.domain}` : srv.domain;
-            const publicHost = srv.expose_mode === 'tunnel' && srv.tunnel_hostname ? srv.tunnel_hostname : fullUrl;
-            const canOpenPublicHost = isNavigablePublicHost(publicHost);
-            const proxyProvider = getProvider(srv.expose_mode === 'tunnel' ? srv.tunnel_provider_id : srv.proxy_provider_id);
-            const dnsProvider = srv.expose_mode !== 'tunnel' ? getProvider(srv.dns_provider_id) : null;
-            const provider = proxyProvider || dnsProvider;
-            const drift = driftByService[Number(srv.id)];
-            const driftIssues = Array.isArray(drift?.issues) ? drift.issues.length : 0;
-            
-            return (
-              <div 
-                key={srv.id}
-                className={`${cardClass} p-6 flex flex-col hover:shadow-md transition-shadow group relative overflow-hidden ${selectedIds.has(srv.id) ? 'ring-2 ring-primary/40' : ''}`}
-              >
-                <div className={`absolute top-0 inset-x-0 h-1 transition-colors ${srv.enabled ? (srv.status === 'error' ? 'bg-destructive' : 'bg-emerald-500') : 'bg-border'}`}></div>
-
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => toggleSelect(srv.id)} className="p-0.5 text-muted-foreground hover:text-foreground transition-colors">
-                      {selectedIds.has(srv.id)
-                        ? <CheckSquare className="w-4 h-4 text-primary" />
-                        : <Square className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />}
-                    </button>
-                    <button 
-                      onClick={() => toggleStatus.mutate({ service: srv, enabled: !srv.enabled })}
-                      className="p-1 transition-colors group-hover:bg-muted rounded"
-                      title={srv.enabled ? 'Disable' : 'Enable'}
-                    >
-                      <div className={`w-2.5 h-2.5 rounded-full ${srv.enabled ? 'bg-emerald-500' : 'border-2 border-muted-foreground/40 bg-transparent'}`} />
-                    </button>
-                  </div>
-
-                  <div className="flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                    {actioningIds.has(srv.id) ? (
-                      <div className="p-1.5"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => checkDrift.mutate(Number(srv.id))}
-                          className="p-1.5 text-muted-foreground hover:text-foreground rounded bg-muted hover:bg-accent transition-colors"
-                          title="Check drift"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => reconcileService.mutate(Number(srv.id))}
-                          className="p-1.5 text-muted-foreground hover:text-primary rounded bg-muted hover:bg-primary/10 transition-colors"
-                          title="Reconcile"
-                        >
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => setEditingService(srv)} className="p-1.5 text-muted-foreground hover:text-foreground rounded bg-muted hover:bg-accent transition-colors" title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
-                        <button onClick={async () => { if (await confirm({ title: 'Delete service', message: `Delete route for ${publicHost}?`, confirmLabel: 'Delete', variant: 'danger' })) deleteService.mutate(srv.id); }} className="p-1.5 text-muted-foreground hover:text-destructive rounded bg-muted hover:bg-destructive/10 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5 mb-1">
-                  <h3 className="font-bold text-foreground text-lg truncate" title={srv.expose_mode === 'tunnel' ? publicHost : (srv.subdomain ? srv.subdomain : srv.domain)}>
-                    {srv.expose_mode === 'tunnel' ? publicHost : (srv.subdomain ? srv.subdomain : srv.domain)}
-                  </h3>
-                  {srv.status === 'error' && srv.enabled && (
-                    <AlertTriangle className="w-4 h-4 text-destructive shrink-0" />
-                  )}
-                </div>
-                <div className="mb-1">{modeBadge(srv)}</div>
-                {canOpenPublicHost ? (
-                  <a href={`https://${publicHost}`} target="_blank" rel="noreferrer" className="text-sm font-mono text-muted-foreground hover:text-primary transition-colors hover:underline mb-1 truncate block w-full">
-                    {publicHost}
-                  </a>
-                ) : (
-                  <span className="text-sm font-mono text-muted-foreground/80 mb-1 truncate block w-full" title="Wildcard host (not directly navigable)">
-                    {publicHost}
-                  </span>
-                )}
-                
-                {provider && (
-                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mt-1 mb-6">
-                    Routed via {provider.name}
-                    {drift && <span className={driftIssues === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}>• drift {driftIssues}</span>}
-                  </div>
-                )}
-
-                <div className="mt-auto pt-4 border-t border-border bg-muted/40 -mx-6 -mb-6 px-6 py-4 flex items-center justify-between">
-                   <span className="text-xs font-semibold text-muted-foreground uppercase">Target</span>
-                   <div className="flex items-center gap-1 text-xs">
-                      <span className="font-mono font-medium text-foreground">{srv.target_ip}</span>
-                    <span className="text-muted-foreground">:</span>
-                    <span className="font-mono font-semibold text-primary">{srv.target_port}</span>
-                   </div>
-                </div>
+        <TabPanel value={modeFilter} className="space-y-4">
+          {selectedIds.size > 0 && (
+            <div
+              role="toolbar"
+              aria-label={t('services.bulk.label')}
+              className="sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-primary/30 bg-card/95 px-4 py-2.5 shadow-elevated backdrop-blur animate-in fade-in animate-duration-200"
+            >
+              <Badge tone="primary" size="md">
+                {t('services.bulk.selected', { count: selectedIds.size })}
+              </Badge>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button variant="outline" size="sm" leftIcon={<Power />} disabled={bulkBusy} onClick={() => handleBulk('enable')}>
+                  {t('services.action.enable')}
+                </Button>
+                <Button variant="outline" size="sm" leftIcon={<PowerOff />} disabled={bulkBusy} onClick={() => handleBulk('disable')}>
+                  {t('services.action.disable')}
+                </Button>
+                <Button variant="outline" size="sm" leftIcon={<Activity />} loading={bulkChecking} disabled={bulkBusy} onClick={() => handleBulk('check')}>
+                  {t('services.action.check')}
+                </Button>
+                <Button variant="danger" size="sm" leftIcon={<Trash2 />} loading={bulkAction.isPending} disabled={bulkBusy} onClick={() => handleBulk('delete')}>
+                  {t('common.delete')}
+                </Button>
               </div>
-            );
-          })}
-        </div>
+              <IconButton label={t('services.bulk.clear')} icon={<X />} size="sm" className="ml-auto h-8 w-8" onClick={clearSelection} />
+            </div>
+          )}
+          <div className={cn(bulkBusy && 'pointer-events-none opacity-70 transition-opacity')}>{listBody}</div>
+        </TabPanel>
+      </Tabs>
+
+      {routeModal && (
+        <ExposeModal
+          key={routeModal.key}
+          isOpen
+          onClose={closeRouteModal}
+          mode={routeModal.mode}
+          service={routeModal.service ?? null}
+          initialState={routeModal.initialState ?? null}
+          templateName={routeModal.templateName ?? null}
+        />
       )}
 
-      {/* Bulk Action Bar */}
-      {selectedIds.size > 0 && (
-        <div className="sticky top-0 z-50 flex items-center gap-3 bg-card border border-b border-border shadow-lg px-4 py-3 animate-in slide-in-from-top-2 duration-200">
-          <span className="text-sm font-semibold text-foreground whitespace-nowrap">
-            {selectedIds.size} selected
-          </span>
-          <div className="w-px h-5 bg-border" />
-          <button
-            onClick={() => bulkAction.mutate({ ids: [...selectedIds], action: 'enable' })}
-            disabled={bulkAction.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-          >
-            <Power className="w-3.5 h-3.5" /> Enable
-          </button>
-          <button
-            onClick={() => bulkAction.mutate({ ids: [...selectedIds], action: 'disable' })}
-            disabled={bulkAction.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-muted text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-50"
-          >
-            <PowerOff className="w-3.5 h-3.5" /> Disable
-          </button>
-          <button
-            onClick={async () => {
-              if (await confirm({
-                title: 'Delete multiple services',
-                message: `Delete ${selectedIds.size} service(s)? This will remove all provider routes.`,
-                confirmLabel: 'Delete all',
-                variant: 'danger',
-              })) {
-                bulkAction.mutate({ ids: [...selectedIds], action: 'delete' });
-              }
-            }}
-            disabled={bulkAction.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
-          >
-            <Trash2 className="w-3.5 h-3.5" /> Delete
-          </button>
-          <div className="w-px h-5 bg-border" />
-          <button
-            onClick={() => setSelectedIds(new Set())}
-            className="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted transition-colors"
-            title="Clear selection (Esc)"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      <ExposeModal
-        key={routeModalKey}
-        isOpen={isRouteModalOpen}
-        onClose={closeRouteModal}
-        mode={routeModalMode as 'create' | 'edit'}
-        service={editingService as Record<string, unknown> | null}
+      <DriftDrawer
+        open={driftDrawerId !== null}
+        onClose={() => setDriftDrawerId(null)}
+        service={driftService}
+        drift={driftDrawerId !== null ? driftByService[driftDrawerId] : undefined}
+        isChecking={checkDrift.isPending && checkDrift.variables?.id === driftDrawerId}
+        checkError={driftDrawerId !== null ? driftErrorById[driftDrawerId] ?? null : null}
+        onRecheck={() => {
+          if (driftService) checkDrift.mutate(driftService);
+        }}
+        isReconciling={reconcileService.isPending && reconcileService.variables?.id === driftDrawerId}
+        onReconcile={handleReconcile}
+        reconcileResult={driftDrawerId !== null ? reconcileByService[driftDrawerId] : undefined}
       />
 
       {ConfirmDialogElement}

@@ -1,433 +1,506 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Radio, RefreshCw, Search, Clock3, Server } from "lucide-react";
-import { api } from "@/api/client";
-import toast from "react-hot-toast";
-import { useSearchParams } from "react-router-dom";
-import { useT } from "@/i18n";
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
+import { Activity, ArrowDownCircle, CircleHelp, Gauge, Radio, ShieldCheck, Timer } from 'lucide-react';
+import { api } from '@/api/client';
+import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
+import { translateApiError } from '@/lib/errors';
+import { EM_DASH } from '@/lib/format';
+import {
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Chip,
+  ChipGroup,
+  InlineAlert,
+  PageHeader,
+  ProgressBar,
+  SearchInput,
+  Select,
+  StatCard,
+} from '@/components/ui';
+import { MonitoringTable } from '@/components/features/monitoring/MonitoringTable';
+import { ServiceDrawer } from '@/components/features/monitoring/ServiceDrawer';
+import { TunnelsCard } from '@/components/features/monitoring/TunnelsCard';
+import { useServiceProbes } from '@/components/features/monitoring/useServiceProbes';
+import {
+  STATUS_FILTERS,
+  STATUS_LABEL_KEY,
+  overallAvailability,
+  serviceHost,
+  serviceStatus,
+  serviceTarget,
+  toStatusFilter,
+  type StatusFilter,
+} from '@/components/features/monitoring/uptime';
+import type {
+  CheckAllResult,
+  LogEntry,
+  LogsResponse,
+  Service,
+  ServiceHistoryResponse,
+  TunnelHealthResponse,
+} from '@/types/api';
 
-type ServiceItem = {
-  id: number;
-  subdomain: string;
-  domain: string;
-  target_ip: string;
-  target_port: number;
-  status: "ok" | "error" | "unknown";
-  enabled: boolean | number;
-  last_checked: string | null;
-  expose_mode?: string;
-  proxy_provider_name?: string;
-  dns_provider_name?: string;
-};
+/**
+ * Monitoring — is every published endpoint answering, and has it been answering all day.
+ *
+ * Data sources, all read-only except the two check routes:
+ *  - `GET  /api/services`                the rows, their last known status and `last_checked`
+ *  - `GET  /api/services/history`        the `uptime_events` of the last 24 h, per service
+ *  - `GET  /api/logs`                    the recent lines, matched to a host in the drawer
+ *  - `GET  /api/providers/tunnels/health` the Cloudflare connectors
+ *  - `POST /api/services/check-all`      probe everything now
+ *  - `GET  /api/services/{sid}/check`    probe one service and measure its latency
+ */
 
-type LogItem = { id: number; level: string; message: string; created_at: string };
+const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
+const REFRESH_STORAGE_KEY = 'vauxtra.monitoring.refresh';
 
-type LogsResponse = {
-  items: LogItem[];
-  total: number;
-  page: number;
-  pages: number;
-};
+/** `get_logs` clamps `per_page` to 200 — asking for 300 silently returned 200. */
+const LOGS_PAGE_SIZE = 200;
+/** How many recent lines the drawer searches through; two clamped pages. */
+const LOGS_SAMPLE = 300;
 
-type TunnelHealthResponse = {
-  total?: number;
-  healthy?: number;
-  down?: number;
-  items?: Array<{
-    id: number;
-    name: string;
-    health?: {
-      ok?: boolean;
-      status?: string;
-      connections?: number;
-      clients?: number;
-      error?: string;
-    };
-  }>;
-};
+const REFRESH_CHOICES = [0, 10_000, 15_000, 30_000, 60_000, 300_000] as const;
+const DEFAULT_REFRESH = 15_000;
 
-type ServiceHistoryItem = {
-  status: "ok" | "error" | "unknown";
-  created_at: string;
-};
+function readRefreshChoice(): number {
+  try {
+    const raw = Number(localStorage.getItem(REFRESH_STORAGE_KEY));
+    return (REFRESH_CHOICES as readonly number[]).includes(raw) ? raw : DEFAULT_REFRESH;
+  } catch {
+    return DEFAULT_REFRESH;
+  }
+}
 
-type ServiceHistoryMap = Record<string, ServiceHistoryItem[]>;
+function readServicesCache(): Service[] | undefined {
+  try {
+    const raw = sessionStorage.getItem(SERVICES_CACHE_KEY);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Service[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
-type StatusFilter = "all" | "ok" | "error" | "unknown" | "disabled";
+/**
+ * The recent log lines, in pages the backend will actually serve.
+ *
+ * The page used to ask for `per_page=300` and quietly receive 200, so anything older than
+ * the 200th line never reached the drawer's filter. Two clamped pages restore the depth.
+ */
+async function fetchRecentLogs(): Promise<LogEntry[]> {
+  const first = await api.get<LogsResponse>(`/logs?page=1&per_page=${LOGS_PAGE_SIZE}`);
+  const items = Array.isArray(first.items) ? [...first.items] : [];
+  const wantMore = items.length >= LOGS_PAGE_SIZE && items.length < LOGS_SAMPLE && (first.pages ?? 1) > 1;
+  if (!wantMore) return items;
+  const second = await api.get<LogsResponse>(`/logs?page=2&per_page=${LOGS_PAGE_SIZE}`);
+  const rest = Array.isArray(second.items) ? second.items : [];
+  return items.concat(rest.slice(0, LOGS_SAMPLE - items.length));
+}
+
+interface CheckSummary extends CheckAllResult {
+  /** `checked` counts every enabled service, tunnels included — and the route skips those. */
+  skipped: number;
+}
 
 export function Monitoring() {
   const t = useT();
+  const { formatPercent, formatLatency, formatNumber } = useFormat();
   const queryClient = useQueryClient();
-  const SERVICES_CACHE_KEY = "vauxtra.cache.services";
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialStatus = searchParams.get("status");
-  const statusFromQuery: StatusFilter = ["ok", "error", "unknown", "disabled", "all"].includes(initialStatus || "")
-    ? (initialStatus as StatusFilter)
-    : "all";
 
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(statusFromQuery);
-  const [routeSearch, setRouteSearch] = useState("");
-  const [selectedServiceId, setSelectedServiceId] = useState<number | null>(() => {
-    const raw = Number(searchParams.get("service") || 0);
-    return Number.isFinite(raw) && raw > 0 ? raw : null;
-  });
+  const statusFilter = toStatusFilter(searchParams.get('status'));
+  const selectedId = Number(searchParams.get('service')) || null;
 
+  const [search, setSearch] = useState('');
+  const [refreshMs, setRefreshMs] = useState<number>(readRefreshChoice);
+  const [summary, setSummary] = useState<CheckSummary | null>(null);
+
+  // One instant per tick, shared by every strip and every relative date on the page.
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    setStatusFilter(statusFromQuery);
-  }, [statusFromQuery]);
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
-  const parseBackendTimestamp = (dateRaw: string | null): number | null => {
-    if (!dateRaw) return null;
-    const normalized = dateRaw.includes("T") ? dateRaw : dateRaw.replace(" ", "T");
-    const utcLike = /(?:Z|[+-]\d\d:\d\d)$/.test(normalized) ? normalized : `${normalized}Z`;
-    const ts = Date.parse(utcLike);
-    return Number.isFinite(ts) ? ts : null;
-  };
-
-  const { data: services = [], isLoading } = useQuery<ServiceItem[]>({
-    queryKey: ["services"],
-    queryFn: () => api.get("/services"),
-    refetchInterval: 15000,
-    initialData: () => {
-      try {
-        const raw = sessionStorage.getItem(SERVICES_CACHE_KEY);
-        if (!raw) return undefined;
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as ServiceItem[]) : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-  });
-
-  const { data: settingsData } = useQuery<Record<string, string>>({
-    queryKey: ["settings"],
-    queryFn: () => api.get("/settings"),
-  });
-
-  const { data: logsResp } = useQuery<LogsResponse>({
-    queryKey: ["logs", "monitoring"],
-    queryFn: () => api.get(`/logs?per_page=300`),
-    refetchInterval: 10000,
-  });
-
-  const { data: servicesHistory } = useQuery<ServiceHistoryMap>({
-    queryKey: ["services-history"],
-    queryFn: () => api.get("/services/history"),
-    refetchInterval: 15000,
-  });
-
-  const { data: tunnelHealth } = useQuery<TunnelHealthResponse>({
-    queryKey: ["providers-tunnel-health"],
-    queryFn: () => api.get("/providers/tunnels/health"),
-    refetchInterval: 30000,
-  });
-
-  const checkAllMutation = useMutation({
-    mutationFn: () => api.post<{ checked?: number }>("/services/check-all"),
-    onSuccess: async (data) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["services"] }),
-        queryClient.refetchQueries({ queryKey: ["services"], type: "active" }),
-        queryClient.invalidateQueries({ queryKey: ["logs"] }),
-        queryClient.invalidateQueries({ queryKey: ["logs", "monitoring"] }),
-        queryClient.invalidateQueries({ queryKey: ["services-history"] }),
-      ]);
-      toast.success(t("monitoring.toast.checked_count", { count: data?.checked ?? 0 }));
-    },
-    onError: (err: unknown) => {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || t("monitoring.toast.check_failed"));
-    },
-  });
-
-  const serviceItems = useMemo(() => (Array.isArray(services) ? services : []), [services]);
   useEffect(() => {
     try {
-      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(serviceItems));
+      localStorage.setItem(REFRESH_STORAGE_KEY, String(refreshMs));
     } catch {
-      // Ignore storage quota/private mode errors.
+      // Private mode: the choice simply does not survive a reload.
     }
-  }, [serviceItems]);
+  }, [refreshMs]);
 
-  const tunnelItems = Array.isArray(tunnelHealth?.items) ? tunnelHealth.items : [];
-  const unhealthyTunnels = tunnelItems.filter((t) => !t.health?.ok);
+  const autoRefresh = refreshMs > 0 ? refreshMs : false;
 
-  const enabledServices = serviceItems.filter((s) => s.enabled);
-  const disabledServices = serviceItems.filter((s) => !s.enabled);
-  const okCount = enabledServices.filter((s) => s.status === "ok").length;
-  const errorCount = enabledServices.filter((s) => s.status === "error").length;
-  const unknownCount = enabledServices.filter((s) => s.status === "unknown").length;
-  const disabledCount = disabledServices.length;
-  const checkIntervalMinutes = Number(settingsData?.check_interval || 5);
-  const hasAutoCheckData = enabledServices.some((s) => Boolean(s.last_checked));
+  const servicesQuery = useQuery<Service[]>({
+    queryKey: ['services'],
+    queryFn: () => api.get<Service[]>('/services'),
+    refetchInterval: autoRefresh,
+    initialData: readServicesCache,
+  });
 
-  const fqdn = (s: ServiceItem) => (s.subdomain ? `${s.subdomain}.${s.domain}` : s.domain);
+  const { data: settings } = useQuery<Record<string, string>>({
+    queryKey: ['settings'],
+    queryFn: () => api.get<Record<string, string>>('/settings'),
+  });
 
-  const effectiveStatus = (s: ServiceItem): StatusFilter => {
-    if (!s.enabled) return "disabled";
-    if (s.status === "ok" || s.status === "error" || s.status === "unknown") return s.status;
-    return "unknown";
-  };
+  const { data: logs } = useQuery<LogEntry[]>({
+    queryKey: ['logs', 'monitoring'],
+    queryFn: fetchRecentLogs,
+    refetchInterval: autoRefresh,
+  });
 
-  const filteredRoutes = useMemo(() => {
-    return serviceItems.filter((s) => {
-      const eff = effectiveStatus(s);
-      if (statusFilter !== "all" && eff !== statusFilter) return false;
-      if (routeSearch) {
-        const host = fqdn(s);
-        const q = routeSearch.toLowerCase();
-        return host.toLowerCase().includes(q) || s.target_ip.includes(q);
-      }
-      return true;
-    });
-  }, [serviceItems, statusFilter, routeSearch]);
+  const historyQuery = useQuery<ServiceHistoryResponse>({
+    queryKey: ['services-history'],
+    queryFn: () => api.get<ServiceHistoryResponse>('/services/history'),
+    refetchInterval: autoRefresh,
+  });
 
+  const tunnelsQuery = useQuery<TunnelHealthResponse>({
+    queryKey: ['providers-tunnel-health'],
+    queryFn: () => api.get<TunnelHealthResponse>('/providers/tunnels/health'),
+    // Every poll asks Cloudflare over the network; never faster than every 30 s.
+    refetchInterval: refreshMs > 0 ? Math.max(refreshMs, 30_000) : false,
+  });
+
+  const services = useMemo(
+    () => (Array.isArray(servicesQuery.data) ? servicesQuery.data : []),
+    [servicesQuery.data],
+  );
+
+  // The RAW query result, never the normalised memo: on the first render `data` is `undefined`
+  // and the memo is `[]`, and writing that `[]` would seed `readServicesCache()` -- the
+  // `initialData` of the shared `['services']` key -- with an empty list on the next load. Every
+  // page reading that key would then render its "no services" empty state instead of a skeleton.
   useEffect(() => {
-    if (filteredRoutes.length === 0) {
-      setSelectedServiceId(null);
-      return;
+    if (!Array.isArray(servicesQuery.data)) return;
+    try {
+      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(servicesQuery.data));
+    } catch {
+      // Ignore storage quota / private mode errors.
     }
-    if (!selectedServiceId || !filteredRoutes.some((s) => s.id === selectedServiceId)) {
-      setSelectedServiceId(filteredRoutes[0].id);
-    }
-  }, [filteredRoutes, selectedServiceId]);
+  }, [servicesQuery.data]);
 
-  const selectedService = filteredRoutes.find((s) => s.id === selectedServiceId) || null;
+  const probes = useServiceProbes();
 
-  const selectedHistory = useMemo(() => {
-    if (!selectedService) return [];
-    const key = String(selectedService.id);
-    return Array.isArray(servicesHistory?.[key]) ? servicesHistory[key] : [];
-  }, [selectedService, servicesHistory]);
+  const checkAll = useMutation({
+    mutationFn: () => api.post<CheckAllResult>('/services/check-all'),
+    onSuccess: async (result) => {
+      const checked = result?.checked ?? 0;
+      const ok = result?.ok ?? 0;
+      const error = result?.error ?? 0;
+      setSummary({ checked, ok, error, skipped: Math.max(0, checked - ok - error) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['services'] }),
+        queryClient.invalidateQueries({ queryKey: ['services-history'] }),
+        queryClient.invalidateQueries({ queryKey: ['logs'] }),
+      ]);
+      toast.success(t('monitoring.toast.checked_count', { count: checked }));
+    },
+    onError: (err: unknown) => {
+      setSummary(null);
+      toast.error(translateApiError(err, t, t('monitoring.toast.check_failed')));
+    },
+  });
+
+  // --- counts -------------------------------------------------------------
+
+  const counts = useMemo(() => {
+    const tally = { all: services.length, ok: 0, error: 0, unknown: 0, disabled: 0 };
+    for (const service of services) tally[serviceStatus(service)] += 1;
+    return tally;
+  }, [services]);
+
+  const availability = useMemo(
+    () => overallAvailability(historyQuery.data, services, now),
+    [historyQuery.data, services, now],
+  );
+
+  const checkIntervalMinutes = Number(settings?.check_interval) || 5;
+  const hasAutoCheckData = services.some((service) => Boolean(service.last_checked));
+  const probedCount = Object.keys(probes.probes).length;
+
+  // --- filtering ----------------------------------------------------------
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return services.filter((service) => {
+      if (statusFilter !== 'all' && serviceStatus(service) !== statusFilter) return false;
+      if (!needle) return true;
+      return (
+        serviceHost(service).toLowerCase().includes(needle) ||
+        serviceTarget(service).toLowerCase().includes(needle) ||
+        (service.proxy_provider_name || '').toLowerCase().includes(needle) ||
+        (service.tunnel_provider_name || '').toLowerCase().includes(needle)
+      );
+    });
+  }, [services, statusFilter, search]);
+
+  const setParams = useCallback(
+    (next: { status?: StatusFilter; service?: number | null }) => {
+      const params = new URLSearchParams(searchParams);
+      if (next.status !== undefined) {
+        if (next.status === 'all') params.delete('status');
+        else params.set('status', next.status);
+      }
+      if (next.service !== undefined) {
+        if (next.service === null) params.delete('service');
+        else params.set('service', String(next.service));
+      }
+      setSearchParams(params, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const selectedService = useMemo(
+    () => services.find((service) => service.id === selectedId) ?? null,
+    [services, selectedId],
+  );
 
   const selectedLogs = useMemo(() => {
     if (!selectedService) return [];
-    const host = fqdn(selectedService).toLowerCase();
-    const sidToken = `service ${selectedService.id}`;
-    const logs = Array.isArray(logsResp?.items) ? logsResp.items : [];
-    return logs.filter((log) => {
-      const msg = String(log.message || "").toLowerCase();
-      return msg.includes(host) || msg.includes(sidToken);
+    const host = serviceHost(selectedService).toLowerCase();
+    const token = `service ${selectedService.id}`;
+    return (logs ?? []).filter((log) => {
+      const message = String(log.message || '').toLowerCase();
+      return message.includes(host) || message.includes(token);
     });
-  }, [selectedService, logsResp]);
+  }, [selectedService, logs]);
 
-  const formatAge = (dateRaw: string | null): string => {
-    if (!dateRaw) return "never";
-    const ts = parseBackendTimestamp(dateRaw);
-    if (ts === null) return dateRaw;
-    const deltaSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-    if (deltaSec < 60) return `${deltaSec}s ago`;
-    if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`;
-    if (deltaSec < 86400) return `${Math.floor(deltaSec / 3600)}h ago`;
-    return `${Math.floor(deltaSec / 86400)}d ago`;
-  };
+  const selectedHistory = useMemo(() => {
+    if (!selectedService) return [];
+    const points = historyQuery.data?.[String(selectedService.id)];
+    return Array.isArray(points) ? points : [];
+  }, [selectedService, historyQuery.data]);
 
-  const statusDot = (status: StatusFilter) => {
-    if (status === "ok") return "bg-emerald-500";
-    if (status === "error") return "bg-destructive";
-    if (status === "disabled") return "bg-muted-foreground/40";
-    return "bg-yellow-500";
-  };
+  // --- render -------------------------------------------------------------
 
-  const handleFilterChange = (next: StatusFilter) => {
-    setStatusFilter(next);
-    const currentService = searchParams.get("service");
-    const params = new URLSearchParams();
-    if (next !== "all") params.set("status", next);
-    if (currentService) params.set("service", currentService);
-    setSearchParams(params, { replace: true });
-  };
-
-  const handleSelectService = (serviceId: number) => {
-    setSelectedServiceId(serviceId);
-    const params = new URLSearchParams(searchParams);
-    params.set("service", String(serviceId));
-    if (statusFilter !== "all") params.set("status", statusFilter);
-    setSearchParams(params, { replace: true });
-  };
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+  const loading = servicesQuery.isPending && services.length === 0;
 
   return (
-    <div className="space-y-6 pb-8 animate-in fade-in duration-200">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Monitoring</h1>
-          <div className="flex items-center gap-2 text-xs font-semibold">
-            <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{okCount}</span>
-            {errorCount > 0 && <span className="inline-flex items-center gap-1 text-destructive"><span className="w-1.5 h-1.5 rounded-full bg-destructive" />{errorCount}</span>}
-            {unknownCount > 0 && <span className="inline-flex items-center gap-1 text-yellow-600 dark:text-yellow-400"><span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />{unknownCount}</span>}
-            {disabledCount > 0 && <span className="inline-flex items-center gap-1 text-muted-foreground"><span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />{disabledCount}</span>}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="mx-auto max-w-7xl space-y-6 pb-8 duration-200 animate-in fade-in">
+      <PageHeader
+        eyebrow={t('nav.group.operations')}
+        title={t('nav.monitoring')}
+        description={t('monitoring.page_description')}
+        icon={<Activity />}
+        meta={
           <span className="text-xs text-muted-foreground">
             {hasAutoCheckData
-              ? t("monitoring.auto_checks_every", { minutes: checkIntervalMinutes })
-              : t("monitoring.auto_checks_waiting")}
+              ? t('monitoring.auto_checks_every', { minutes: checkIntervalMinutes })
+              : t('monitoring.auto_checks_waiting')}
           </span>
-          <button
-            onClick={() => checkAllMutation.mutate()}
-            disabled={checkAllMutation.isPending}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-card text-xs font-semibold hover:bg-accent transition-colors"
-          >
-            {checkAllMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Radio className="w-3.5 h-3.5" />}
-            {t("monitoring.check_all")}
-          </button>
-        </div>
-      </div>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              size="sm"
+              aria-label={t('monitoring.refresh_label')}
+              value={String(refreshMs)}
+              onChange={(event) => setRefreshMs(Number(event.target.value))}
+              wrapperClassName="w-auto"
+            >
+              {REFRESH_CHOICES.map((choice) => (
+                <option key={choice} value={choice}>
+                  {choice === 0
+                    ? t('monitoring.refresh.off')
+                    : choice < 60_000
+                      ? t('monitoring.refresh.seconds', { seconds: choice / 1000 })
+                      : t('monitoring.refresh.minutes', { minutes: choice / 60_000 })}
+                </option>
+              ))}
+            </Select>
+            <Button
+              leftIcon={<Radio />}
+              loading={checkAll.isPending}
+              onClick={() => {
+                setSummary(null);
+                checkAll.mutate();
+              }}
+            >
+              {t('monitoring.check_all')}
+            </Button>
+          </div>
+        }
+      />
 
-      {unhealthyTunnels.length > 0 && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-destructive/30 bg-destructive/5 text-destructive text-xs font-semibold">
-          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-          {t("monitoring.tunnels_down", { count: unhealthyTunnels.length })}: {unhealthyTunnels.map((t) => t.name).join(", ")}
-        </div>
+      {checkAll.isPending && (
+        <InlineAlert tone="info" title={t('monitoring.check_running')}>
+          <ProgressBar indeterminate size="sm" label={t('monitoring.check_running')} className="mt-2" />
+        </InlineAlert>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-        <section className="xl:col-span-7 space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold text-foreground mr-2">{t("monitoring.route_health")}</h2>
-            <div className="relative flex-1 min-w-[180px] max-w-xs">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder={t("monitoring.filter_routes_placeholder")}
-                value={routeSearch}
-                onChange={(e) => setRouteSearch(e.target.value)}
-                className="w-full bg-input border border-border rounded-lg pl-9 pr-3 py-1.5 text-sm outline-none focus:border-foreground/30 transition-colors"
+      {!checkAll.isPending && summary && (
+        <InlineAlert
+          tone={summary.error > 0 ? 'warning' : 'success'}
+          title={t('monitoring.check_summary', {
+            checked: summary.checked,
+            ok: summary.ok,
+            error: summary.error,
+          })}
+          onDismiss={() => setSummary(null)}
+        >
+          {summary.skipped > 0 ? t('monitoring.check_skipped', { count: summary.skipped }) : null}
+        </InlineAlert>
+      )}
+
+      {servicesQuery.isError && (
+        <InlineAlert
+          tone="danger"
+          title={t('monitoring.load_failed')}
+          action={
+            <Button variant="outline" size="sm" onClick={() => void servicesQuery.refetch()}>
+              {t('common.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(servicesQuery.error, t, t('monitoring.load_failed_hint'))}
+        </InlineAlert>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <StatCard
+          label={t('monitoring.stat.up')}
+          value={counts.ok}
+          hint={t('monitoring.stat.up_hint')}
+          icon={<ShieldCheck />}
+          tone="success"
+          loading={loading}
+          onClick={() => setParams({ status: statusFilter === 'ok' ? 'all' : 'ok' })}
+        />
+        <StatCard
+          label={t('monitoring.stat.down')}
+          value={counts.error}
+          hint={t('monitoring.stat.down_hint')}
+          icon={<ArrowDownCircle />}
+          tone={counts.error > 0 ? 'danger' : 'neutral'}
+          loading={loading}
+          onClick={() => setParams({ status: statusFilter === 'error' ? 'all' : 'error' })}
+        />
+        <StatCard
+          label={t('monitoring.stat.unknown')}
+          value={counts.unknown}
+          hint={t('monitoring.stat.unknown_hint')}
+          icon={<CircleHelp />}
+          tone={counts.unknown > 0 ? 'warning' : 'neutral'}
+          loading={loading}
+          onClick={() => setParams({ status: statusFilter === 'unknown' ? 'all' : 'unknown' })}
+        />
+        <StatCard
+          label={t('monitoring.stat.availability')}
+          value={availability === null ? EM_DASH : formatPercent(availability * 100, 1)}
+          hint={
+            availability === null ? t('monitoring.stat.availability_empty') : t('monitoring.stat.availability_hint')
+          }
+          icon={<Gauge />}
+          tone={availability !== null && availability < 0.99 ? 'warning' : 'info'}
+          loading={loading || historyQuery.isPending}
+        />
+        <StatCard
+          label={t('monitoring.stat.latency')}
+          value={probes.average === null ? EM_DASH : formatLatency(probes.average)}
+          hint={
+            probedCount > 0
+              ? t('monitoring.stat.latency_hint', { count: formatNumber(probedCount) })
+              : t('monitoring.stat.latency_empty')
+          }
+          icon={<Timer />}
+          tone="neutral"
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-12">
+        <Card className="xl:col-span-8">
+          <CardHeader className="gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <CardTitle>{t('monitoring.route_health')}</CardTitle>
+              <SearchInput
+                size="sm"
+                value={search}
+                onChange={setSearch}
+                placeholder={t('monitoring.filter_routes_placeholder')}
+                aria-label={t('monitoring.filter_routes_placeholder')}
+                wrapperClassName="w-full max-w-xs"
               />
             </div>
-            <div className="flex items-center gap-1">
-              {([
-                { key: "all" as StatusFilter, label: t("monitoring.filter.all"), count: serviceItems.length },
-                { key: "ok" as StatusFilter, label: t("monitoring.filter.ok"), count: okCount },
-                { key: "error" as StatusFilter, label: t("monitoring.filter.error"), count: errorCount },
-                { key: "unknown" as StatusFilter, label: t("monitoring.filter.unknown"), count: unknownCount },
-                { key: "disabled" as StatusFilter, label: t("monitoring.filter.disabled"), count: disabledCount },
-              ] as const).map(({ key, label, count }) => (
-                <button
+            <ChipGroup label={t('monitoring.filters_label')}>
+              {STATUS_FILTERS.map((key) => (
+                <Chip
                   key={key}
-                  onClick={() => handleFilterChange(key)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${statusFilter === key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:bg-muted"}`}
+                  selected={statusFilter === key}
+                  count={key === 'all' ? counts.all : counts[key]}
+                  onClick={() => setParams({ status: key })}
                 >
-                  {label} <span className="opacity-60">{count}</span>
-                </button>
+                  {key === 'all' ? t('monitoring.filter.all') : t(STATUS_LABEL_KEY[key])}
+                </Chip>
               ))}
-            </div>
-          </div>
+            </ChipGroup>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            <MonitoringTable
+              services={filtered}
+              history={historyQuery.data}
+              probes={probes.probes}
+              checkingId={probes.checkingId}
+              now={now}
+              selectedId={selectedId}
+              loading={loading}
+              onSelect={(service) => setParams({ service: service.id })}
+              onCheck={probes.check}
+              empty={
+                statusFilter !== 'all' || search
+                  ? {
+                      title: t('monitoring.empty.filter'),
+                      description: t('monitoring.empty.filter_hint'),
+                      action: (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setSearch('');
+                            setParams({ status: 'all' });
+                          }}
+                        >
+                          {t('monitoring.empty.clear_filters')}
+                        </Button>
+                      ),
+                    }
+                  : { title: t('monitoring.empty.all'), description: t('monitoring.empty.all_hint') }
+              }
+            />
+          </CardContent>
+        </Card>
 
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
-            <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-4 px-4 py-2.5 border-b border-border text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-              <span className="w-4" />
-              <span>{t("monitoring.table.hostname")}</span>
-              <span className="hidden sm:block">{t("monitoring.table.target")}</span>
-              <span className="hidden md:block">{t("monitoring.table.provider")}</span>
-              <span className="text-right">{t("monitoring.table.checked")}</span>
-            </div>
-            {filteredRoutes.length === 0 ? (
-              <div className="p-6 text-sm text-muted-foreground text-center">
-                {statusFilter !== "all" ? t("monitoring.empty.filter") : t("monitoring.empty.all")}
-              </div>
-            ) : (
-              <div className="max-h-[62vh] overflow-auto divide-y divide-border/50">
-                {filteredRoutes.map((s) => {
-                  const eff = effectiveStatus(s);
-                  const selected = selectedServiceId === s.id;
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => handleSelectService(s.id)}
-                      className={`w-full text-left grid grid-cols-[auto_1fr_auto_auto_auto] gap-4 px-4 py-3 items-center transition-colors text-sm ${selected ? "bg-accent/50" : "hover:bg-accent/40"}`}
-                    >
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(eff)}`} />
-                      <div className="min-w-0">
-                        <p className={`font-medium truncate ${eff === "disabled" ? "text-muted-foreground" : "text-foreground"}`}>{fqdn(s)}</p>
-                        {eff === "error" && (
-                          <p className="text-[11px] text-destructive mt-0.5">
-                            {s.expose_mode === "tunnel" ? t("monitoring.error.check_tunnel") : t("monitoring.error.tcp_unreachable", { target: `${s.target_ip}:${s.target_port}` })}
-                          </p>
-                        )}
-                        {eff === "disabled" && (
-                          <p className="text-[11px] text-muted-foreground mt-0.5">{t("monitoring.status.disabled_by_user")}</p>
-                        )}
-                      </div>
-                      <span className="font-mono text-xs text-muted-foreground hidden sm:block">{s.target_ip}:{s.target_port}</span>
-                      <span className="text-xs text-muted-foreground hidden md:block truncate max-w-[140px]">{s.proxy_provider_name || s.dns_provider_name || "—"}</span>
-                      <span className="text-[11px] text-muted-foreground text-right whitespace-nowrap">{formatAge(s.last_checked)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <aside className="xl:col-span-5">
-          <div className="bg-card border border-border rounded-lg p-4 h-full min-h-[420px]">
-            {!selectedService ? (
-              <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground">
-                <Server className="w-8 h-8 mb-2" />
-                <p className="text-sm font-medium">{t("monitoring.select_hostname_prompt")}</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="border-b border-border pb-3">
-                  <p className="text-xs uppercase tracking-wider text-muted-foreground">{t("monitoring.selected_host")}</p>
-                  <h3 className="text-lg font-semibold text-foreground truncate">{fqdn(selectedService)}</h3>
-                  <p className="text-xs text-muted-foreground mt-1">{t("monitoring.target_label", { target: `${selectedService.target_ip}:${selectedService.target_port}` })}</p>
-                </div>
-
-                <div>
-                  <p className="text-xs uppercase tracking-wider text-muted-foreground mb-2">{t("monitoring.timeline_title")}</p>
-                  {selectedHistory.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">{t("monitoring.timeline_empty")}</p>
-                  ) : (
-                    <div className="max-h-[200px] overflow-auto rounded-md border border-border divide-y divide-border/50">
-                      {selectedHistory.slice().reverse().map((item, idx) => (
-                        <div key={`${item.created_at}-${idx}`} className="px-3 py-2 flex items-center justify-between text-xs">
-                          <span className="inline-flex items-center gap-1.5">
-                            <span className={`w-1.5 h-1.5 rounded-full ${statusDot(item.status as StatusFilter)}`} />
-                            <span className={item.status === "error" ? "text-destructive" : item.status === "ok" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>{item.status.toUpperCase()}</span>
-                          </span>
-                          <span className="text-muted-foreground">{item.created_at}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <p className="text-xs uppercase tracking-wider text-muted-foreground mb-2">{t("monitoring.related_logs_title")}</p>
-                  {selectedLogs.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">{t("monitoring.related_logs_empty")}</p>
-                  ) : (
-                    <div className="max-h-[220px] overflow-auto rounded-md border border-border divide-y divide-border/50">
-                      {selectedLogs.slice(0, 50).map((log) => (
-                        <div key={log.id} className="px-3 py-2 text-xs space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className={`uppercase font-semibold ${log.level === "error" ? "text-destructive" : log.level === "warn" || log.level === "warning" ? "text-yellow-600 dark:text-yellow-400" : "text-muted-foreground"}`}>{log.level}</span>
-                            <span className="text-muted-foreground inline-flex items-center gap-1"><Clock3 className="w-3 h-3" />{log.created_at}</span>
-                          </div>
-                          <p className="text-foreground break-words leading-relaxed">{log.message}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </aside>
+        <div className="xl:col-span-4">
+          <TunnelsCard
+            data={tunnelsQuery.data}
+            loading={tunnelsQuery.isPending}
+            isError={tunnelsQuery.isError}
+            refreshing={tunnelsQuery.isFetching}
+            onRefresh={() => void tunnelsQuery.refetch()}
+          />
+        </div>
       </div>
+
+      <ServiceDrawer
+        open={selectedService !== null}
+        onClose={() => setParams({ service: null })}
+        service={selectedService}
+        history={selectedHistory}
+        logs={selectedLogs}
+        probe={selectedService ? probes.probes[selectedService.id] : undefined}
+        checking={probes.checkingId === selectedService?.id}
+        onCheck={probes.check}
+        now={now}
+      />
     </div>
   );
 }

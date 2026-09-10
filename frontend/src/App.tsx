@@ -4,8 +4,10 @@ import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Layout } from './components/layout/Layout';
 import { ThemeProvider } from './theme';
-import { ErrorBoundary } from './components/ui/ErrorBoundary';
+import { RouteErrorBoundary } from './components/ui/ErrorBoundary';
 import { api } from './api/client';
+import { useT } from './i18n';
+import type { AuthStatus } from './types/api';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const Services = lazy(() => import('./pages/Services').then((m) => ({ default: m.Services })));
@@ -13,6 +15,7 @@ const Providers = lazy(() => import('./pages/Providers').then((m) => ({ default:
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 const Monitoring = lazy(() => import('./pages/Monitoring').then((m) => ({ default: m.Monitoring })));
 const Certificates = lazy(() => import('./pages/Certificates').then((m) => ({ default: m.Certificates })));
+const Templates = lazy(() => import('./pages/Templates').then((m) => ({ default: m.Templates })));
 const Login = lazy(() => import('./pages/Login').then((m) => ({ default: m.Login })));
 const Setup = lazy(() => import('./pages/Setup').then((m) => ({ default: m.Setup })));
 
@@ -25,10 +28,29 @@ const queryClient = new QueryClient({
   },
 });
 
-interface AuthStatus {
-  authenticated: boolean;
-  auth_required: boolean;
-  setup_required: boolean;
+/**
+ * Branded full-page loader for the two moments the app has nothing else to show: the
+ * first auth check and a lazy route's chunk. Announced politely to screen readers.
+ */
+function FullPageLoader() {
+  const t = useT();
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-screen flex-col items-center justify-center gap-5 bg-background text-muted-foreground animate-in fade-in motion-reduce:animate-none"
+    >
+      <div className="relative flex h-16 w-16 items-center justify-center">
+        <span aria-hidden="true" className="absolute inset-0 rounded-full border-2 border-primary/15" />
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary motion-safe:animate-spin"
+        />
+        <img src="/favicon.svg" alt="" width={28} height={28} className="h-7 w-7" />
+      </div>
+      <p className="text-sm font-medium">{t('ui.loading')}</p>
+    </div>
+  );
 }
 
 function AuthGate() {
@@ -48,11 +70,7 @@ function AuthGate() {
   }, [qc]);
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground animate-pulse">
-        Loading…
-      </div>
-    );
+    return <FullPageLoader />;
   }
 
   // Show login if password is required and not authenticated
@@ -84,22 +102,19 @@ function AuthGate() {
 }
 
 function AppRoutes() {
-  const pageFallback = (
-    <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground animate-pulse">
-      Loading…
-    </div>
-  );
+  const t = useT();
 
   return (
-    <Suspense fallback={pageFallback}>
+    <Suspense fallback={<FullPageLoader />}>
       <Routes>
         <Route path="/" element={<Layout />}>
-          <Route index element={<ErrorBoundary fallbackTitle="Dashboard unavailable"><Dashboard /></ErrorBoundary>} />
-          <Route path="services" element={<ErrorBoundary fallbackTitle="Services unavailable"><Services /></ErrorBoundary>} />
-          <Route path="providers" element={<ErrorBoundary fallbackTitle="Providers unavailable"><Providers /></ErrorBoundary>} />
-          <Route path="monitoring" element={<ErrorBoundary fallbackTitle="Monitoring unavailable"><Monitoring /></ErrorBoundary>} />
-          <Route path="settings" element={<ErrorBoundary fallbackTitle="Settings unavailable"><Settings /></ErrorBoundary>} />
-          <Route path="certificates" element={<ErrorBoundary fallbackTitle="Certificates unavailable"><Certificates /></ErrorBoundary>} />
+          <Route index element={<RouteErrorBoundary page={t('nav.dashboard')}><Dashboard /></RouteErrorBoundary>} />
+          <Route path="services" element={<RouteErrorBoundary page={t('nav.services')}><Services /></RouteErrorBoundary>} />
+          <Route path="templates" element={<RouteErrorBoundary page={t('nav.templates')}><Templates /></RouteErrorBoundary>} />
+          <Route path="providers" element={<RouteErrorBoundary page={t('nav.providers')}><Providers /></RouteErrorBoundary>} />
+          <Route path="monitoring" element={<RouteErrorBoundary page={t('nav.monitoring')}><Monitoring /></RouteErrorBoundary>} />
+          <Route path="settings" element={<RouteErrorBoundary page={t('nav.settings')}><Settings /></RouteErrorBoundary>} />
+          <Route path="certificates" element={<RouteErrorBoundary page={t('nav.certificates')}><Certificates /></RouteErrorBoundary>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
@@ -112,18 +127,44 @@ function App() {
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <Toaster 
+          <Toaster
             position="bottom-right"
+            gutter={10}
             toastOptions={{
-               style: {
-                  background: 'rgb(var(--vx-card))',
-                  color: 'rgb(var(--vx-fg))',
-                  border: '1px solid rgb(var(--vx-border))',
-                 boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
-                 fontSize: '14px',
-                 fontWeight: 500,
-                 borderRadius: '12px'
-               }
+              duration: 4000,
+              style: {
+                background: 'rgb(var(--vx-popover, var(--vx-card)))',
+                color: 'rgb(var(--vx-popover-fg, var(--vx-fg)))',
+                border: '1px solid rgb(var(--vx-border))',
+                boxShadow:
+                  'var(--vx-shadow-elevated, 0 12px 32px -12px rgba(0, 0, 0, 0.28), 0 2px 6px -1px rgba(0, 0, 0, 0.08))',
+                borderRadius: '12px',
+                fontSize: '14px',
+                fontWeight: 500,
+                lineHeight: '1.4',
+                padding: '10px 14px',
+                maxWidth: '420px',
+              },
+              success: {
+                iconTheme: {
+                  primary: 'rgb(var(--vx-success, 22 163 74))',
+                  secondary: 'rgb(var(--vx-success-fg, 255 255 255))',
+                },
+              },
+              error: {
+                iconTheme: {
+                  primary: 'rgb(var(--vx-destructive))',
+                  secondary: 'rgb(var(--vx-destructive-fg, 255 255 255))',
+                },
+              },
+              loading: {
+                // A top-level duration would otherwise dismiss a toast.promise() mid-flight.
+                duration: Infinity,
+                iconTheme: {
+                  primary: 'rgb(var(--vx-primary))',
+                  secondary: 'rgb(var(--vx-muted))',
+                },
+              },
             }}
           />
           <AuthGate />

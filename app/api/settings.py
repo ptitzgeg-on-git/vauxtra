@@ -5,7 +5,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 
 from app.auth import require_auth
-from app.models import add_log, ensure_default_docker_endpoint, get_db
+from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
 from app.validators import is_valid_domain, normalize_domain
 
@@ -297,10 +297,19 @@ def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = "
     conn     = get_db()
 
     if level:
-        total = conn.execute("SELECT COUNT(*) FROM logs WHERE level=?", (level,)).fetchone()[0]
+        # Rows written before `add_log` normalised the level still say "warn"; asking for
+        # "warning" has to find them, or the filter hides ten rows out of twelve.
+        wanted = {normalise_log_level(level), (level or "").strip().lower()}
+        if "warning" in wanted:
+            wanted.add("warn")
+        values = sorted(wanted)
+        marks  = ",".join("?" * len(values))
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM logs WHERE level IN ({marks})", values
+        ).fetchone()[0]
         rows  = conn.execute(
-            "SELECT * FROM logs WHERE level=? ORDER BY id DESC LIMIT ? OFFSET ?",
-            (level, per_page, offset),
+            f"SELECT * FROM logs WHERE level IN ({marks}) ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*values, per_page, offset),
         ).fetchall()
     else:
         total = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]

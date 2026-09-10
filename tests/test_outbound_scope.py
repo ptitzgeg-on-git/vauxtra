@@ -529,13 +529,42 @@ class TheInterfaceAsksForWhatTheServerWillAcceptTests(unittest.TestCase):
         "settings.auth.new_min",
     )
 
+    # `minLength={12}` is the same mistake as `minLength={8}` -- a figure written a second
+    # time, free to drift from the server. The attribute has to name the constant.
+    _MIN_LENGTH_ATTR = re.compile(r"minLength=\{([^}]*)\}")
+
     def _read(self, rel: str) -> str:
         return (REPO_ROOT / rel).read_text(encoding="utf-8")
 
+    def _password_sources(self) -> dict[str, str]:
+        """Every component that renders a password or passphrase field.
+
+        This used to read `pages/Settings.tsx` alone. The fields then moved out into
+        `components/features/settings/`, and the two checks that read them went quiet --
+        still passing, over a file that no longer holds a password field at all. Reading
+        the tree instead means the next move cannot blind them.
+        """
+        root = REPO_ROOT / "frontend" / "src"
+        return {
+            str(path.relative_to(REPO_ROOT)): text
+            for path in sorted(root.rglob("*.tsx"))
+            if "MIN_PASSWORD_LENGTH" in (text := path.read_text(encoding="utf-8"))
+        }
+
+    def test_the_scan_still_finds_the_password_fields(self) -> None:
+        """A scan that finds nothing makes every check below pass for free."""
+        self.assertGreaterEqual(len(self._password_sources()), 3)
+
     def test_no_field_still_advertises_the_old_floor(self) -> None:
-        source = self._read("frontend/src/pages/Settings.tsx")
-        self.assertNotIn("minLength={8}", source)
-        self.assertIn("minLength={MIN_PASSWORD_LENGTH}", source)
+        carried = 0
+        for rel, source in self._password_sources().items():
+            for value in self._MIN_LENGTH_ATTR.findall(source):
+                with self.subTest(file=rel, value=value):
+                    self.assertEqual(value.strip(), "MIN_PASSWORD_LENGTH")
+                carried += 1
+        self.assertGreaterEqual(
+            carried, 3, "the password fields stopped carrying the floor at all"
+        )
 
     def test_both_sides_agree_on_the_number(self) -> None:
         found = re.search(
@@ -561,11 +590,11 @@ class TheInterfaceAsksForWhatTheServerWillAcceptTests(unittest.TestCase):
 
     def test_every_call_site_passes_the_substitution(self) -> None:
         """A `{min}` nobody fills in reads as a literal brace on the operator's screen."""
-        source = self._read("frontend/src/pages/Settings.tsx")
-        for key in self.NUMBERED_KEYS:
-            with self.subTest(key=key):
+        for rel, source in self._password_sources().items():
+            for key in self.NUMBERED_KEYS:
                 for call in re.findall(rf"t\('{re.escape(key)}'[^)]*\)", source):
-                    self.assertIn("min: MIN_PASSWORD_LENGTH", call)
+                    with self.subTest(file=rel, key=key):
+                        self.assertIn("min: MIN_PASSWORD_LENGTH", call)
 
     def test_the_proxy_variable_is_documented_where_operators_look(self) -> None:
         for rel in (".env.example", "README.md", "docs/DEPLOYMENT.md"):

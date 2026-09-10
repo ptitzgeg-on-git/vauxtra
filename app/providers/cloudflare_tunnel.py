@@ -405,8 +405,13 @@ class CloudflareTunnelProvider(ProxyProvider):
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
         checks: list[dict] = []
 
-        def _add(name: str, ok: bool, detail: str, blocking: bool = True) -> None:
-            checks.append({"name": name, "ok": bool(ok), "detail": detail, "blocking": blocking})
+        # `code` is the short name of the sentence in `detail`; the UI reads
+        # `providers.diag.detail.<code>` so the line is not English-only.
+        def _add(name: str, ok: bool, detail: str, blocking: bool = True, code: str = "") -> None:
+            entry = {"name": name, "ok": bool(ok), "detail": detail, "blocking": blocking}
+            if code:
+                entry["detail_code"] = code
+            checks.append(entry)
 
         token_verify = self._request_detailed("GET", "/user/tokens/verify")
         _add(
@@ -414,10 +419,11 @@ class CloudflareTunnelProvider(ProxyProvider):
             token_verify["ok"],
             "API token is active" if token_verify["ok"] else "Token verification failed",
             True,
+            code="token_active" if token_verify["ok"] else "token_invalid",
         )
 
         if not self.account_id:
-            _add("account_id", False, "Account ID is required", True)
+            _add("account_id", False, "Account ID is required", True, code="account_required")
         else:
             tunnel_list = self._request_detailed(
                 "GET",
@@ -429,6 +435,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                 tunnel_list["ok"],
                 "Can list account tunnels" if tunnel_list["ok"] else "Cannot list account tunnels",
                 True,
+                code="tunnel_list_ok" if tunnel_list["ok"] else "tunnel_list_failed",
             )
 
         tunnel_id = self._resolve_tunnel_id()
@@ -438,6 +445,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                 False,
                 "Tunnel ID is missing or cannot be auto-resolved",
                 True,
+                code="tunnel_id_missing",
             )
         else:
             tunnel_get = self._request_detailed("GET", f"/accounts/{self.account_id}/cfd_tunnel/{tunnel_id}")
@@ -446,6 +454,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                 tunnel_get["ok"],
                 "Can read tunnel details" if tunnel_get["ok"] else "Cannot read tunnel details",
                 True,
+                code="tunnel_read_ok" if tunnel_get["ok"] else "tunnel_read_failed",
             )
 
             config_get = self._request_detailed(
@@ -457,6 +466,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                 config_get["ok"],
                 "Can read tunnel configuration" if config_get["ok"] else "Cannot read tunnel configuration",
                 True,
+                code="tunnel_config_read_ok" if config_get["ok"] else "tunnel_config_read_failed",
             )
 
             if write_probe and config_get["ok"]:
@@ -467,6 +477,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                     write_ok,
                     "Configuration write probe succeeded" if write_ok else "Configuration write probe failed",
                     True,
+                    code="tunnel_config_write_ok" if write_ok else "tunnel_config_write_failed",
                 )
             else:
                 _add(
@@ -474,6 +485,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                     False,
                     "Write probe skipped (safe mode).",
                     False,
+                    code="tunnel_config_write_skipped",
                 )
 
         hostname = (hostname_hint or "").strip().lower()
@@ -484,6 +496,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                 bool(zone_id),
                 "Can resolve DNS zone for hostname" if zone_id else "Cannot resolve DNS zone for hostname",
                 False,
+                code="zone_lookup_ok" if zone_id else "zone_lookup_failed",
             )
             if zone_id:
                 dns_read = self._request_detailed(
@@ -496,6 +509,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                     dns_read["ok"],
                     "Can read zone DNS records" if dns_read["ok"] else "Cannot read zone DNS records",
                     False,
+                    code="zone_dns_read_ok" if dns_read["ok"] else "zone_dns_read_failed",
                 )
         else:
             _add(
@@ -503,6 +517,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                 False,
                 "No hostname hint provided for DNS scope checks",
                 False,
+                code="zone_lookup_no_hint",
             )
 
         blocking_failures = [c for c in checks if c["blocking"] and not c["ok"]]

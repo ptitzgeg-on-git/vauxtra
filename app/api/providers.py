@@ -44,7 +44,16 @@ def _provider_diagnostics(provider, provider_type: str, hostname_hint: str = "",
         except Exception as e:
             validation = {
                 "ok": False,
-                "checks": [{"name": "validation", "ok": False, "detail": str(e), "blocking": True}],
+                "checks": [
+                    {
+                        "name": "validation",
+                        "ok": False,
+                        "detail": str(e),
+                        "detail_code": "provider_error",
+                        "detail_params": {"error": str(e)},
+                        "blocking": True,
+                    }
+                ],
                 "warnings": [],
             }
     else:
@@ -60,6 +69,7 @@ def _provider_diagnostics(provider, provider_type: str, hostname_hint: str = "",
                     "name": "test_connection",
                     "ok": ok,
                     "detail": "Connection test passed" if ok else "Connection test failed",
+                    "detail_code": "connection_ok" if ok else "connection_failed",
                     "blocking": True,
                 }
             ],
@@ -222,7 +232,16 @@ def validate_provider_draft(request: Request, body: ProviderDraftValidationIn):
             "type": body.type,
             "validation": {
                 "ok": False,
-                "checks": [{"name": "provider_init", "ok": False, "detail": str(e), "blocking": True}],
+                "checks": [
+                    {
+                        "name": "provider_init",
+                        "ok": False,
+                        "detail": str(e),
+                        "detail_code": "provider_error",
+                        "detail_params": {"error": str(e)},
+                        "blocking": True,
+                    }
+                ],
                 "warnings": [],
             },
             "health": {"ok": False, "status": "down", "error": str(e)},
@@ -462,7 +481,16 @@ def validate_provider(pid: int, request: Request, body: ProviderValidationOption
             "type": row["type"],
             "validation": {
                 "ok": False,
-                "checks": [{"name": "provider_init", "ok": False, "detail": str(e), "blocking": True}],
+                "checks": [
+                    {
+                        "name": "provider_init",
+                        "ok": False,
+                        "detail": str(e),
+                        "detail_code": "provider_error",
+                        "detail_params": {"error": str(e)},
+                        "blocking": True,
+                    }
+                ],
                 "warnings": [],
             },
             "health": {"ok": False, "status": "down", "error": str(e)},
@@ -525,7 +553,16 @@ def test_provider(pid: int, request: Request):
             "provider": row["name"],
             "validation": {
                 "ok": False,
-                "checks": [{"name": "provider_init", "ok": False, "detail": str(e), "blocking": True}],
+                "checks": [
+                    {
+                        "name": "provider_init",
+                        "ok": False,
+                        "detail": str(e),
+                        "detail_code": "provider_error",
+                        "detail_params": {"error": str(e)},
+                        "blocking": True,
+                    }
+                ],
                 "warnings": [],
             },
             "health": {"ok": False, "status": "down", "error": str(e)},

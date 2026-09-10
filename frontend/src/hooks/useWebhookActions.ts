@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import toast from 'react-hot-toast';
+import { translateApiError } from '@/lib/errors';
 import type { Webhook } from '@/types/api';
 import { useI18n } from '@/i18n';
 
@@ -53,8 +54,7 @@ export function useWebhookActions(enabled = true) {
       setTestResult(null);
     },
     onError: (err: unknown) => {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || t('settings.webhooks.add_failed'));
+      toast.error(translateApiError(err, t, t('settings.webhooks.add_failed')));
     },
   });
 
@@ -65,8 +65,7 @@ export function useWebhookActions(enabled = true) {
       toast.success(t('settings.webhooks.removed'));
     },
     onError: (err: unknown) => {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || t('settings.webhooks.remove_failed'));
+      toast.error(translateApiError(err, t, t('settings.webhooks.remove_failed')));
     },
   });
 
@@ -74,8 +73,7 @@ export function useWebhookActions(enabled = true) {
     mutationFn: (id: number) => api.post(`/webhooks/${id}/test`),
     onSuccess: () => toast.success(t('settings.webhooks.test_sent')),
     onError: (err: unknown) => {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || t('settings.webhooks.test_failed'));
+      toast.error(translateApiError(err, t, t('settings.webhooks.test_failed')));
     },
   });
 
@@ -86,8 +84,7 @@ export function useWebhookActions(enabled = true) {
       toast.success(t('settings.webhooks.test_sent'));
     },
     onError: (err: unknown) => {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      const errorMsg = axErr?.response?.data?.detail || t('settings.webhooks.test_failed');
+      const errorMsg = translateApiError(err, t, t('settings.webhooks.test_failed'));
       setTestResult({ ok: false, error: errorMsg });
       toast.error(errorMsg);
     },
@@ -98,8 +95,7 @@ export function useWebhookActions(enabled = true) {
       api.put(`/webhooks/${id}`, { enabled }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['webhooks'] }),
     onError: (err: unknown) => {
-      const axErr = err as { response?: { data?: { detail?: string } } };
-      toast.error(axErr?.response?.data?.detail || t('settings.webhooks.update_failed'));
+      toast.error(translateApiError(err, t, t('settings.webhooks.update_failed')));
     },
   });
 

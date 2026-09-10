@@ -104,6 +104,17 @@ def _service_target_reachable(host: str, port: int, timeout: float = 2.0) -> tup
         return False, str(e)
 
 
+#: Every preflight check carries `detail` (the English sentence, kept for logs and older
+#: clients) plus `detail_key` -- the short code the sentence was written from -- and the
+#: values it was built out of. The UI looks up `expose.preflight.detail.<detail_key>` so the
+#: line is read in the reader's language, and falls back to `detail` when the code is new.
+def _detail(key: str, text: str, **params) -> dict:
+    out = {"detail": text, "detail_key": key}
+    if params:
+        out["detail_params"] = params
+    return out
+
+
 def _check_provider(conn, provider_id: int | None, *, role: str, required: bool) -> tuple[dict | None, dict]:
     if not provider_id:
         if required:
@@ -111,13 +122,13 @@ def _check_provider(conn, provider_id: int | None, *, role: str, required: bool)
                 "name": f"{role}_provider",
                 "ok": False,
                 "blocking": True,
-                "detail": f"{role.capitalize()} provider is required",
+                **_detail("provider_required", f"{role.capitalize()} provider is required"),
             }
         return None, {
             "name": f"{role}_provider",
             "ok": True,
             "blocking": False,
-            "detail": f"{role.capitalize()} provider not set (optional)",
+            **_detail("provider_optional", f"{role.capitalize()} provider not set (optional)"),
         }
 
     row = conn.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
@@ -126,21 +137,25 @@ def _check_provider(conn, provider_id: int | None, *, role: str, required: bool)
             "name": f"{role}_provider",
             "ok": False,
             "blocking": True,
-            "detail": f"{role.capitalize()} provider not found",
+            **_detail("provider_missing", f"{role.capitalize()} provider not found"),
         }
     if not row["enabled"]:
         return dict(row), {
             "name": f"{role}_provider",
             "ok": False,
             "blocking": True,
-            "detail": f"{role.capitalize()} provider is disabled",
+            **_detail("provider_disabled", f"{role.capitalize()} provider is disabled"),
         }
 
     return dict(row), {
         "name": f"{role}_provider",
         "ok": True,
         "blocking": False,
-        "detail": f"{role.capitalize()} provider ready: {row['name']}",
+        **_detail(
+            "provider_ready",
+            f"{role.capitalize()} provider ready: {row['name']}",
+            name=row["name"],
+        ),
     }
 
 
@@ -173,18 +188,33 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
             "name": "public_host_conflict",
             "ok": conflicting_id is None,
             "blocking": True,
-            "detail": "No existing route conflict" if conflicting_id is None else f"Route already exists on service #{conflicting_id}",
+            **(
+                _detail("host_free", "No existing route conflict")
+                if conflicting_id is None
+                else _detail(
+                    "host_taken",
+                    f"Route already exists on service #{conflicting_id}",
+                    id=conflicting_id,
+                )
+            ),
         }
     )
 
-    # Target reachability
+    # Target reachability. The round trip is timed here rather than read back out of the
+    # helper's sentence, so the number survives translation.
+    started = time.monotonic()
     reachable, detail = _service_target_reachable(body.target_ip, body.target_port)
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     checks.append(
         {
             "name": "target_reachable",
             "ok": reachable,
             "blocking": True,
-            "detail": detail if reachable else f"Target not reachable: {detail}",
+            **(
+                _detail("target_reachable", detail, ms=elapsed_ms)
+                if reachable
+                else _detail("target_unreachable", f"Target not reachable: {detail}", reason=detail)
+            ),
         }
     )
 
@@ -194,7 +224,10 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                 "name": "https_port_hint",
                 "ok": False,
                 "blocking": False,
-                "detail": "Forward scheme is HTTPS but port is 80. Verify backend TLS termination.",
+                **_detail(
+                    "https_port_hint",
+                    "Forward scheme is HTTPS but port is 80. Verify backend TLS termination.",
+                ),
             }
         )
 
@@ -217,7 +250,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                             "name": "tunnel_health",
                             "ok": bool(health.get("ok")),
                             "blocking": True,
-                            "detail": f"Tunnel status: {health.get('status', 'unknown')}",
+                            **_detail(
+                                "tunnel_status",
+                                f"Tunnel status: {health.get('status', 'unknown')}",
+                                status=str(health.get("status", "unknown")),
+                            ),
                             "data": health,
                         }
                     )
@@ -228,7 +265,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                             "name": "tunnel_health",
                             "ok": ok,
                             "blocking": True,
-                            "detail": "Tunnel provider reachable" if ok else "Tunnel provider not reachable",
+                            **(
+                                _detail("tunnel_reachable", "Tunnel provider reachable")
+                                if ok
+                                else _detail("tunnel_unreachable", "Tunnel provider not reachable")
+                            ),
                         }
                     )
             except Exception as e:
@@ -237,7 +278,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         "name": "tunnel_health",
                         "ok": False,
                         "blocking": True,
-                        "detail": f"Tunnel health check failed: {e}",
+                        **_detail(
+                            "tunnel_check_failed",
+                            f"Tunnel health check failed: {e}",
+                            error=str(e),
+                        ),
                     }
                 )
 
@@ -249,10 +294,13 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                 "name": "provider_target_required",
                 "ok": has_any_proxy_target or has_any_dns_target,
                 "blocking": True,
-                "detail": (
-                    "At least one provider target is configured"
+                **(
+                    _detail("target_set", "At least one provider target is configured")
                     if (has_any_proxy_target or has_any_dns_target)
-                    else "Select at least one proxy, DNS, or tunnel provider target"
+                    else _detail(
+                        "target_none",
+                        "Select at least one proxy, DNS, or tunnel provider target",
+                    )
                 ),
             }
         )
@@ -282,7 +330,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                     "name": "proxy_connection",
                     "ok": ok,
                     "blocking": False,
-                    "detail": "Proxy provider connection is healthy" if ok else "Proxy provider connection test failed",
+                    **(
+                        _detail("proxy_ok", "Proxy provider connection is healthy")
+                        if ok
+                        else _detail("proxy_failed", "Proxy provider connection test failed")
+                    ),
                 }
             )
 
@@ -299,10 +351,15 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                     "name": "dns_target_resolution",
                     "ok": bool(resolved_target),
                     "blocking": True,
-                    "detail": (
-                        f"Resolved public DNS target: {resolved_target} ({target_source})"
+                    **(
+                        _detail(
+                            "dns_resolved",
+                            f"Resolved public DNS target: {resolved_target} ({target_source})",
+                            target=str(resolved_target),
+                            source=str(target_source),
+                        )
                         if resolved_target
-                        else "Unable to resolve DNS public target"
+                        else _detail("dns_unresolved", "Unable to resolve DNS public target")
                     ),
                     "data": {"resolved_target": resolved_target, "source": target_source},
                 }
