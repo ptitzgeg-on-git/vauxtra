@@ -49,6 +49,13 @@ REQUIRED_TRACKED_FILES = (
 _USES = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+/[^@\s]+)@(\S+)")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
+# Where hand-written source lives. An ignore rule has no business reaching in here.
+SOURCE_ROOTS = ("app", "frontend/src", "vauxtra_mcp", "tests", "scripts")
+
+# Extensions that mean "somebody wrote this", as opposed to a build or cache artifact
+# (`.pyc`, `.tsbuildinfo`) that is ignored inside these roots on purpose.
+SOURCE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".json")
+
 
 def _git_ls_files() -> list[str]:
     result = subprocess.run(
@@ -112,14 +119,38 @@ def _find_unpinned_actions() -> list[str]:
     return bad
 
 
+def _find_ignored_source_files() -> list[str]:
+    """Source files that exist on disk but that .gitignore hides from `git add`.
+
+    Not hypothetical: the rule was `data/`, unanchored, written for the SQLite directory
+    at the root -- so it also matched `frontend/src/components/features/settings/data/`,
+    and `git add -A` skipped four components without printing anything. The tree built
+    locally, where the files are on disk; only CI, which checks out what git actually
+    holds, said `Cannot find module './data/SyncSection'`. A silent omission is the
+    failure mode worth a test -- a loud one gets fixed by whoever hits it.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", *SOURCE_ROOTS],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return sorted(
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip().endswith(SOURCE_SUFFIXES)
+    )
+
+
 def main() -> int:
     tracked = _git_ls_files()
     bad_tracked = _find_bad_tracked_files(tracked)
     bad_refs = _find_bad_public_references()
     missing_required = _find_missing_required_files(tracked)
     unpinned = _find_unpinned_actions()
+    ignored_source = _find_ignored_source_files()
 
-    if not bad_tracked and not bad_refs and not missing_required and not unpinned:
+    if not (bad_tracked or bad_refs or missing_required or unpinned or ignored_source):
         print("Repo hygiene check passed")
         return 0
 
@@ -144,6 +175,14 @@ def main() -> int:
         for ref in unpinned:
             print(f" - {ref}")
         print("\nUse `uses: owner/repo@<40-char sha> # vX.Y.Z`.")
+
+    if ignored_source:
+        print("\nSource files on disk that .gitignore hides from git:")
+        for path in ignored_source:
+            print(f" - {path}")
+        print("\nAnchor the rule to the repository root (`/data/`, not `data/`), or")
+        print("negate it for this path. Until then these files build locally and are")
+        print("missing from every clone.")
 
     return 1
 
