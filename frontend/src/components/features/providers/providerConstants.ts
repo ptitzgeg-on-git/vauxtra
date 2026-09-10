@@ -3,7 +3,7 @@
  * Used by both ProviderModal (main panel) and Setup (first-run wizard).
  */
 
-import { Globe, Shield, Server, Box, ShieldCheck, Waypoints, Cpu, Route } from 'lucide-react';
+import { Globe, GlobeLock, Shield, Server, Box, Database, ShieldCheck, Waypoints, Cpu, Route } from 'lucide-react';
 import type { ComponentType } from 'react';
 import type { TranslateFn } from '@/i18n';
 import { metaHasCapability } from '@/lib/providers';
@@ -109,6 +109,8 @@ export const fallbackIconByType: Record<string, ComponentType<{ className?: stri
   zoraxy: Route,
   adguard: ShieldCheck,
   technitium: Cpu,
+  powerdns: Database,
+  desec: GlobeLock,
 };
 
 /**
@@ -138,6 +140,8 @@ export const descByType: Record<string, string> = {
   zoraxy: 'Zoraxy reverse proxy',
   adguard: 'DNS sinkhole & filtering',
   technitium: 'Self-hosted authoritative DNS server',
+  powerdns: 'PowerDNS Authoritative Server zone records',
+  desec: 'Public DNS records via the deSEC API',
 };
 
 /**
@@ -236,6 +240,8 @@ export const projectUrlByType: Record<string, string> = {
   cloudflare: 'https://dash.cloudflare.com',
   cloudflare_tunnel: 'https://one.dash.cloudflare.com',
   technitium: 'https://technitium.com/dns',
+  powerdns: 'https://doc.powerdns.com/authoritative/',
+  desec: 'https://desec.io',
 };
 
 /** Resolve project URL from API meta first, then local fallback. */
@@ -259,7 +265,7 @@ export function buildPayload(formData: ProviderFormState) {
 }
 
 const passwordOptionalTypes = new Set(['traefik', 'zoraxy']);
-const urlOptionalTypes = new Set(['cloudflare', 'cloudflare_tunnel']);
+const urlOptionalTypes = new Set(['cloudflare', 'cloudflare_tunnel', 'desec']);
 
 /**
  * Whether a secret is mandatory for this type. The API may say so explicitly
@@ -276,7 +282,7 @@ export function requiresUsername(type: string, meta?: Pick<ProviderTypeMeta, 're
   return type === 'cloudflare_tunnel';
 }
 
-/** Cloudflare types fall back to the public API endpoint when the URL is left empty. */
+/** Hosted types fall back to their public API endpoint when the URL is left empty. */
 export function isUrlOptional(type: string): boolean {
   return urlOptionalTypes.has(type);
 }

@@ -13,8 +13,10 @@ from app.config import PROVIDER_TIMEOUT
 from app.providers.adguard import AdGuardProvider
 from app.providers.base import TimeoutSession
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
+from app.providers.desec import DesecProvider
 from app.providers.npm import NPMProvider
 from app.providers.pihole import PiholeProvider
+from app.providers.powerdns import PowerDNSProvider
 from app.providers.technitium import TechnitiumProvider
 from app.providers.traefik import TraefikProvider
 
@@ -50,6 +52,8 @@ class TestProvidersUseTimeoutSession(unittest.TestCase):
             AdGuardProvider("http://h", "u", "p"),
             PiholeProvider("http://h", "u", "p"),
             TechnitiumProvider("http://h", "u", "p"),
+            PowerDNSProvider("http://h", "u", "p"),
+            DesecProvider("", "", "tok"),
             TraefikProvider("http://h", "u", "p"),
             NPMProvider("http://h", "u", "p"),
             CloudflareTunnelProvider("", "acc", "tok", {"tunnel_id": "tid"}),
