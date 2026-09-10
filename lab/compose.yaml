@@ -23,6 +23,20 @@ services:
       - "127.0.0.1:5380:5380"
     restart: unless-stopped
 
+  # The API is off until a key exists. `PDNS_AUTH_API_KEY` is the image's own hook: its
+  # entrypoint renders a webserver stanza from it, and that is what opens :8081. Port 53
+  # stays inside the compose network -- Vauxtra only ever speaks to the API, and a second
+  # resolver on the host is the last thing this lab needs. The zone database is the
+  # sqlite3 file baked into the image, so `down` is enough to forget everything.
+  powerdns:
+    image: powerdns/pdns-auth-49:4.9.17
+    container_name: vxlab-powerdns
+    environment:
+      PDNS_AUTH_API_KEY: vauxtra-lab-pw
+    ports:
+      - "127.0.0.1:3084:8081"
+    restart: unless-stopped
+
   # `state/adguard/conf` is seeded by up.sh from `seed/adguard`: the container otherwise
   # stops at a four-step setup wizard that has no API. AdGuard rewrites that file as it
   # runs, so the seed is copied rather than mounted.
