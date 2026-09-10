@@ -27,6 +27,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   every request rather than falling back to anonymous access. Following the page written
   for people who are locked out left them locked out harder. Both rows are named now, with
   the reason and a link to the full procedure.
+- **Release notes advertised an image tag that is never published.** The body said `docker
+  pull ghcr.io/…:${{ github.ref_name }}` — `v1.3.0` — while `type=semver,pattern={{version}}`
+  publishes `1.3.0`, without the `v`. Every release since the first handed users a command
+  that fails. The publish job now exports the tag it actually pushed and the release body
+  quotes that.
 - **The recommended deployment no longer logs an error at every boot.** Vauxtra serves its
   own interface, so the configuration the documentation recommends allows no cross-origin
   caller at all — and that is exactly the case `validate_cors_origins()` treated as a
