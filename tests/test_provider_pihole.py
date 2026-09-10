@@ -182,7 +182,12 @@ class TestPiholeV6Operations(unittest.TestCase):
         """PUT/DELETE URL must URL-encode the 'ip domain' entry."""
         self.p.session.delete = MagicMock(return_value=_response(204))
         self.p.delete_rewrite("app.home.local", "10.0.0.1")
-        call_url = self.p.session.delete.call_args[0][0]
+        # The last DELETE is the logout on /api/auth; the rewrite is the one on the
+        # hosts endpoint.
+        call_url = next(
+            c[0][0] for c in self.p.session.delete.call_args_list
+            if "/api/config/dns/hosts/" in c[0][0]
+        )
         self.assertIn("10.0.0.1", call_url)
         self.assertIn("app.home.local", call_url)
         # Spaces must be encoded (%20 or +)
@@ -221,6 +226,110 @@ class TestPiholeUpdateRewrite(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue(add_called)
         self.assertTrue(delete_called)
+
+
+class TestPiholeApiSeats(unittest.TestCase):
+    """Every v6 operation must hand its API seat back.
+
+    Pi-hole v6 allows `webserver.api.max_sessions` concurrent sessions (16 by default)
+    and holds each for `webserver.session.timeout` (1800s). Vauxtra builds a fresh
+    provider per request, so an operation that logs in without logging out burns a seat
+    for half an hour. Sixteen of them -- one drift check over a handful of services --
+    and Pi-hole refuses every login, the operator's own browser included.
+    """
+
+    def setUp(self):
+        self.p = PiholeProvider("http://pihole", "", "mysecret")
+        self.p._version = 6
+        self.logins = 0
+        self.p._ensure_auth = MagicMock(side_effect=self._auth)
+        self.p.session.get = MagicMock(return_value=_response(200, {
+            "config": {"dns": {"hosts": ["10.0.0.1 app.home.local"]}}
+        }))
+        self.p.session.put = MagicMock(return_value=_response(201))
+        self.p.session.delete = MagicMock(return_value=_response(204))
+
+    def _auth(self) -> bool:
+        """Stand in for _ensure_auth: takes a seat only when none is held."""
+        if self.p._v6_sid:
+            return True
+        self.logins += 1
+        self.p._v6_sid = "sess"
+        self.p._v6_csrf = "csrf"
+        self.p.session.headers["X-FTL-SID"] = "sess"
+        self.p.session.headers["X-FTL-CSRF"] = "csrf"
+        return True
+
+    def _logouts(self) -> int:
+        return sum(
+            1 for c in self.p.session.delete.call_args_list
+            if c[0][0].endswith("/api/auth")
+        )
+
+    def assertSeatReturned(self):
+        self.assertEqual(self._logouts(), 1, "the session was never released")
+        self.assertIsNone(self.p._v6_sid)
+        self.assertNotIn("X-FTL-SID", self.p.session.headers)
+        self.assertNotIn("X-FTL-CSRF", self.p.session.headers)
+
+    def test_list_rewrites_releases_session(self):
+        # The drift check calls this on every pass -- the leak that emptied the pool.
+        self.assertEqual(len(self.p.list_rewrites()), 1)
+        self.assertSeatReturned()
+
+    def test_add_rewrite_releases_session(self):
+        self.assertTrue(self.p.add_rewrite("new.home.local", "10.0.0.5"))
+        self.assertSeatReturned()
+
+    def test_delete_rewrite_releases_session(self):
+        self.assertTrue(self.p.delete_rewrite("app.home.local", "10.0.0.1"))
+        self.assertSeatReturned()
+
+    def test_test_connection_releases_session(self):
+        self.assertTrue(self.p.test_connection())
+        self.assertSeatReturned()
+
+    def test_failed_operation_still_releases_session(self):
+        self.p.session.put = MagicMock(return_value=_response(400))
+        self.assertFalse(self.p.add_rewrite("new.home.local", "10.0.0.5"))
+        self.assertSeatReturned()
+
+    def test_network_error_still_releases_session(self):
+        self.p.session.get = MagicMock(side_effect=requests.RequestException("boom"))
+        self.assertEqual(self.p.list_rewrites(), [])
+        self.assertSeatReturned()
+
+    def test_rejected_auth_takes_no_seat(self):
+        self.p._ensure_auth = MagicMock(return_value=False)
+        self.assertEqual(self.p.list_rewrites(), [])
+        self.assertFalse(self.p.test_connection())
+        self.assertEqual(self._logouts(), 0)
+
+    def test_update_rewrite_spends_one_session_for_both_halves(self):
+        # add + delete nest inside the same session; a non-reentrant release would log
+        # in twice.
+        self.assertTrue(
+            self.p.update_rewrite("app.home.local", "10.0.0.1", "new.home.local", "10.0.0.5")
+        )
+        self.assertEqual(self.logins, 1)
+        self.assertSeatReturned()
+
+    def test_repeated_operations_never_hold_two_seats(self):
+        # Twenty passes: without the release this stops working at the sixteenth.
+        for _ in range(20):
+            self.p.list_rewrites()
+            self.assertIsNone(self.p._v6_sid)
+        self.assertEqual(self.logins, 20)
+        self.assertEqual(self._logouts(), 20)
+
+    def test_v5_issues_no_logout(self):
+        p = PiholeProvider("http://pihole", "", "apikey123")
+        p._version = 5
+        p.session.get = MagicMock(return_value=_response(200, {"data": []}))
+        p.session.delete = MagicMock()
+        self.assertTrue(p.test_connection())
+        self.assertEqual(p.list_rewrites(), [])
+        p.session.delete.assert_not_called()
 
 
 if __name__ == "__main__":
