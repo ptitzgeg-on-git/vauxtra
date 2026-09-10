@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from urllib.parse import quote
 
 import requests
@@ -15,6 +16,7 @@ class PiholeProvider(DNSProvider):
         self._v6_sid  = None
         self._v6_csrf = None
         self._version = None
+        self._depth   = 0
 
     def _detect_version(self) -> int:
         try:
@@ -77,13 +79,46 @@ class PiholeProvider(DNSProvider):
             return self._login_v6()
         return True
 
+    @contextmanager
+    def _api_session(self):
+        """Authenticate for one operation and always hand the API seat back.
+
+        Pi-hole v6 caps concurrent sessions at `webserver.api.max_sessions` -- 16 by
+        default -- and holds each one for `webserver.session.timeout`, 1800 seconds.
+        Vauxtra builds a fresh provider for every request (`create_provider`), so every
+        operation logs in again and gets its own seat.
+
+        Only `test_connection` used to release one. `list_rewrites` did not, and that is
+        the call the drift check and the scheduler make on every pass: sixteen of them and
+        Pi-hole answers `api_seats_exceeded` to every login for the next half hour -- the
+        operator's own browser included, because it draws on the same pool. Restarting
+        Pi-hole does not clear it; the sessions are persisted, so only the timeout ends it.
+        The failure surfaces as "provider rejected" inside Vauxtra, which points at the
+        wrong thing entirely.
+
+        The counter makes the helper reentrant, so `update_rewrite` can wrap its add and
+        its delete in a single seat instead of spending two.
+
+        Yields False when authentication failed; the caller returns its empty value.
+        """
+        self._depth += 1
+        try:
+            yield self._ensure_auth()
+        finally:
+            self._depth -= 1
+            if self._depth == 0:
+                # A no-op on v5 and whenever no session was opened.
+                self._logout_v6()
+
     def test_connection(self) -> bool:
-        created_v6_session = False
-        if not self._ensure_auth():
-            return False
+        with self._api_session() as authed:
+            if not authed:
+                return False
+            return self._test_connection_inner()
+
+    def _test_connection_inner(self) -> bool:
         try:
             if self._version == 6:
-                created_v6_session = bool(self._v6_sid)
                 r = self.session.get(f"{self.url}/api/config/dns/hosts", timeout=5)
                 return r.status_code == 200
             else:
@@ -103,15 +138,14 @@ class PiholeProvider(DNSProvider):
             return False
         except ValueError:
             return False
-        finally:
-            # Test calls create many short-lived provider instances; release v6 sessions
-            # immediately to avoid exhausting Pi-hole API session slots.
-            if created_v6_session:
-                self._logout_v6()
 
     def list_rewrites(self) -> list[dict]:
-        if not self._ensure_auth():
-            return []
+        with self._api_session() as authed:
+            if not authed:
+                return []
+            return self._list_rewrites_inner()
+
+    def _list_rewrites_inner(self) -> list[dict]:
         try:
             if self._version == 6:
                 r = self.session.get(f"{self.url}/api/config/dns/hosts")
@@ -137,8 +171,12 @@ class PiholeProvider(DNSProvider):
             return []
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
-        if not self._ensure_auth():
-            return False
+        with self._api_session() as authed:
+            if not authed:
+                return False
+            return self._add_rewrite_inner(domain, ip)
+
+    def _add_rewrite_inner(self, domain: str, ip: str) -> bool:
         try:
             if self._version == 6:
                 entry = quote(f"{ip} {domain}", safe="")
@@ -159,8 +197,12 @@ class PiholeProvider(DNSProvider):
             return False
 
     def delete_rewrite(self, domain: str, ip: str) -> bool:
-        if not self._ensure_auth():
-            return False
+        with self._api_session() as authed:
+            if not authed:
+                return False
+            return self._delete_rewrite_inner(domain, ip)
+
+    def _delete_rewrite_inner(self, domain: str, ip: str) -> bool:
         try:
             if self._version == 6:
                 entry = quote(f"{ip} {domain}", safe="")
@@ -183,8 +225,13 @@ class PiholeProvider(DNSProvider):
     def update_rewrite(self, old_domain: str, old_ip: str, new_domain: str, new_ip: str) -> bool:
         if old_domain == new_domain and old_ip == new_ip:
             return True  # nothing to change
-        if not self.add_rewrite(new_domain, new_ip):
-            return False
-        if not self.delete_rewrite(old_domain, old_ip):
-            return True  # new record created; old delete failed (logged by caller)
-        return True
+        # One seat for both halves: the helper only logs out when the outermost caller
+        # leaves, so the add and the delete share the session this opens.
+        with self._api_session() as authed:
+            if not authed:
+                return False
+            if not self.add_rewrite(new_domain, new_ip):
+                return False
+            if not self.delete_rewrite(old_domain, old_ip):
+                return True  # new record created; old delete failed (logged by caller)
+            return True

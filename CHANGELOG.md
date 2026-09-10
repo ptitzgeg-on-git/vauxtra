@@ -51,6 +51,17 @@ Security audit of v1.1.0 and the fixes it produced. Everything below is on
   Security screen explains instead of offering a form that cannot work.
 
 ### Fixed
+- **Pi-hole stopped answering after sixteen operations.** Pi-hole v6 allows
+  `webserver.api.max_sessions` concurrent API sessions — 16 by default — and holds each
+  for `webserver.session.timeout`, 1800 seconds. Vauxtra builds a fresh provider per
+  request, so every operation logs in again and takes a seat; only `test_connection` gave
+  one back. `list_rewrites` did not, and that is the call the drift check makes on every
+  pass. Sixteen of them and Pi-hole refused every login for the next half hour — the
+  operator's own browser included, since it draws on the same pool — while Vauxtra
+  reported "provider rejected" and pointed at the wrong thing. Restarting Pi-hole does not
+  clear it: the sessions are persisted. Every operation now runs inside a session helper
+  that releases the seat on the way out, `update_rewrite` spending a single one for its
+  add and its delete.
 - **Four Settings components were never committed.** The `.gitignore` rule `data/` was
   unanchored, so it matched `frontend/src/components/features/settings/data/` as well as
   the SQLite directory it was written for, and `git add -A` skipped them without a word.
