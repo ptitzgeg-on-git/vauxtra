@@ -873,6 +873,11 @@ The test suite went from 284 tests to 738.
 
 ## [1.0.0] — 2026-05-02
 
+> **Never shipped.** This tag was created retroactively and points at the same commit as
+> `v1.0.1`: PR #20 was squashed, so everything listed below reached `main` in one tree and
+> went out as 1.0.1 two days later. No `1.0.0` image was ever built or pushed, and no
+> release of that number ever existed until this entry was reconciled with the tag.
+
 ### Added
 - `app/security.py` — CORS origin validation, domain sanitization, password strength enforcement
 - `app/cache.py` — request-scoped caching with TTL expiration (eliminates N+1 provider calls)
@@ -912,5 +917,5 @@ The test suite went from 284 tests to 738.
 [1.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v0.1.0...v1.0.1
-[1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases
+[1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v0.1.0
