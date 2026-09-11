@@ -14,9 +14,19 @@
 # still verifies. The signature was never a claim that the image is *there*.
 #
 # `dataaxiom/ghcr-cleanup-action` reads the manifest lists before deleting anything, so a
-# child referenced by any surviving tag is never a candidate. `validate: true` then walks
-# every remaining tag and fails the run if one no longer resolves -- the check that would
-# have caught the old behaviour the first Sunday it ran.
+# child referenced by any surviving tag is never a candidate.
+#
+# That stops the bleeding; it does not report the wound. A dry run on 2026-09-11 found 48
+# images with at least one missing child, three of them carrying a release tag -- `0.1.0`,
+# `1.0.1` and `1.0.2` cannot be pulled, on a package page that still lists them. `validate:
+# true` names every one of them and the run still ends green, because the action writes
+# `::warning` and not `::error`. A check nobody is paged for is a check that does not exist,
+# which is why the damage sat there across every Sunday since it was done.
+#
+# So the last step below re-asks the only question that has a user behind it: does every
+# version a human is invited to pull still resolve, all the way down to its platform
+# manifests? It fails the run when the answer is no. The `sha-<commit>` breadcrumbs are
+# deliberately outside its scope -- 22 of them are broken too, and nothing reads them.
 name: GHCR Cleanup
 
 on:
@@ -54,8 +64,87 @@ jobs:
           # A margin against racing a push that is still settling. Sunday at 04:00 should
           # not be looking at Saturday night's build at all.
           older-than: 7 days
-          # Walks every multi-architecture manifest afterwards and fails the run if a digest
-          # it references is missing -- the check that would have caught the old behaviour
-          # the first Sunday it ran.
+          # Walks every multi-architecture manifest afterwards and names each digest it
+          # cannot find. Worth keeping for the detail it prints, but it reports through
+          # `::warning`, so it cannot turn a run red on its own -- see the step below.
           validate: true
           dry-run: ${{ inputs.dry_run == true }}
+
+      - name: Every pullable tag must still resolve
+        env:
+          PACKAGE: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.error, urllib.request
+
+          repo = os.environ["PACKAGE"].lower()
+          accept = ",".join([
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+              "application/vnd.oci.image.manifest.v1+json",
+              "application/vnd.docker.distribution.manifest.v2+json",
+          ])
+
+          def get(url, headers):
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
+                  return json.load(r)
+
+          token = get(
+              f"https://ghcr.io/token?scope=repository:{repo}:pull&service=ghcr.io", {}
+          )["token"]
+          head = {"Authorization": f"Bearer {token}", "Accept": accept}
+
+          def manifest(ref):
+              try:
+                  return get(f"https://ghcr.io/v2/{repo}/manifests/{ref}", head)
+              except urllib.error.HTTPError as e:
+                  return e.code
+
+          # Already destroyed, before this check existed, by the cleanup this workflow
+          # replaced. Their platform manifests are gone from the registry and nothing
+          # brings them back short of rebuilding and re-pushing the tag, so failing every
+          # Sunday over them would train everyone to ignore this step. Their release notes
+          # say plainly that the image cannot be pulled. Remove a line here the day its
+          # tag is rebuilt; never add one to silence a fresh break.
+          UNRECOVERABLE = {"0", "0.1", "0.1.0", "1.0", "1.0.1", "1.0.2"}
+
+          # A tag a human is invited to pull: a version number, or `latest`. The
+          # `sha-<commit>` breadcrumbs and the `sha256-....sig` signatures are machine
+          # bookkeeping and are not part of this contract.
+          tags = get(f"https://ghcr.io/v2/{repo}/tags/list?n=1000", head)["tags"]
+          pullable = sorted(
+              t for t in tags
+              if (t == "latest" or re.fullmatch(r"\d+(\.\d+)*", t)) and t not in UNRECOVERABLE
+          )
+          skipped = sorted(UNRECOVERABLE & set(tags))
+          if skipped:
+              print(f"::notice::known unpullable, not checked: {', '.join(skipped)}")
+          print(f"checking {len(pullable)} pullable tags: {', '.join(pullable)}\n")
+
+          broken = []
+          for tag in pullable:
+              index = manifest(tag)
+              if isinstance(index, int):
+                  broken.append(f"{tag}: index itself returns HTTP {index}")
+                  continue
+              missing = [
+                  m["digest"]
+                  for m in index.get("manifests", [])
+                  if isinstance(manifest(m["digest"]), int)
+              ]
+              if missing:
+                  broken.append(
+                      f"{tag}: {len(missing)}/{len(index['manifests'])} platform manifests missing"
+                  )
+                  for d in missing:
+                      print(f"::error::{tag} references {d}, which the registry does not have")
+              else:
+                  print(f"  ok  {tag}")
+
+          if broken:
+              print("\n::error::a published tag cannot be pulled:")
+              for b in broken:
+                  print(f"  {b}")
+              sys.exit(1)
+          print("\nevery pullable tag resolves to every manifest it references")
+          PY
