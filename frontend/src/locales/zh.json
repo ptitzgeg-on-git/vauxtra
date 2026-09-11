@@ -1306,6 +1306,7 @@
   "settings.security.api_keys_desc": "为脚本和集成分配独立凭据，而不是使用您的密码。",
   "settings.security.api_keys_title": "API 密钥",
   "settings.security.load_failed": "无法加载安全状态",
+  "settings.security.refresh_failed": "无法刷新安全状态 — 您填写的内容仍在",
   "settings.security.env_password_title": "密码来自环境变量",
   "settings.security.env_password_desc": "此实例从 APP_PASSWORD 变量读取管理员密码，因此无法在此处更改。",
   "settings.security.env_password_how_title": "如何更改",

@@ -47,6 +47,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A failed background refresh of the security status threw away a password somebody was
+  halfway through typing.** The security tab reads `/auth/me` through React Query, which
+  refetches on window focus like every query in the panel. The error branch came first in
+  the render, so a refetch that failed swapped the card — set a password, change it, or the
+  environment-managed notice — for a full-width alert, and the retry then mounted a fresh,
+  empty one. React Query keeps the last good data through a failed background refetch, so
+  nothing was ever actually unknown: the form was discarded over an answer the panel already
+  had. A blip behind a reverse proxy was enough, and the operator did nothing to cause it.
+
+  A failure that still has data behind it is now reported *above* the form rather than in
+  place of it, as a warning that says what survived: "Could not refresh the security status
+  — what you have typed is still here". The alert is a sibling of the card rather than a
+  branch around it, which is what keeps the card mounted: React reconciles a list of children
+  by position, so rendering nothing in the alert's slot leaves the card exactly where it was.
+  The full-width error card is still what you get when there is no data at all, which is the
+  case it was written for, and both retry buttons now show their pending state while the
+  refetch is in flight.
+
 - **The health cycle held the only write lock SQLite has, across every network call it
   makes, and everything else that tried to write failed.** `run_health_checks()` opened a
   write transaction on its first `UPDATE` and did not commit until the end of the round.
