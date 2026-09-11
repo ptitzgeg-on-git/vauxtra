@@ -41,3 +41,18 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # `pip` and `npm` watch what the application imports; neither of them watches what it
+  # runs on. The Dockerfile pins `node:22-slim` and `python:3.13-slim`, and a base image
+  # is where a CVE lands without a single line of this repository changing -- the weekly
+  # Trivy and Grype scans report those findings against an image nobody was updating.
+  # Monthly, because a base image tag moves on its own schedule and a weekly PR for it
+  # would be the noise this file was rewritten to avoid.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies, build]
+    groups:
+      docker:
+        patterns: ["*"]

@@ -10,6 +10,15 @@ on:
   # of the branch triggers above.
   workflow_call:
 
+# A pull request triggers this workflow twice -- once on `push` and once on
+# `pull_request` -- and pushing three commits in a row leaves four runs nobody will read.
+# Superseded runs are cancelled, but only for pull requests: on `main`, on a tag, or when
+# Build & Publish calls this as a gate, the run has to finish or the thing it gates is
+# decided by a job that was killed halfway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
