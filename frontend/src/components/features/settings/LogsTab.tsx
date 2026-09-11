@@ -273,7 +273,7 @@ export function LogsTab() {
                 <Badge size="sm" tone={LEVEL_TONE[entry.level] ?? 'neutral'} dot className="shrink-0 self-start">
                   {t(levelKey(entry.level))}
                 </Badge>
-                <span className="min-w-0 flex-1 break-words text-foreground">{entry.message}</span>
+                <span className="min-w-0 flex-1 wrap-break-word text-foreground">{entry.message}</span>
               </li>
             ))}
           </ol>

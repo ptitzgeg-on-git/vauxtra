@@ -291,15 +291,15 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
               <span className="block space-y-1">
                 <span className="block">
                   <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_local')}</span>{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">unix:///var/run/docker.sock</code>
+                  <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">unix:///var/run/docker.sock</code>
                 </span>
                 <span className="block">
                   <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_tcp')}</span>{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">tcp://192.168.1.10:2375</code>
+                  <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">tcp://192.168.1.10:2375</code>
                 </span>
                 <span className="block">
                   <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_ssh')}</span>{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">ssh://user@host</code>
+                  <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">ssh://user@host</code>
                 </span>
               </span>
             }

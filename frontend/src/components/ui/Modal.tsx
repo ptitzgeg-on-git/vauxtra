@@ -71,7 +71,7 @@ export function Modal({
       <div
         aria-hidden="true"
         onClick={persistent ? undefined : onClose}
-        className="absolute inset-0 bg-background/60 backdrop-blur-sm animate-in fade-in animate-duration-150"
+        className="absolute inset-0 bg-background/60 backdrop-blur-xs animate-in fade-in animate-duration-150"
       />
       <div
         ref={dialogRef}
@@ -81,7 +81,7 @@ export function Modal({
         aria-label={title ? undefined : ariaLabel}
         aria-describedby={description ? descriptionId : undefined}
         className={cn(
-          'relative flex w-full flex-col outline-none rounded-2xl border border-border bg-card text-foreground shadow-elevated',
+          'relative flex w-full flex-col outline-hidden rounded-2xl border border-border bg-card text-foreground shadow-elevated',
           'max-h-[calc(100vh-2rem)] animate-in fade-in zoom-in-95 animate-duration-200',
           SIZES[size],
           className,

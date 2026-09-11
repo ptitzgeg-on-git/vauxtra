@@ -155,7 +155,7 @@ export function Tooltip({
             role="tooltip"
             style={{ top: 0, left: 0, visibility: 'hidden' }}
             className={cn(
-              'pointer-events-none fixed z-[70] max-w-xs rounded-lg border border-border bg-popover px-2.5 py-1.5',
+              'pointer-events-none fixed z-70 max-w-xs rounded-lg border border-border bg-popover px-2.5 py-1.5',
               'text-xs font-medium leading-snug text-popover-foreground shadow-elevated',
               'animate-in fade-in zoom-in-95 animate-duration-150',
               contentClassName,

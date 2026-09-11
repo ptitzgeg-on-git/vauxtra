@@ -74,7 +74,7 @@ function IssueList({ issues }: { issues: DriftIssue[] }) {
                 <span className="text-sm font-medium text-foreground">{issueLabel(t, issue)}</span>
                 {issue.provider && <span className="text-xs text-muted-foreground">· {issue.provider}</span>}
               </div>
-              {detail && <p className="break-words text-xs text-muted-foreground">{detail}</p>}
+              {detail && <p className="wrap-break-word text-xs text-muted-foreground">{detail}</p>}
             </div>
           </li>
         );
@@ -166,7 +166,7 @@ function ReconcileSummary({ result }: { result: ReconcileResult }) {
           <p className="text-xs font-medium text-destructive">{t('services.drift.push_errors')}</p>
           <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
             {pushErrors.map((error, index) => (
-              <li key={index} className="break-words">
+              <li key={index} className="wrap-break-word">
                 {error}
               </li>
             ))}

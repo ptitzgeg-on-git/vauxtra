@@ -82,7 +82,7 @@ export function QuickActions({ onCreateService, onAddProvider }: QuickActionsPro
               <button
                 type="button"
                 onClick={action.onClick}
-                className="group flex w-full items-center gap-3 rounded-xl border border-border p-3 text-left text-sm transition-colors hover:border-primary/30 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group flex w-full items-center gap-3 rounded-xl border border-border p-3 text-left text-sm transition-colors hover:border-primary/30 hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span
                   aria-hidden="true"

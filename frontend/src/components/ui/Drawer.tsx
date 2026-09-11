@@ -69,7 +69,7 @@ export function Drawer({
       <div
         aria-hidden="true"
         onClick={persistent ? undefined : onClose}
-        className="absolute inset-0 bg-background/60 backdrop-blur-sm animate-in fade-in animate-duration-150"
+        className="absolute inset-0 bg-background/60 backdrop-blur-xs animate-in fade-in animate-duration-150"
       />
       <div
         ref={dialogRef}
@@ -79,7 +79,7 @@ export function Drawer({
         aria-label={title ? undefined : ariaLabel}
         aria-describedby={description ? descriptionId : undefined}
         className={cn(
-          'absolute inset-y-0 flex h-full w-full flex-col outline-none bg-card text-foreground shadow-elevated',
+          'absolute inset-y-0 flex h-full w-full flex-col outline-hidden bg-card text-foreground shadow-elevated',
           'animate-in animate-duration-300',
           side === 'right' ? 'right-0 border-l border-border slide-in-from-right' : 'left-0 border-r border-border slide-in-from-left',
           SIZES[size],
