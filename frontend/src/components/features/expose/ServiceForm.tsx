@@ -82,7 +82,7 @@ function ModeOption({
         'relative flex cursor-pointer gap-3 rounded-xl border p-3 transition-colors duration-150',
         checked ? 'border-primary bg-primary/5 shadow-sm' : 'border-border bg-card hover:bg-accent/60',
         disabled && 'cursor-not-allowed opacity-60 hover:bg-card',
-        'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-background',
+        'has-focus-visible:ring-2 has-focus-visible:ring-ring has-focus-visible:ring-offset-2 has-focus-visible:ring-offset-background',
       )}
     >
       <input
@@ -764,7 +764,7 @@ export function ServiceForm({
                               onClick={() =>
                                 setFormData((prev) => ({ ...prev, dns_ip: String(targetSuggestion.recommended) }))
                               }
-                              className="ml-2 rounded-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              className="ml-2 rounded-xs font-medium text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               {t('expose.use_this')}
                             </button>

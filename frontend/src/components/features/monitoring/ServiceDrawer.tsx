@@ -318,7 +318,7 @@ export function ServiceDrawer({
                       <span className={cn('text-[11px] font-semibold uppercase', logTone(log.level))}>{log.level}</span>
                       <span className="text-[11px] text-muted-foreground">{formatDateTime(log.created_at)}</span>
                     </div>
-                    <p className="break-words text-xs leading-relaxed text-foreground">{log.message}</p>
+                    <p className="wrap-break-word text-xs leading-relaxed text-foreground">{log.message}</p>
                   </li>
                 ))}
               </ul>

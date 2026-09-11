@@ -40,7 +40,7 @@ export interface StepTypeSelectorProps {
 }
 
 const CARD =
-  'flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  'flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring';
 const CARD_IDLE = 'border-border bg-card hover:border-primary/40 hover:bg-accent';
 const CARD_SELECTED = 'border-primary bg-primary/10 ring-1 ring-primary/30';
 

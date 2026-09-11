@@ -160,7 +160,7 @@ export function Layout() {
     <div className="flex h-screen bg-background text-foreground">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-xl focus:border focus:border-border focus:bg-card focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:shadow-elevated"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-60 focus:rounded-xl focus:border focus:border-border focus:bg-card focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:shadow-elevated"
       >
         {t('layout.skip_to_content')}
       </a>
@@ -215,7 +215,7 @@ export function Layout() {
       </Drawer>
 
       {/* Main content */}
-      <main id="main" tabIndex={-1} className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden outline-none focus-visible:ring-0">
+      <main id="main" tabIndex={-1} className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden outline-hidden focus-visible:ring-0">
         <div className="pt-14 md:pt-0">
           <OpenAccessBanner />
         </div>

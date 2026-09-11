@@ -113,7 +113,7 @@ export function IntegrationsGlance({
             <li key={p.id} className="animate-in fade-in">
               <Link
                 to="/providers"
-                className="flex h-full items-center gap-3 rounded-xl border border-border p-3 text-sm transition-colors hover:border-primary/30 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex h-full items-center gap-3 rounded-xl border border-border p-3 text-sm transition-colors hover:border-primary/30 hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span aria-hidden="true" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
                   <ProviderLogo type={p.type} className="h-5 w-5" />
@@ -137,7 +137,7 @@ export function IntegrationsGlance({
           <li className="sm:col-span-2">
             <Link
               to="/providers"
-              className="flex items-center justify-center rounded-xl border border-dashed border-border px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex items-center justify-center rounded-xl border border-dashed border-border px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
             >
               {t('dashboard.integrations.more', { count: rest })}
             </Link>
