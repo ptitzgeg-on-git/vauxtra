@@ -40,6 +40,13 @@ on:
         type: boolean
         default: false
 
+# Never `cancel-in-progress`. Two runs here would be two writers on the same registry tag
+# or the same release page, so they queue instead -- and a run that is already pushing,
+# signing or attesting is never the one to kill.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
