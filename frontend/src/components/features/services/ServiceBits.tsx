@@ -144,7 +144,7 @@ export function HostLink({ host, className }: { host: string; className?: string
           href={`https://${host}`}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex min-w-0 items-center gap-1 truncate font-mono text-sm font-medium text-foreground hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+          className="inline-flex min-w-0 items-center gap-1 truncate font-mono text-sm font-medium text-foreground hover:text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-xs"
           title={t('services.open_host', { host })}
         >
           <span className="truncate">{host}</span>
@@ -318,7 +318,7 @@ export function DriftIndicator({ drift, onOpen, className }: { drift: DriftResul
     <button
       type="button"
       onClick={onOpen}
-      className={cn('inline-flex rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', className)}
+      className={cn('inline-flex rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring', className)}
       aria-label={t('services.drift.open_report', { state: label })}
     >
       <Badge tone={tone} size="sm" dot>

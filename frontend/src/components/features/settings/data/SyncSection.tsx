@@ -283,7 +283,7 @@ export function SyncSection() {
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-border">
-            <table className="w-full min-w-[40rem] text-xs">
+            <table className="w-full min-w-160 text-xs">
               <thead className="border-b border-border bg-muted/50">
                 <tr>
                   <th scope="col" className="w-10 px-3 py-2">

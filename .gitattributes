@@ -26,7 +26,6 @@ frontend/src/locales/*.json linguist-generated=true
 
 # Frontend config boilerplate — not counted as primary language
 frontend/postcss.config.cjs linguist-documentation=true
-frontend/tailwind.config.js linguist-documentation=true
 
 # Scripts in other languages — exclude from primary language calculation
 frontend/scripts/*.mjs linguist-language=JavaScript

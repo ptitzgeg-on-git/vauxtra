@@ -463,8 +463,9 @@ class TheSourceNoLongerPromisesWhatItDoesNotDoTests(unittest.TestCase):
         self.assertIn("@fontsource-variable/inter", self._read("frontend/src/main.tsx"))
         self.assertIn("@fontsource-variable/inter", self._read("frontend/package.json"))
         # Declaring the dependency and importing it is not enough if the stack never names
-        # the family the bundled file actually registers.
-        self.assertIn("Inter Variable", self._read("frontend/tailwind.config.js"))
+        # the family the bundled file actually registers. Since Tailwind 4 the theme lives
+        # in the stylesheet, not in a config file.
+        self.assertIn("Inter Variable", self._read("frontend/src/index.css"))
 
 
 if __name__ == "__main__":

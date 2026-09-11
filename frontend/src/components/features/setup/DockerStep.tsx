@@ -52,7 +52,7 @@ export function DockerStep({ onBack, onContinue }: DockerStepProps) {
           {SCHEMES.map((scheme) => (
             <li key={scheme.key}>
               <span className="font-semibold text-foreground">{t(`setup.docker.scheme_${scheme.key}`)}</span>
-              <code className="ml-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{scheme.sample}</code>
+              <code className="ml-1.5 rounded-sm bg-muted px-1.5 py-0.5 font-mono text-foreground">{scheme.sample}</code>
               <span className="ml-1.5">{t(`setup.docker.scheme_${scheme.key}_hint`)}</span>
             </li>
           ))}

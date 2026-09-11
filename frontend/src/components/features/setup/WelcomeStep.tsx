@@ -29,7 +29,7 @@ function ChoiceCard({
         'group flex h-full w-full flex-col gap-3 rounded-2xl border bg-card p-5 text-left shadow-card',
         'transition-[transform,box-shadow,border-color] duration-200 ease-out-expo',
         'hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevated',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         recommended ? 'border-primary/30' : 'border-border',
       )}
     >

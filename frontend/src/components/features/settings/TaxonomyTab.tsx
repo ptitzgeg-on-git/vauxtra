@@ -185,7 +185,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
           leftIcon={<Plus />}
           loading={create.isPending}
           disabled={!candidate || duplicate}
-          className="sm:mt-[1.375rem]"
+          className="sm:mt-5.5"
         >
           {t('common.add')}
         </Button>
@@ -291,7 +291,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                 style={swatchStyle(item.color)}
               >
                 <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-                <span className="max-w-[12rem] truncate">{item.name}</span>
+                <span className="max-w-48 truncate">{item.name}</span>
                 <button
                   type="button"
                   aria-label={t(`${cfg.prefix}.edit_aria`, { name: item.name })}
@@ -299,7 +299,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                   onClick={() => setEditing({ id: item.id, name: item.name, color: item.color })}
                   className={cn(
                     'inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors hover:bg-foreground/10',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+                    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                   )}
                 >
                   <Pencil aria-hidden="true" className="h-3 w-3" />
@@ -311,7 +311,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                   onClick={() => void requestDelete(item)}
                   className={cn(
                     'inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors hover:bg-foreground/10',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+                    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                   )}
                 >
                   <X aria-hidden="true" className="h-3 w-3" />
