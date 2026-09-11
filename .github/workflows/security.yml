@@ -50,8 +50,14 @@ jobs:
           python -m pip install pip-audit
           python -m pip_audit --requirement requirements.txt
 
+      # Through a runner, because `npm audit` exits 1 both when the registry reports a
+      # high-severity advisory and when the registry reports nothing at all. The runner
+      # reads the report rather than the exit code, retries a registry that will not
+      # answer, and -- if it never does -- fails while saying that nothing was audited.
       - name: npm audit (frontend dependencies)
-        run: cd frontend && npm ci && npm audit --audit-level=high
+        run: |
+          cd frontend && npm ci && cd ..
+          python scripts/run_npm_audit.py --audit-level=high
 
       - name: API-MCP parity gate
         run: python scripts/check_api_mcp_parity.py
