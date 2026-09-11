@@ -47,6 +47,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The health cycle held the only write lock SQLite has, across every network call it
+  makes, and everything else that tried to write failed.** `run_health_checks()` opened a
+  write transaction on its first `UPDATE` and did not commit until the end of the round.
+  Between those two points it runs a TCP probe per service at three seconds each, a DNS
+  provider's API per auto-updating service, an HTTPS fetch of every certificate, and up to
+  twenty webhook POSTs. SQLite admits one writer at a time: for as long as all of that
+  took, an operator saving a service, or the API disabling a host, waited out
+  `busy_timeout` — fifteen seconds — and then failed with "database is locked".
+
+  How long that had been happening in the open is written into the code: `_sync_npm_statuses`
+  carries a branch that silently drops any error whose message contains that string, added so
+  the logs would stop filling with it.
+
+  The cycle no longer holds a transaction across a network call. Probes run with no
+  connection open at all and their results are written in one short burst; every phase after
+  that commits per item rather than per phase, so the lock is held for the length of a write
+  and not for the length of a round trip. `_sync_npm_statuses` also asks each proxy for its
+  host list once instead of once per service behind it — ten services on one NPM meant ten
+  identical requests a cycle.
+
+  Committing per item is also what keeps the work: under one transaction, a process that went
+  down on the nineteenth webhook re-sent the eighteen before it, and an exception anywhere in
+  the round discarded every status it had collected.
+
+  Seven tests cover it. Five install a witness in the middle of a slow phase — a second
+  connection, with a deliberately short timeout, that tries one small write and records
+  whether it got in — and all five fail on the code as it was, with "database is locked",
+  which is the defect reproduced rather than described. The other two say the round is still
+  recorded and a tunnel service is still skipped, and pass on both sides.
+
 - **Escape threw away a provider's credentials and a template's dozen decisions, the same way
   it used to throw away an exposure.** `ExposeModal` was fixed in 1.4.0; the two dialogs beside
   it were not, and they close on the same key for the same reason — `persistent` blocks the

@@ -28,7 +28,13 @@ router = APIRouter()
 
 
 def _sync_npm_statuses(conn) -> None:
-    """Sync enabled/disabled status from NPM for all services using NPM proxy."""
+    """Sync enabled/disabled status from NPM for all services using NPM proxy.
+
+    Owns its transaction: it commits each service's write before reaching for the next
+    one, because between two services it talks to NPM over HTTP and SQLite admits one
+    writer at a time. Held open across those calls, this loop was itself producing the
+    "database is locked" that its own error branch below learned to ignore.
+    """
     try:
         # Find all services with NPM proxy host
         services = conn.execute("""
@@ -38,19 +44,27 @@ def _sync_npm_statuses(conn) -> None:
               AND s.proxy_provider_id IS NOT NULL
               AND s.expose_mode = 'proxy_dns'
         """).fetchall()
-        
+
+        # One listing per proxy, not one per service. Ten services behind the same NPM
+        # asked it for the same list ten times a cycle, and each of those round trips was
+        # time the cycle spent holding a connection open instead of finishing.
+        hosts_by_provider: dict[int, list] = {}
+
         for svc in services:
             try:
-                proxy_row = conn.execute(
-                    "SELECT * FROM providers WHERE id=?",
-                    (svc["proxy_provider_id"],)
-                ).fetchone()
-                if not proxy_row:
+                provider_id = int(svc["proxy_provider_id"])
+                if provider_id not in hosts_by_provider:
+                    proxy_row = conn.execute(
+                        "SELECT * FROM providers WHERE id=?",
+                        (provider_id,)
+                    ).fetchone()
+                    hosts_by_provider[provider_id] = (
+                        create_provider(proxy_row).list_hosts() or [] if proxy_row else []
+                    )
+                hosts = hosts_by_provider[provider_id]
+                if not hosts:
                     continue
-                
-                proxy = create_provider(proxy_row)
-                hosts = proxy.list_hosts() or []
-                
+
                 # Find matching host by ID
                 npm_host = next(
                     (h for h in hosts if h.get("id") == svc["npm_host_id"]),
@@ -71,6 +85,7 @@ def _sync_npm_statuses(conn) -> None:
                             f"Synced service {svc['id']} status from NPM: {'enabled' if npm_enabled else 'disabled'}",
                             conn
                         )
+                        conn.commit()
             except Exception as e:
                 # Log but don't block: continue syncing other services.
                 # SQLite lock contention can happen under concurrent writes; avoid warning spam.
