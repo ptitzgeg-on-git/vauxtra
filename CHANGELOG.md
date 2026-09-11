@@ -44,6 +44,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Testing a second integration stole the first one's spinner.** The Integrations page tracked
+  each action with a single `number | null`, which cannot name two rows at once. Clicking Test
+  on one row and then another overwrote the id, so the first row stopped spinning and its
+  button re-enabled while its request was still open; and whichever response returned first
+  cleared the tracker unconditionally, so the second row lost its spinner while still working.
+  The diagnostics badges then updated out of order and a result could be read against the wrong
+  integration. `toggling` was the worst of the four: it drives `disabled` on the enable/disable
+  switch, so a stolen spinner made a provider clickable in the middle of its own write. Each
+  action now tracks a set of ids — the shape `actioningIds` already uses on the Services page,
+  which never had the bug — and marks busy in `onMutate` so the pairing with `onSettled` is
+  explicit: both receive the same row, and only that row is released.
 - **Saving one Settings card discarded what was typed in the other three.** The four cards on
   the General tab share one mutation whose `onSuccess` invalidates `['settings']`, and they
   shared a single remount key joined over all ten server fields. Saving any one of them
