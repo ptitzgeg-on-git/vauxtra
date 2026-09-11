@@ -1,12 +1,13 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, CircleAlert, Plug, Plus } from 'lucide-react';
+import { ArrowRight, CircleAlert, Plug, Plus, RefreshCw } from 'lucide-react';
 import { useT } from '@/i18n';
 import {
   Badge,
   Button,
   Card,
   EmptyState,
+  InlineAlert,
   ProviderLogo,
   SectionHeading,
   SkeletonRow,
@@ -22,6 +23,9 @@ export interface IntegrationsGlanceProps {
   health: ProvidersHealthMap | undefined;
   healthError: boolean;
   types: ProviderTypesResponse | undefined;
+  /** The list came back empty because the request failed — not because there are none. */
+  error: boolean;
+  onRetry: () => void;
   onAddProvider: () => void;
   /** How many tiles to show before the "+N more" link. */
   limit?: number;
@@ -36,6 +40,8 @@ export function IntegrationsGlance({
   health,
   healthError,
   types,
+  error,
+  onRetry,
   onAddProvider,
   limit = 6,
 }: IntegrationsGlanceProps) {
@@ -60,6 +66,21 @@ export function IntegrationsGlance({
         <SkeletonRow columns={3} />
         <SkeletonRow columns={3} />
       </div>
+    );
+  } else if (error) {
+    // "No integrations yet" and "the list did not load" are the same empty array. Only one of
+    // them should be invited to connect a first one; the other has to say what happened.
+    body = (
+      <InlineAlert
+        tone="danger"
+        action={
+          <Button variant="outline" size="sm" leftIcon={<RefreshCw />} onClick={onRetry}>
+            {t('ui.error.retry')}
+          </Button>
+        }
+      >
+        {t('dashboard.integrations.error')}
+      </InlineAlert>
     );
   } else if (!providers || providers.length === 0) {
     body = (
