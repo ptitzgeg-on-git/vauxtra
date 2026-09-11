@@ -47,7 +47,9 @@ Access: `http://localhost:8888`
 
 CI runs automatically on every push and pull request:
 - `.github/workflows/tests.yml` — Python tests + ruff + frontend typecheck/build
-- `.github/workflows/docker-publish.yml` — Docker build + release (push to `main` or version tag)
+- `.github/workflows/docker-publish.yml` — Docker build, sign and push (push to `main` or version tag)
+- `.github/workflows/release.yml` — GitHub release page, written only after the pushed image is verified pullable (version tag)
+- `.github/workflows/ghcr-cleanup.yml` — weekly GHCR housekeeping; fails if a published tag stops resolving
 
 Locally:
 
