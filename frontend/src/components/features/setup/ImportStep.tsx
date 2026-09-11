@@ -7,12 +7,13 @@
  * that field carries raw palette classes and would be the only hardcoded colour on the screen.
  */
 
-import { CheckCircle2, Download, Globe, RefreshCw, Server } from 'lucide-react';
+import { CheckCircle2, CloudOff, Download, Globe, RefreshCw, Server } from 'lucide-react';
 import {
   Badge,
   Button,
   Checkbox,
   EmptyState,
+  InlineAlert,
   ProviderLogo,
   cn,
   toneClasses,
@@ -28,6 +29,8 @@ interface ImportStepProps {
   providers: ProviderItem[];
   importableServices: ImportableService[];
   loadingImportable: boolean;
+  /** The scan came back empty because it failed, not because there is nothing to import. */
+  scanFailed?: boolean;
   onToggle: (index: number) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
@@ -43,6 +46,7 @@ export function ImportStep({
   providers,
   importableServices,
   loadingImportable,
+  scanFailed = false,
   onToggle,
   onSelectAll,
   onDeselectAll,
@@ -87,6 +91,23 @@ export function ImportStep({
           title={t('setup.import.no_providers')}
           description={t('setup.import.no_providers_hint')}
         />
+      ) : scanFailed ? (
+        // This used to land in the "nothing to import" state below — under a green tick, on
+        // the one screen where the next button ends setup. The toast that said otherwise was
+        // gone in a few seconds; the tick stayed, and the operator finished a wizard having
+        // been told there was nothing to bring in.
+        <InlineAlert
+          tone="danger"
+          icon={<CloudOff />}
+          title={t('setup.import.scan_failed')}
+          action={
+            <Button variant="outline" size="sm" onClick={onRetry} leftIcon={<RefreshCw />}>
+              {t('setup.import.retry')}
+            </Button>
+          }
+        >
+          {t('setup.import.scan_failed_hint')}
+        </InlineAlert>
       ) : total === 0 ? (
         <EmptyState
           compact

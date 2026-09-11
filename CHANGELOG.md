@@ -47,6 +47,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Four screens read an empty list as a fact about the panel.** A request that fails and a
+  request that answers "there are none" both leave the same empty array behind, and the
+  screens above them said the second thing either way. The worst of them was the last step
+  of the setup wizard: when `POST /api/services/sync` failed, the toast saying so was gone in
+  a few seconds and what stayed on screen was a green tick reading *No services found to
+  import* — on the one page whose next button ends setup. Its own hint already admitted the
+  ambiguity rather than resolving it ("or Vauxtra couldn't read them"), which is a sentence
+  nobody can act on. The wizard now keeps the failure, says the scan could not be completed,
+  says that finishing from here imports nothing, and offers the retry button that was
+  already there. The hint drops its hedge, because it is no longer covering for two
+  different facts.
+
+  Three smaller ones, all of them sending somebody somewhere for no reason: a failed
+  `/domains` told the expose form *No domain yet? Add one in Settings › DNS* — it now says
+  the list could not be loaded and that a domain can still be typed in; failed `/tags` and
+  `/environments` invited the operator to go and create their first one, each on its own
+  flag, so the list that answered does not apologise for the one that did not; and the
+  template modal did the same with its tag list.
+
 - **The dependency audit could not tell a vulnerability from a registry that would not
   answer.** `npm audit --audit-level=high` exits 1 for both, and the CI step read nothing but
   that exit code. So a `400` from `registry.npmjs.org` — which happens, and happened here —

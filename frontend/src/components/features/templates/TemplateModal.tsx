@@ -124,7 +124,7 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
     queryKey: ['domains'],
     queryFn: () => api.get<string[]>('/domains'),
   });
-  const { data: tags = [] } = useQuery<Tag[]>({
+  const { data: tags = [], isError: tagsError } = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
   });
@@ -448,7 +448,11 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
             title={t('templates.form.tags')}
             description={t('templates.form.tags_hint')}
           />
-          {tags.length === 0 ? (
+          {tags.length === 0 && tagsError ? (
+            // Not an invitation to go and create one: there may well be plenty, and this
+            // list simply did not load.
+            <InlineAlert tone="danger">{t('ui.error.list_unavailable')}</InlineAlert>
+          ) : tags.length === 0 ? (
             <InlineAlert tone="info" icon={<Plug />}>
               <div className="flex flex-wrap items-center gap-2">
                 <span>{t('templates.form.no_tags')}</span>
