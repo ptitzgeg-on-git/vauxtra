@@ -45,6 +45,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   nothing about the sixty commits behind it, and reported green for a history it never
   opened.
 
+### Fixed
+
+- **Escape threw away a provider's credentials and a template's dozen decisions, the same way
+  it used to throw away an exposure.** `ExposeModal` was fixed in 1.4.0; the two dialogs beside
+  it were not, and they close on the same key for the same reason — `persistent` blocks the
+  click on the backdrop and nothing else. In `ProviderModal` what is lost is a secret: a
+  Cloudflare token pasted out of another tab, a proxy manager password. The form cannot offer
+  it back, and neither can the provider's dashboard without issuing a new one. In
+  `TemplateModal` it is a dozen separate choices — name, scheme, port, mode, three providers,
+  domain, tags — unmounted together with the dialog body.
+
+  Both now ask before discarding, and only when there is something to lose, so a dialog nobody
+  typed into still shuts on the first press: a confirmation that fires every time is one people
+  learn to click through. Cancel goes through the same gate as Escape, because the two ways out
+  of a form should not behave differently. A save that succeeded still closes straight through
+  — the server already has the form, and asking about it would be asking about nothing.
+
+  The question itself now lives in `useUnsavedGuard`, rather than in a third and fourth copy of
+  what `ExposeModal` worked out first. The two dialogs disagree only on what *dirty* means, and
+  they have to: picking a provider type seeds `name` and `url` from the type's own metadata, so
+  a form-versus-seed diff would call `ProviderModal` dirty the moment a tile is clicked — it
+  tracks the two paths a human types through instead. `TemplateModal` compares against the
+  template it was opened on, with the tag list sorted first, since tag order is click order and
+  a tag turned off and back on is not a change anybody made.
+
 ---
 
 ## [1.4.0] — 2026-09-11

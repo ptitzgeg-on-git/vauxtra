@@ -15,6 +15,7 @@ import { StepCredentials, StepTypeSelector, type WizardMode } from '@/components
 import { useProviderMutations } from '@/hooks/useProviderMutations';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { useDockerEndpoints } from '@/hooks/useDockerEndpoints';
+import { useUnsavedGuard } from '@/hooks/useUnsavedGuard';
 import { useT } from '@/i18n';
 import type { Provider, ProviderUpdate } from '@/types/api';
 
@@ -55,6 +56,13 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   const [validationResult, setValidationResult] = useState<ProviderValidationResult | null>(null);
   const [isDockerMode, setIsDockerMode] = useState(false);
   const docker = useDockerEndpoints();
+  /**
+   * Whether the operator has typed anything the wizard did not put there itself. Picking a
+   * type seeds `name` and `url` from the provider's metadata, so comparing the form against
+   * `emptyForm` would call a dialog dirty the moment a tile is clicked; the flag is set from
+   * the two paths a human can type through instead, and so cannot drift from that seeding.
+   */
+  const [edited, setEdited] = useState(false);
 
   const typesQuery = useProviderTypes({ enabled: isOpen });
   const { data: providerTypes, isLoading: typesLoading } = typesQuery;
@@ -81,6 +89,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
     setGuidedStepIndex(0);
     setIsDockerMode(false);
     setValidationResult(null);
+    setEdited(false);
   }, [isOpen, editingId]);
 
   const resetAndClose = () => {
@@ -90,10 +99,20 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
     setFormData(emptyForm);
     setValidationResult(null);
     setIsDockerMode(false);
+    setEdited(false);
     docker.setName('');
     docker.setHost(DEFAULT_DOCKER_HOST);
     onClose();
   };
+
+  /**
+   * Escape closes the dialog even while `persistent` blocks the backdrop, and closing wipes
+   * every field. What gets wiped is a provider's credentials -- a Cloudflare token pasted out
+   * of another tab, a proxy manager password -- none of which the form can offer back. Cancel
+   * goes through the same gate, so the two ways out of the wizard behave alike. A save that
+   * succeeded still closes straight through `resetAndClose`: there is nothing left to lose.
+   */
+  const { requestClose, UnsavedGuardElement } = useUnsavedGuard(edited, resetAndClose);
 
   const { validateDraft, createProvider, updateProvider } = useProviderMutations(formData, setValidationResult, {
     onCreated: resetAndClose,
@@ -103,6 +122,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   const updateField = (key: keyof ProviderFormState, value: string) => {
     setFormData((prev) => ({ ...prev, [key]: value }));
     setValidationResult(null);
+    setEdited(true);
   };
 
   const chooseDockerType = () => {
@@ -166,7 +186,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   if (editMode) {
     footer = (
       <div className="flex w-full items-center justify-end gap-2">
-        <Button variant="outline" onClick={resetAndClose} disabled={updateProvider.isPending}>
+        <Button variant="outline" onClick={() => void requestClose()} disabled={updateProvider.isPending}>
           {t('common.cancel')}
         </Button>
         <Button onClick={handleSave} loading={updateProvider.isPending} disabled={!canSave}>
@@ -177,7 +197,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   } else if (step === 1) {
     footer = (
       <div className="flex w-full items-center justify-between gap-2">
-        <Button variant="outline" onClick={resetAndClose}>
+        <Button variant="outline" onClick={() => void requestClose()}>
           {t('common.cancel')}
         </Button>
         <Button onClick={() => setStep(2)} disabled={!canContinue}>
@@ -225,7 +245,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   return (
     <Modal
       open={isOpen}
-      onClose={resetAndClose}
+      onClose={() => void requestClose()}
       size="lg"
       title={title}
       description={description}
@@ -255,7 +275,10 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
             <Input
               type="text"
               value={docker.name}
-              onChange={(e) => docker.setName(e.target.value)}
+              onChange={(e) => {
+                docker.setName(e.target.value);
+                setEdited(true);
+              }}
               placeholder={t('provider_modal.docker.name_placeholder')}
               autoComplete="off"
               autoFocus
@@ -284,7 +307,10 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
             <Input
               type="text"
               value={docker.host}
-              onChange={(e) => docker.setHost(e.target.value)}
+              onChange={(e) => {
+                docker.setHost(e.target.value);
+                setEdited(true);
+              }}
               placeholder={DEFAULT_DOCKER_HOST}
               autoComplete="off"
               spellCheck={false}
@@ -306,6 +332,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
           editMode={editMode}
         />
       )}
+      {UnsavedGuardElement}
     </Modal>
   );
 }

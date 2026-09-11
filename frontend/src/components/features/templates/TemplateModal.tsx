@@ -20,6 +20,7 @@ import {
   buttonVariants,
 } from '@/components/ui';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { useUnsavedGuard } from '@/hooks/useUnsavedGuard';
 import { useT } from '@/i18n';
 import { translateApiError, isHttpStatus } from '@/lib/errors';
 import type { Provider, Tag, Template, TemplateIn } from '@/types/api';
@@ -63,6 +64,14 @@ function providerOptions(list: Provider[], current: string, missingLabel: string
 const NO_ERRORS: TemplateFormErrors = {};
 
 /**
+ * The form reduced to what it *says*, for comparing against what it was opened on. Tags are
+ * sorted first: their order in the array is the order they were clicked in, and a tag turned
+ * off and back on would otherwise read as a change nobody made.
+ */
+const formFingerprint = (state: TemplateFormState): string =>
+  JSON.stringify({ ...state, tag_ids: [...state.tag_ids].sort((a, b) => a - b) });
+
+/**
  * The dialog only exists while it is open, and its identity changes with the template it
  * edits. The body below can therefore seed its form from the props it mounts with — no
  * effect has to copy them into state, and every open starts on clean fields.
@@ -91,6 +100,19 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
     if (changes.name !== undefined) setNameConflict(null);
     setForm((prev) => ({ ...prev, ...changes }));
   }, []);
+
+  /**
+   * Escape closes the dialog even while `persistent` blocks the backdrop, and the body is
+   * unmounted on the way out, which takes the form with it. A template is a dozen decisions --
+   * name, scheme, port, mode, three providers, domain, tags -- and one stray key threw the lot
+   * away with no undo. Cancel asks the same question, so the two ways out behave alike; a
+   * successful save still closes straight through, because the server already has the form.
+   */
+  const seeded = useMemo(() => (template ? toTemplateForm(template) : emptyTemplateForm), [template]);
+  const { requestClose, UnsavedGuardElement } = useUnsavedGuard(
+    formFingerprint(form) !== formFingerprint(seeded),
+    onClose,
+  );
 
   // --- reference data -----------------------------------------------------
   const { data: providers = [] } = useQuery<Provider[]>({
@@ -195,7 +217,7 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
   return (
     <Modal
       open
-      onClose={onClose}
+      onClose={() => void requestClose()}
       size="lg"
       icon={<LayoutTemplate />}
       title={t(isEdit ? 'templates.form.edit_title' : 'templates.form.create_title')}
@@ -203,7 +225,7 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
       persistent={save.isPending}
       footer={
         <>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={save.isPending}>
+          <Button type="button" variant="ghost" onClick={() => void requestClose()} disabled={save.isPending}>
             {t('common.cancel')}
           </Button>
           <Button type="submit" form="template-form" variant="primary" loading={save.isPending}>
@@ -465,6 +487,7 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
 
         {submitted && errorCount > 0 && <InlineAlert tone="danger">{t('templates.form.fix_errors')}</InlineAlert>}
       </form>
+      {UnsavedGuardElement}
     </Modal>
   );
 }
