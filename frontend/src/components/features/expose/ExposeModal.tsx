@@ -145,7 +145,7 @@ export function ExposeModal({
     enabled: isOpen,
   });
 
-  const { data: domains = [], isLoading: isLoadingDomains } = useQuery<string[]>({
+  const { data: domains = [], isLoading: isLoadingDomains, isError: domainsError } = useQuery<string[]>({
     queryKey: ['domains'],
     queryFn: () => api.get<string[]>('/domains'),
     enabled: isOpen,
@@ -153,13 +153,17 @@ export function ExposeModal({
 
   const { data: providerTypes = {} } = useProviderTypes({ enabled: isOpen });
 
-  const { data: tags = [], isLoading: isLoadingTags } = useQuery<Tag[]>({
+  const { data: tags = [], isLoading: isLoadingTags, isError: tagsError } = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
     enabled: isOpen,
   });
 
-  const { data: environments = [], isLoading: isLoadingEnvironments } = useQuery<Environment[]>({
+  const {
+    data: environments = [],
+    isLoading: isLoadingEnvironments,
+    isError: environmentsError,
+  } = useQuery<Environment[]>({
     queryKey: ['environments'],
     queryFn: () => api.get<Environment[]>('/environments'),
     enabled: isOpen,
@@ -593,6 +597,9 @@ export function ExposeModal({
             setFormData={setFormData}
             providers={providers}
             domains={domains}
+            domainsError={domainsError}
+            tagsError={tagsError}
+            environmentsError={environmentsError}
             isLoadingProviders={isLoadingProviders}
             isLoadingDomains={isLoadingDomains}
             providerTypeMap={providerTypeMap}
