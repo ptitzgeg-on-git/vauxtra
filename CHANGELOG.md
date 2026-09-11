@@ -794,6 +794,35 @@ The test suite went from 284 tests to 738.
 
 ---
 
+## [1.0.2] — 2026-05-04
+
+### Added
+- Webhook alert rules: `alert_on_any_down`, `alert_on_any_up`, `alert_on_integration_down`,
+  `alert_on_integration_up` and `min_down_minutes` — a notification endpoint now says
+  *which* transitions it wants, and how long a service must stay down before it is worth
+  a message
+- Guided provider documentation in the setup wizard — each integration explains what it
+  needs before the form asks for it, rather than after the connection test fails
+- Technitium: zone handling completed alongside the record operations shipped in 1.0.1
+
+### Changed
+- Notification settings rebuilt around those rules rather than a single on/off switch
+- Provider constants and the provider form share one source of truth for field labels and
+  help text, across all eight locales
+- `scripts/check_repo_hygiene.py` widened: the gate now reads the contribution and MCP
+  documentation too, not only the application sources
+
+### Removed
+- MCP tool `get_logs`. The log endpoint it wrapped is paginated and unfiltered by default;
+  an assistant asking for "the logs" pulled fifty lines of mostly noise into its context and
+  spent the budget it needed for the answer. `clear_logs` stays.
+
+### Fixed
+- Public wording hygiene across `README.md`, `CONTRIBUTING.md`, `docs/HOWTO.md` and
+  `vauxtra_mcp/`, and the changelog cross-references that had drifted from their sections
+
+---
+
 ## [1.0.1] — 2026-05-04
 
 ### Added
@@ -881,7 +910,7 @@ The test suite went from 284 tests to 738.
 [1.3.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.2...v1.1.0
-[1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.2
-[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.1
+[1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v0.1.0...v1.0.1
 [1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases
 [0.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v0.1.0
