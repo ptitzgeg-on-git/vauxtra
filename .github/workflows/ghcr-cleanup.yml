@@ -26,7 +26,8 @@
 # So the last step below re-asks the only question that has a user behind it: does every
 # version a human is invited to pull still resolve, all the way down to its platform
 # manifests? It fails the run when the answer is no. The `sha-<commit>` breadcrumbs are
-# deliberately outside its scope -- 22 of them are broken too, and nothing reads them.
+# deliberately outside its scope: nothing reads them, and the settings below now retire
+# them on their own rather than letting five months of them pile up again.
 name: GHCR Cleanup
 
 on:
@@ -55,12 +56,31 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           package: vauxtra
+          # The one rule everything else is subordinate to: a tag a human can be invited to
+          # pull is never a candidate, whatever state the registry reports it in. `latest`
+          # and every dotted version number are excluded by name here, which is also why
+          # `delete-ghost-images` below cannot quietly retire `0.1.0`, `1.0.1` and `1.0.2` --
+          # those three are already unpullable, and removing their package entries is a
+          # decision for a person, not for a cron job.
+          use-regex: true
+          exclude-tags: '^(latest|\d+(\.\d+)*)$'
           # Untagged *and* unreferenced. This action resolves every manifest list first, so
           # a platform manifest belonging to a live tag is not a candidate however untagged
-          # the registry reports it. Tagged versions are never touched: nothing here sets
-          # `delete-tags`, so the `sha-<short>` breadcrumbs from `main` and every semver tag
-          # survive on their own.
+          # the registry reports it.
           delete-untagged: true
+          # Everything not excluded above is machine bookkeeping: the `sha-<short>`
+          # breadcrumb from each `main` build and the cosign signature that follows it.
+          # Twenty of them were deleted by hand on 2026-09-11 after five months of
+          # accumulation; keeping the most recent dozen means that is the last time anyone
+          # has to do it by hand.
+          keep-n-tagged: 12
+          # Three shapes of debris the old cleanup left behind and no schedule was removing:
+          # an image whose platform manifests are all gone, one missing only some of them,
+          # and a cosign signature or attestation whose subject no longer exists. All three
+          # are invisible on the package page and all three still take up a row in it.
+          delete-ghost-images: true
+          delete-partial-images: true
+          delete-orphaned-images: true
           # A margin against racing a push that is still settling. Sunday at 04:00 should
           # not be looking at Saturday night's build at all.
           older-than: 7 days
