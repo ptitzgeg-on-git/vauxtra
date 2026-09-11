@@ -44,6 +44,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Saving one Settings card discarded what was typed in the other three.** The four cards on
+  the General tab share one mutation whose `onSuccess` invalidates `['settings']`, and they
+  shared a single remount key joined over all ten server fields. Saving any one of them
+  refetched, one field changed, the joined key changed, and all four remounted — and since each
+  card seeds its fields in a `useState` initialiser, a remount is a hard reset to the server
+  value. Paste three new sources into the WAN policy, scroll up, save the health checks, and
+  the paste was gone with no toast and no warning. One key per card, over that card's own
+  fields, which is what the comment above it already promised.
 - **The whole app painted raw translation keys on its first frame.** `t()` falls back to the
   key itself when it is missing, and the translation map arrives asynchronously after mount.
   The provider wraps the entire tree, so the window covered every screen rather than only the
