@@ -44,6 +44,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Three legitimate spellings of one origin matched nothing.** `CORS_ORIGINS` is compared to
+  the browser's `Origin` header character for character, so a rebuilt origin that is merely
+  *equivalent* is a rejection — and a silent one: the request fails in the browser while the
+  log says `CORS origins validated`. A trailing slash, which is what the address bar shows and
+  therefore what gets pasted, refused the whole setting; one bad entry refuses them all, so a
+  second, perfectly good origin went down with the first. An explicitly written default port
+  was kept, and `Origin` reads `https://host`, never `https://host:443`. And an IPv6 literal
+  came back from `urlparse` stripped of the brackets that make it an authority, so
+  `http://[::1]:8888` was stored as `http://::1:8888`. All three are normalised to the exact
+  string a browser sends now, and two spellings of one origin count once. Anything that is not
+  an origin — a path, a query, a fragment, a wildcard, an unknown scheme, a port out of range —
+  is still refused.
 - **Two list pages painted once with stale state before correcting themselves.** Integrations
   keeps a map of manual-test results, Services a set of selected rows, and both pruned that
   state in an effect — one render *after* the list it mirrors had arrived. A passive effect
