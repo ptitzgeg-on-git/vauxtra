@@ -47,6 +47,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The dashboard had four ways of not saying "this failed".** Every widget on it decided it
+  was loading by asking whether its data had arrived — `loading={!providersReady}`, where
+  `providersReady` is `Array.isArray(providers)`. A request that fails leaves that array
+  undefined for good, so a failed `/providers` in a fresh tab left the integrations card, the
+  triage list and two KPI tiles pulsing skeletons **until somebody reloaded the page**. No
+  error, no retry button, no end: the panel looked busy rather than broken, which is the one
+  reading that suggests waiting is the right thing to do.
+
+  Where a widget did notice and stop waiting, it said something worse. `NeedsAttention`
+  builds its rows from the endpoint and integration lists, so with either of them missing it
+  found nothing to list and announced **"All clear — every endpoint, integration and
+  certificate is healthy"**, vouching for services it had just failed to read. The KPI tiles
+  turned the same absence into a confident `0`, and the offline banner said *"Showing the
+  last data received; it may be stale"* over a page where nothing had ever been received.
+
+  A widget is now in one of three states rather than two. **Loading** means the request is
+  still in flight. **Failed** means it came back with nothing: a dash and a stated reason on
+  the tiles, an error with a Retry button on the integrations card, and on the triage list a
+  notice that it is incomplete — which replaces "all clear" outright, because a list that
+  could not read everything it triages has no business declaring the rest fine. The offline
+  banner distinguishes a stale page from an empty one. Only when everything answered does a
+  widget get to make a statement about the panel.
+
+  Two figures deserved a mention of their own: "{enabled} enabled" and "{total} entries in
+  total" are counted from a list with no `/stats` fallback, so a missing list used to print a
+  zero underneath a headline number that was perfectly correct. They are now `undefined`
+  rather than `0` when nobody answered, and the hint says so. The certificate tile had had
+  this treatment since it was written, and its comment already said why: zero expiring and
+  "we could not ask" look identical as a number, and only one of them means everything is
+  fine.
+
 - **Two dialogs open at once fought over the keyboard, and the one underneath won.** Every
   dialog in the panel — `Modal`, `Drawer`, `ConfirmDialog`, the command palette — listens for
   Escape and Tab on `document` in the capture phase, through `useModalDialog`. Two being open

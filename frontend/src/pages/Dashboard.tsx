@@ -131,7 +131,7 @@ export function Dashboard() {
     refetchInterval: 15000,
   });
 
-  const { data: todayLogsResp } = useQuery<LogsResponse>({
+  const { data: todayLogsResp, isError: todayLogsError } = useQuery<LogsResponse>({
     queryKey: ['logs', 'dashboard-today'],
     queryFn: () => api.get<LogsResponse>(`/logs?per_page=${TODAY_LOGS_SAMPLE}`),
     staleTime: 60_000,
@@ -187,9 +187,30 @@ export function Dashboard() {
   const todayItems = Array.isArray(todayLogsResp?.items) ? todayLogsResp.items : [];
   const logsToday = todayItems.filter((log) => formatDate(log.created_at, 'short') === todayKey).length;
   const logsTodayCapped = todayItems.length >= TODAY_LOGS_SAMPLE && logsToday === todayItems.length;
-  const logsTotal = stats?.logs ?? todayLogsResp?.total ?? logsResp?.total ?? 0;
+  const logsTotal = stats?.logs ?? todayLogsResp?.total ?? logsResp?.total;
 
   const hasError = servicesError || providersError;
+  /**
+   * Whether anything at all arrived. The offline banner said "showing the last data received"
+   * whatever had happened; on a first load in a fresh tab there is no last data, and it said
+   * that over a page of cards with nothing in them.
+   */
+  const hasSomeData = servicesReady || providersReady || Boolean(stats);
+  /**
+   * A card is loading only while its request is in flight. Once that request has come back
+   * and left it with nothing, the card is *unknown*: a dash, or a stated failure. Never a
+   * skeleton that pulses until somebody reloads the page, and never a zero — a zero is a
+   * measurement, and it reads as good news.
+   */
+  const servicesUnknown = !servicesReady && !stats;
+  const providersUnknown = !providersReady;
+  const logsUnknown = !todayLogsResp;
+  /**
+   * The triage list is read off the two lists themselves and never off `stats`, so it is
+   * incomplete as soon as either is missing — including when the counters above found their
+   * figures in `stats` and look perfectly healthy.
+   */
+  const attentionIncomplete = !servicesReady || !providersReady;
   const handleRetry = () => {
     refetchServices();
     refetchProviders();
@@ -310,34 +331,44 @@ export function Dashboard() {
             </Button>
           }
         >
-          {t('dashboard.offline.body')}
+          {hasSomeData ? t('dashboard.offline.body') : t('dashboard.offline.body_empty')}
         </InlineAlert>
       )}
 
       <StatRow
         loading={{
-          services: !servicesReady && !stats,
-          providers: !providersReady,
+          services: servicesUnknown && !servicesError,
+          providers: providersUnknown && !providersError,
           certificates: !certExpiry && !certExpiryFailed,
-          logs: !todayLogsResp,
+          logs: logsUnknown && !todayLogsError,
         }}
         services={{
           total: stats?.services ?? allServices.length,
-          enabled: enabledServices.length,
+          enabled: servicesReady ? enabledServices.length : undefined,
           ok: stats?.services_ok ?? servicesOk,
           error: stats?.services_error ?? servicesInError,
+          failed: servicesUnknown,
         }}
-        providers={{ total: allProviders.length, enabled: enabledProviders, healthy: providersHealthy }}
+        providers={{
+          total: allProviders.length,
+          enabled: enabledProviders,
+          healthy: providersHealthy,
+          failed: providersUnknown,
+        }}
         certificates={{
           expiring: expiringCerts,
           total: totalCerts,
           thresholdDays: warnDays,
           failed: certExpiryFailed,
         }}
-        logs={{ today: logsToday, todayCapped: logsTodayCapped, total: logsTotal }}
+        logs={{ today: logsToday, todayCapped: logsTodayCapped, total: logsTotal, failed: logsUnknown }}
       />
 
-      <NeedsAttention items={attentionItems} loading={!servicesReady || !providersReady} />
+      <NeedsAttention
+        items={attentionItems}
+        loading={(!servicesReady && !servicesError) || (!providersReady && !providersError)}
+        incomplete={attentionIncomplete}
+      />
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
         <div className="space-y-6 xl:col-span-3">
@@ -352,7 +383,9 @@ export function Dashboard() {
         <div className="space-y-6 xl:col-span-2">
           <IntegrationsGlance
             providers={providersReady ? allProviders : undefined}
-            loading={!providersReady}
+            loading={providersUnknown && !providersError}
+            error={providersUnknown && providersError}
+            onRetry={() => refetchProviders()}
             health={providersHealth}
             healthError={providersHealthError}
             types={providerTypes}
