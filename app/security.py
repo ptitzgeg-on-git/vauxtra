@@ -3,6 +3,9 @@
 import re
 from urllib.parse import urlparse
 
+# The port a browser leaves out of `Origin` because it is the scheme's own.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
 
 def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
     """
@@ -13,6 +16,9 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
     - No localhost wildcards (*) or overly permissive patterns
     - Proper port numbers (1-65535)
     - No URL injection attempts
+    - Normalised to the exact string a browser puts in `Origin`: a bare trailing slash
+      is dropped, a default port for the scheme is dropped, an IPv6 literal keeps its
+      brackets
     
     Args:
         origins_str: Comma-separated CORS origins from environment
@@ -53,17 +59,37 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
             if parsed.port is not None and not (1 <= parsed.port <= 65535):
                 raise ValueError(f"Invalid port: {parsed.port}. Must be 1-65535.")
 
-            # ✅ Rebuild valid origin
-            if parsed.port:
-                validated = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-            else:
-                validated = f"{parsed.scheme}://{parsed.hostname}"
-
             # ✅ Ensure no path, query, or fragment
-            if parsed.path or parsed.query or parsed.fragment:
+            #
+            # An origin carries no path and a browser never sends one, but a single "/" is
+            # what the address bar shows and therefore what gets pasted. It used to refuse
+            # the setting -- and with it every other origin in the list, since one bad
+            # entry refuses them all -- over a character that means nothing here. It is
+            # accepted and dropped; a path with anything in it is not an origin and still
+            # fails.
+            if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
                 raise ValueError(f"Origins must not include path/query/fragment: {origin}")
 
-            parsed_origins.append(validated)
+            # ✅ Rebuild valid origin
+            #
+            # This string is compared to the browser's `Origin` header character for
+            # character, so a rebuild that is merely equivalent is a rejection with no
+            # message anywhere: the request fails in the browser, and the log says the
+            # origin was validated. Two spellings used to come out of here matching
+            # nothing -- an explicit default port, where `Origin` reads `https://host` and
+            # never `https://host:443`, and an IPv6 literal, which `urlparse` returns
+            # stripped of the brackets that make it an authority.
+            host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+            if parsed.port is not None and parsed.port != _DEFAULT_PORTS[parsed.scheme]:
+                validated = f"{parsed.scheme}://{host}:{parsed.port}"
+            else:
+                validated = f"{parsed.scheme}://{host}"
+
+            # Two spellings of one origin are one origin. Normalising is what makes that
+            # reachable: `https://host/` and `https://host:443` arrive here identical, and
+            # the duplicate would otherwise be counted in the "N allowed" line at startup.
+            if validated not in parsed_origins:
+                parsed_origins.append(validated)
 
         except ValueError as e:
             raise ValueError(f"Invalid CORS origin '{origin}': {e}")
