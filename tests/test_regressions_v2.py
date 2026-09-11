@@ -301,6 +301,164 @@ class BackupSecureRoundTripTests(IsolatedDBTestCase):
         self.assertEqual(row["password"], "")
 
 
+class WebhookDeliveryLogCascadeTests(IsolatedDBTestCase):
+    """Schema 11: deleting a webhook must take its queued sends with it.
+
+    `delete_webhook` is one `DELETE FROM webhooks WHERE id=?` and nothing else. Before the
+    cascade, the rows in `webhook_delivery_log` stayed -- and since the retry job reads the
+    destination off the log row rather than off `webhooks`, Vauxtra kept POSTing to a URL the
+    operator had just revoked, for the whole length of the backoff.
+    """
+
+    SECRET = "discord://1234567890/aTokenTheOperatorRevoked"
+
+    def _queue(self, conn, webhook_id, url=None, *, status="pending"):
+        conn.execute(
+            """INSERT INTO webhook_delivery_log
+                   (webhook_id, url, title, body, status, attempt, next_retry_at)
+               VALUES (?,?,?,?,?,1,datetime('now','-1 hour'))""",
+            (webhook_id, url or self.SECRET, "Vauxtra: service DOWN", "nas.example.com", status),
+        )
+
+    def _webhook(self, conn, name="Discord", url=None):
+        conn.execute(
+            "INSERT INTO webhooks (name, url, enabled) VALUES (?,?,1)", (name, url or self.SECRET)
+        )
+        return int(conn.execute("SELECT id FROM webhooks ORDER BY id DESC LIMIT 1").fetchone()["id"])
+
+    def test_deleting_a_webhook_drops_its_queued_sends(self):
+        conn = models.get_db()
+        try:
+            wid = self._webhook(conn)
+            self._queue(conn, wid)
+            conn.commit()
+
+            # Exactly the body of app/api/webhooks.py::delete_webhook.
+            conn.execute("DELETE FROM webhooks WHERE id=?", (wid,))
+            conn.commit()
+
+            # What app/scheduler.py::_run_webhook_retry would pick up next cycle.
+            pending = conn.execute(
+                """SELECT url FROM webhook_delivery_log
+                   WHERE status='pending' AND next_retry_at <= datetime('now')"""
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(
+            [], [r["url"] for r in pending],
+            "A deleted webhook still had a send queued to its URL",
+        )
+
+    def test_another_webhooks_queue_is_left_alone(self):
+        conn = models.get_db()
+        try:
+            doomed = self._webhook(conn, "Doomed")
+            kept = self._webhook(conn, "Kept", "slack://kept/channel")
+            self._queue(conn, doomed)
+            self._queue(conn, kept, "slack://kept/channel")
+            conn.commit()
+
+            conn.execute("DELETE FROM webhooks WHERE id=?", (doomed,))
+            conn.commit()
+
+            rows = conn.execute("SELECT webhook_id, url FROM webhook_delivery_log").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([(kept, "slack://kept/channel")], [(r["webhook_id"], r["url"]) for r in rows])
+
+    def test_an_ad_hoc_send_has_no_parent_and_survives(self):
+        """`_try_send_apprise` defaults `webhook_id` to None; NULL is not an orphan."""
+        conn = models.get_db()
+        try:
+            wid = self._webhook(conn)
+            self._queue(conn, None, "mailto://ops@example.com")
+            conn.commit()
+            conn.execute("DELETE FROM webhooks WHERE id=?", (wid,))
+            conn.commit()
+            rows = conn.execute("SELECT url FROM webhook_delivery_log").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(["mailto://ops@example.com"], [r["url"] for r in rows])
+
+    def test_the_migration_drops_orphans_that_already_exist(self):
+        """The cascade cannot reach backwards; the rebuild's copy is what cleans up."""
+        conn = models.get_db()
+        try:
+            # Put the table back in its schema-10 shape, orphan included, then migrate again.
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("DROP TABLE webhook_delivery_log")
+            conn.execute(
+                """CREATE TABLE webhook_delivery_log (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    webhook_id    INTEGER,
+                    url           TEXT    NOT NULL,
+                    title         TEXT    NOT NULL DEFAULT '',
+                    body          TEXT    NOT NULL DEFAULT '',
+                    status        TEXT    NOT NULL DEFAULT 'pending',
+                    attempt       INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT,
+                    error_msg     TEXT    NOT NULL DEFAULT '',
+                    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                    updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                )"""
+            )
+            kept = self._webhook(conn, "Kept", "slack://kept/channel")
+            self._queue(conn, 9999)                                   # parent never existed
+            self._queue(conn, kept, "slack://kept/channel")
+            self._queue(conn, None, "mailto://ops@example.com")
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys=ON")
+
+            before = conn.execute("SELECT COUNT(*) AS n FROM webhook_delivery_log").fetchone()["n"]
+            models._rebuild_webhook_delivery_log_fk(conn)
+            rows = conn.execute("SELECT webhook_id, url FROM webhook_delivery_log ORDER BY id").fetchall()
+            fks = conn.execute("PRAGMA foreign_key_list(webhook_delivery_log)").fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(3, before)
+        self.assertEqual(
+            [(kept, "slack://kept/channel"), (None, "mailto://ops@example.com")],
+            [(r["webhook_id"], r["url"]) for r in rows],
+            "The rebuild must drop the orphan and keep both legitimate rows",
+        )
+        self.assertEqual(
+            [("webhooks", "CASCADE")],
+            [(f["table"], f["on_delete"]) for f in fks],
+        )
+
+    def test_the_rebuild_runs_only_once(self):
+        """It reads the pragma, not the version row, and is safe to call again."""
+        conn = models.get_db()
+        try:
+            wid = self._webhook(conn)
+            self._queue(conn, wid)
+            conn.commit()
+            models._rebuild_webhook_delivery_log_fk(conn)
+            models._rebuild_webhook_delivery_log_fk(conn)
+            rows = conn.execute("SELECT webhook_id FROM webhook_delivery_log").fetchall()
+            fks = conn.execute("PRAGMA foreign_key_list(webhook_delivery_log)").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([wid], [r["webhook_id"] for r in rows])
+        self.assertEqual(1, len(fks))
+
+    def test_a_fresh_install_already_has_the_cascade(self):
+        """`init_db` ran in setUp; the CREATE TABLE carries the reference itself."""
+        conn = models.get_db()
+        try:
+            fks = conn.execute("PRAGMA foreign_key_list(webhook_delivery_log)").fetchall()
+            version = conn.execute(
+                "SELECT value FROM settings WHERE key='schema_version'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual([("webhooks", "webhook_id", "CASCADE")],
+                         [(f["table"], f["from"], f["on_delete"]) for f in fks])
+        self.assertEqual(11, models.SCHEMA_VERSION)
+        self.assertEqual("11", version["value"])
+
+
 class RestoreWipesEveryTableTests(IsolatedDBTestCase):
     """A restore replaces the instance; nothing may be left over from the old one."""
 

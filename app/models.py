@@ -7,7 +7,7 @@ from app.db import get_connection
 
 # Increment this constant whenever a new ALTER is added to _migrate().
 # The value is stored in the settings table and logged on startup.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def get_db():
@@ -180,7 +180,7 @@ def init_db() -> None:
 
         CREATE TABLE IF NOT EXISTS webhook_delivery_log (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            webhook_id    INTEGER,
+            webhook_id    INTEGER REFERENCES webhooks(id) ON DELETE CASCADE,
             url           TEXT    NOT NULL,
             title         TEXT    NOT NULL DEFAULT '',
             body          TEXT    NOT NULL DEFAULT '',
@@ -264,6 +264,106 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _purge_logged_webhook_urls(conn)
     _migrate_legacy_webhook_url(conn)
     _ensure_unique_service_hostnames(conn)
+    _rebuild_webhook_delivery_log_fk(conn)
+
+
+def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
+    """Deleting a webhook left its queued sends behind, and the retry job kept firing them.
+
+    `webhook_delivery_log.webhook_id` named a webhook without referencing one, so
+    `DELETE FROM webhooks WHERE id=?` -- the whole body of `delete_webhook` -- removed the
+    row and nothing else. The retry job reads the destination off the log row rather than
+    off `webhooks`, so Vauxtra went on POSTing to a URL the operator had just revoked, for
+    the full length of the backoff: up to twenty-four hours after the delete.
+
+    Two things are needed and neither replaces the other. The cascade stops it happening
+    again; the copy below drops the rows it has already happened to, which no cascade can
+    reach retroactively. Rows with a NULL `webhook_id` are kept -- an ad-hoc send has no
+    parent webhook and is not an orphan.
+
+    SQLite cannot add a foreign key to an existing column, so the table is rebuilt. Three
+    details make that safe:
+
+      - `PRAGMA foreign_keys` is a no-op inside a transaction, so it is set before BEGIN and
+        restored after COMMIT. It has to be off: `ALTER TABLE ... RENAME` would otherwise
+        rewrite references pointing at the table being replaced.
+      - The statements are issued one `execute()` at a time. `executescript()` COMMITs before
+        it runs, which would turn the rollback below into a no-op -- the lesson the restore
+        path already carries at `app/api/backup.py`.
+      - `foreign_key_check` runs before the COMMIT, not after, so a database that somehow
+        still violates the new constraint keeps its old table instead of a half-built one.
+
+    Idempotent: it reads the pragma rather than the schema version, so an install whose
+    version row was written by a failed earlier attempt is still repaired.
+    """
+    try:
+        existing = conn.execute("PRAGMA foreign_key_list(webhook_delivery_log)").fetchall()
+    except sqlite3.Error:
+        return
+    if any(row["table"] == "webhooks" for row in existing):
+        return
+
+    previous_isolation = conn.isolation_level
+    conn.commit()
+    conn.isolation_level = None  # drive BEGIN/COMMIT by hand
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """CREATE TABLE webhook_delivery_log_new (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    webhook_id    INTEGER REFERENCES webhooks(id) ON DELETE CASCADE,
+                    url           TEXT    NOT NULL,
+                    title         TEXT    NOT NULL DEFAULT '',
+                    body          TEXT    NOT NULL DEFAULT '',
+                    status        TEXT    NOT NULL DEFAULT 'pending',
+                    attempt       INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT,
+                    error_msg     TEXT    NOT NULL DEFAULT '',
+                    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                    updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO webhook_delivery_log_new
+                       (id, webhook_id, url, title, body, status, attempt,
+                        next_retry_at, error_msg, created_at, updated_at)
+                   SELECT id, webhook_id, url, title, body, status, attempt,
+                          next_retry_at, error_msg, created_at, updated_at
+                     FROM webhook_delivery_log
+                    WHERE webhook_id IS NULL
+                       OR webhook_id IN (SELECT id FROM webhooks)"""
+            )
+            dropped = conn.execute(
+                """SELECT COUNT(*) FROM webhook_delivery_log
+                    WHERE webhook_id IS NOT NULL
+                      AND webhook_id NOT IN (SELECT id FROM webhooks)"""
+            ).fetchone()[0]
+            conn.execute("DROP TABLE webhook_delivery_log")
+            conn.execute("ALTER TABLE webhook_delivery_log_new RENAME TO webhook_delivery_log")
+            if conn.execute("PRAGMA foreign_key_check(webhook_delivery_log)").fetchall():
+                raise sqlite3.IntegrityError(
+                    "webhook_delivery_log still violates its new foreign key"
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    except Exception as exc:
+        import traceback
+        add_log("error", f"Could not add the webhook_delivery_log cascade: {exc}\n{traceback.format_exc()}")
+        return
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.isolation_level = previous_isolation
+
+    if dropped:
+        add_log(
+            "warn",
+            f"Dropped {dropped} queued webhook deliveries addressed to webhooks that no "
+            "longer exist. Vauxtra was still retrying them; it is not any more.",
+        )
 
 
 def _ensure_unique_service_hostnames(conn: sqlite3.Connection) -> None:

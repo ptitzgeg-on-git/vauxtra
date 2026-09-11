@@ -44,6 +44,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Deleting a webhook did not stop the sends already queued to it.** `delete_webhook` is one
+  `DELETE FROM webhooks WHERE id=?` and nothing else, and `webhook_delivery_log.webhook_id`
+  named a webhook without referencing one — so the webhook went and its retry queue stayed. The
+  retry job reads the destination off the log row rather than off `webhooks`, which means
+  Vauxtra kept POSTing to a URL the operator had just revoked, for the full length of the
+  backoff: up to twenty-four hours later. A Discord token pulled *because* it had leaked was
+  still being used the next day. Schema 11 adds the cascade so it cannot happen again, and the
+  migration's rebuild drops the rows it has already happened to — no cascade reaches backwards.
+  Rows with a NULL `webhook_id` are kept: an ad-hoc send has no parent webhook and is not an
+  orphan. The rebuild keys off the pragma rather than the version row, so an install whose
+  version was written by a failed earlier attempt is still repaired, and `foreign_key_check`
+  runs before the COMMIT so a database that still violates the constraint keeps its old table
+  instead of a half-built one.
 - **Four screens turned a failed request into a factual claim about the operator's
   infrastructure.** A list read as `data ?? []` has the same shape whether the backend answered
   "nothing" or did not answer at all, and every one of these sites rendered the first reading:
