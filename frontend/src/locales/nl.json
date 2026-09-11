@@ -1306,6 +1306,7 @@
   "settings.security.api_keys_desc": "Geef scripts en integraties hun eigen inloggegevens in plaats van je wachtwoord.",
   "settings.security.api_keys_title": "API-sleutels",
   "settings.security.load_failed": "Kan de beveiligingsstatus niet laden",
+  "settings.security.refresh_failed": "Beveiligingsstatus kon niet worden ververst — wat je hebt ingevuld staat er nog",
   "settings.security.env_password_title": "Het wachtwoord komt uit de omgeving",
   "settings.security.env_password_desc": "Deze instantie leest haar beheerderswachtwoord uit de variabele APP_PASSWORD en kan het hier niet wijzigen.",
   "settings.security.env_password_how_title": "Zo wijzigt u het",

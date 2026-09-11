@@ -1306,6 +1306,7 @@
   "settings.security.api_keys_desc": "Geben Sie Skripten und Integrationen eigene Zugangsdaten statt Ihres Passworts.",
   "settings.security.api_keys_title": "API-Schlüssel",
   "settings.security.load_failed": "Der Sicherheitsstatus konnte nicht geladen werden",
+  "settings.security.refresh_failed": "Sicherheitsstatus konnte nicht aktualisiert werden — Ihre Eingaben sind noch da",
   "settings.security.env_password_title": "Das Passwort stammt aus der Umgebung",
   "settings.security.env_password_desc": "Diese Instanz liest ihr Administratorpasswort aus der Variable APP_PASSWORD und kann es hier nicht ändern.",
   "settings.security.env_password_how_title": "So ändern Sie es",

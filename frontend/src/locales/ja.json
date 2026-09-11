@@ -1306,6 +1306,7 @@
   "settings.security.api_keys_desc": "スクリプトや外部連携には、パスワードではなく専用の認証情報を割り当てましょう。",
   "settings.security.api_keys_title": "APIキー",
   "settings.security.load_failed": "セキュリティの状態を読み込めませんでした",
+  "settings.security.refresh_failed": "セキュリティ状態を更新できませんでした。入力内容はそのまま残っています",
   "settings.security.env_password_title": "パスワードは環境変数から読み込まれます",
   "settings.security.env_password_desc": "このインスタンスは管理者パスワードを APP_PASSWORD 変数から読み取るため、ここでは変更できません。",
   "settings.security.env_password_how_title": "変更方法",
