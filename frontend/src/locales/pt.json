@@ -1306,6 +1306,7 @@
   "settings.security.api_keys_desc": "Dê a scripts e integrações credenciais próprias em vez da sua senha.",
   "settings.security.api_keys_title": "Chaves de API",
   "settings.security.load_failed": "Não foi possível carregar o status de segurança",
+  "settings.security.refresh_failed": "Não foi possível atualizar o estado de segurança — o que você digitou continua aí",
   "settings.security.env_password_title": "A palavra-passe vem do ambiente",
   "settings.security.env_password_desc": "Esta instância lê a palavra-passe de administrador da variável APP_PASSWORD, por isso não pode ser alterada aqui.",
   "settings.security.env_password_how_title": "Como alterá-la",

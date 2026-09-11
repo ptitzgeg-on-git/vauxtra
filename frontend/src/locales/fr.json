@@ -1306,6 +1306,7 @@
   "settings.security.api_keys_desc": "Donnez aux scripts et aux intégrations leurs propres identifiants plutôt que votre mot de passe.",
   "settings.security.api_keys_title": "Clés API",
   "settings.security.load_failed": "Impossible de charger l'état de sécurité",
+  "settings.security.refresh_failed": "Impossible d'actualiser l'état de sécurité — ce que vous avez saisi est toujours là",
   "settings.security.env_password_title": "Le mot de passe vient de l'environnement",
   "settings.security.env_password_desc": "Cette instance lit son mot de passe administrateur dans la variable APP_PASSWORD : il ne peut pas être changé ici.",
   "settings.security.env_password_how_title": "Comment le changer",

@@ -19,28 +19,62 @@ export function SecurityTab() {
     queryFn: () => api.get<AuthStatus>('/auth/me'),
   });
 
+  /**
+   * Which card is shown is decided by the data, and only by the data.
+   *
+   * The error branch used to come first. `/auth/me` is refetched in the background -- on
+   * window focus, like every query here -- and a refetch that failed swapped whatever card
+   * was on screen for an alert. React Query keeps the last good data through that, so
+   * nothing was actually unknown; but the card was gone, and with it the password somebody
+   * was halfway through typing. The retry then mounted a fresh, empty one. A blip behind a
+   * reverse proxy was enough, and the operator did nothing to cause it.
+   *
+   * So a failure that still has data behind it is reported *above* the form rather than in
+   * place of it. The alert is a sibling of the card, not a branch around it: rendering
+   * nothing in its slot leaves the card at the same position, which is what keeps React
+   * from treating it as a new one.
+   */
+  const status = authQuery.data;
+
   return (
     <div className="space-y-6">
       {authQuery.isLoading ? (
         <SkeletonCard />
-      ) : authQuery.isError ? (
+      ) : authQuery.isError && !status ? (
         <InlineAlert
           tone="danger"
           title={t('settings.security.load_failed')}
           action={
-            <Button variant="outline" size="sm" onClick={() => authQuery.refetch()}>
+            <Button variant="outline" size="sm" loading={authQuery.isFetching} onClick={() => authQuery.refetch()}>
               {t('ui.error.retry')}
             </Button>
           }
         >
           {translateApiError(authQuery.error, t, t('common.error'))}
         </InlineAlert>
-      ) : authQuery.data?.password_source === 'environment' ? (
-        <EnvManagedPasswordCard />
-      ) : authQuery.data && !authQuery.data.auth_required ? (
-        <SetPasswordCard />
       ) : (
-        <ChangePasswordCard />
+        <div className="space-y-4">
+          {authQuery.isError && (
+            <InlineAlert
+              tone="warning"
+              title={t('settings.security.refresh_failed')}
+              action={
+                <Button variant="outline" size="sm" loading={authQuery.isFetching} onClick={() => authQuery.refetch()}>
+                  {t('ui.error.retry')}
+                </Button>
+              }
+            >
+              {translateApiError(authQuery.error, t, t('common.error'))}
+            </InlineAlert>
+          )}
+          {status?.password_source === 'environment' ? (
+            <EnvManagedPasswordCard />
+          ) : status && !status.auth_required ? (
+            <SetPasswordCard />
+          ) : (
+            <ChangePasswordCard />
+          )}
+        </div>
       )}
 
       <SettingsSection
