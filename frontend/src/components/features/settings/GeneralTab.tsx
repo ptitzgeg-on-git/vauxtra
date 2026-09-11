@@ -70,22 +70,32 @@ export function GeneralTab() {
   const onSave = (values: Record<string, string>, successMessage: string) =>
     save.mutate({ values, successMessage });
 
-  // Remount the cards when the server values change so their local state re-seeds
-  // without an effect; the key is the join of the fields each card edits.
-  const seed = settings
-    ? [
-        settings.timezone,
-        settings.check_interval,
-        settings.monitoring_retention_days,
-        settings.log_retention_days,
-        settings.auto_reconcile_enabled,
-        settings.auto_reconcile_interval,
-        settings.webhook_retry_retention_days,
-        settings.public_target_sources,
-        settings.public_target_timeout,
-        settings.public_target_priority,
-      ].join('|')
-    : 'none';
+  // Remount a card when the server values *it* edits change, so its local state re-seeds
+  // without an effect. One key per card, over that card's own fields only.
+  //
+  // It used to be a single key joined over all ten fields, which is not what the sentence
+  // above ever described: the four cards share one `save`, whose `onSuccess` invalidates
+  // ['settings']. Saving any one of them refetched, one field changed, the joined key
+  // changed -- and all four remounted, so the three the operator had not saved yet were
+  // reset to the server values. No toast, no warning; whatever was still typed in them
+  // was simply gone.
+  const seedOf = (...fields: Array<string | undefined>) => (settings ? fields.join('|') : 'none');
+  const tzSeed = seedOf(settings?.timezone);
+  const healthSeed = seedOf(
+    settings?.check_interval,
+    settings?.monitoring_retention_days,
+    settings?.log_retention_days,
+  );
+  const reconcileSeed = seedOf(
+    settings?.auto_reconcile_enabled,
+    settings?.auto_reconcile_interval,
+    settings?.webhook_retry_retention_days,
+  );
+  const wanSeed = seedOf(
+    settings?.public_target_sources,
+    settings?.public_target_timeout,
+    settings?.public_target_priority,
+  );
 
   return (
     <div className="space-y-6">
@@ -111,10 +121,10 @@ export function GeneralTab() {
         </InlineAlert>
       ) : (
         <>
-          <TimezoneCard key={`tz-${seed}`} current={settings?.timezone ?? ''} saving={save.isPending} onSave={onSave} />
-          <HealthChecksCard key={`hc-${seed}`} settings={settings ?? {}} saving={save.isPending} onSave={onSave} />
-          <AutoReconcileCard key={`ar-${seed}`} settings={settings ?? {}} saving={save.isPending} onSave={onSave} />
-          <WanPolicyCard key={`wan-${seed}`} settings={settings ?? {}} saving={save.isPending} onSave={onSave} />
+          <TimezoneCard key={`tz-${tzSeed}`} current={settings?.timezone ?? ''} saving={save.isPending} onSave={onSave} />
+          <HealthChecksCard key={`hc-${healthSeed}`} settings={settings ?? {}} saving={save.isPending} onSave={onSave} />
+          <AutoReconcileCard key={`ar-${reconcileSeed}`} settings={settings ?? {}} saving={save.isPending} onSave={onSave} />
+          <WanPolicyCard key={`wan-${wanSeed}`} settings={settings ?? {}} saving={save.isPending} onSave={onSave} />
         </>
       )}
     </div>
