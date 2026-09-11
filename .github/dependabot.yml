@@ -7,10 +7,16 @@
 # reads, and a flood nobody reads is the same as no alert at all. So everything below is
 # grouped -- one PR per ecosystem per week for the routine version bumps, and separate PRs
 # only for major versions, which are the ones that actually need a human.
+# Every ecosystem below targets `dev`, not `main`. A dependency bump is a change like
+# any other: it belongs on the integration branch, where it is built, scanned and run
+# against a staging instance before a human moves it into production. Opening these
+# against `main` meant the only thing between a new major version and the release
+# branch was whether anyone read the diff that morning.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
       day: monday
@@ -23,6 +29,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /frontend
+    target-branch: dev
     schedule:
       interval: weekly
       day: monday
@@ -35,6 +42,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     labels: [dependencies, ci]
@@ -50,6 +58,7 @@ updates:
   # would be the noise this file was rewritten to avoid.
   - package-ecosystem: docker
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     labels: [dependencies, build]

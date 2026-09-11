@@ -3,12 +3,12 @@ name: Security Scan
 on:
   # Every branch, not just main: a scan that only runs once the code has already landed
   # tells you about a problem you now have, instead of one you were about to create.
-  # `main` is deliberately excluded here -- on main this workflow runs as the Build &
-  # Publish gate, so it runs exactly once per push instead of twice.
+  # `main` and `dev` are deliberately excluded here -- on both of them this workflow runs
+  # as the Build & Publish gate, so it runs exactly once per push instead of twice.
   push:
-    branches-ignore: [main]
+    branches-ignore: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   schedule:
     - cron: "0 3 * * 1"  # every Monday at 03:00 UTC
   # Called by Build & Publish: the image is not pushed until this is green.

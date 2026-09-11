@@ -66,6 +66,42 @@ cd frontend && npm run lint
 
 ---
 
+## Branches and Releases
+
+Two long-lived branches, and they are not interchangeable.
+
+| Branch | What it is | What lands on it | What it publishes |
+| --- | --- | --- | --- |
+| `dev` | Integration. The branch where changes meet each other for the first time. | Every feature branch, every fix, every Dependabot update. | `ghcr.io/ptitzgeg-on-git/vauxtra:dev`, a moving tag. |
+| `main` | Production. What a stranger gets when they follow the README. | Only `dev`, only through a pull request. | `ghcr.io/ptitzgeg-on-git/vauxtra:latest`. |
+
+The flow, in order:
+
+1. Branch off `dev`, not `main`.
+2. Open a pull request into `dev`. The five required checks run there.
+3. Merge. `dev` rebuilds and pushes the `dev` image, so a staging instance can pull the
+   exact artifact this repository just produced rather than an approximation of it.
+4. When `dev` has proven itself, open a pull request from `dev` into `main`.
+5. To ship, tag `main`: `git tag -a v1.5.0 -m "v1.5.0" && git push origin v1.5.0`. The tag
+   is what builds the versioned image and writes the release page. Nothing else does.
+
+Two consequences worth stating plainly, because both have caused an incident here before:
+
+- **The image tag drops the `v`.** Git tag `v1.5.0` produces image `1.5.0`. The `v` belongs
+  to Git, not to the registry.
+- **`Latest` on the releases page goes to the release created most recently**, not to the
+  highest version number. Tagging an old commit after a newer one therefore moves the badge
+  backwards. Automation here passes `make_latest=legacy` for that reason.
+
+### Why Dependabot targets `dev`
+
+A dependency bump is a change like any other. Opening those pull requests against `main`
+put a new major version one merge away from the release branch, with nothing between them
+but whether somebody read the diff that morning. They open against `dev` now and reach
+`main` the same way everything else does.
+
+---
+
 ## Commit Convention
 
 This project follows [Conventional Commits](https://www.conventionalcommits.org/):
