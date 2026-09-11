@@ -231,89 +231,134 @@ def _tcp_ok(ip: str, port: int) -> str:
 
 # ── Job principal ─────────────────────────────────────────────────────────
 
-def run_health_checks() -> None:
-    """Check all services, record uptime events, and dispatch alerts."""
-    with _lock:
-        conn = get_db()
+def _sync_npm_once() -> None:
+    """Pull NPM's enable/disable state onto our services, once per cycle.
 
-        # Sync NPM enable/disable state once per cycle (not on every API call)
+    Its own connection, because it is its own transaction: it talks to NPM between two
+    services and nothing else in the cycle needs to see, or wait for, what it writes.
+    """
+    try:
+        from app.api.services import _sync_npm_statuses  # noqa: PLC0415
+        conn = get_db()
         try:
-            from app.api.services import _sync_npm_statuses  # noqa: PLC0415
             _sync_npm_statuses(conn)
             conn.commit()
-        except Exception:
-            pass
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
-        services = conn.execute(
-            "SELECT id, target_ip, target_port, subdomain, domain, status, expose_mode FROM services WHERE enabled=1"
-        ).fetchall()
+
+def _purge_history(conn) -> None:
+    """Drop monitoring history, logs and settled webhook rows past their retention."""
+    monitoring_retention_days = _read_retention_days(conn, "monitoring_retention_days", 14)
+    log_retention_days = _read_retention_days(conn, "log_retention_days", 30)
+    webhook_retry_retention_days = _read_retention_days(
+        conn, "webhook_retry_retention_days", 7, min_days=1, max_days=90
+    )
+    conn.execute(
+        "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)",
+        (f"-{monitoring_retention_days} days",),
+    )
+    conn.execute(
+        "DELETE FROM logs WHERE created_at < datetime('now', ?)",
+        (f"-{log_retention_days} days",),
+    )
+    try:
+        conn.execute(
+            """DELETE FROM webhook_delivery_log
+               WHERE status IN ('delivered', 'failed')
+                 AND updated_at < datetime('now', ?)""",
+            (f"-{webhook_retry_retention_days} days",),
+        )
+    except Exception:
+        pass
+
+
+def run_health_checks() -> None:
+    """Check all services, record uptime events, and dispatch alerts.
+
+    Every phase of this cycle talks to the network, and SQLite admits one writer at a
+    time. A write transaction left open across an HTTP call therefore does not merely
+    slow the panel down, it stops it: every other writer waits out `busy_timeout`
+    (15 s) and then fails with "database is locked" -- which is why `_sync_npm_statuses`
+    had grown a branch that swallows exactly that message.
+
+    So the cycle never holds a transaction across a network call. The probes below run
+    with no connection open at all, their results are written in one short burst, and
+    each phase after that commits per item rather than per phase.
+    """
+    with _lock:
+        _sync_npm_once()
+
+        conn = get_db()
+        try:
+            services = conn.execute(
+                "SELECT id, target_ip, target_port, subdomain, domain, status, expose_mode FROM services WHERE enabled=1"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # Probe with nothing open. A TCP probe against a host that is simply gone costs
+        # the full 3 s timeout, and a panel can hold dozens of services: run between two
+        # UPDATEs on one transaction, that alone was minutes of held write lock a cycle.
+        #
+        # Tunnel services are health-checked via the Cloudflare API, not TCP. Running TCP
+        # against cfargotunnel.com or similar targets always fails.
+        probes = [
+            (svc, _tcp_ok(svc["target_ip"], svc["target_port"]))
+            for svc in services
+            if (svc["expose_mode"] or "").strip().lower() != "tunnel"
+        ]
 
         changed: list[dict] = []
-        for svc in services:
-            old_status = svc["status"] or "unknown"
-
-            # Tunnel services are health-checked via the Cloudflare API, not TCP.
-            # Running TCP against cfargotunnel.com or similar targets always fails.
-            if (svc["expose_mode"] or "").strip().lower() == "tunnel":
-                continue
-
-            new_status = _tcp_ok(svc["target_ip"], svc["target_port"])
-
-            conn.execute(
-                "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-                (new_status, svc["id"]),
-            )
-            conn.execute(
-                "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-                (svc["id"], new_status),
-            )
-
-            if old_status != new_status:
-                fqdn = f"{svc['subdomain']}.{svc['domain']}"
-                changed.append(
-                    {
-                        "service_id": svc["id"],
-                        "fqdn": fqdn,
-                        "old": old_status,
-                        "new": new_status,
-                    }
-                )
-                add_log(
-                    "ok" if new_status == "ok" else "error",
-                    f"[Auto] {fqdn} : {old_status} → {new_status}",
-                    conn,
-                )
-
-        _run_dns_auto_updates(conn)
-        changed.extend(_run_provider_health_checks(conn))
-        _run_cert_expiry_alerts(conn)
-        _run_webhook_retry(conn)
-
-        # Purge old monitoring history/logs according to settings.
-        monitoring_retention_days = _read_retention_days(conn, "monitoring_retention_days", 14)
-        log_retention_days = _read_retention_days(conn, "log_retention_days", 30)
-        webhook_retry_retention_days = _read_retention_days(
-            conn, "webhook_retry_retention_days", 7, min_days=1, max_days=90
-        )
-        conn.execute(
-            "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)" ,
-            (f"-{monitoring_retention_days} days",),
-        )
-        conn.execute(
-            "DELETE FROM logs WHERE created_at < datetime('now', ?)",
-            (f"-{log_retention_days} days",),
-        )
+        conn = get_db()
         try:
-            conn.execute(
-                """DELETE FROM webhook_delivery_log
-                   WHERE status IN ('delivered', 'failed')
-                     AND updated_at < datetime('now', ?)""",
-                (f"-{webhook_retry_retention_days} days",),
-            )
-        except Exception:
-            pass
-        conn.commit()
-        conn.close()
+            for svc, new_status in probes:
+                old_status = svc["status"] or "unknown"
+
+                conn.execute(
+                    "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
+                    (new_status, svc["id"]),
+                )
+                conn.execute(
+                    "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+                    (svc["id"], new_status),
+                )
+
+                if old_status != new_status:
+                    fqdn = f"{svc['subdomain']}.{svc['domain']}"
+                    changed.append(
+                        {
+                            "service_id": svc["id"],
+                            "fqdn": fqdn,
+                            "old": old_status,
+                            "new": new_status,
+                        }
+                    )
+                    add_log(
+                        "ok" if new_status == "ok" else "error",
+                        f"[Auto] {fqdn} : {old_status} → {new_status}",
+                        conn,
+                    )
+            # One commit for the whole round of probes: these are writes only, with no
+            # network between them, so the lock is held for as long as they take and no
+            # longer. Every phase below commits per item instead, for the same reason.
+            conn.commit()
+
+            _run_dns_auto_updates(conn)
+            conn.commit()
+            changed.extend(_run_provider_health_checks(conn))
+            conn.commit()
+            _run_cert_expiry_alerts(conn)
+            conn.commit()
+            _run_webhook_retry(conn)
+            conn.commit()
+
+            _purge_history(conn)
+            conn.commit()
+        finally:
+            conn.close()
 
         # Persist scheduler state after closing connection to avoid locks
         _save_scheduler_state()
@@ -323,7 +368,6 @@ def run_health_checks() -> None:
         if any("provider_id" in c for c in changed):
             _fire_integration_webhook(changed)
         _fire_service_webhooks()
-
 
 def _run_provider_health_checks(conn) -> list[dict]:
     """Check enabled providers and return status transitions for notifications."""
@@ -379,6 +423,11 @@ def _run_provider_health_checks(conn) -> list[dict]:
                 conn,
             )
 
+        # Per provider, not per loop: the next iteration reaches across the network to
+        # somebody else's API, and a transaction still open while it does is a writer
+        # every other caller has to wait out.
+        conn.commit()
+
     for pid in list(_provider_last_status.keys()):
         if pid not in seen_ids:
             _provider_last_status.pop(pid, None)
@@ -410,7 +459,7 @@ def _run_dns_auto_updates(conn) -> bool:
         """
     ).fetchall()
     if not services:
-        return
+        return False
 
     policy = load_public_target_policy(conn)
     server_public_ip = detect_server_public_ip(
@@ -474,11 +523,14 @@ def _run_dns_auto_updates(conn) -> bool:
             else:
                 add_log("error", f"[AutoDNS] {fqdn}: {e} (failure {_dns_update_failures[sid]}/{_DNS_FAILURE_THRESHOLD})", conn)
 
-    # No _save_scheduler_state() here, the flag is returned instead. This function runs
-    # inside the write transaction opened by run_health_checks(); opening a second
-    # connection to persist state makes SQLite wait out its busy_timeout and raise
-    # "database is locked". The cycle's commit is then never reached and every status of
-    # the round is lost. run_health_checks() persists once the connection is closed.
+        # Per service. The next iteration resolves a public target and then calls a DNS
+        # provider's API, and the write above must not still be uncommitted while it does.
+        conn.commit()
+
+    # No _save_scheduler_state() here, the flag is returned instead. Scheduler state is
+    # persisted once per cycle, by run_health_checks(), after the connection is closed --
+    # one file written once beats one written per service, and a helper that never guesses
+    # whether it owns the cycle cannot get the answer wrong.
     return state_changed
 
 
@@ -557,6 +609,10 @@ def _run_cert_expiry_alerts(conn) -> None:
                 if prior.get("level") != level or elapsed > 86400:
                     add_log(level, msg, conn)
                     _cert_alert_state[key] = {"level": level, "alerted_at": time.monotonic()}
+
+            # Per provider: fetching the next one's certificate list is an HTTPS round
+            # trip, and the alerts just logged must not be holding the write lock for it.
+            conn.commit()
 
         for key in list(_cert_alert_state):
             if key not in seen_keys:
@@ -654,6 +710,7 @@ def _run_webhook_retry(conn) -> None:
                 f"{mask_secret_url(row['url'])}",
                 conn,
             )
+            conn.commit()
             continue
 
         a = _apprise.Apprise()
@@ -662,6 +719,7 @@ def _run_webhook_retry(conn) -> None:
                 "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
                 (dlid,),
             )
+            conn.commit()
             continue
 
         try:
@@ -692,6 +750,11 @@ def _run_webhook_retry(conn) -> None:
                        WHERE id=?""",
                     (new_attempt, next_retry, str(exc), dlid),
                 )
+
+        # Per row. Up to twenty of these run in a cycle, each one an HTTP POST to somebody
+        # else's endpoint; one transaction around the lot held the write lock for the sum
+        # of them, and lost every outcome in it if the process went down in the middle.
+        conn.commit()
 
 
 # ── Webhook ───────────────────────────────────────────────────────────────
