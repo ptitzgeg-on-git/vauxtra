@@ -336,9 +336,14 @@ class ResetMeansResetTests(_IsolatedDB):
         self._exec(
             "INSERT INTO service_templates (id, name) VALUES (1, 'web app')"
         )
+        # `webhook_id` stays NULL on purpose. Schema 11 gave the column a cascade from
+        # `webhooks`, and a row with a parent would be swept away by the `DELETE FROM
+        # webhooks` further down `reset_all` even if its own DELETE were removed. An ad-hoc
+        # send has no parent, so only the explicit wipe can clear it -- which is the line
+        # this test exists to hold.
         self._exec(
             "INSERT INTO webhook_delivery_log (id, webhook_id, url, title, body, status) "
-            "VALUES (1, 1, 'discord://x', 't', 'b', 'pending')"
+            "VALUES (1, NULL, 'discord://x', 't', 'b', 'pending')"
         )
         self._exec(
             "INSERT INTO scheduler_state (key, value) VALUES ('provider_last_status', '{}')"
