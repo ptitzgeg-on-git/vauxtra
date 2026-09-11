@@ -44,6 +44,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Four screens turned a failed request into a factual claim about the operator's
+  infrastructure.** A list read as `data ?? []` has the same shape whether the backend answered
+  "nothing" or did not answer at all, and every one of these sites rendered the first reading:
+  "No webhook configured" with an invitation to create one, "No integration type available"
+  (which reads as a broken build, not a network blip), "No Docker engine configured" with an Add
+  button, "No check in the last 24 h" on hosts the scheduler had probed every cycle, and an
+  availability figure quietly replaced by an em dash. The Monitoring drawer said the same thing
+  twice more, on its timeline and its logs tab. The damage is not cosmetic: the operator acts on
+  those sentences — re-adding an endpoint that already exists, or chasing an uptime gap that
+  never happened. Each of the four now distinguishes the two cases, says which request failed,
+  and offers a retry; where a retry has no place — a drawer tab, a table cell — it states that
+  the figure is unknown rather than zero. The hooks return their query alongside its rows so the
+  caller can tell the cases apart at all, which is what `StepTypeSelector`'s existing comment
+  about the loading case already argued for. A service behind a tunnel keeps its own explanation:
+  its history is empty by design, whether or not the request succeeded.
 - **Testing a second integration stole the first one's spinner.** The Integrations page tracked
   each action with a single `number | null`, which cannot name two rows at once. Clicking Test
   on one row and then another overwrote the id, so the first row stopped spinning and its

@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Container, Server } from 'lucide-react';
-import { Chip, ChipGroup, EmptyState, ProviderLogo, Skeleton, cn } from '@/components/ui';
+import { Button, Chip, ChipGroup, EmptyState, InlineAlert, ProviderLogo, Skeleton, cn } from '@/components/ui';
 import { useT } from '@/i18n';
+import { translateApiError } from '@/lib/errors';
 import {
   PROVIDER_GROUPS,
   type ProviderGroup,
@@ -24,6 +25,14 @@ export interface StepTypeSelectorProps {
    * the wizard told every user their install had no integrations at all.
    */
   loading?: boolean;
+  /**
+   * The request failed. Same reasoning as `loading` one step further: an empty `types` after a
+   * failed fetch is not "this build serves no provider", it is "we do not know". Saying the
+   * former sends the user looking for a packaging bug that does not exist.
+   */
+  error?: unknown;
+  refreshing?: boolean;
+  onRetry?: () => void;
   selectedType: string;
   isDockerMode: boolean;
   onChooseProvider: (type: string, meta: ProviderTypeMeta) => void;
@@ -38,6 +47,9 @@ const CARD_SELECTED = 'border-primary bg-primary/10 ring-1 ring-primary/30';
 export function StepTypeSelector({
   types,
   loading = false,
+  error = null,
+  refreshing = false,
+  onRetry,
   selectedType,
   isDockerMode,
   onChooseProvider,
@@ -95,8 +107,23 @@ export function StepTypeSelector({
           </Chip>
         </ChipGroup>
 
-        {types.length === 0 && filter !== 'docker' && (
-          <EmptyState compact icon={<Server />} title={t('provider_modal.type.empty')} />
+        {error && filter !== 'docker' ? (
+          <InlineAlert
+            tone="danger"
+            title={t('provider_modal.type.load_failed')}
+            action={
+              onRetry ? (
+                <Button variant="outline" size="sm" loading={refreshing} onClick={onRetry}>
+                  {t('common.retry')}
+                </Button>
+              ) : undefined
+            }
+          >
+            {translateApiError(error, t, t('provider_modal.type.load_failed_hint'))}
+          </InlineAlert>
+        ) : (
+          types.length === 0 &&
+          filter !== 'docker' && <EmptyState compact icon={<Server />} title={t('provider_modal.type.empty')} />
         )}
 
         {visibleGroups.map(({ group, entries }) => (

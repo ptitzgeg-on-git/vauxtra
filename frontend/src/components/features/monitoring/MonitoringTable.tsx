@@ -29,6 +29,12 @@ import {
 export interface MonitoringTableProps {
   services: Service[];
   history: ServiceHistoryResponse | undefined;
+  /**
+   * `GET /api/services/history` failed. `history` is then `undefined` for every row, which is
+   * the same shape as a genuinely quiet service -- and the cell would state "no check in the
+   * last 24 h" about hosts that were in fact probed every cycle.
+   */
+  historyError?: boolean;
   probes: LatencyProbes;
   checkingId: number | null;
   /** Frozen once per render pass so every strip buckets against the same instant. */
@@ -46,6 +52,7 @@ const HEAD_CELL = 'px-3 py-2 text-left text-[11px] font-semibold uppercase track
 export function MonitoringTable({
   services,
   history,
+  historyError = false,
   probes,
   checkingId,
   now,
@@ -187,7 +194,9 @@ export function MonitoringTable({
                       <p className="text-[11px] tabular-nums text-muted-foreground">
                         {availability
                           ? t('monitoring.uptime.summary', { percent: availability, count: summary.total })
-                          : t('monitoring.uptime.no_history')}
+                          : historyError
+                            ? t('monitoring.uptime.history_failed')
+                            : t('monitoring.uptime.no_history')}
                       </p>
                     </div>
                   )}

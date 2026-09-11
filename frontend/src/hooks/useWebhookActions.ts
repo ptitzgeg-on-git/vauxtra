@@ -26,11 +26,16 @@ export function useWebhookActions(enabled = true) {
   const [url, setUrl] = useState('');
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
 
-  const { data: webhooks = [], refetch } = useQuery<Webhook[]>({
+  // The query itself is returned alongside the rows: `webhooks = []` on a failed fetch is
+  // indistinguishable from "no webhook is configured", and the caller has to be able to tell
+  // those apart before it renders an empty state.
+  const webhooksQuery = useQuery<Webhook[]>({
     queryKey: ['webhooks'],
     queryFn: () => api.get('/webhooks'),
     enabled,
   });
+  const webhooks = webhooksQuery.data ?? [];
+  const refetch = webhooksQuery.refetch;
 
   const addWebhook = useMutation({
     mutationFn: (payload?: WebhookPayload) => api.post('/webhooks', {
@@ -101,6 +106,7 @@ export function useWebhookActions(enabled = true) {
 
   return {
     webhooks,
+    webhooksQuery,
     refetch,
     name, setName,
     url, setUrl,
