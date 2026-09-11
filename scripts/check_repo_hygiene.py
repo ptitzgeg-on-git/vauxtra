@@ -49,6 +49,43 @@ REQUIRED_TRACKED_FILES = (
 _USES = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+/[^@\s]+)@(\S+)")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
+# A public repository prints example addresses. It does not print addresses off somebody's
+# actual network, and the difference is invisible in review: a host address from a real LAN
+# reads exactly like a placeholder unless you happen to know that LAN. Eight locale files
+# and one test fixture shipped that way, and those addresses stayed in the published history
+# and in a release tag until the history was rewritten.
+#
+# Only an allowlist catches this. The repository declares which prefixes it is allowed to
+# print -- loopback, the documentation subnet, the lab's own compose networks -- and any
+# other RFC 1918 or link-local literal has to be justified here before it can be committed.
+ALLOWED_ADDRESS_PREFIXES = (
+    "0.0.0.0",          # bind-any
+    "127.",             # loopback
+    "169.254.169.254",  # cloud instance metadata endpoint
+    "192.168.1.",       # the placeholder subnet used across docs, locales and screenshots
+    "10.0.0.",          # the lab compose network (lab/providers/docker-compose.yml)
+    "172.16.",          # docker-assigned bridge networks
+    "172.17.",
+    "172.18.",
+    "172.19.",
+)
+
+_PRIVATE_V4 = re.compile(
+    r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r"|192\.168\.\d{1,3}\.\d{1,3}"
+    r"|169\.254\.\d{1,3}\.\d{1,3})\b"
+)
+
+# Everything a human writes. Lockfiles and vendored data are not ours to police.
+TEXT_SUFFIXES = (
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".json",
+    ".md", ".yml", ".yaml", ".toml", ".txt", ".sh", ".html", ".example",
+)
+
+SKIP_ADDRESS_SCAN = ("frontend/package-lock.json",)
+
+
 # Where hand-written source lives. An ignore rule has no business reaching in here.
 SOURCE_ROOTS = ("app", "frontend/src", "vauxtra_mcp", "tests", "scripts")
 
@@ -142,6 +179,24 @@ def _find_ignored_source_files() -> list[str]:
     )
 
 
+def _find_private_addresses(files: list[str]) -> list[str]:
+    """Tracked files printing a private address the repository has not declared."""
+    hits: list[str] = []
+    for rel in files:
+        if rel in SKIP_ADDRESS_SCAN or not rel.endswith(TEXT_SUFFIXES):
+            continue
+        path = Path(rel)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for addr in _PRIVATE_V4.findall(line):
+                if not addr.startswith(ALLOWED_ADDRESS_PREFIXES):
+                    hits.append(f"{rel}:{lineno}: {addr}")
+    return hits
+
+
 def main() -> int:
     tracked = _git_ls_files()
     bad_tracked = _find_bad_tracked_files(tracked)
@@ -149,8 +204,11 @@ def main() -> int:
     missing_required = _find_missing_required_files(tracked)
     unpinned = _find_unpinned_actions()
     ignored_source = _find_ignored_source_files()
+    private_addresses = _find_private_addresses(tracked)
 
-    if not (bad_tracked or bad_refs or missing_required or unpinned or ignored_source):
+    if not (
+        bad_tracked or bad_refs or missing_required or unpinned or ignored_source or private_addresses
+    ):
         print("Repo hygiene check passed")
         return 0
 
@@ -183,6 +241,13 @@ def main() -> int:
         print("\nAnchor the rule to the repository root (`/data/`, not `data/`), or")
         print("negate it for this path. Until then these files build locally and are")
         print("missing from every clone.")
+
+    if private_addresses:
+        print("\nPrivate addresses that are not declared example addresses:")
+        for hit in private_addresses:
+            print(f" - {hit}")
+        print("\nUse the 192.168.1.x placeholder subnet, or add the prefix to")
+        print("ALLOWED_ADDRESS_PREFIXES if it really belongs to this repository.")
 
     return 1
 
