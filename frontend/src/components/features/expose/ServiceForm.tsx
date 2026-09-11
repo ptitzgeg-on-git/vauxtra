@@ -30,6 +30,14 @@ interface ServiceFormProps {
   setFormData: Dispatch<SetStateAction<FormState>>;
   providers: Provider[];
   domains: string[];
+  /**
+   * A list below came back empty because its request failed, not because it is empty. One
+   * flag each: they are three separate requests, and the one that answered must not be made
+   * to apologise for the one that did not.
+   */
+  domainsError?: boolean;
+  tagsError?: boolean;
+  environmentsError?: boolean;
   isLoadingProviders: boolean;
   isLoadingDomains: boolean;
   providerTypeMap: ProviderTypesResponse;
@@ -194,6 +202,9 @@ export function ServiceForm({
   setFormData,
   providers,
   domains,
+  domainsError = false,
+  tagsError = false,
+  environmentsError = false,
   isLoadingProviders,
   isLoadingDomains,
   providerTypeMap,
@@ -369,7 +380,13 @@ export function ServiceForm({
             label={t('expose.field.domain')}
             required
             hint={
-              domains.length === 0 && !isLoadingDomains ? (
+              domains.length === 0 && domainsError ? (
+                // "You have no domains" and "we could not read your domains" are the same
+                // empty array, and only one of them is worth a trip to the settings page.
+                // Keyed on the list still being empty, because a refresh can fail over data
+                // that already arrived -- and those domains are in the datalist below.
+                t('expose.field.domain_hint_unavailable')
+              ) : domains.length === 0 && !isLoadingDomains ? (
                 <>
                   {t('expose.field.domain_hint_prefix')}{' '}
                   <Link to="/settings?tab=dns" className="font-medium text-primary hover:underline">
@@ -825,12 +842,16 @@ export function ServiceForm({
             onToggle={toggleTag}
             loading={isLoadingTaxonomy}
             emptyText={
-              <>
-                {t('expose.field.tags_empty')}{' '}
-                <Link to="/settings?tab=tags" className="font-medium text-primary hover:underline">
-                  {t('expose.field.manage_taxonomy')}
-                </Link>
-              </>
+              tagsError ? (
+                t('ui.error.list_unavailable')
+              ) : (
+                <>
+                  {t('expose.field.tags_empty')}{' '}
+                  <Link to="/settings?tab=tags" className="font-medium text-primary hover:underline">
+                    {t('expose.field.manage_taxonomy')}
+                  </Link>
+                </>
+              )
             }
           />
           <TaxonomyChips
@@ -840,12 +861,16 @@ export function ServiceForm({
             onToggle={toggleEnvironment}
             loading={isLoadingTaxonomy}
             emptyText={
-              <>
-                {t('expose.field.environments_empty')}{' '}
-                <Link to="/settings?tab=environments" className="font-medium text-primary hover:underline">
-                  {t('expose.field.manage_taxonomy')}
-                </Link>
-              </>
+              environmentsError ? (
+                t('ui.error.list_unavailable')
+              ) : (
+                <>
+                  {t('expose.field.environments_empty')}{' '}
+                  <Link to="/settings?tab=environments" className="font-medium text-primary hover:underline">
+                    {t('expose.field.manage_taxonomy')}
+                  </Link>
+                </>
+              )
             }
           />
         </div>

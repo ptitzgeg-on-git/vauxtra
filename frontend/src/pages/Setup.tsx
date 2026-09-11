@@ -131,6 +131,12 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   // Import
   const [importableServices, setImportableServices] = useState<ImportableService[]>([]);
   const [loadingImportable, setLoadingImportable] = useState(false);
+  /**
+   * The scan came back with nothing because it failed. Without this, it came back with
+   * nothing exactly like a provider that has nothing to import — and the wizard drew a
+   * green tick over the failure on the screen whose next button ends setup.
+   */
+  const [importScanFailed, setImportScanFailed] = useState(false);
   const [importing, setImporting] = useState(false);
   const [finishing, setFinishing] = useState(false);
 
@@ -169,6 +175,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   );
 
   const loadImportableServices = useCallback(async () => {
+    setImportScanFailed(false);
     if (providers.length === 0) {
       setImportableServices([]);
       return;
@@ -223,6 +230,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
       if (import.meta.env.DEV) console.error('Sync error:', err);
       toast.error(translateApiError(err, t, t('setup.toast.scan_failed')));
       setImportableServices([]);
+      setImportScanFailed(true);
     } finally {
       setLoadingImportable(false);
     }
@@ -491,6 +499,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
                 providers={providers}
                 importableServices={importableServices}
                 loadingImportable={loadingImportable}
+                scanFailed={importScanFailed}
                 importing={importing}
                 onToggle={(idx) => setImportableServices((prev) => prev.map((svc, i) => (i === idx ? { ...svc, selected: !svc.selected } : svc)))}
                 onSelectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: true })))}
