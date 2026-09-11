@@ -26,6 +26,52 @@ def _table_exists(conn, table_name: str) -> bool:
     return result is not None
 
 
+# Emptied by a restore, in this order. The same list `POST /api/reset` uses, minus
+# `api_keys`: only the prefix of a key is ever exported, never its hash, so wiping that
+# table would lock the operator's own automation out of the instance it just restored, and
+# a restore could not put a usable key back either. Everything else has to go, because the
+# restore re-inserts explicit ids -- a surviving row does not dangle, it silently re-points
+# at whatever record now holds its id.
+#
+# Children before parents: nothing above may be resurrected by a cascade fired from a row
+# deleted below it.
+#
+# `_restore_wipe_covers_the_schema` holds this list to the schema, so a table added later
+# fails a test instead of quietly outliving every restore -- which is how the four below
+# came to be missing in the first place:
+#   - `webhook_delivery_log` has no cascade from `webhooks` before schema 11, and the retry
+#     job reads the destination off the log row rather than off `webhooks`, so a queued send
+#     kept firing at a webhook the restored set does not contain.
+#   - `scheduler_state` keys its alert bookkeeping by (service_id, webhook_id).
+#   - `service_templates` is in neither export, so it survived a restore with its provider
+#     columns blanked by the cascade and `tag_ids_json` naming other people's tags.
+#   - `uptime_events` was already emptied by its ON DELETE CASCADE on services; it is listed
+#     anyway so the wipe does not depend on a pragma being on.
+_RESTORE_WIPE_TABLES = (
+    "service_alerts",
+    "service_tags",
+    "service_push_targets",
+    "service_environments",
+    "uptime_events",
+    "services",
+    "webhook_delivery_log",
+    "webhooks",
+    "service_templates",
+    "providers",
+    "tags",
+    "environments",
+    "domains",
+    "docker_endpoints",
+    "scheduler_state",
+    "logs",
+)
+
+# Kept out of the wipe on purpose, and asserted by that same test so the exemption stays a
+# decision rather than an oversight. `settings` is wiped separately, down to the protected
+# keys; `api_keys` is never touched.
+_RESTORE_KEEPS = frozenset({"settings", "api_keys"})
+
+
 _BACKUP_VERSION = "8"  # Version 8 encrypts the webhook URLs too, and says which fields
 
 # What a secure export encrypts with the passphrase, written into the file so a restore
@@ -268,20 +314,7 @@ def import_backup(request: Request, body: RestoreRequest):
         # One execute() per table, NOT executescript(): executescript() issues an implicit
         # COMMIT before running, which would close the transaction opened above and make the
         # rollback handlers below no-ops on an already-destroyed database.
-        for table in (
-            "service_alerts",
-            "service_tags",
-            "service_push_targets",
-            "service_environments",
-            "services",
-            "providers",
-            "tags",
-            "environments",
-            "webhooks",
-            "domains",
-            "docker_endpoints",
-            "logs",
-        ):
+        for table in _RESTORE_WIPE_TABLES:
             conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed literal table names
         # Never wipe the credentials: a restore must not be able to drop the instance
         # back to anonymous-admin.

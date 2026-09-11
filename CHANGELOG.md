@@ -44,6 +44,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Four tables outlived a restore.** A restore replaces the instance: it empties the tables,
+  then re-inserts the backup's rows under their original ids. A table left out of that wipe
+  therefore does not keep orphans — it keeps rows that now name a different record.
+  `webhook_delivery_log` was the worst of them: it has no cascade from `webhooks`, and the
+  retry job reads a delivery's destination off the log row rather than off `webhooks`, so a
+  queued send kept firing at a webhook the restored set does not contain, for the full 24 h of
+  backoff. `scheduler_state` kept alert bookkeeping keyed by `(service_id, webhook_id)`, and
+  `service_templates` — exported by neither backup route — came back with its provider columns
+  blanked by the cascade and its `tag_ids_json` naming someone else's tags, so the next service
+  created from a template landed on the wrong tags with no provider attached. `uptime_events`
+  was already emptied by its cascade on `services`; it is listed anyway so the wipe does not
+  depend on a pragma being on. `api_keys` stays out on purpose: only a key's prefix is ever
+  exported, never its hash, so wiping it would lock the operator's own automation out of the
+  instance it just restored. The list is now a module constant held to the schema by a test, so
+  a table added later fails a test instead of silently surviving every restore.
 - **Three legitimate spellings of one origin matched nothing.** `CORS_ORIGINS` is compared to
   the browser's `Origin` header character for character, so a rebuilt origin that is merely
   *equivalent* is a rejection — and a silent one: the request fails in the browser while the
