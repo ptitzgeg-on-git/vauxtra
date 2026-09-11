@@ -91,7 +91,19 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     if (stored && SUPPORTED_LANGUAGES.some((l) => l.code === stored)) return stored;
     return detectBrowserLang();
   });
-  const [translations, setTranslations] = useState<Translations>({});
+  // `t()` falls back to the key itself, so anything painted before the first locale chunk
+  // lands reads `nav.dashboard`, `ui.loading`, `dashboard.page_description`. The provider
+  // wraps the whole app, so that is every screen, and it looks like a half-deployed build --
+  // the natural reaction being to reload or roll back a healthy release. Non-English users
+  // saw it on every cold load, their chunk never being the one already parsed.
+  //
+  // The cache is read here rather than waited for: a second mount at the same language has
+  // the map in hand and must not blank the screen again.
+  const [translations, setTranslations] = useState<Translations>(() => cache[lang] ?? {});
+  // One-way, and deliberately not `isLoading`: that goes true again on every language
+  // switch, and blanking the app mid-session would be worse than holding the previous
+  // language until the new one lands -- which is what `setLang` already arranges.
+  const [ready, setReady] = useState(() => cache[lang] !== undefined);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -100,6 +112,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       setTranslations(t);
       setIsLoading(false);
+      setReady(true);
     });
 
     return () => {
@@ -132,6 +145,13 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     },
     [translations],
   );
+
+  // Deliberately text-free: any label here would need a translation that is, by definition,
+  // not loaded yet. The background token matches the blocking theme script in index.html, so
+  // the first frame already carries the right colours and nothing flashes. The cost is one
+  // small same-origin JSON serialised ahead of the app's first request, which is cheaper than
+  // showing the operator a screen full of raw keys.
+  if (!ready) return <div className="min-h-screen bg-background" aria-busy="true" />;
 
   return <I18nContext.Provider value={{ lang, setLang, t, isLoading }}>{children}</I18nContext.Provider>;
 }
