@@ -325,6 +325,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   concerned now use U+202F before `? ! ;` and U+00A0 before `:`, the spelling the file already
   used in one place.
 
+- **A French panel had lost its accents, and only the French one.** *Les cles API ne sont
+  affichees qu'une seule fois a la creation* — Settings › API keys and Settings › Backup were
+  written without a single diacritic, fourteen strings of them, while Spanish, Portuguese and
+  German kept theirs on the same keys. Nothing caught it: every key was present, every
+  placeholder matched, the file was valid JSON. Three more turned up elsewhere by the same
+  reading — German `Webhook-Eintrage` for *Einträge*, Portuguese `notificacao` and `versao`.
+
+  `check-locale-quality.mjs` now refuses a spelling that cannot be a word in its language.
+  The list holds only those: `cles`, `acces`, `donnees`, `parametres` and their kind, never
+  `chiffres` or `configure` or `utilise`, which are ordinary words that happen to neighbour an
+  accented one. Placeholders and paths are skipped before the check reads a value, or
+  `{version}` and `icone.png` would both be reported. The check matches on `\p{L}`, not `\w`:
+  JavaScript's `\w` is ASCII even under `/u`, so `Paramètres` would otherwise arrive as
+  `Param` and `tres`.
+
+- **Four strings used a word the rest of their own file translates differently.** The backup
+  summary called services *Prestations* in French — what a caterer sells — and tags *Balises*,
+  which are the tags in a markup document; German called them *Dienstleistungen* where it says
+  *Dienste* everywhere else; Chinese left `Provider` in English under a sentence that had just
+  written 提供商. Each was the single string in its file using that word. They join the banned
+  values `check-locale-quality.mjs` already held for *webhaken* and *discapacitado*, which are
+  the same mistake: a translator reaching for the everyday sense of a term this product uses
+  in its technical sense.
+
+  Eight more French strings had kept the English *providers* while the file says *fournisseurs*
+  a hundred times over — including two that sit on the same screen, *Analyse des providers…*
+  next to *Analyse des fournisseurs…*, both translating the same English sentence.
+
 ---
 
 ## [1.4.0] — 2026-09-11

@@ -158,7 +158,7 @@
   "settings.backup.invalid_json": "JSON 格式无效。",
   "settings.backup.version": "备份 v{version}",
   "settings.backup.summary.services": "服务",
-  "settings.backup.summary.providers": "Provider",
+  "settings.backup.summary.providers": "提供商",
   "settings.backup.summary.domains": "域名",
   "settings.backup.summary.tags": "标签",
   "settings.backup.summary.environments": "环境",
