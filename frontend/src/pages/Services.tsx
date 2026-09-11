@@ -764,7 +764,7 @@ export function Services() {
   } else {
     listBody = (
       <div className="overflow-x-auto rounded-2xl border border-border bg-card shadow-card animate-in fade-in animate-duration-200">
-        <table className="w-full min-w-[56rem] text-sm">
+        <table className="w-full min-w-4xl text-sm">
           <thead className="border-b border-border bg-muted/40 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             <tr>
               <th scope="col" className="w-10 px-3 py-2.5">
@@ -844,7 +844,7 @@ export function Services() {
       >
         <div className="space-y-4 rounded-2xl border border-border bg-card p-4 shadow-card">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[14rem] flex-1">
+            <div className="relative min-w-56 flex-1">
               <SearchInput
                 ref={searchRef}
                 value={search}
@@ -937,7 +937,7 @@ export function Services() {
             <div
               role="toolbar"
               aria-label={t('services.bulk.label')}
-              className="sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-primary/30 bg-card/95 px-4 py-2.5 shadow-elevated backdrop-blur animate-in fade-in animate-duration-200"
+              className="sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-primary/30 bg-card/95 px-4 py-2.5 shadow-elevated backdrop-blur-sm animate-in fade-in animate-duration-200"
             >
               <Badge tone="primary" size="md">
                 {t('services.bulk.selected', { count: selectedIds.size })}
