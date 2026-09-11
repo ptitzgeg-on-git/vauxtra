@@ -69,6 +69,68 @@ class TestCORSValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_cors_origins("https://ok.example.com,ftp://bad", "https://fallback.example.com")
 
+    def test_trailing_slash_is_dropped_not_refused(self):
+        """The address bar shows a trailing slash, so that is what gets pasted.
+
+        It used to refuse the whole setting over it -- and one bad entry refuses them all,
+        so a second, perfectly good origin went down with it. The browser never sends that
+        character in `Origin`; there is nothing here to refuse.
+        """
+        self.assertEqual(
+            validate_cors_origins("https://panel.example.com/", ""),
+            ["https://panel.example.com"],
+        )
+        self.assertEqual(
+            validate_cors_origins("https://a.example.com/,https://b.example.com", ""),
+            ["https://a.example.com", "https://b.example.com"],
+        )
+
+    def test_a_real_path_is_still_refused(self):
+        """Forgiving the slash is not forgiving a URL that is not an origin."""
+        for setting in (
+            "https://example.com/app",
+            "https://example.com/?x=1",
+            "https://example.com/#fragment",
+        ):
+            with self.subTest(setting=setting):
+                with self.assertRaises(ValueError):
+                    validate_cors_origins(setting, "")
+
+    def test_a_default_port_is_dropped(self):
+        """`Origin` reads `https://host`. It never reads `https://host:443`.
+
+        The comparison is exact, so an operator who spelled the port out got a CORS error
+        in the browser and a line in the log saying the origin had been validated.
+        """
+        self.assertEqual(
+            validate_cors_origins("https://panel.example.com:443", ""),
+            ["https://panel.example.com"],
+        )
+        self.assertEqual(
+            validate_cors_origins("http://panel.example.com:80", ""),
+            ["http://panel.example.com"],
+        )
+        # Any other port is part of the origin and stays.
+        self.assertEqual(
+            validate_cors_origins("http://panel.example.com:8888", ""),
+            ["http://panel.example.com:8888"],
+        )
+
+    def test_ipv6_keeps_its_brackets(self):
+        """`urlparse` hands the host back without them, and `http://::1:8888` is nothing."""
+        self.assertEqual(validate_cors_origins("http://[::1]:8888", ""), ["http://[::1]:8888"])
+        self.assertEqual(
+            validate_cors_origins("https://[2001:db8::1]", ""),
+            ["https://[2001:db8::1]"],
+        )
+
+    def test_two_spellings_of_one_origin_are_one_entry(self):
+        """Normalising is what makes a duplicate possible; the count must not double."""
+        self.assertEqual(
+            validate_cors_origins("https://panel.example.com/,https://panel.example.com:443", ""),
+            ["https://panel.example.com"],
+        )
+
 
 class TestDomainSanitization(unittest.TestCase):
     def test_valid_domain(self):
