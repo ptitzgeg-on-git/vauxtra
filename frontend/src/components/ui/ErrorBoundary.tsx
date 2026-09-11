@@ -26,7 +26,7 @@ interface State {
 }
 
 const FOCUS_RING =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
 
 /**
  * The class React needs for `getDerivedStateFromError`. Hooks cannot live here, so the
@@ -71,11 +71,11 @@ class ErrorBoundaryBase extends Component<BaseProps, State> {
         {error.message && (
           <details className="mt-4 w-full text-left">
             <summary
-              className={`cursor-pointer rounded text-xs font-medium text-muted-foreground hover:text-foreground ${FOCUS_RING}`}
+              className={`cursor-pointer rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground ${FOCUS_RING}`}
             >
               {labels.details}
             </summary>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {error.message}
             </pre>
           </details>

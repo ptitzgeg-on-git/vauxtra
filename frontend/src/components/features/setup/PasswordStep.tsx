@@ -49,7 +49,7 @@ function ModeCard({
       aria-pressed={selected}
       className={cn(
         'flex h-full flex-col items-start gap-3 rounded-xl border-2 p-5 text-left transition-all',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring',
         selected
           ? tone === 'primary'
             ? 'border-primary bg-primary/5'
@@ -205,7 +205,7 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
                     aria-label={showPassword ? t('provider_modal.field.hide_password') : t('provider_modal.field.show_password')}
                     aria-pressed={showPassword}
                     tabIndex={-1}
-                    className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>

@@ -134,7 +134,7 @@ export function MonitoringTable({
                       event.stopPropagation();
                       onSelect(service);
                     }}
-                    className="block max-w-[280px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded"
+                    className="block max-w-[280px] text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded-sm"
                   >
                     <span
                       className={cn(

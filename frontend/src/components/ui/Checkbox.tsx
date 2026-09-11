@@ -44,7 +44,7 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(function Che
         aria-invalid={control.invalid || undefined}
         aria-describedby={control.describedBy}
         className={cn(
-          'peer h-4 w-4 cursor-pointer appearance-none rounded border border-border bg-input shadow-sm transition-colors',
+          'peer h-4 w-4 cursor-pointer appearance-none rounded-sm border border-border bg-input shadow-sm transition-colors',
           'checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary',
           'focus:ring-2 focus:ring-primary/25 focus:ring-offset-0',
           'disabled:cursor-not-allowed disabled:opacity-50',
