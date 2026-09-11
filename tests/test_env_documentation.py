@@ -29,6 +29,20 @@ _READER = re.compile(
 # `.env.example` lines, live or commented out: `NAME=`, `# NAME=`.
 _DECLARED = re.compile(r"^\s*#?\s*([A-Z][A-Z_0-9]*)\s*=", re.M)
 
+# Declared in `.env.example` and read by nothing written in Python. Each names the file
+# that does read it, because an entry here is not an exemption from the rule -- it is the
+# rule applied to a reader that is not Python. `test_the_non_python_readers_are_real`
+# checks that the named file still mentions it, so a stale pardon fails instead of
+# quietly covering a knob that turns nothing.
+_READ_OUTSIDE_PYTHON = {
+    # The C library, inside the container. The Dockerfile sets it for that reason.
+    "TZ": "Dockerfile",
+    # Docker Compose, while it builds the port mapping. `.env` is the file Compose
+    # interpolates from, so `.env.example` is exactly where an operator looking for the
+    # interface the panel is published on should find it.
+    "VAUXTRA_BIND": "docker-compose.yml",
+}
+
 # Read by the code, deliberately absent from `.env.example`. Each needs a reason.
 _NOT_OPERATOR_CONTROLS = {
     # Stamped into the image by the Dockerfile at build time (`ARG APP_VERSION`). Setting it
@@ -76,19 +90,32 @@ class EveryVariableIsDocumentedTests(unittest.TestCase):
     def test_the_example_does_not_advertise_a_variable_nothing_reads(self) -> None:
         """The other direction: a documented knob that turns nothing.
 
-        `TZ` is the exception that proves the rule -- no Python line reads it, the C library
-        does, which is why the Dockerfile sets it.
+        Two readers here are not Python, and `_READ_OUTSIDE_PYTHON` names both of them.
+        Everything else in `.env.example` has to be reachable from a `os.environ` call.
         """
         read = set(_env_vars_read_by_the_code())
         declared = _env_vars_declared_in_the_example()
-        read_by_the_platform = {"TZ"}
 
-        orphans = sorted(declared - read - read_by_the_platform)
+        orphans = sorted(declared - read - set(_READ_OUTSIDE_PYTHON))
         self.assertEqual(
             orphans,
             [],
             "`.env.example` offers these and no code reads them: an operator sets one and "
             "nothing happens.",
+        )
+
+    def test_the_non_python_readers_are_real(self) -> None:
+        """A pardon that names a reader must name one that still reads it."""
+        silent = sorted(
+            f"{name} ({where})"
+            for name, where in _READ_OUTSIDE_PYTHON.items()
+            if name not in (_REPO / where).read_text(encoding="utf-8", errors="replace")
+        )
+        self.assertEqual(
+            silent,
+            [],
+            "These are pardoned because something outside Python reads them, and the file "
+            "named no longer mentions them.",
         )
 
     def test_the_exception_list_stays_honest(self) -> None:

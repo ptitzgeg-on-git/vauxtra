@@ -75,11 +75,15 @@ Pull the pre-built image from GitHub Container Registry:
 ```bash
 docker run -d \
   --name vauxtra \
-  -p 8888:8888 \
+  -p 127.0.0.1:8888:8888 \
   -v vauxtra_data:/app/data \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   ghcr.io/ptitzgeg-on-git/vauxtra:latest
 ```
+
+> The port is published on the loopback: the panel holds provider credentials and has
+> none of its own until you complete the setup wizard. Once you have, `-p 8888:8888` reaches
+> it from the LAN — behind a reverse proxy, preferably.
 
 > The Docker socket is only needed for container discovery, and mounting it is a real
 > grant: `:ro` applies to the socket file, not to the Docker API, so whoever reaches it can
@@ -95,7 +99,8 @@ services:
   vauxtra:
     image: ghcr.io/ptitzgeg-on-git/vauxtra:latest
     ports:
-      - "8888:8888"
+      # Loopback by default; VAUXTRA_BIND=0.0.0.0 publishes on every interface.
+      - "${VAUXTRA_BIND:-127.0.0.1}:8888:8888"
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
