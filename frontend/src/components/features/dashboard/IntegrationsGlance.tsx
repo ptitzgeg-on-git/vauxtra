@@ -99,8 +99,15 @@ export function IntegrationsGlance({
   } else {
     const shown = providers.slice(0, limit);
     const rest = providers.length - shown.length;
+    // Two tiles per row only when this card is genuinely wide, which is a question about the
+    // card and not about the window. `sm:grid-cols-2` asked the window, and got it backwards:
+    // below `xl` the dashboard is one column and the card spans the whole page, while at `xl`
+    // it drops into the narrow 2/5 rail -- about 440 px. Split in two there, a tile had some
+    // 30 px left for the name once the logo and the status pill had taken their share, so the
+    // integrations read "Ad...", "Pi-...", "Te...". The pill sets that floor: it is
+    // `whitespace-nowrap`, so it never gives any width back.
     body = (
-      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <ul className="grid grid-cols-1 gap-2 @2xl/glance:grid-cols-2">
         {shown.map((p) => {
           const badge = badgeFor(p);
           const typeLabel = types?.[p.type]?.label ?? p.type;
@@ -134,7 +141,7 @@ export function IntegrationsGlance({
           );
         })}
         {rest > 0 && (
-          <li className="sm:col-span-2">
+          <li className="@2xl/glance:col-span-2">
             <Link
               to="/providers"
               className="flex items-center justify-center rounded-xl border border-dashed border-border px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
@@ -155,7 +162,7 @@ export function IntegrationsGlance({
           <ArrowRight aria-hidden="true" className="ml-1.5 h-3.5 w-3.5" />
         </Link>
       </SectionHeading>
-      <div className="mt-4">{body}</div>
+      <div className="@container/glance mt-4">{body}</div>
     </Card>
   );
 }

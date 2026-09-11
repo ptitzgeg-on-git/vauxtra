@@ -45,6 +45,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   nothing about the sixty commits behind it, and reported green for a history it never
   opened.
 
+- **The container could hand a privilege back after dropping it.** `docker-compose.yml`
+  carried no `security_opt`, so the container ran with `no_new_privs` unset and any setuid
+  binary inside it was free to raise privilege after the entrypoint had lowered it. The
+  entrypoint starts as root deliberately — it chowns the data volume and adds `appuser` to
+  whichever group owns the Docker socket, a GID nothing can know before run time — and then
+  runs the server with `gosu appuser`. That handover is a syscall made by root and is not
+  what the flag forbids; `no-new-privileges:true` is now set, and the drop still happens.
+
+  Two neighbouring flags are deliberately *not* set, and the file says so rather than
+  leaving the next reader to wonder. `read_only: true` and `cap_drop: ALL` each break that
+  same entrypoint: it writes `/etc/group` and `/etc/passwd` for the socket grant and chowns
+  `/app/data`, so it needs a writable root filesystem and five capabilities. Turning them on
+  is not a hardening, it is a container that stops booting at the next restart — with the
+  Docker socket mounted, at the exact moment somebody is least watching.
+
 ### Added
 
 - **A frontend test runner, because three fixes in a row shipped with the same caveat.** The
@@ -231,6 +246,84 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   tracks the two paths a human types through instead. `TemplateModal` compares against the
   template it was opened on, with the tag list sorted first, since tag order is click order and
   a tag turned off and back on is not a change anybody made.
+
+- **The screen that says a service is live printed `{host}` and then the host.** Every one of
+  the eight locales writes the success sentence with the hostname inside it — `Your service is
+  now reachable at {host}` — and the last step of the expose modal called `t('expose.done.body')`
+  with no parameters at all, then rendered the host again underneath. So the one line confirming
+  a publication read *…reachable at {host}* above the real address. It had been that way in
+  every language since the sentence gained its placeholder.
+
+  `t()` returns a plain string, which is why handing it the host would not have been a fix
+  either: the host is styled — monospace, on the foreground colour — and a parameter would have
+  flattened that into the paragraph. The template is split on its own placeholder instead, so
+  the styling survives and each language keeps its word order, which really does differ here:
+  the Japanese sentence opens on the host and the English one ends on it. A translation that
+  lost the placeholder still renders, with the host last.
+
+- **Supervision announced automatic checks on an instance where they are switched off.** The
+  header read *Auto checks: every 5 min* whenever the scheduler was stopped, because
+  `check_interval` holds `0` when the toggle in Settings › General is off and
+  `Number('0') || 5` reads that back as five minutes. The one screen an operator opens to find
+  out whether checks are running was the screen claiming they were. It now says they are off,
+  and `app/main.py`'s own rule is honoured on the way — anything it cannot parse is treated as
+  zero there, so it is treated as off here. A settings query that has not landed yet is the one
+  case that is neither, and the header keeps quiet rather than contradicting itself on first
+  paint.
+
+- **The log footer counted entries the search had just hidden.** The level chip filters on the
+  server, so the total it returns is a real total; the text search does not, it narrows the page
+  in hand. Both fed the same sentence, so typing three characters left *21 entries* written under
+  three visible rows. The footer now names which of the two numbers it is showing. The empty
+  state had a second problem underneath: it blamed the API — *Failed to load logs* — for a
+  filter that simply matched nothing, on a branch that is only ever reached when the request
+  succeeded, the failure having its own branch above it. It says nothing has been logged when
+  nothing has, and that no entry matches when a filter is on. In French it also regained the
+  accents it had lost.
+
+- **Two tooltips repeated the text under the cursor.** The uptime strip, when it has nothing to
+  plot, draws *No check in the last 24 h* and carried a `title` saying the same words, so
+  hovering it raised a native bubble quoting the sentence already on screen; the table under it
+  then printed that sentence a second time in its caption. Both are gone. A tooltip that adds
+  nothing is noise with a pointer and unreachable on a touch screen, and the caption now appears
+  only when it has something the strip cannot say — that the history request itself failed,
+  which from the strip's side looks exactly like a quiet scheduler.
+
+- **The provider validation panel answered in English on a French panel.** Both the setup wizard
+  and the integration modal printed each check exactly as the API names it for itself, so a
+  French operator connecting a provider read `test_connection — Connection test passed`. The
+  machinery to avoid that was already in the repository and already used by the integrations
+  page: the API sends a short `detail_code` beside its English sentence, and `checkDetailText()`
+  resolves it against the locale files. These two render sites bypassed it.
+
+  They now go through it, and through a sibling for the check's name. Twenty-two
+  `providers.diag.check.*` keys are added in all eight languages, folded so that the three
+  providers written before the naming convention settled — which spell their checks `API token`,
+  `List zones`, `DNS write` — land on the same key as the snake_case ones. A name no build knows
+  is shown as it arrives, which is what a panel older than the API it is talking to has to do.
+
+- **Six integrations on the dashboard were listed as "Ad…", "Pi-…", "Te…".** The glance card put
+  two tiles per row from the `sm` breakpoint on, and `sm` is a question about the window. The
+  answer came out backwards: below `xl` the dashboard is a single column and the card spans the
+  whole page, while at `xl` it drops into the narrow right-hand rail, about 440 px. Split in two
+  there, a tile had roughly 30 px left for the name once the logo and the status pill had taken
+  theirs — and the pill never gives any back, being `whitespace-nowrap`. The card now asks about
+  itself with a container query, so the second column appears when there is room for it rather
+  than when the window is wide.
+
+- **French counted in the plural from one.** *1 erreurs et 1 avertissements*, under a heading
+  reading *1 problèmes détectés* — the drift panel and the expose preflight both wrote their
+  counts with a bare plural. They use the `(s)` form the project already ships in
+  `monitoring.tunnels_down` and `providers.diag.passed_warnings`, rather than the `_one`/`_other`
+  pair used elsewhere, because two of these strings carry several independent counts at once and
+  a single pair cannot agree with more than one of them. Japanese and Chinese count with a
+  classifier and never disagreed; they are untouched.
+
+- **A lone `?` could start its own line in French.** French puts a space before `? ! ; :` and
+  that space has to be unbreakable, or the browser wraps on it — which is what the delete
+  confirmations did, leaving the question mark alone on the second line. The 145 French strings
+  concerned now use U+202F before `? ! ;` and U+00A0 before `:`, the spelling the file already
+  used in one place.
 
 ---
 

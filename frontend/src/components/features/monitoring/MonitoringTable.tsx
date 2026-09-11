@@ -191,13 +191,17 @@ export function MonitoringTable({
                             : t('monitoring.uptime.aria_empty', { host })
                         }
                       />
-                      <p className="text-[11px] tabular-nums text-muted-foreground">
-                        {availability
-                          ? t('monitoring.uptime.summary', { percent: availability, count: summary.total })
-                          : historyError
-                            ? t('monitoring.uptime.history_failed')
-                            : t('monitoring.uptime.no_history')}
-                      </p>
+                      {/* The strip draws its own "no check in the last 24 h" when it has
+                          nothing to plot, so repeating it here printed the sentence twice,
+                          one line under the other. A failed history query is different:
+                          the strip cannot tell that apart from a quiet scheduler. */}
+                      {(availability || historyError) && (
+                        <p className="text-[11px] tabular-nums text-muted-foreground">
+                          {availability
+                            ? t('monitoring.uptime.summary', { percent: availability, count: summary.total })
+                            : t('monitoring.uptime.history_failed')}
+                        </p>
+                      )}
                     </div>
                   )}
                 </td>

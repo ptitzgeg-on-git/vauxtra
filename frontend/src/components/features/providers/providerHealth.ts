@@ -62,6 +62,23 @@ export function checkDetailText(check: ProviderValidationCheck, t: Translate): s
   return line === key ? fallback : line;
 }
 
+/**
+ * What a validation check is called, in the reader's language.
+ *
+ * The API names its checks for itself, not for a reader: `test_connection`, `zones_access`,
+ * and -- in the three providers written earlier -- `API token`, `List zones`, `DNS write`.
+ * Both spellings are folded onto one key, so `providers.diag.check.dns_write` covers the
+ * snake_case name and the English phrase alike. An unknown name falls through to itself,
+ * which is what a build older than the API has to do anyway.
+ */
+export function checkLabelText(name: string | undefined, t: Translate): string {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const key = `providers.diag.check.${raw.toLowerCase().replace(/\s+/g, '_')}`;
+  const label = t(key);
+  return label === key ? raw : label;
+}
+
 export function isDiagnosticsFresh(diag: ProviderDiagnostics | undefined, now = Date.now()): boolean {
   const testedAt = Number(diag?.testedAt || 0);
   return testedAt > 0 && now - testedAt <= DIAGNOSTIC_TTL_MS;

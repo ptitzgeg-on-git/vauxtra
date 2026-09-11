@@ -6,6 +6,21 @@ services:
     # image: ghcr.io/ptitzgeg-on-git/vauxtra:latest
     container_name: vauxtra
     restart: unless-stopped
+    security_opt:
+      # Nothing inside this container ever needs to gain a privilege it was not started
+      # with. The entrypoint starts as root on purpose -- it has to chown the data volume
+      # and add `appuser` to the group that owns the Docker socket, whose GID is only known
+      # at run time -- and then hands the server over with `gosu appuser`. That handover is
+      # a plain setuid/setgid syscall made by root, which this flag does not touch; what it
+      # does forbid is the opposite direction, a setuid binary handing privilege back after
+      # the drop.
+      - no-new-privileges:true
+    # Not set, and deliberately: `read_only: true` and `cap_drop: ALL` both break the
+    # entrypoint. It writes `/etc/group` and `/etc/passwd` to grant the Docker socket's
+    # group, and chowns `/app/data` -- so it needs a writable root filesystem and CHOWN,
+    # DAC_OVERRIDE, FOWNER, SETUID and SETGID. Hardening past this point means moving that
+    # work out of the container, not switching the flags on and finding out at the next
+    # restart.
     ports:
       # The loopback by default. This panel holds provider credentials -- Cloudflare
       # tokens, proxy manager passwords -- and it has no password of its own until the
