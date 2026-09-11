@@ -12,7 +12,8 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { useDockerDiscovery, type DockerContainer } from '@/hooks/useDockerDiscovery';
 import { isDnsType, isProxyType } from '@/components/features/providers/providerConstants';
-import { Badge, Button, Checkbox, EmptyState, Field, IconButton, Input, Select, useConfirmDialog, type Tone } from '@/components/ui';
+import { Badge, Button, Checkbox, EmptyState, Field, IconButton, InlineAlert, Input, Select, useConfirmDialog, type Tone } from '@/components/ui';
+import { translateApiError } from '@/lib/errors';
 import type { Provider } from '@/types/api';
 import { SectionEyebrow, SettingsSection } from '../SettingsSection';
 
@@ -142,7 +143,24 @@ export function DockerSection() {
         </form>
       )}
 
-      {!hasEndpoints ? (
+      {docker.endpointsQuery.isError ? (
+        <InlineAlert
+          tone="danger"
+          title={t('settings.docker.endpoints_load_failed')}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              loading={docker.endpointsQuery.isFetching}
+              onClick={() => void docker.endpointsQuery.refetch()}
+            >
+              {t('common.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(docker.endpointsQuery.error, t, t('settings.docker.endpoints_load_failed_hint'))}
+        </InlineAlert>
+      ) : !hasEndpoints ? (
         <EmptyState
           compact
           icon={<Container />}

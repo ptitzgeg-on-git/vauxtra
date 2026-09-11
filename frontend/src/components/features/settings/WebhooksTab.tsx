@@ -54,7 +54,7 @@ export function WebhooksTab() {
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const hook = useWebhookActions(true);
-  const { webhooks, name, setName, url, setUrl, testResult, setTestResult } = hook;
+  const { webhooks, webhooksQuery, name, setName, url, setUrl, testResult, setTestResult } = hook;
 
   const { data: providers = [] } = useQuery<Provider[]>({
     queryKey: ['providers'],
@@ -424,7 +424,19 @@ export function WebhooksTab() {
           <SearchInput value={search} onChange={setSearch} placeholder={t('settings.webhooks.search_placeholder')} />
         )}
 
-        {webhooks.length === 0 ? (
+        {webhooksQuery.isError ? (
+          <InlineAlert
+            tone="danger"
+            title={t('settings.webhooks.load_failed')}
+            action={
+              <Button variant="outline" size="sm" onClick={() => void webhooksQuery.refetch()}>
+                {t('common.retry')}
+              </Button>
+            }
+          >
+            {translateApiError(webhooksQuery.error, t, t('settings.webhooks.load_failed_hint'))}
+          </InlineAlert>
+        ) : webhooks.length === 0 ? (
           <EmptyState compact icon={<Bell />} title={t('settings.webhooks.empty')} />
         ) : visible.length === 0 ? (
           <EmptyState compact title={t('settings.webhooks.no_match')} />

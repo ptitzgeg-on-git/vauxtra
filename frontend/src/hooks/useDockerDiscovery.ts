@@ -51,10 +51,13 @@ export function useDockerDiscovery() {
   const [newDockerEndpointName, setNewDockerEndpointName] = useState('');
   const [newDockerEndpointHost, setNewDockerEndpointHost] = useState('');
 
-  const { data: dockerEndpoints = [] } = useQuery<DockerEndpoint[]>({
+  // Returned whole, not just its rows: an empty list reads as "no engine is configured" and
+  // offers to add one, which is the wrong thing to say when the list simply failed to load.
+  const endpointsQuery = useQuery<DockerEndpoint[]>({
     queryKey: ['docker-endpoints'],
     queryFn: () => api.get<DockerEndpoint[]>('/docker/endpoints'),
   });
+  const dockerEndpoints = endpointsQuery.data ?? [];
 
   const { data: domains = [] } = useQuery<string[]>({
     queryKey: ['domains'],
@@ -199,6 +202,7 @@ export function useDockerDiscovery() {
     setNewDockerEndpointHost,
     // Derived
     dockerEndpoints,
+    endpointsQuery,
     domains,
     effectiveEndpointId,
     selectedEndpoint,

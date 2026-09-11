@@ -80,7 +80,11 @@ export interface ServiceDrawerProps {
   onClose: () => void;
   service: Service | null;
   history: ServiceHistoryPoint[];
+  /** The history request failed; an empty `history` says nothing about the service. */
+  historyError?: boolean;
   logs: LogEntry[];
+  /** Same, for the log request behind the third tab. */
+  logsError?: boolean;
   probe: LatencyProbe | undefined;
   checking: boolean;
   onCheck: (serviceId: number) => void;
@@ -92,7 +96,9 @@ export function ServiceDrawer({
   onClose,
   service,
   history,
+  historyError = false,
   logs,
+  logsError = false,
   probe,
   checking,
   onCheck,
@@ -229,7 +235,11 @@ export function ServiceDrawer({
           </TabList>
 
           <TabPanel value="timeline" className="pt-4">
-            {runs.length === 0 ? (
+            {runs.length === 0 && historyError && !tunnel ? (
+              <InlineAlert tone="warning" title={t('monitoring.history.load_failed')}>
+                {t('monitoring.history.load_failed_hint')}
+              </InlineAlert>
+            ) : runs.length === 0 ? (
               <EmptyState
                 compact
                 icon={<History />}
@@ -284,7 +294,11 @@ export function ServiceDrawer({
           </TabPanel>
 
           <TabPanel value="logs" className="pt-4">
-            {logs.length === 0 ? (
+            {logs.length === 0 && logsError ? (
+              <InlineAlert tone="warning" title={t('monitoring.logs.load_failed')}>
+                {t('monitoring.logs.load_failed_hint')}
+              </InlineAlert>
+            ) : logs.length === 0 ? (
               <EmptyState
                 compact
                 icon={<ScrollText />}

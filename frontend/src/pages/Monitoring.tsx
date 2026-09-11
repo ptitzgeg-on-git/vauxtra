@@ -152,11 +152,12 @@ export function Monitoring() {
     queryFn: () => api.get<Record<string, string>>('/settings'),
   });
 
-  const { data: logs } = useQuery<LogEntry[]>({
+  const logsQuery = useQuery<LogEntry[]>({
     queryKey: ['logs', 'monitoring'],
     queryFn: fetchRecentLogs,
     refetchInterval: autoRefresh,
   });
+  const logs = logsQuery.data;
 
   const historyQuery = useQuery<ServiceHistoryResponse>({
     queryKey: ['services-history'],
@@ -366,6 +367,20 @@ export function Monitoring() {
         </InlineAlert>
       )}
 
+      {historyQuery.isError && (
+        <InlineAlert
+          tone="warning"
+          title={t('monitoring.history.load_failed')}
+          action={
+            <Button variant="outline" size="sm" loading={historyQuery.isFetching} onClick={() => void historyQuery.refetch()}>
+              {t('common.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(historyQuery.error, t, t('monitoring.history.load_failed_hint'))}
+        </InlineAlert>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label={t('monitoring.stat.up')}
@@ -398,7 +413,11 @@ export function Monitoring() {
           label={t('monitoring.stat.availability')}
           value={availability === null ? EM_DASH : formatPercent(availability * 100, 1)}
           hint={
-            availability === null ? t('monitoring.stat.availability_empty') : t('monitoring.stat.availability_hint')
+            historyQuery.isError
+              ? t('monitoring.stat.availability_failed')
+              : availability === null
+                ? t('monitoring.stat.availability_empty')
+                : t('monitoring.stat.availability_hint')
           }
           icon={<Gauge />}
           tone={availability !== null && availability < 0.99 ? 'warning' : 'info'}
@@ -448,6 +467,7 @@ export function Monitoring() {
             <MonitoringTable
               services={filtered}
               history={historyQuery.data}
+              historyError={historyQuery.isError}
               probes={probes.probes}
               checkingId={probes.checkingId}
               now={now}
@@ -495,7 +515,9 @@ export function Monitoring() {
         onClose={() => setParams({ service: null })}
         service={selectedService}
         history={selectedHistory}
+        historyError={historyQuery.isError}
         logs={selectedLogs}
+        logsError={logsQuery.isError}
         probe={selectedService ? probes.probes[selectedService.id] : undefined}
         checking={probes.checkingId === selectedService?.id}
         onCheck={probes.check}

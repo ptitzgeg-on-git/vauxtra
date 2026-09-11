@@ -56,7 +56,8 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   const [isDockerMode, setIsDockerMode] = useState(false);
   const docker = useDockerEndpoints();
 
-  const { data: providerTypes, isLoading: typesLoading } = useProviderTypes({ enabled: isOpen });
+  const typesQuery = useProviderTypes({ enabled: isOpen });
+  const { data: providerTypes, isLoading: typesLoading } = typesQuery;
 
   const availableTypes = useMemo(() => {
     const entries = Object.entries(providerTypes || {}).filter(([, meta]) => Boolean(meta?.available));
@@ -236,6 +237,9 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
         <StepTypeSelector
           types={availableTypes}
           loading={typesLoading}
+          error={typesQuery.isError ? typesQuery.error : null}
+          refreshing={typesQuery.isFetching}
+          onRetry={() => void typesQuery.refetch()}
           selectedType={formData.type}
           isDockerMode={isDockerMode}
           onChooseProvider={chooseProviderType}
