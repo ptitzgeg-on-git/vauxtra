@@ -9,6 +9,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **The port was published on every interface of the host, and what answers it holds the
+  credentials of every provider.** `docker-compose.yml` mapped `"8888:8888"`, which means
+  `0.0.0.0:8888`: every machine on the LAN, and whatever a router in front of it forwards.
+  That is what a first `up -d` gets — before the setup wizard has run, and therefore
+  before there is a password on the panel at all. The mapping is now
+  `"${VAUXTRA_BIND:-127.0.0.1}:8888:8888"`, and `README.md`, `.env.example` and
+  `docs/DEPLOYMENT.md` say the same thing in the same place they used to say the opposite.
+  Widening it is one variable, which is the point: reaching the LAN is now a decision
+  somebody makes rather than one they inherit.
+
+  **Upgrading:** an instance you reach from another machine on `http://<host>:8888` stops
+  answering there. Put `VAUXTRA_BIND=0.0.0.0` in `.env` to get it back, or — better —
+  put the reverse proxy of `docs/DEPLOYMENT.md` section 5 in front of it and leave the port
+  where it is.
+
 - **Nothing stopped a tool from signing a commit on behalf of somebody who never wrote
   one.** GitHub builds the contributor sidebar from commit authors and from
   `Co-authored-by:` trailers alike, so a trailer is not a footnote: it puts a name and an

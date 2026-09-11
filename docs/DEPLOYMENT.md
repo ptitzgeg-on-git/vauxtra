@@ -22,7 +22,9 @@ services:
     image: ghcr.io/ptitzgeg-on-git/vauxtra:latest
     container_name: vauxtra
     ports:
-      - "8888:8888"
+      # The loopback, so the proxy of section 5 is the only way in. VAUXTRA_BIND=0.0.0.0
+      # publishes on every interface of the host instead.
+      - "${VAUXTRA_BIND:-127.0.0.1}:8888:8888"
     environment:
       TZ: UTC
       HTTPS_ONLY: "true"          # the browser reaches you over https://, proxy or not
@@ -45,7 +47,9 @@ Start:
 docker compose up -d
 ```
 
-Open: `http://<host>:8888`
+Open: `http://127.0.0.1:8888`, from the host itself. The port is published on the
+loopback only; section 5 puts a reverse proxy in front of it to reach it from anywhere
+else, and `VAUXTRA_BIND=0.0.0.0` publishes it on every interface if you would rather not.
 
 ## 4. Critical Security Rules
 
@@ -56,7 +60,10 @@ Open: `http://<host>:8888`
    `python -c "from app.auth import hash_password; print(hash_password('...'))"`.
    A plaintext value is refused unless `ALLOW_PLAINTEXT_APP_PASSWORD=true`.
 4. Set `DEBUG=false` in production to disable `/api/docs`.
-5. Restrict inbound access with reverse proxy/firewall if Internet-exposed.
+5. Restrict inbound access with a reverse proxy or a firewall. The compose file
+   publishes the port on the loopback (`VAUXTRA_BIND`, default `127.0.0.1`) so that this
+   rule is the default rather than a step to remember; widen it only once something in
+   front of it authenticates.
 6. Treat the Docker socket mount as root on the host, because it is. The `:ro` in
    `/var/run/docker.sock:/var/run/docker.sock:ro` applies to the socket *file*; the Docker
    API behind it is unchanged, and it can create a container that bind-mounts `/`. Vauxtra

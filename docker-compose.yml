@@ -7,7 +7,13 @@ services:
     container_name: vauxtra
     restart: unless-stopped
     ports:
-      - "8888:8888"
+      # The loopback by default. This panel holds provider credentials -- Cloudflare
+      # tokens, proxy manager passwords -- and it has no password of its own until the
+      # setup wizard is completed. `"8888:8888"` would publish it on every interface of
+      # the host from the first `up -d`, which on a home network is every device on the
+      # LAN. Set VAUXTRA_BIND to 0.0.0.0, or to one interface address, to widen it on
+      # purpose.
+      - "${VAUXTRA_BIND:-127.0.0.1}:8888:8888"
     volumes:
       - ./data:/app/data
       # Container discovery. `:ro` applies to the socket *file*, not to the Docker API:
