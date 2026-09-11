@@ -63,7 +63,13 @@ jobs:
           # those three are already unpullable, and removing their package entries is a
           # decision for a person, not for a cron job.
           use-regex: true
-          exclude-tags: '^(latest|\d+(\.\d+)*)$'
+          # `^(latest|\d+(\.\d+)*)$` is the obvious way to write this and the action rejects
+          # it: a quantified group inside a quantifier is a ReDoS shape, and it refuses to
+          # run rather than hand an attacker-controlled tag name to a backtracking engine.
+          # A flat character class says the same thing about the tags that exist here --
+          # every other tag is `sha-<hex>` or `sha256-<hex>.sig`, neither of which is
+          # digits and dots -- with no nesting to back track through.
+          exclude-tags: '^(latest|[0-9.]+)$'
           # Untagged *and* unreferenced. This action resolves every manifest list first, so
           # a platform manifest belonging to a live tag is not a candidate however untagged
           # the registry reports it.
