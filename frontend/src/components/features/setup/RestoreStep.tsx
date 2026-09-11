@@ -188,7 +188,7 @@ export function RestoreStep({
         type="button"
         onClick={() => fileInputRef.current?.click()}
         disabled={restoring}
-        className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-8 transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-8 transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
       >
         <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-xl bg-muted text-muted-foreground">
           {backupFile ? <FileJson className="h-5 w-5" /> : <Upload className="h-5 w-5" />}
@@ -258,7 +258,7 @@ export function RestoreStep({
                 aria-label={showPassphrase ? t('provider_modal.field.hide_password') : t('provider_modal.field.show_password')}
                 aria-pressed={showPassphrase}
                 tabIndex={-1}
-                className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {showPassphrase ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>

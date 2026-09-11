@@ -177,7 +177,7 @@ function AppearanceCard() {
                 onClick={() => setTheme(option.value)}
                 className={cn(
                   'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-colors duration-150',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring',
                   selected ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
                 )}
               >

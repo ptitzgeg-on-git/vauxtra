@@ -258,14 +258,14 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[10vh] sm:pt-[14vh]">
-      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-background/60 backdrop-blur-sm animate-in fade-in animate-duration-150" />
+      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-background/60 backdrop-blur-xs animate-in fade-in animate-duration-150" />
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t('palette.title')}
         className={cn(
-          'relative flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-border bg-popover text-popover-foreground shadow-elevated outline-none',
+          'relative flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-border bg-popover text-popover-foreground shadow-elevated outline-hidden',
           'animate-in fade-in zoom-in-95 animate-duration-200',
         )}
       >
