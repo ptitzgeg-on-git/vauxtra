@@ -120,11 +120,12 @@ const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
  * `t()` returns a plain string, so handing it the host as a parameter would flatten that
  * monospace run into the paragraph -- and calling it with no parameter at all, as this
  * screen did, printed the raw `{host}` placeholder followed by the value again. Splitting
- * the template on its own placeholder keeps both the styling and each language's word
- * order, which really does differ: the Japanese sentence opens on the host, the English one
- * closes on it. A translation that lost the placeholder still renders, host last.
+ * the template on its own placeholder keeps both the styling and the word order the
+ * translator chose. All eight sentences happen to open on the host today, and nothing in
+ * the locale files makes them: a translation that moves the placeholder, or loses it
+ * altogether, still renders -- host last in that case.
  */
-function PublishedSentence({ template, host }: { template: string; host: string }) {
+export function PublishedSentence({ template, host }: { template: string; host: string }) {
   const [before, after = ''] = template.split('{host}');
   return (
     <>
