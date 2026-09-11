@@ -17,7 +17,16 @@ import { useT } from '@/i18n';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { cn } from '@/lib/cn';
 import { translateApiError, isHttpStatus } from '@/lib/errors';
-import { Badge, Button, InlineAlert, Input, Modal, ProviderLogo, SectionHeading } from '@/components/ui';
+import {
+  Badge,
+  Button,
+  InlineAlert,
+  Input,
+  Modal,
+  ProviderLogo,
+  SectionHeading,
+  useConfirmDialog,
+} from '@/components/ui';
 import type {
   DryRunPlan,
   Environment,
@@ -128,6 +137,7 @@ export function ExposeModal({
   const [dryRun, setDryRun] = useState<DryRunPlan | null>(null);
   const [saveOutcome, setSaveOutcome] = useState<{ host: string; errors: string[] } | null>(null);
   const [templateDraftName, setTemplateDraftName] = useState('');
+  const { confirm, ConfirmDialogElement } = useConfirmDialog();
 
   const { data: providers = [], isLoading: isLoadingProviders } = useQuery<Provider[]>({
     queryKey: ['providers'],
@@ -441,6 +451,40 @@ export function ExposeModal({
     onClose();
   };
 
+  /**
+   * Escape closes the dialog even though `persistent` blocks the backdrop, and closing resets
+   * every field. A finished exposure -- hostname, target, providers, tags, environments, the
+   * preflight already run -- is several minutes of work, and one stray key threw all of it
+   * away, with no undo and no trace of what was in the form. The reset is now gated on the
+   * wizard having something to lose; Cancel goes through the same gate, so the two ways out
+   * of the first step behave alike.
+   *
+   * `done` is deliberately never dirty: the push has happened, that panel is a receipt, and
+   * making the operator confirm the closing of a receipt would be noise. `review` always is
+   * -- reaching it costs a preflight round-trip, even when nothing was typed on an edit.
+   */
+  const isDirty =
+    step !== 'done' &&
+    (step === 'review' ||
+      templateDraftName.trim() !== '' ||
+      JSON.stringify(formData) !== JSON.stringify(seedForm()));
+
+  const requestClose = async () => {
+    if (
+      isDirty &&
+      !(await confirm({
+        title: t('expose.discard.title'),
+        message: t('expose.discard.message'),
+        confirmLabel: t('expose.discard.confirm'),
+        cancelLabel: t('expose.discard.cancel'),
+        variant: 'danger',
+      }))
+    ) {
+      return;
+    }
+    handleClose();
+  };
+
   const checkLabel = (name: string): string => {
     const key = `expose.preflight.check.${name}`;
     const label = t(key);
@@ -480,7 +524,7 @@ export function ExposeModal({
   if (step === 'configure') {
     footer = (
       <>
-        <Button variant="ghost" onClick={handleClose}>
+        <Button variant="ghost" onClick={() => void requestClose()}>
           {t('common.cancel')}
         </Button>
         <Button
@@ -525,7 +569,7 @@ export function ExposeModal({
   return (
     <Modal
       open={isOpen}
-      onClose={handleClose}
+      onClose={() => void requestClose()}
       title={title}
       description={description}
       icon={<Network />}
@@ -830,6 +874,7 @@ export function ExposeModal({
           )}
         </div>
       )}
+      {ConfirmDialogElement}
     </Modal>
   );
 }

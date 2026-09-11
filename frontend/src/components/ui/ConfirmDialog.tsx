@@ -9,6 +9,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, Info, X } from 'lucide-react';
 import { useModalDialog } from '../../hooks/useModalDialog';
 import { useT } from '../../i18n';
@@ -71,8 +72,16 @@ const VARIANT_STYLES: Record<ConfirmVariant, { icon: string; variant: ButtonVari
  * every opening, so the typed confirmation text never carries over.
  */
 export function ConfirmDialog({ open, ...panel }: ConfirmDialogProps) {
-  if (!open) return null;
-  return <ConfirmDialogPanel {...panel} />;
+  if (!open || typeof document === 'undefined') return null;
+  /**
+   * Portalled to the body, like `Modal` and `Drawer`, and for the two reasons they were. A
+   * confirmation is regularly asked from inside a modal -- discarding a half-filled wizard, for
+   * one -- and both overlays sit at `z-50`: rendered where it is declared, the confirm is
+   * earlier in the document than the modal's own portal and paints underneath it, invisible.
+   * And `fixed` is measured against the nearest transformed ancestor: the modal panel carries
+   * `zoom-in-95`, which would become the containing block and shrink `inset-0` to the panel.
+   */
+  return createPortal(<ConfirmDialogPanel {...panel} />, document.body);
 }
 
 function ConfirmDialogPanel({
