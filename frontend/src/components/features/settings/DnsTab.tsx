@@ -136,7 +136,7 @@ export function DnsTab() {
           </Field>
           <Button
             type="submit"
-            className="sm:mt-[1.375rem]"
+            className="sm:mt-5.5"
             leftIcon={<Plus />}
             loading={addDomain.isPending}
             disabled={!candidate || candidateInvalid}

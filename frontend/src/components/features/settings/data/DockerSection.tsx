@@ -131,7 +131,7 @@ export function DockerSection() {
                 className="font-mono text-xs"
               />
             </Field>
-            <div className="flex gap-2 md:mt-[1.375rem]">
+            <div className="flex gap-2 md:mt-5.5">
               <Button type="submit" loading={docker.addEndpointMutation.isPending} disabled={!canAddEndpoint}>
                 {t('common.add')}
               </Button>
@@ -308,7 +308,7 @@ export function DockerSection() {
                 </Button>
               </div>
               <div className="overflow-x-auto rounded-xl border border-border">
-                <table className="w-full min-w-[48rem] text-xs">
+                <table className="w-full min-w-3xl text-xs">
                   <thead className="border-b border-border bg-muted/50">
                     <tr>
                       <th scope="col" className="w-10 px-3 py-2">

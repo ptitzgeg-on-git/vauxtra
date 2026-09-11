@@ -226,7 +226,7 @@ export function Login({ onSuccess }: LoginPageProps) {
                           aria-label={showPassword ? t('login.hide_password') : t('login.show_password')}
                           aria-pressed={showPassword}
                           tabIndex={-1}
-                          className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -254,7 +254,7 @@ export function Login({ onSuccess }: LoginPageProps) {
                       href={DOCS_AUTH_URL}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {t('login.docs_link')}
                       <ExternalLink aria-hidden="true" className="h-3 w-3" />

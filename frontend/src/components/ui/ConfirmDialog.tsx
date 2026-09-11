@@ -155,7 +155,7 @@ function ConfirmDialogPanel({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm animate-in fade-in animate-duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-xs animate-in fade-in animate-duration-150"
       onClick={handleBackdropClick}
     >
       <div
@@ -165,7 +165,7 @@ function ConfirmDialogPanel({
         aria-labelledby={titleId}
         aria-describedby={hasMessage ? messageId : undefined}
         aria-busy={loading || undefined}
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-elevated outline-none animate-in zoom-in-95 fade-in animate-duration-200"
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-elevated outline-hidden animate-in zoom-in-95 fade-in animate-duration-200"
       >
         <div className="flex items-start gap-4 p-5">
           <div className={`shrink-0 rounded-xl p-2.5 ${styles.icon}`} aria-hidden="true">
