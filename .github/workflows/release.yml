@@ -1,0 +1,169 @@
+# Every release page on this repository was written by hand, and it showed: three of them
+# advertised a `docker pull` for an image that is not in the registry, and one release was
+# missing entirely for a version the changelog documents. Both are the same class of
+# mistake, a page that asserts something nobody re-checked at the moment of publishing.
+#
+# So this workflow refuses to write the `docker pull` line until it has pulled the manifest
+# itself, all the way down to the platform images. If the tag does not resolve, the release
+# is not created and the run goes red. A missing release page is a nuisance; a release page
+# promising a command that fails is a trap, and this repository has already set three.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # `docker/metadata-action` strips the leading `v`, so git tag `v1.4.0` becomes image
+      # tag `1.4.0`. Getting this backwards is why `:v1.4.0` is not a thing you can pull.
+      - name: Resolve version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image tag: $version"
+
+      # Build & Publish is triggered by the same tag push and runs in parallel. Two
+      # architectures plus attestations take a while, so this waits rather than racing it.
+      - name: Wait for the image to be pullable
+        env:
+          PACKAGE: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.request
+
+          repo, tag = os.environ["PACKAGE"].lower(), os.environ["VERSION"]
+          accept = ",".join([
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+              "application/vnd.oci.image.manifest.v1+json",
+              "application/vnd.docker.distribution.manifest.v2+json",
+          ])
+
+          def get(url, headers):
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
+                  return json.load(r)
+
+          def resolves():
+              # A fresh token each attempt: these are short-lived and the wait is not.
+              token = get(
+                  f"https://ghcr.io/token?scope=repository:{repo}:pull&service=ghcr.io", {}
+              )["token"]
+              head = {"Authorization": f"Bearer {token}", "Accept": accept}
+              try:
+                  index = get(f"https://ghcr.io/v2/{repo}/manifests/{tag}", head)
+              except urllib.error.HTTPError as e:
+                  return f"index: HTTP {e.code}"
+              children = index.get("manifests", [])
+              if not children:
+                  return "index lists no manifests"
+              for m in children:
+                  try:
+                      get(f"https://ghcr.io/v2/{repo}/manifests/{m['digest']}", head)
+                  except urllib.error.HTTPError as e:
+                      return f"child {m['digest'][:19]}: HTTP {e.code}"
+              return None
+
+          DEADLINE, STEP = 30 * 60, 30
+          waited = 0
+          while True:
+              why = resolves()
+              if why is None:
+                  print(f"{tag} resolves to every manifest it references")
+                  break
+              if waited >= DEADLINE:
+                  print(f"::error::{tag} is still not pullable after {DEADLINE // 60} "
+                        f"minutes: {why}")
+                  print("::error::no release page will be created for an image that does "
+                        "not exist -- fix the build, then re-run this workflow")
+                  sys.exit(1)
+              print(f"  not yet ({why}), {waited}s elapsed")
+              time.sleep(STEP)
+              waited += STEP
+          PY
+
+      - name: Assemble the release body
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import io, json, os, re, subprocess
+
+          version, tag = os.environ["VERSION"], os.environ["TAG"]
+          repo = os.environ["REPO"]
+
+          # The tag before this one, so the generated notes cover the right range.
+          tags = subprocess.run(
+              ["git", "tag", "--sort=-v:refname"],
+              capture_output=True, text=True, check=True,
+          ).stdout.split()
+          previous = tags[tags.index(tag) + 1] if tag in tags[:-1] else None
+
+          payload = {"tag_name": tag}
+          if previous:
+              payload["previous_tag_name"] = previous
+          generated = json.loads(subprocess.run(
+              ["gh", "api", f"repos/{repo}/releases/generate-notes",
+               "--input", "-", "--jq", ".body"],
+              input=json.dumps(payload), capture_output=True, text=True, check=True,
+          ).stdout or '""')
+
+          # The changelog section for this version, if the release commit added one.
+          with io.open("CHANGELOG.md", encoding="utf-8") as f:
+              changelog = f.read()
+          section = re.search(
+              r"^## \[" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)",
+              changelog, re.S | re.M,
+          )
+          notes = (section.group(1).strip() if section else "").strip("-").strip()
+
+          parts = [
+              "## Docker Image\n",
+              "```bash",
+              f"docker pull ghcr.io/{repo.lower()}:{version}",
+              "```",
+              "",
+              "Verified pullable on both `linux/amd64` and `linux/arm64` before this page was "
+              "created.",
+              "",
+          ]
+          if notes:
+              parts += ["## Changelog\n", notes, ""]
+          if generated:
+              parts += [generated]
+          with io.open("RELEASE_BODY.md", "wb") as f:
+              f.write("\n".join(parts).encode("utf-8"))
+          print("\n".join(parts)[:2000])
+          PY
+
+      # `make_latest: legacy` asks GitHub to pick the latest release by version rather than
+      # by creation date. Creating a retroactive tag for an old version otherwise hands it
+      # the "Latest" badge, which is how `v1.0.0` briefly outranked `v1.4.0`.
+      - name: Create the release
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$REPO/releases" \
+            -f tag_name="$TAG" \
+            -f name="$TAG" \
+            -f body="$(cat RELEASE_BODY.md)" \
+            -f make_latest=legacy \
+            --jq '"created: \(.html_url)  latest=\(.tag_name)"'
