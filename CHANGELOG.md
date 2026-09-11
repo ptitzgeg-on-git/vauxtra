@@ -7,6 +7,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Security
+- **The example addresses in the interface were real hosts, and they were in the published
+  history.** `expose.field.dns_target_local_placeholder` and `expose.field.target_placeholder`
+  shipped a maintainer's actual LAN addresses in all eight locale files, and one test fixture
+  carried a third. They looked like placeholders, which is exactly why nobody caught them —
+  a host address only reads as private if you already know the network. The strings were
+  replaced in the working tree earlier in this cycle, but a public repository publishes its
+  history too: they were still readable in every commit since the interface rewrite, and in
+  the `v1.3.0` tag. The whole history has been rewritten to replace them with the
+  documentation subnet, and `scripts/check_repo_hygiene.py` now refuses any RFC 1918 or
+  link-local literal outside a declared allowlist, so the next one fails CI instead of
+  shipping.
+
+  Anyone holding a clone from before this rewrite still has the old objects. The published
+  commit identifiers have all changed as a result; a fresh clone is the only clean copy.
+
 ### Added
 - **The image is now built and scanned on every branch, and shipping pip is what that
   caught.** Nothing in this repository ever ran `docker build` outside the publish step, so
