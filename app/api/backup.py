@@ -39,9 +39,11 @@ def _table_exists(conn, table_name: str) -> bool:
 # `_restore_wipe_covers_the_schema` holds this list to the schema, so a table added later
 # fails a test instead of quietly outliving every restore -- which is how the four below
 # came to be missing in the first place:
-#   - `webhook_delivery_log` has no cascade from `webhooks` before schema 11, and the retry
-#     job reads the destination off the log row rather than off `webhooks`, so a queued send
-#     kept firing at a webhook the restored set does not contain.
+#   - `webhook_delivery_log` gained its cascade from `webhooks` in schema 11 and is listed
+#     anyway, for the same reason as `uptime_events` below: the wipe must not depend on a
+#     pragma being on. The retry job reads the destination off the log row rather than off
+#     `webhooks`, so a queued send left behind kept firing at a webhook the restored set
+#     does not contain.
 #   - `scheduler_state` keys its alert bookkeeping by (service_id, webhook_id).
 #   - `service_templates` is in neither export, so it survived a restore with its provider
 #     columns blanked by the cascade and `tag_ids_json` naming other people's tags.
