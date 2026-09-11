@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Menu, Search, ShieldAlert } from 'lucide-react';
 import { api } from '@/api/client';
+import { anyDialogOpen } from '@/hooks/useModalDialog';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { Button, Drawer, IconButton, InlineAlert } from '@/components/ui';
@@ -104,13 +105,20 @@ export function Layout() {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      // Ctrl/⌘ K opens the palette from anywhere, a text field included.
+      // Ctrl/⌘ K opens the palette from anywhere, a text field included — but never over
+      // another dialog. The palette navigates, and navigating out from under a half-filled
+      // modal leaves it floating over a page it has nothing to do with. It still closes the
+      // palette it opened: that is the one dialog it is allowed to answer over.
       if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        setPaletteOpen((v) => !v);
+        setPaletteOpen((v) => (v ? false : !anyDialogOpen()));
         return;
       }
       if (isTypingTarget(event.target)) return;
+      // Everything below either navigates or opens a dialog, and one is already open: `g` then
+      // `s` used to leave a modal standing over the services page while its form belonged to
+      // the dashboard, and `?` stacked the shortcut sheet on top of it.
+      if (anyDialogOpen()) return;
 
       if (event.key === '?' && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
