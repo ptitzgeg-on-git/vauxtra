@@ -62,18 +62,25 @@ def _parse_sources(raw: str) -> list[str]:
 
 
 def _parse_priority(raw: str) -> list[str]:
+    """The sources allowed to answer, in the operator's order. Omitting one excludes it.
+
+    Every value the operator left out used to be appended back at the end, so the field
+    could reorder the three sources but never drop one. What it names is the address
+    written into public DNS for every service left in `auto` mode: an operator who takes
+    `server_public_ip` out is saying this machine's WAN address must not be published, and
+    saw it published anyway, under a form that had answered "Saved".
+
+    An empty or unrecognisable setting is still the full default policy -- that is a field
+    nobody has filled in, not a request for no sources at all.
+    """
     parts = [p.strip() for p in (raw or "").replace(";", ",").split(",") if p.strip()]
     ordered = [p for p in parts if p in PUBLIC_TARGET_PRIORITY_CHOICES]
     if not ordered:
         return list(DEFAULT_PUBLIC_TARGET_PRIORITY)
-    # Keep unique order while preserving user preference.
     unique: list[str] = []
     for item in ordered:
         if item not in unique:
             unique.append(item)
-    for fallback in DEFAULT_PUBLIC_TARGET_PRIORITY:
-        if fallback not in unique:
-            unique.append(fallback)
     return unique
 
 
