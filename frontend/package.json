@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "i18n:check": "node scripts/check-locale-parity.mjs",
     "i18n:quality": "node scripts/check-locale-quality.mjs",
-    "quality": "npm run lint && npm run i18n:check && npm run i18n:quality && npm run build"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "quality": "npm run lint && npm run i18n:check && npm run i18n:quality && npm run build && npm run test"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -26,6 +28,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^26.5.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -35,10 +40,12 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "jsdom": "^30.0.1",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.10"
+    "vite": "^8.0.10",
+    "vitest": "^5.0.0"
   }
 }

@@ -89,3 +89,8 @@ jobs:
 
       - name: Locale semantic quality
         run: cd frontend && npm run i18n:quality
+
+      # Three PRs in a row shipped with the same caveat in their body: the defect they fixed
+      # could only be reproduced by hand, because nothing here ever rendered a component.
+      - name: Unit tests
+        run: cd frontend && npm run test
