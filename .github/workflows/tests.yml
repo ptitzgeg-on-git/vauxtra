@@ -12,12 +12,17 @@ on:
 
 # A pull request triggers this workflow twice -- once on `push` and once on
 # `pull_request` -- and pushing three commits in a row leaves four runs nobody will read.
-# Superseded runs are cancelled, but only for pull requests: on `main`, on a tag, or when
-# Build & Publish calls this as a gate, the run has to finish or the thing it gates is
-# decided by a job that was killed halfway.
+# Superseded runs of the same pull request are cancelled.
+#
+# Everything else keys on `github.run_id`, which is unique, so those runs share a group
+# with nothing and can never queue. That is not tidiness, it is the whole point: inside a
+# reusable workflow `github.workflow` is the name of the *caller*, so keying on it put this
+# workflow in Build & Publish's own group when Build & Publish called it as a gate. The
+# caller held the group and waited for the gate; the gate waited for the group. No job was
+# ever created and the publish chain failed on `ddcd703` with nothing in the log to read.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: tests-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
