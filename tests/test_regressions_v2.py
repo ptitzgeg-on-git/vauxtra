@@ -301,6 +301,139 @@ class BackupSecureRoundTripTests(IsolatedDBTestCase):
         self.assertEqual(row["password"], "")
 
 
+class RestoreWipesEveryTableTests(IsolatedDBTestCase):
+    """A restore replaces the instance; nothing may be left over from the old one."""
+
+    def _minimal_backup(self) -> dict:
+        return {
+            "version": "8",
+            "secrets_included": False,
+            "providers": [],
+            "services": [],
+            "tags": [],
+            "service_tags": [],
+            "service_push_targets": [],
+            "environments": [],
+            "service_environments": [],
+            "domains": [],
+            "webhooks": [],
+            "service_alerts": [],
+            "settings": [],
+            "docker_endpoints": [],
+        }
+
+    def _restore(self, backup: dict) -> dict:
+        with patch.object(backup_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(backup_api, "limiter") as mock_limiter:
+            mock_limiter.limit = lambda *a, **kw: (lambda f: f)
+            return backup_api.import_backup(
+                _request("POST", "/api/restore"),
+                RestoreRequest(backup=backup),
+            )
+
+    def test_four_tables_used_to_outlive_the_restore(self) -> None:
+        """Delivery queue, scheduler state, templates and uptime history, all left behind.
+
+        The restore re-inserts explicit ids, so a surviving row does not dangle -- it
+        re-points at whatever record now holds its id. A queued delivery kept firing at a
+        webhook the restored set does not contain, because the retry job reads the
+        destination off the log row rather than off `webhooks`.
+        """
+        conn = models.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO services (subdomain, domain, target_ip, target_port) VALUES (?,?,?,?)",
+                ("app", "example.com", "10.0.0.1", 8080),
+            )
+            sid = conn.execute("SELECT id FROM services").fetchone()["id"]
+            conn.execute("INSERT INTO uptime_events (service_id, status) VALUES (?,?)", (sid, "ok"))
+            conn.execute("INSERT INTO webhooks (name, url) VALUES (?,?)", ("Discord", "discord://t"))
+            wid = conn.execute("SELECT id FROM webhooks").fetchone()["id"]
+            conn.execute(
+                "INSERT INTO webhook_delivery_log (webhook_id, url, status) VALUES (?,?,?)",
+                (wid, "discord://rotated-away", "pending"),
+            )
+            conn.execute(
+                "INSERT INTO scheduler_state (key, value) VALUES (?,?)",
+                (f"alert:{sid}:{wid}", "down"),
+            )
+            conn.execute("INSERT INTO service_templates (name) VALUES (?)", ("Web app",))
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertTrue(self._restore(self._minimal_backup())["ok"])
+
+        for table in ("webhook_delivery_log", "scheduler_state", "service_templates", "uptime_events"):
+            with self.subTest(table=table):
+                self.assertEqual(self._count(table), 0)
+
+    def test_the_protected_settings_still_survive(self) -> None:
+        """Widening the wipe must not reach the credentials it was always kept away from."""
+        conn = models.get_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+                ("app_password_hash", "$2b$12$notarealhash"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+                ("timezone", "Europe/Paris"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertTrue(self._restore(self._minimal_backup())["ok"])
+
+        conn = models.get_db()
+        try:
+            kept = dict(conn.execute("SELECT key, value FROM settings").fetchall())
+        finally:
+            conn.close()
+        self.assertEqual(kept.get("app_password_hash"), "$2b$12$notarealhash")
+        self.assertNotIn("timezone", kept)
+
+    def test_restore_wipe_covers_the_schema(self) -> None:
+        """Every table is wiped or deliberately kept -- a new one cannot be neither.
+
+        Four tables were missing from this list and nothing said so. A table added later
+        must fail here rather than quietly outlive every restore.
+        """
+        conn = models.get_db()
+        try:
+            existing = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        wiped = set(backup_api._RESTORE_WIPE_TABLES)
+        self.assertEqual(len(wiped), len(backup_api._RESTORE_WIPE_TABLES), "a table is listed twice")
+        self.assertEqual(existing - wiped - backup_api._RESTORE_KEEPS, set())
+        # And the reverse: a table dropped from the schema must not linger in the list,
+        # where the DELETE would raise mid-restore with the database already emptied.
+        self.assertEqual(wiped - existing, set())
+
+    def test_children_are_wiped_before_their_parents(self) -> None:
+        """Order is load-bearing: a cascade must never fire onto a table already emptied."""
+        order = list(backup_api._RESTORE_WIPE_TABLES)
+        for child, parent in (
+            ("uptime_events", "services"),
+            ("service_tags", "services"),
+            ("service_tags", "tags"),
+            ("service_environments", "environments"),
+            ("service_alerts", "services"),
+            ("webhook_delivery_log", "webhooks"),
+            ("service_templates", "providers"),
+        ):
+            with self.subTest(child=child, parent=parent):
+                self.assertLess(order.index(child), order.index(parent))
+
+
 # ===========================================================================
 # 2. Auth — change-password
 # ===========================================================================
