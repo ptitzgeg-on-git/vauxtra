@@ -63,6 +63,31 @@ type DiagnosticsMap = Record<number, ProviderDiagnostics>;
  * their integrations flickered in on each navigation. `useState` takes its initial value
  * lazily, so the first paint already has them.
  */
+/**
+ * The rows busy with one action.
+ *
+ * This was a `number | null` per action, which cannot hold two rows at once. A second click
+ * overwrote the first row's id, so that row's spinner stopped and its button re-enabled while
+ * its request was still open; and whichever response came back first cleared the tracker
+ * outright, wiping a spinner that by then belonged to another row. `toggling` drives
+ * `disabled` on the enable/disable switch, so the same slip made a provider clickable in the
+ * middle of its own write.
+ *
+ * Same shape as `actioningIds` in Services.tsx, which never had the bug.
+ */
+function useBusyIds() {
+  const [ids, setIds] = useState<Set<number>>(() => new Set());
+  const start = useCallback((id: number) => setIds((prev) => new Set(prev).add(id)), []);
+  const end = useCallback((id: number) => {
+    setIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+  return { has: (id: number) => ids.has(id), start, end };
+}
+
 function restoreDiagnostics(): DiagnosticsMap {
   try {
     const raw = localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
@@ -133,10 +158,10 @@ export function Providers() {
   const [focusFilter, setFocusFilter] = useState<FocusFilter>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [storedDiagnostics, setDiagnostics] = useState<DiagnosticsMap>(restoreDiagnostics);
-  const [testingId, setTestingId] = useState<number | null>(null);
-  const [validatingId, setValidatingId] = useState<number | null>(null);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [togglingId, setTogglingId] = useState<number | null>(null);
+  const testing = useBusyIds();
+  const validating = useBusyIds();
+  const deleting = useBusyIds();
+  const toggling = useBusyIds();
 
   // --- data ---------------------------------------------------------------
   const providersQuery = useQuery<Provider[]>({
@@ -326,10 +351,10 @@ export function Providers() {
   };
 
   const testConnection = useMutation({
-    mutationFn: (provider: Provider) => {
-      setTestingId(Number(provider.id));
-      return api.post<ProviderDiagnostics>(`/providers/${provider.id}/test`);
-    },
+    // Marked busy in `onMutate` rather than inside `mutationFn`, so the pairing with
+    // `onSettled` is explicit: both are handed the same `provider`, and only that row clears.
+    onMutate: (provider: Provider) => testing.start(Number(provider.id)),
+    mutationFn: (provider: Provider) => api.post<ProviderDiagnostics>(`/providers/${provider.id}/test`),
     onSuccess: (data, provider) => {
       storeDiagnostics(Number(provider.id), data);
       const name = data?.provider || provider.name;
@@ -341,17 +366,16 @@ export function Providers() {
       toast.error(msg);
       storeDiagnostics(Number(provider.id), { ok: false, provider: provider.name, health: { ok: false, status: 'error', error: msg } });
     },
-    onSettled: () => {
-      setTestingId(null);
+    onSettled: (_data, _error, provider) => {
+      testing.end(Number(provider.id));
       queryClient.invalidateQueries({ queryKey: ['providers'] });
     },
   });
 
   const validateProvider = useMutation({
-    mutationFn: (provider: Provider) => {
-      setValidatingId(Number(provider.id));
-      return api.post<ProviderDiagnostics>(`/providers/${provider.id}/validate`, { write_probe: false });
-    },
+    onMutate: (provider: Provider) => validating.start(Number(provider.id)),
+    mutationFn: (provider: Provider) =>
+      api.post<ProviderDiagnostics>(`/providers/${provider.id}/validate`, { write_probe: false }),
     onSuccess: (data, provider) => {
       storeDiagnostics(Number(provider.id), data);
       const name = data?.provider || provider.name;
@@ -362,14 +386,13 @@ export function Providers() {
     onError: (error: unknown) => {
       toast.error(translateApiError(error, t, t('providers.toast.validate_error')));
     },
-    onSettled: () => setValidatingId(null),
+    onSettled: (_data, _error, provider) => validating.end(Number(provider.id)),
   });
 
   const toggleEnabled = useMutation({
-    mutationFn: ({ provider, enabled }: { provider: Provider; enabled: boolean }) => {
-      setTogglingId(Number(provider.id));
-      return api.put<{ ok: boolean }>(`/providers/${provider.id}`, { enabled: enabled ? 1 : 0 });
-    },
+    onMutate: ({ provider }: { provider: Provider; enabled: boolean }) => toggling.start(Number(provider.id)),
+    mutationFn: ({ provider, enabled }: { provider: Provider; enabled: boolean }) =>
+      api.put<{ ok: boolean }>(`/providers/${provider.id}`, { enabled: enabled ? 1 : 0 }),
     onSuccess: (_data, { provider, enabled }) => {
       toast.success(t(enabled ? 'providers.toast.enabled' : 'providers.toast.disabled', { name: provider.name }));
       queryClient.invalidateQueries({ queryKey: ['providers'] });
@@ -379,7 +402,7 @@ export function Providers() {
     onError: (error: unknown) => {
       toast.error(translateApiError(error, t, t('providers.toast.update_failed')));
     },
-    onSettled: () => setTogglingId(null),
+    onSettled: (_data, _error, { provider }) => toggling.end(Number(provider.id)),
   });
 
   const deleteProvider = useMutation({
@@ -401,11 +424,11 @@ export function Providers() {
       variant: 'danger',
     });
     if (!ok) return;
-    setDeletingId(id);
+    deleting.start(id);
     try {
       await deleteProvider.mutateAsync({ id });
       if (inspectId === id) setInspectId(null);
-      setDeletingId(null);
+      deleting.end(id);
     } catch (error: unknown) {
       const detail = getErrorDetail(error);
       if (getHttpStatus(error) === 409 && isProviderDeleteConflict(detail)) {
@@ -420,7 +443,7 @@ export function Providers() {
           deleteProvider.mutate(
             { id, force: true },
             {
-              onSettled: () => setDeletingId(null),
+              onSettled: () => deleting.end(id),
               onError: (err: unknown) => toast.error(translateApiError(err, t, t('providers.toast.delete_failed'))),
               onSuccess: () => {
                 if (inspectId === id) setInspectId(null);
@@ -428,11 +451,11 @@ export function Providers() {
             },
           );
         } else {
-          setDeletingId(null);
+          deleting.end(id);
         }
       } else {
         toast.error(translateApiError(error, t, t('providers.toast.delete_failed')));
-        setDeletingId(null);
+        deleting.end(id);
       }
     }
   };
@@ -565,10 +588,10 @@ export function Providers() {
                         diagnostics={signals.diag}
                         tunnelHealth={isTunnelType(String(provider.type || ''), meta) ? signals.tunnel : undefined}
                         autoHealth={signals.auto}
-                        testing={testingId === id}
-                        validating={validatingId === id}
-                        deleting={deletingId === id}
-                        toggling={togglingId === id}
+                        testing={testing.has(id)}
+                        validating={validating.has(id)}
+                        deleting={deleting.has(id)}
+                        toggling={toggling.has(id)}
                         onTest={() => testConnection.mutate(provider)}
                         onValidate={() => validateProvider.mutate(provider)}
                         onInspect={() => setInspectId(id)}
