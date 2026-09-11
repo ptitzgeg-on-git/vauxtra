@@ -38,6 +38,38 @@ FORBIDDEN_PROCESS_ATTRIBUTION_TOKENS = (
     "prompt:",
 )
 
+# Who is allowed to appear in the history of a public repository. GitHub builds the
+# contributor sidebar from commit authors *and* from `Co-authored-by:` trailers, so a
+# trailer is not a footnote: it puts a face and an avatar on the front page. Two of them
+# had, and removing them meant rewriting every commit and force-pushing six tags -- after
+# which every published commit identifier changed and every existing clone went stale.
+#
+# That is the expensive half. The cheap half is this list, which did not exist: nothing
+# stopped the next tool that writes a trailer from putting the face straight back.
+#
+# An address here is a deliberate decision, not a default. Add one only for somebody whose
+# name belongs on the front page of this repository.
+ALLOWED_AUTHOR_EMAILS = (
+    "61865114+ptitzgeg-on-git@users.noreply.github.com",
+    "49699333+dependabot[bot]@users.noreply.github.com",
+)
+
+# `GitHub <noreply@github.com>` is the identity a rebase or squash merge signs with. It
+# commits and it never authors, which is why it is absent from the list above: an address
+# that can only ever be a committer must not be able to become a contributor.
+ALLOWED_COMMITTER_EMAILS = ALLOWED_AUTHOR_EMAILS + ("noreply@github.com",)
+
+# Attribution that names a process rather than a person. These never appear in a message a
+# human wrote, so the check can be blunt -- and blunt is what is wanted, because the shapes
+# vary (`Co-authored-by:`, a bare `Claude-Session:` line, a footer with a robot emoji) while
+# the substrings do not.
+FORBIDDEN_COMMIT_MESSAGE_TOKENS = (
+    "generated with",
+    "claude-session",
+    "anthropic.com",
+    "\U0001f916",  # the robot emoji that opens the usual generated footer
+)
+
 REQUIRED_TRACKED_FILES = (
     ".github/CODEOWNERS",
     "SECURITY.md",
@@ -48,6 +80,13 @@ REQUIRED_TRACKED_FILES = (
 # matched at all.
 _USES = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+/[^@\s]+)@(\S+)")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+
+# `Co-authored-by: Name <address>`, the trailer GitHub reads to add a contributor.
+_COAUTHOR = re.compile(r"^\s*co-authored-by:\s*(.*?)\s*<([^>]+)>\s*$", re.IGNORECASE)
+
+# One record per commit: hash, author, committer, then the full message. Unit and record
+# separators rather than newlines, because the message contains newlines by definition.
+_LOG_FORMAT = "%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x00"
 
 # A public repository prints example addresses. It does not print addresses off somebody's
 # actual network, and the difference is invisible in review: a host address from a real LAN
@@ -179,6 +218,69 @@ def _find_ignored_source_files() -> list[str]:
     )
 
 
+def _find_bad_commit_identities() -> list[str]:
+    """Commits signed by somebody -- or something -- outside the declared allowlist.
+
+    Three things put a name in the contributor sidebar: the author, the committer, and a
+    `Co-authored-by:` trailer. All three are checked, on every commit this clone can see,
+    because the sidebar is built from the whole history and not from the tip.
+
+    A shallow clone is a failure, not a skip. A gate that cannot see the history it is
+    meant to police, and says nothing about it, is worse than no gate: it reports green
+    for a repository it never read.
+    """
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if shallow == "true":
+        return [
+            "shallow clone: this gate needs the whole history "
+            "(`actions/checkout` with `fetch-depth: 0`)"
+        ]
+
+    # The encoding is named rather than inherited: commit messages here are French, and a
+    # Windows checkout decodes them in the console codepage by default -- which turns an
+    # accent into a decode error and the gate into a crash.
+    result = subprocess.run(
+        ["git", "log", "--all", f"--format={_LOG_FORMAT}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    bad: list[str] = []
+    for record in result.stdout.split("\x00"):
+        if not record.strip():
+            continue
+        parts = record.split("\x1f")
+        if len(parts) < 6:
+            continue
+        sha, author_name, author_email, committer_name, committer_email, message = parts[:6]
+        short = sha.strip()[:8]
+
+        if author_email not in ALLOWED_AUTHOR_EMAILS:
+            bad.append(f"{short}: author {author_name} <{author_email}>")
+        if committer_email not in ALLOWED_COMMITTER_EMAILS:
+            bad.append(f"{short}: committer {committer_name} <{committer_email}>")
+
+        lowered = message.lower()
+        for token in FORBIDDEN_COMMIT_MESSAGE_TOKENS:
+            if token in lowered:
+                bad.append(f"{short}: message contains {token!r}")
+
+        for line in message.splitlines():
+            match = _COAUTHOR.match(line)
+            if match and match.group(2) not in ALLOWED_AUTHOR_EMAILS:
+                bad.append(f"{short}: co-author {match.group(1)} <{match.group(2)}>")
+
+    return sorted(set(bad))
+
+
 def _find_private_addresses(files: list[str]) -> list[str]:
     """Tracked files printing a private address the repository has not declared."""
     hits: list[str] = []
@@ -205,9 +307,16 @@ def main() -> int:
     unpinned = _find_unpinned_actions()
     ignored_source = _find_ignored_source_files()
     private_addresses = _find_private_addresses(tracked)
+    bad_identities = _find_bad_commit_identities()
 
     if not (
-        bad_tracked or bad_refs or missing_required or unpinned or ignored_source or private_addresses
+        bad_tracked
+        or bad_refs
+        or missing_required
+        or unpinned
+        or ignored_source
+        or private_addresses
+        or bad_identities
     ):
         print("Repo hygiene check passed")
         return 0
@@ -248,6 +357,14 @@ def main() -> int:
             print(f" - {hit}")
         print("\nUse the 192.168.1.x placeholder subnet, or add the prefix to")
         print("ALLOWED_ADDRESS_PREFIXES if it really belongs to this repository.")
+
+    if bad_identities:
+        print("\nCommits signed outside the declared allowlist:")
+        for hit in bad_identities:
+            print(f" - {hit}")
+        print("\nAuthors and co-authors become contributors on the front page of this")
+        print("repository. Amend the commit, or add the address to ALLOWED_AUTHOR_EMAILS")
+        print("if that name really belongs there.")
 
     return 1
 
