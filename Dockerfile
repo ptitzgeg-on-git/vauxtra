@@ -1,12 +1,12 @@
 # Build arguments for multi-architecture (implicit with buildx)
-FROM node:22-slim AS frontend-builder
+FROM node:26-slim AS frontend-builder
 WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 ARG APP_VERSION=dev
 WORKDIR /app
 ENV TZ=UTC
