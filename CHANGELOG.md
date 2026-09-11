@@ -44,6 +44,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **The whole app painted raw translation keys on its first frame.** `t()` falls back to the
+  key itself when it is missing, and the translation map arrives asynchronously after mount.
+  The provider wraps the entire tree, so the window covered every screen rather than only the
+  lazy routes — and `App.tsx`'s `Suspense` fallback guarded nothing, since it renders
+  `{t('ui.loading')}` and was part of the bug. On a slow link or a cold CDN the operator saw a
+  sidebar reading `nav.dashboard`, `nav.services`, `nav.monitoring`: it looks like a corrupted
+  build, and the natural reaction is to reload or roll back a perfectly healthy release.
+  Non-English users hit it on every cold load, their locale chunk never being the one already
+  parsed. Rendering now waits for the first map. `isLoading` could not gate it — that goes
+  true again on every language switch, and blanking the app mid-session would be worse than
+  holding the previous language until the new one lands — so the gate is one-way and reads the
+  cache rather than waiting on it. The hold screen carries no text by construction: any label
+  would need a translation that is not loaded yet.
 - **Four tables outlived a restore.** A restore replaces the instance: it empties the tables,
   then re-inserts the backup's rows under their original ids. A table left out of that wipe
   therefore does not keep orphans — it keeps rows that now name a different record.
