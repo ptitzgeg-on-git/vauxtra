@@ -39,6 +39,15 @@ updates:
       npm-minor:
         patterns: ["*"]
         update-types: [minor, patch]
+    # TypeScript 7 cannot be installed here yet, and the PR for it is not a diff anyone can
+    # review: `npm ci` aborts with ERESOLVE before a single file is linted, because
+    # `typescript-eslint` still declares `typescript@">=4.8.4 <6.1.0"` as a peer and has
+    # published no major above 8. Reopening that PR every week produces a red build with no
+    # decision attached to it. Remove this entry as soon as typescript-eslint ships a release
+    # whose peer range admits 7.x -- the bump is wanted, only its blocker is upstream.
+    ignore:
+      - dependency-name: typescript
+        versions: ["7.x"]
 
   - package-ecosystem: github-actions
     directory: /
