@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from app.auth import require_auth, require_auth_or_setup
 from app.models import add_log, get_db
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
-from app.public_target import resolve_public_target
+from app.public_target import describe_public_target_failure, resolve_public_target
 
 router = APIRouter()
 
@@ -299,7 +299,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
 
     if expose_mode != "tunnel":
         if not dns_target and dns_targets:
-            errors.append("Unable to resolve DNS target for dry-run")
+            errors.append(describe_public_target_failure(dns_target_source)[1])
 
         if dns_target:
             for row in dns_targets:
@@ -553,6 +553,15 @@ def _push_service_row(conn, svc, sid: int) -> dict:
             proxy_provider_id=svc["proxy_provider_id"],
             current_value=svc["dns_ip"] or "",
         )
+
+        if not dns_target and dns_targets:
+            # The dry-run has always refused this. The push skipped the loop below without a
+            # word and returned `{"ok": true, "errors": []}`, so the preview of the action and
+            # the action itself contradicted each other about the same service, and the one
+            # that reported success is the one that writes records.
+            sentence = describe_public_target_failure(dns_target_source)[1]
+            errors.append(sentence)
+            add_log("error", f"[Push] Nothing pushed to DNS for {public_host}: {sentence}", conn)
 
         if dns_target and dns_target != (svc["dns_ip"] or ""):
             conn.execute("UPDATE services SET dns_ip=? WHERE id=?", (dns_target, sid))

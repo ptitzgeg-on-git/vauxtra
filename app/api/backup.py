@@ -295,7 +295,15 @@ def import_backup(request: Request, body: RestoreRequest):
         try:
             return decrypt_from_backup(value, body.passphrase, salt)
         except Exception as e:
-            raise HTTPException(400, f"Failed to decrypt {label}. Wrong passphrase? ({e})")
+            # `InvalidToken`, the expected failure here, carries no message at all: `str(e)`
+            # is empty and the brackets meant to hold the reason printed as a bare "()".
+            # Anything else that comes through says something worth keeping.
+            reason = str(e).strip() or type(e).__name__
+            raise HTTPException(
+                400,
+                f"Failed to decrypt {label}. The passphrase does not match the one "
+                f"this backup was written with ({reason}).",
+            )
 
     # Dry run BEFORE destroying anything: a wrong passphrase must fail with the database
     # untouched. Decryption is the only expensive validation, so it runs first -- and it

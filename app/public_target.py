@@ -21,6 +21,10 @@ DEFAULT_PUBLIC_TARGET_TIMEOUT = 2.0
 DEFAULT_PUBLIC_TARGET_PRIORITY = ["server_public_ip", "proxy_provider_host", "current"]
 PUBLIC_TARGET_PRIORITY_CHOICES = {"server_public_ip", "proxy_provider_host", "current"}
 
+# Why `resolve_public_target` came back empty, as the `source` it reports. `manual` means it
+# was never asked to look anything up; `auto_unavailable` means it looked and found nothing.
+PUBLIC_TARGET_UNRESOLVED_SOURCES = {"manual", "auto_unavailable"}
+
 
 def _normalize_target(value: str) -> str:
     return (value or "").strip().lower()
@@ -232,3 +236,27 @@ def resolve_public_target(
             break
 
     return value, source
+
+
+def describe_public_target_failure(source: str, provider_name: str = "") -> tuple[str, str]:
+    """Why no public target is available, as `(detail_key, sentence)`.
+
+    `resolve_public_target` already separates the two ways of coming back empty, and every
+    caller used to throw that apart and print one sentence for both: "Unable to resolve DNS
+    public target". Only one of the two resolves anything. In manual mode the function
+    returns on its first branch without a single lookup, so an operator who simply left the
+    field blank was told a resolution had failed, and went reading firewall logs over an
+    empty text box. The two cases have different remedies, so they get different sentences.
+    """
+    who = f' for "{provider_name}"' if provider_name else ""
+    if _normalize_target(source) == "auto_unavailable":
+        return (
+            "dns_target_detection_failed",
+            f"Automatic detection of the public DNS target{who} found nothing usable. "
+            "Check the WAN resolvers in Settings, or set the target by hand.",
+        )
+    return (
+        "dns_target_required",
+        f"A public DNS target is required{who}. "
+        "Enter an address, or turn on automatic detection.",
+    )

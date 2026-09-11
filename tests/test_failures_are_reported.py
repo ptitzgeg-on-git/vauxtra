@@ -16,6 +16,12 @@ The same shape appears three more times, and each is covered here:
 - `save_settings` dropped a value it did not like with a bare `continue`, then answered
   `{"ok": true}` -- and for `check_interval` the value it *did* accept was read back with a
   bare `int()` at startup, so "later" in that field kept the application from booting.
+
+A fifth shape is the absence of a target rather than a refusal, and it reached four routes
+that disagreed with one another about it: `add_service` raised a 400, `update_service`
+saved the state and answered 200, `push/dry-run` answered `ok:false`, and `push_service`
+answered `{"ok": true, "errors": []}` for the same service at the same instant. The last
+one is the route that writes records.
 """
 
 import os
@@ -27,6 +33,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app import models
+from app.api import services as services_api
 from app.api import settings as settings_api
 from app.api import sync as sync_api
 
@@ -460,6 +467,162 @@ class StartupSurvivesABadIntervalTests(_IsolatedDB):
                 self.assertEqual(client.get("/api/health").status_code, 200)
 
         self.assertEqual(started, [0])
+
+
+class MissingDnsTargetIsReportedTests(_IsolatedDB):
+    """A DNS provider with nothing to write is one state, and it gets one answer.
+
+    The state is reachable: `dns_ip` is optional, automatic detection returns nothing on a
+    host with no route to the WAN resolvers, and a service can be edited to gain a DNS
+    provider it had no target for. What the four routes did with it had nothing in common.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list = []
+        self.provider = _ScriptedProvider(self.calls)
+        self._patchers = [
+            patch.object(sync_api, "require_auth", lambda _req, scope=None: None),
+            patch.object(sync_api, "create_provider", lambda _row: self.provider),
+            patch.object(services_api, "require_auth", lambda _req, scope=None: None),
+            patch.object(services_api, "create_provider", lambda _row: self.provider),
+        ]
+        for p in self._patchers:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in reversed(self._patchers)])
+
+        conn = models.get_db()
+        conn.execute(
+            """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
+               VALUES (2, 'NPM', 'npm', 'http://npm:81', 'admin', 'pass', '{}', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
+               VALUES (3, 'AdGuard', 'adguard', 'http://ag', 'admin', 'pass', '{}', 1)"""
+        )
+        conn.commit()
+        conn.close()
+
+    def _service_in(self, **overrides):
+        payload = {
+            "subdomain": "app",
+            "domain": "example.com",
+            "target_ip": "10.0.0.9",
+            "target_port": 8080,
+            "expose_mode": "proxy_dns",
+            "enabled": True,
+        }
+        payload.update(overrides)
+        return services_api.ServiceIn(**payload)
+
+    def _seed_without_target(self, *, dns_provider_id=3) -> int:
+        """A row in the state the routes disagreed about: DNS provider set, `dns_ip` empty."""
+        conn = models.get_db()
+        cur = conn.execute(
+            """INSERT INTO services
+                 (subdomain, domain, target_ip, target_port, forward_scheme, websocket,
+                  enabled, expose_mode, proxy_provider_id, npm_host_id,
+                  dns_provider_id, dns_ip, public_target_mode)
+               VALUES ('app', 'example.com', '10.0.0.9', 8080, 'http', 0, 1, 'proxy_dns',
+                       NULL, NULL, ?, '', 'manual')""",
+            (dns_provider_id,),
+        )
+        sid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return sid
+
+    # -- la poussee ----------------------------------------------------------------------
+
+    def test_push_with_no_target_is_an_error_not_a_sync(self) -> None:
+        sid = self._seed_without_target()
+
+        result = sync_api.push_service(sid, _request())
+
+        self.assertFalse(result["ok"], result)
+        self.assertTrue(result["errors"], "the push wrote nothing and said nothing")
+        self.assertNotIn("add_rewrite", [c[0] for c in self.calls])
+
+    def test_dry_run_and_push_agree_about_the_same_service(self) -> None:
+        """The preview of an action is worth nothing if the action disagrees with it."""
+        sid = self._seed_without_target()
+
+        plan = sync_api.dry_run_push_service(sid, _request())
+        result = sync_api.push_service(sid, _request())
+
+        self.assertEqual(plan["ok"], result["ok"])
+        self.assertEqual(plan["errors"], result["errors"])
+
+    # -- la creation et la modification --------------------------------------------------
+
+    def test_creating_with_a_dns_provider_and_no_target_is_refused(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            services_api.add_service(_request(), self._service_in(dns_provider_id=3))
+
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_editing_a_service_to_add_a_dns_provider_needs_a_target_too(self) -> None:
+        """This is the one that answered 200 and saved the state the others called invalid."""
+        conn = models.get_db()
+        cur = conn.execute(
+            """INSERT INTO services
+                 (subdomain, domain, target_ip, target_port, forward_scheme, websocket,
+                  enabled, expose_mode, proxy_provider_id, npm_host_id,
+                  dns_provider_id, dns_ip, public_target_mode)
+               VALUES ('app', 'example.com', '10.0.0.9', 8080, 'http', 0, 1, 'proxy_dns',
+                       2, 77, NULL, '', 'manual')""",
+        )
+        sid = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+        with self.assertRaises(HTTPException) as caught:
+            services_api.update_service(
+                sid, _request(), self._service_in(proxy_provider_id=2, dns_provider_id=3)
+            )
+
+        self.assertEqual(caught.exception.status_code, 400)
+
+        conn = models.get_db()
+        row = conn.execute("SELECT dns_provider_id FROM services WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        self.assertIsNone(row["dns_provider_id"], "the refused provider was attached anyway")
+
+    def test_nothing_is_created_on_the_proxy_before_the_refusal(self) -> None:
+        """The refusal used to fire after `create_host`, and undo it with a silent delete."""
+        with self.assertRaises(HTTPException):
+            services_api.add_service(
+                _request(), self._service_in(proxy_provider_id=2, dns_provider_id=3)
+            )
+
+        self.assertEqual(self.calls, [], "a host was created on the proxy, then deleted")
+
+    # -- la phrase -----------------------------------------------------------------------
+
+    def test_an_empty_field_and_a_failed_lookup_do_not_read_the_same(self) -> None:
+        """One of the two resolves something. Both used to say "Unable to resolve"."""
+        with self.assertRaises(HTTPException) as blank:
+            services_api.add_service(
+                _request(), self._service_in(dns_provider_id=3, public_target_mode="manual")
+            )
+        with patch.object(services_api, "resolve_public_target", return_value=("", "auto_unavailable")):
+            with self.assertRaises(HTTPException) as failed:
+                services_api.add_service(
+                    _request(), self._service_in(dns_provider_id=3, public_target_mode="auto")
+                )
+
+        blank_text = blank.exception.detail["message"]
+        failed_text = failed.exception.detail["message"]
+
+        self.assertNotEqual(blank_text, failed_text)
+        self.assertNotIn("resolve", blank_text.lower(), "nothing was looked up")
+        self.assertIn("AdGuard", blank_text, "the operator has several DNS providers")
+
+    def test_the_refusal_carries_a_key_the_interface_can_act_on(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            services_api.add_service(_request(), self._service_in(dns_provider_id=3))
+
+        self.assertEqual(caught.exception.detail["detail_key"], "dns_target_required")
 
 
 if __name__ == "__main__":

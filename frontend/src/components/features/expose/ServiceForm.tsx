@@ -741,7 +741,10 @@ export function ServiceForm({
                   />
                 </div>
 
-                {formData.dns_provider_id && formData.ui_expose_mode !== 'dns_only' && (
+                {/* Hidden in DNS-only mode only while the resolver is local, where the
+                    record takes the service's own address. A public zone needs a target
+                    stated here, and a refusal may name it. */}
+                {formData.dns_provider_id && (formData.ui_expose_mode !== 'dns_only' || isExternalDns) && (
                   <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
                     <Field
                       label={isLocalDns ? t('expose.field.dns_target_local') : t('expose.field.dns_target_external')}

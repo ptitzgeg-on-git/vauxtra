@@ -15,7 +15,11 @@ from app.models import (
     set_tags,
 )
 from app.providers.factory import create_provider, host_id_is_hostname
-from app.public_target import resolve_public_target, suggest_public_targets
+from app.public_target import (
+    describe_public_target_failure,
+    resolve_public_target,
+    suggest_public_targets,
+)
 from app.validators import (
     is_valid_domain,
     is_valid_hostname,
@@ -123,6 +127,20 @@ def _service_target_reachable(host: str, port: int, timeout: float = 2.0) -> tup
 #: clients) plus `detail_key` -- the short code the sentence was written from -- and the
 #: values it was built out of. The UI looks up `expose.preflight.detail.<detail_key>` so the
 #: line is read in the reader's language, and falls back to `detail` when the code is new.
+def _public_target_refusal(conn, source: str, dns_provider_id: int | None) -> dict:
+    """The body of the 400 raised when a DNS provider has no target to write.
+
+    Named after the provider the operator chose: an instance holding several DNS providers
+    would otherwise give the same anonymous sentence whichever one is at fault.
+    """
+    name = ""
+    if dns_provider_id:
+        row = conn.execute("SELECT name FROM providers WHERE id=?", (int(dns_provider_id),)).fetchone()
+        name = row["name"] if row else ""
+    detail_key, sentence = describe_public_target_failure(source, name)
+    return {"message": sentence, "detail_key": detail_key}
+
+
 def _detail(key: str, text: str, **params) -> dict:
     out = {"detail": text, "detail_key": key}
     if params:
@@ -374,7 +392,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                             source=str(target_source),
                         )
                         if resolved_target
-                        else _detail("dns_unresolved", "Unable to resolve DNS public target")
+                        else _detail(*describe_public_target_failure(target_source))
                     ),
                     "data": {"resolved_target": resolved_target, "source": target_source},
                 }
@@ -781,10 +799,28 @@ def add_service(request: Request, body: ServiceIn):
             "hostname push over each other -- edit that one, or choose another hostname.",
         )
 
+    # Resolved before a single provider is touched. This refusal used to live past the
+    # proxy creation, so a target nobody could resolve first created a host on the remote
+    # proxy and then deleted it again -- through a compensating delete whose own failure was
+    # swallowed by a bare `except: pass`. Nothing to compensate if nothing was done yet.
+    dns_target = ""
+    dns_target_source = ""
+    if body.expose_mode == "proxy_dns" and body.dns_provider_id:
+        dns_target, dns_target_source = resolve_public_target(
+            conn,
+            mode=body.public_target_mode,
+            manual_value=body.dns_ip,
+            proxy_provider_id=body.proxy_provider_id,
+            current_value="",
+        )
+        if not dns_target:
+            refusal = _public_target_refusal(conn, dns_target_source, body.dns_provider_id)
+            conn.close()
+            raise HTTPException(400, refusal)
+
     errors = []
 
     npm_host_id = None
-    dns_target = ""
 
     if body.expose_mode == "tunnel":
         row = conn.execute("SELECT * FROM providers WHERE id=?", (body.tunnel_provider_id,)).fetchone()
@@ -842,24 +878,6 @@ def add_service(request: Request, body: ServiceIn):
                     errors.append(str(e))
 
         if body.dns_provider_id:
-            dns_target, dns_target_source = resolve_public_target(
-                conn,
-                mode=body.public_target_mode,
-                manual_value=body.dns_ip,
-                proxy_provider_id=body.proxy_provider_id,
-                current_value="",
-            )
-            if not dns_target:
-                if npm_host_id and body.proxy_provider_id:
-                    try:
-                        proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
-                        if proxy_row:
-                            create_provider(proxy_row).delete_host(npm_host_id)
-                    except Exception:
-                        pass
-                conn.close()
-                raise HTTPException(400, "Unable to resolve DNS public target")
-
             row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
             if row and not body.enabled:
                 # The resolved target is still stored, so the enable path can re-add the
@@ -961,6 +979,29 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     new_mode = body.expose_mode
     new_public_host = _service_public_hostname(new_mode, body.tunnel_hostname, body.subdomain, body.domain)
     old_public_host = _service_public_hostname(old_mode, old["tunnel_hostname"] or "", old["subdomain"], old["domain"])
+
+    # `add_service` refuses a DNS provider it has no target for. Editing one in accepted the
+    # same state and answered 200: the service listed its DNS provider in the interface, no
+    # record was ever written, and `push_service` then reported `{"ok": true, "errors": []}`
+    # for it while `push/dry-run` reported the opposite about the very same service.
+    dns_ip = ""
+    dns_target_source = "n/a"
+    if new_mode == "proxy_dns":
+        dns_ip, dns_target_source = resolve_public_target(
+            conn,
+            mode=body.public_target_mode,
+            manual_value=body.dns_ip,
+            proxy_provider_id=body.proxy_provider_id,
+            current_value=old["dns_ip"] or "",
+        )
+        if not dns_ip:
+            # Detection can blip. A target the service already holds beats no target at all.
+            dns_ip = old["dns_ip"] or ""
+        if body.dns_provider_id and not dns_ip:
+            refusal = _public_target_refusal(conn, dns_target_source, body.dns_provider_id)
+            conn.close()
+            raise HTTPException(400, refusal)
+
     errors = []
 
     next_npm_host_id = None
@@ -1050,8 +1091,6 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             except Exception as e:
                 errors.append(str(e))
 
-        dns_ip = ""
-        dns_target_source = "n/a"
     else:
         if old_mode == "tunnel" and old["tunnel_provider_id"]:
             old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
@@ -1121,16 +1160,6 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                         add_log("info", f"Proxy updated: {new_public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
                 except Exception as e:
                     errors.append(str(e))
-
-        dns_ip, dns_target_source = resolve_public_target(
-            conn,
-            mode=body.public_target_mode,
-            manual_value=body.dns_ip,
-            proxy_provider_id=body.proxy_provider_id,
-            current_value=old["dns_ip"] or "",
-        )
-        if not dns_ip:
-            dns_ip = old["dns_ip"] or ""
 
         if body.dns_provider_id and dns_ip and not body.enabled:
             # Publishing the record here and letting the enable/disable block below undo it

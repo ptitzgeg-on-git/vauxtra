@@ -298,9 +298,14 @@ export function ExposeModal({
 
     if (formData.expose_mode === 'proxy_dns' && formData.dns_provider_id) {
       if (effectivePublicTargetMode === 'manual' && !manualDnsTarget) {
-        // DNS-only: target_ip is used automatically, nothing else to ask for.
         if (formData.ui_expose_mode === 'dns_only') {
+          // A local resolver may answer with the service's own LAN address, and that is what
+          // `localDnsFallback` publishes. A public zone must not carry one, so `target_ip`
+          // gives it nothing: without a target of its own there is simply nothing to write.
           if (!formData.target_ip.trim()) return t('expose.validation.target_required_dns_only');
+          if (selectedDnsIsExternal && !suggestedDnsTarget) {
+            return t('expose.validation.dns_target_external_required');
+          }
         } else if (selectedDnsIsExternal) {
           return t('expose.validation.dns_target_external_required');
         } else if (selectedDnsIsLocal) {
