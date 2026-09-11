@@ -47,6 +47,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Two dialogs open at once fought over the keyboard, and the one underneath won.** Every
+  dialog in the panel — `Modal`, `Drawer`, `ConfirmDialog`, the command palette — listens for
+  Escape and Tab on `document` in the capture phase, through `useModalDialog`. Two being open
+  at once is more common than that sounds: a confirmation asked from inside a modal is the
+  house pattern, and Ctrl/⌘ K summoned the palette over anything. All of them heard every
+  key, and the one registered first — the one underneath — answered first. `stopPropagation()`
+  never helped: it stops an event reaching further *nodes*, not the other listeners already
+  attached to this one.
+
+  So Tab inside a confirmation asked `container.contains(document.activeElement)` of the
+  modal underneath, got false, concluded focus had escaped, and pulled it back out of the
+  confirmation. On the confirmations that ask you to type a name before enabling their button
+  — deleting a provider that still has services, resetting the panel, restoring a backup —
+  there was no way from the field to the confirm button without a mouse. Escape reached both
+  handlers and closed both, which with the unsaved-changes guard in front of a modal meant a
+  single key could dismiss the guard and discard the form it was guarding in one stroke.
+
+  `useModalDialog` now keeps a stack of the dialogs that are open, and only the one on top
+  answers a key. Entries come off it by identity rather than by `pop()`: React makes no
+  promise about which of two nested dialogs unmounts first, and closing the one underneath
+  must not take the top one off the stack.
+
+- **Ctrl/⌘ K opened the command palette over whatever was already on screen, and then
+  navigated out from under it.** The palette exists to jump somewhere, so summoning it over a
+  half-filled modal ended with that modal floating over a page it had nothing to do with, its
+  Cancel button wired to a form the operator could no longer see. The global shortcuts now
+  decline while a dialog is open — the `g` chords and `?` for the same reason — with one
+  exception: Ctrl/⌘ K still closes the palette it opened, the single dialog it is allowed to
+  answer over.
+
 - **A failed background refresh of the security status threw away a password somebody was
   halfway through typing.** The security tab reads `/auth/me` through React Query, which
   refetches on window focus like every query in the panel. The error branch came first in
