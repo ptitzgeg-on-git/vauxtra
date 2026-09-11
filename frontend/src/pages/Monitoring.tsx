@@ -225,7 +225,19 @@ export function Monitoring() {
     [historyQuery.data, services, now],
   );
 
-  const checkIntervalMinutes = Number(settings?.check_interval) || 5;
+  // `check_interval` holds `0` when health checks are turned off -- that is exactly what the
+  // toggle in Settings > General writes -- and `Number('0') || 5` read that back as five
+  // minutes. With the scheduler stopped, this header still announced "every 5 min", so the
+  // one screen an operator opens to see whether checks are running claimed they were.
+  //
+  // `app/main.py` also treats anything it cannot parse as zero, so an unreadable value means
+  // off here too. `undefined` is the one case that is neither: the settings query has simply
+  // not landed yet, and contradicting the header on first paint helps nobody.
+  const storedInterval = settings?.check_interval;
+  const parsedInterval = Number(storedInterval);
+  const hasUsableInterval = Number.isFinite(parsedInterval) && parsedInterval > 0;
+  const autoChecksOff = storedInterval !== undefined && !hasUsableInterval;
+  const checkIntervalMinutes = hasUsableInterval ? parsedInterval : 5;
   const hasAutoCheckData = services.some((service) => Boolean(service.last_checked));
   const probedCount = Object.keys(probes.probes).length;
 
@@ -295,9 +307,11 @@ export function Monitoring() {
         icon={<Activity />}
         meta={
           <span className="text-xs text-muted-foreground">
-            {hasAutoCheckData
-              ? t('monitoring.auto_checks_every', { minutes: checkIntervalMinutes })
-              : t('monitoring.auto_checks_waiting')}
+            {autoChecksOff
+              ? t('monitoring.auto_checks_off')
+              : hasAutoCheckData
+                ? t('monitoring.auto_checks_every', { minutes: checkIntervalMinutes })
+                : t('monitoring.auto_checks_waiting')}
           </span>
         }
         actions={

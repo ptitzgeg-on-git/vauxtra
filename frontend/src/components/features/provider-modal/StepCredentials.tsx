@@ -28,6 +28,7 @@ import {
   requiresPassword,
   requiresUsername,
 } from '@/components/features/providers/providerConstants';
+import { checkDetailText, checkLabelText } from '@/components/features/providers/providerHealth';
 
 export type WizardMode = 'guided' | 'expert';
 
@@ -348,15 +349,21 @@ export function StepCredentials({
           title={validationResult.ok ? t('provider_modal.validation.title_ok') : t('provider_modal.validation.title_failed')}
         >
           <ul className="mt-1 space-y-1 text-xs">
-            {(validationResult.validation?.checks || []).slice(0, 6).map((check, idx) => (
-              <li key={`${check.name || 'check'}-${idx}`} className={cn('flex items-start gap-1.5', check.ok ? 'text-success' : 'text-destructive')}>
-                {check.ok ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-                <span>
-                  {check.name || t('provider_modal.validation.check_fallback')}
-                  {check.detail ? `: ${check.detail}` : ''}
-                </span>
-              </li>
-            ))}
+            {(validationResult.validation?.checks || []).slice(0, 6).map((check, idx) => {
+              // Same reason as the setup wizard: the check name and its detail both arrive in
+              // English from the API, and both have a locale key waiting for them.
+              const label = checkLabelText(check.name, t);
+              const detail = checkDetailText(check, t);
+              return (
+                <li key={`${check.name || 'check'}-${idx}`} className={cn('flex items-start gap-1.5', check.ok ? 'text-success' : 'text-destructive')}>
+                  {check.ok ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                  <span>
+                    {label || t('provider_modal.validation.check_fallback')}
+                    {detail ? `: ${detail}` : ''}
+                  </span>
+                </li>
+              );
+            })}
             {(validationResult.validation?.warnings || []).length > 0 && (
               <li className="text-warning">
                 {t('provider_modal.validation.warnings')} {(validationResult.validation?.warnings || []).join(' · ')}

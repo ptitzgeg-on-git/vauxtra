@@ -55,11 +55,11 @@ export function UptimeStrip({ summary, label, heightClass = 'h-5', className }: 
   );
 
   if (summary.total === 0) {
+    // No `title`: it carried the very sentence the span below already shows, so hovering an
+    // empty strip raised a native tooltip repeating the text under the cursor. A tooltip
+    // that adds nothing is noise on a pointer and unreachable on a touch screen.
     return (
-      <div
-        className={cn('flex items-center rounded-md border border-dashed border-border px-2', heightClass, className)}
-        title={t('monitoring.uptime.no_history')}
-      >
+      <div className={cn('flex items-center rounded-md border border-dashed border-border px-2', heightClass, className)}>
         <span className="truncate text-[10px] text-muted-foreground">{t('monitoring.uptime.no_history')}</span>
       </div>
     );

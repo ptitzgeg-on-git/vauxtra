@@ -114,6 +114,28 @@ const CHECK_ICONS: Record<CheckTone, ReactNode> = {
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
   Boolean(value) && typeof value === 'object' && Array.isArray((value as { errors?: unknown }).errors);
 
+/**
+ * The success sentence carries the host inside it, in monospace.
+ *
+ * `t()` returns a plain string, so handing it the host as a parameter would flatten that
+ * monospace run into the paragraph -- and calling it with no parameter at all, as this
+ * screen did, printed the raw `{host}` placeholder followed by the value again. Splitting
+ * the template on its own placeholder keeps both the styling and the word order the
+ * translator chose. All eight sentences happen to open on the host today, and nothing in
+ * the locale files makes them: a translation that moves the placeholder, or loses it
+ * altogether, still renders -- host last in that case.
+ */
+export function PublishedSentence({ template, host }: { template: string; host: string }) {
+  const [before, after = ''] = template.split('{host}');
+  return (
+    <>
+      {before}
+      <span className="font-mono text-foreground">{host}</span>
+      {after}
+    </>
+  );
+}
+
 export function ExposeModal({
   isOpen,
   onClose,
@@ -867,7 +889,7 @@ export function ExposeModal({
               {isEditMode ? t('expose.done.updated_title') : t('expose.done.created_title')}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {t('expose.done.body')} <span className="font-mono text-foreground">{saveOutcome.host}</span>
+              <PublishedSentence template={t('expose.done.body')} host={saveOutcome.host} />
             </p>
           </div>
           {saveOutcome.errors.length > 0 && (

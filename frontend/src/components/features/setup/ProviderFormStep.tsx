@@ -39,6 +39,7 @@ import {
   type ProviderTypeMeta,
   type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { checkDetailText, checkLabelText } from '@/components/features/providers/providerHealth';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 
@@ -227,19 +228,26 @@ export function ProviderFormStep({
         <ul className="space-y-1">
           {validationResult.validation.checks
             .filter((check) => (validationResult.ok ? true : !check.ok))
-            .map((check, i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                {check.ok ? (
-                  <CheckCircle2 aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-success" />
-                ) : (
-                  <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
-                )}
-                <span>
-                  <span className="font-medium">{check.name || t('provider_modal.validation.check_fallback')}</span>
-                  {check.detail ? ` — ${check.detail}` : ''}
-                </span>
-              </li>
-            ))}
+            .map((check, i) => {
+              // The API names its checks for itself (`test_connection`) and writes their detail
+              // in English; both have to go through the locale files, or this panel answers a
+              // French setup wizard with "test_connection — Connection test passed".
+              const label = checkLabelText(check.name, t);
+              const detail = checkDetailText(check, t);
+              return (
+                <li key={i} className="flex items-start gap-1.5">
+                  {check.ok ? (
+                    <CheckCircle2 aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-success" />
+                  ) : (
+                    <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
+                  )}
+                  <span>
+                    <span className="font-medium">{label || t('provider_modal.validation.check_fallback')}</span>
+                    {detail ? ` — ${detail}` : ''}
+                  </span>
+                </li>
+              );
+            })}
         </ul>
       )}
       {validationResult.health?.status && (
