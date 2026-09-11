@@ -47,6 +47,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The dependency audit could not tell a vulnerability from a registry that would not
+  answer.** `npm audit --audit-level=high` exits 1 for both, and the CI step read nothing but
+  that exit code. So a `400` from `registry.npmjs.org` — which happens, and happened here —
+  turned a green branch red under the heading *npm audit*, with a failure that named no
+  package and no version, and the only repair was to re-run the job until the registry felt
+  better. Re-running a security gate until it passes is a habit worth not teaching anybody.
+
+  `scripts/run_npm_audit.py` now decides from the shape of the answer rather than from the
+  exit code: a real report carries `metadata.vulnerabilities`, and the script counts the
+  severities at or above the level itself. Anything without that object is the registry
+  declining to speak — retried, and if it still will not answer, the job fails saying
+  exactly that: *nothing was audited*. It does not pass. An audit that never reached the
+  registry has proved nothing about the dependencies, and a gate that goes green on silence
+  is worse than one that flakes, because nobody re-runs a green job.
+
 - **The dashboard had four ways of not saying "this failed".** Every widget on it decided it
   was loading by asking whether its data had arrived — `loading={!providersReady}`, where
   `providersReady` is `Array.isArray(providers)`. A request that fails leaves that array
