@@ -5,6 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Nothing stopped a tool from signing a commit on behalf of somebody who never wrote
+  one.** GitHub builds the contributor sidebar from commit authors and from
+  `Co-authored-by:` trailers alike, so a trailer is not a footnote: it puts a name and an
+  avatar on the front page of a public repository. Two arrived that way, and removing them
+  cost a rewrite of every commit and a force-push of six tags. That rewrite cleaned the
+  history and left the door it came through wide open.
+
+  `scripts/check_repo_hygiene.py` now reads the author, the committer and every
+  `Co-authored-by:` trailer of every commit in the repository, refuses any address outside
+  a declared allowlist, and refuses four substrings that name a process rather than a
+  person. The merge identity `GitHub <noreply@github.com>` may commit and may not author,
+  because an address that can only ever be a committer must not be able to become a
+  contributor. Ten tests build throwaway repositories containing exactly the shapes it has
+  to refuse, because a gate nobody has watched fail is a claim rather than a guarantee.
+
+  It also refuses to rule on a shallow clone instead of passing one in silence, which is
+  why both workflows that run it now check out with `fetch-depth: 0`. `actions/checkout`
+  fetches one commit by default: on that default the gate would have read the tip, said
+  nothing about the sixty commits behind it, and reported green for a history it never
+  opened.
+
+---
+
 ## [1.4.0] — 2026-09-11
 
 ### Security

@@ -26,7 +26,14 @@ jobs:
       contents: read
 
     steps:
+      # The hygiene gate judges the identity of every commit in the history, and
+      # `checkout` fetches exactly one by default. On that default the gate would read
+      # the tip, say nothing about everything behind it, and report green -- which is
+      # how two names nobody invited ended up on the front page of this repository. It
+      # now refuses to rule on a shallow clone, so this line is what keeps it able to.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
