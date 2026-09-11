@@ -161,7 +161,7 @@ export function Services() {
   );
 
   // --- transient state ----------------------------------------------------
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [rawSelectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [actioningIds, setActioningIds] = useState<Set<number>>(() => new Set());
   const [checkById, setCheckById] = useState<Record<number, ServiceCheckResult>>({});
   const [driftByService, setDriftByService] = useState<Record<number, DriftResult>>({});
@@ -200,6 +200,18 @@ export function Services() {
   });
 
   const services = useMemo(() => (Array.isArray(servicesQuery.data) ? servicesQuery.data : []), [servicesQuery.data]);
+
+  // A selection survives a refetch, and some of what it holds may not: a service deleted in
+  // another tab, or by the bulk action that just ran. Dropping those ids was an effect, so
+  // the toolbar painted "3 selected" over two rows before correcting itself, and a bulk
+  // action fired in between carried an id the server no longer knows. The live selection is
+  // the stored one intersected with what exists, which is a derivation, not a state.
+  const selectedIds = useMemo(() => {
+    if (rawSelectedIds.size === 0) return rawSelectedIds;
+    const known = new Set(services.map((s) => s.id));
+    if ([...rawSelectedIds].every((id) => known.has(id))) return rawSelectedIds;
+    return new Set([...rawSelectedIds].filter((id) => known.has(id)));
+  }, [services, rawSelectedIds]);
   const providers = useMemo(() => (Array.isArray(providersQuery.data) ? providersQuery.data : []), [providersQuery.data]);
   const tags = useMemo(() => (Array.isArray(tagsQuery.data) ? tagsQuery.data : []), [tagsQuery.data]);
   const environments = useMemo(
@@ -248,6 +260,9 @@ export function Services() {
   useEffect(() => {
     if (searchParams.get('new')) {
       setParam('new', null);
+      // The URL is the instruction: `?new=1` means "open the create form", and the form is
+      // what the operator followed the link for. Opening it on the next tick instead would
+      // paint the page once without it.
       openCreate();
       return;
     }
@@ -282,6 +297,9 @@ export function Services() {
       if (servicesQuery.isPending || servicesQuery.isError) return;
       setParam('edit', null);
       const service = services.find((s) => String(s.id) === editId);
+      // Same contract as `?new=1`: the link names a service to edit, and the drawer is the
+      // page the operator asked for, not a follow-up to it.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (service) openEdit(service);
       else toast.error(t('services.toast.not_found', { id: editId }));
     }
@@ -358,14 +376,6 @@ export function Services() {
     });
   }, [visibleIds]);
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
-
-  // Drop ids that no longer exist (deleted elsewhere, or a refetch).
-  useEffect(() => {
-    if (selectedIds.size === 0) return;
-    const known = new Set(services.map((s) => s.id));
-    if ([...selectedIds].every((id) => known.has(id))) return;
-    setSelectedIds((prev) => new Set([...prev].filter((id) => known.has(id))));
-  }, [services, selectedIds]);
 
   // --- keyboard shortcuts -------------------------------------------------
   useEffect(() => {

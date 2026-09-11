@@ -44,6 +44,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Two list pages painted once with stale state before correcting themselves.** Integrations
+  keeps a map of manual-test results, Services a set of selected rows, and both pruned that
+  state in an effect — one render *after* the list it mirrors had arrived. A passive effect
+  runs after the paint, so the frame in between is on screen and can be clicked: Integrations
+  showed a "last checked" time computed over results belonging to integrations that were no
+  longer there, and the Services toolbar read "3 selected" above two rows, with a confirmation
+  dialog that would then say two. Neither value is anything but a function of the list and
+  what was stored, so both are computed now and the first paint is already right. Restoring
+  the manual-test results moved into the `useState` initialiser for the same reason: as a
+  mount effect it guaranteed one paint with no results at all, so the badges blinked in a tick
+  late on every navigation to the page.
+  `eslint-plugin-react-hooks` moves to 7.1.1, the version that reported all of this — 7.0.1
+  reported nothing on either file. The two modals the URL contract has to open synchronously
+  (`?new=1`, `?edit=<id>`) keep a scoped directive: the modal *is* the page the link asked for.
 - **Four operations could fail without a single word on screen.** Signing out was a bare
   `async` function wired straight to `onClick`, so React discarded the promise: a failed
   `POST /auth/logout` became an unhandled rejection, the `auth-status` invalidation never

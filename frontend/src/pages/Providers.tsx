@@ -54,6 +54,35 @@ import type {
 
 type FocusFilter = 'all' | 'issues' | 'healthy';
 type DiagnosticsMap = Record<number, ProviderDiagnostics>;
+
+/**
+ * What the last manual test round left behind, minus whatever has gone stale.
+ *
+ * This used to be a mount effect, so the page always painted once with no diagnostics at
+ * all and then painted again a tick later: every badge the operator had earned by testing
+ * their integrations flickered in on each navigation. `useState` takes its initial value
+ * lazily, so the first paint already has them.
+ */
+function restoreDiagnostics(): DiagnosticsMap {
+  try {
+    const raw = localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, ProviderDiagnostics>;
+    const now = Date.now();
+    const restored: DiagnosticsMap = {};
+    for (const [id, diag] of Object.entries(parsed || {})) {
+      if (isDiagnosticsFresh(diag, now)) restored[Number(id)] = diag;
+    }
+    return restored;
+  } catch {
+    try {
+      localStorage.removeItem(DIAGNOSTICS_STORAGE_KEY);
+    } catch {
+      // Storage itself is unavailable; there is nothing to clean up.
+    }
+    return {};
+  }
+}
 type RouteModal = { mode: 'create' } | { mode: 'edit'; provider: Provider };
 
 interface ProviderSignals {
@@ -103,7 +132,7 @@ export function Providers() {
   const [inspectId, setInspectId] = useState<number | null>(null);
   const [focusFilter, setFocusFilter] = useState<FocusFilter>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [diagnostics, setDiagnostics] = useState<DiagnosticsMap>({});
+  const [storedDiagnostics, setDiagnostics] = useState<DiagnosticsMap>(restoreDiagnostics);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [validatingId, setValidatingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -140,21 +169,21 @@ export function Providers() {
   const autoHealthById = useMemo(() => unwrapHealthMap(allHealthQuery.data), [allHealthQuery.data]);
 
   // --- manual diagnostics: restored from localStorage, pruned to known ids --
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Record<string, ProviderDiagnostics>;
-      const now = Date.now();
-      const restored: DiagnosticsMap = {};
-      for (const [id, diag] of Object.entries(parsed || {})) {
-        if (isDiagnosticsFresh(diag, now)) restored[Number(id)] = diag;
-      }
-      setDiagnostics(restored);
-    } catch {
-      localStorage.removeItem(DIAGNOSTICS_STORAGE_KEY);
+  // Pruning was an effect, and an effect that prunes is a second render: the list arrived,
+  // the page painted with a result for an integration that no longer exists, and only then
+  // did the effect write the shorter map. It is a function of what was stored and what the
+  // server returned, so it is computed -- one paint, and no second copy to keep in sync.
+  const diagnostics = useMemo(() => {
+    if (providers.length === 0) return storedDiagnostics;
+    const ids = new Set(providers.map((p) => Number(p.id)));
+    const next: DiagnosticsMap = {};
+    let changed = false;
+    for (const [id, diag] of Object.entries(storedDiagnostics)) {
+      if (ids.has(Number(id))) next[Number(id)] = diag;
+      else changed = true;
     }
-  }, []);
+    return changed ? next : storedDiagnostics;
+  }, [providers, storedDiagnostics]);
 
   useEffect(() => {
     try {
@@ -163,20 +192,6 @@ export function Providers() {
       // Private mode / quota: the page still works without persistence.
     }
   }, [diagnostics]);
-
-  useEffect(() => {
-    if (providers.length === 0) return;
-    const ids = new Set(providers.map((p) => Number(p.id)));
-    setDiagnostics((prev) => {
-      const next: DiagnosticsMap = {};
-      let changed = false;
-      for (const [id, diag] of Object.entries(prev)) {
-        if (ids.has(Number(id))) next[Number(id)] = diag;
-        else changed = true;
-      }
-      return changed ? next : prev;
-    });
-  }, [providers]);
 
   const storeDiagnostics = useCallback((id: number, diag: ProviderDiagnostics) => {
     setDiagnostics((prev) => ({ ...prev, [id]: { ...diag, testedAt: Date.now() } }));
@@ -238,6 +253,10 @@ export function Providers() {
   useEffect(() => {
     if (searchParams.get('new')) {
       setParam('new', null);
+      // The URL is the instruction here: `?new=1` means "open the create form", and the
+      // form is what the operator followed the link for. Deferring it would paint the page
+      // once without it, which is the flicker this rule exists to prevent.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       openCreate();
       return;
     }
