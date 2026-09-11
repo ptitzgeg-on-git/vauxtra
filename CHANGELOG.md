@@ -45,6 +45,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   nothing about the sixty commits behind it, and reported green for a history it never
   opened.
 
+### Added
+
+- **A frontend test runner, because three fixes in a row shipped with the same caveat.** The
+  bodies of the last three pull requests each ended by saying their defect could only be
+  reproduced by hand — cut the backend, open the wizard, watch a green tick appear over a
+  failure — and each of them was right: nothing in this repository had ever rendered a
+  component. `npm run test` does, on vitest and jsdom, and it runs inside `npm run quality`
+  and as its own step in the Node job of CI.
+
+  The twenty tests that come with it are not a sample of the codebase; they are the defects
+  those three pull requests fixed, written down. Every one was checked the only way a
+  regression test can be: by putting the defect back and watching the test go red. Two rules
+  keep them honest. They render without `I18nProvider`, so `t()` returns the key and an
+  assertion reads `setup.import.scan_failed` rather than an English sentence somebody may
+  reword next month. And `@/api/client` is redirected to a stub at resolution time rather
+  than mocked file by file, so a test that quietly reaches for the network reaches nothing
+  at all — a test whose result depends on what happens to be running on the machine is not
+  a test.
+
 ### Fixed
 
 - **Four screens read an empty list as a fact about the panel.** A request that fails and a
