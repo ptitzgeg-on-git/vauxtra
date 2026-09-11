@@ -44,6 +44,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   network-facing container, and saves 7 MB. The Debian layer was clean.
 
 ### Fixed
+- **Escape threw away a fully configured exposure, with no undo and no trace.** The wizard is
+  opened with `persistent`, which reads as "this one cannot be dismissed by accident" — but
+  `persistent` only blocks the click on the backdrop. Escape still reached `handleClose`, and
+  `handleClose` resets all seven pieces of state at once: hostname, target, the selected
+  providers, tags, environments, the preflight that was just run. Several minutes of work, gone
+  to one key pressed to dismiss something else — an autocomplete list, an OS notification.
+  Closing now asks first, and only when there is something to lose: the form is compared
+  against the state it was seeded with, so an untouched wizard still closes on the first press.
+  The `done` step is deliberately never dirty — the push has already happened and that panel is
+  a receipt. Cancel goes through the same gate as Escape, so the two ways out behave alike.
+
+  `ConfirmDialog` is portalled to the body for this, as `Modal` and `Drawer` already were.
+  Rendered in place it was earlier in the document than the modal's own portal, at the same
+  `z-50`, so a confirmation asked from inside a modal painted underneath it — and `fixed
+  inset-0` would have been measured against the modal panel's `zoom-in-95` transform rather
+  than the viewport.
 - **Deleting a webhook did not stop the sends already queued to it.** `delete_webhook` is one
   `DELETE FROM webhooks WHERE id=?` and nothing else, and `webhook_delivery_log.webhook_id`
   named a webhook without referencing one — so the webhook went and its retry queue stayed. The
