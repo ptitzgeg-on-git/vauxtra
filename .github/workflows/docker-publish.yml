@@ -2,7 +2,10 @@ name: Build & Publish
 
 on:
   push:
-    branches: [main]
+    # `dev` publishes too, because a staging instance that runs something other than the
+    # image this repository builds is not testing this repository. It gets its own moving
+    # tag and never touches `latest`, which stays the production pointer.
+    branches: [main, dev]
     tags: ["v*.*.*"]
 
 # Never `cancel-in-progress`. Two runs here would be two writers on the same registry tag
@@ -77,6 +80,10 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            # The staging pointer. Written by name rather than by `type=ref,event=branch`,
+            # which would also start publishing a `main` tag that nothing pulls and that the
+            # weekly cleanup would then have to learn about.
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}

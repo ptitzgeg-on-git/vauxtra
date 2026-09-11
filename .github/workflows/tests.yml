@@ -4,7 +4,9 @@ on:
   push:
     branches: ["**"]
   pull_request:
-    branches: [main]
+    # Both integration targets. A pull request into `dev` that ran no checks would make
+    # `dev` the place where breakage accumulates, which is the opposite of its job.
+    branches: [main, dev]
   # Called by Build & Publish so that no image is ever pushed and signed before this
   # workflow is green. Tag pushes reach the tests only through this call: they match none
   # of the branch triggers above.
