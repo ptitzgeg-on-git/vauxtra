@@ -275,7 +275,7 @@
   "common.back": "Terug",
   "monitoring.toast.check_failed": "Kan de services niet controleren",
   "monitoring.auto_checks_every": "Automatische controles: elke {minutes} min",
-  "monitoring.auto_checks_waiting": "Automatische controles: wachten op de eerste cyclus",
+  "monitoring.auto_checks_disabled": "Automatische controles: uit",
   "monitoring.check_all": "Alle services controleren",
   "monitoring.tunnels_down": "{count} tunnel(s) offline",
   "monitoring.route_health": "Gezondheid van de routes",

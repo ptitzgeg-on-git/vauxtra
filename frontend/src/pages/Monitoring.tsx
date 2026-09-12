@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { Activity, ArrowDownCircle, CircleHelp, Gauge, Radio, ShieldCheck, Timer } from 'lucide-react';
@@ -30,6 +30,7 @@ import { useServiceProbes } from '@/components/features/monitoring/useServicePro
 import {
   STATUS_FILTERS,
   STATUS_LABEL_KEY,
+  autoCheckCadence,
   overallAvailability,
   serviceHost,
   serviceStatus,
@@ -225,8 +226,8 @@ export function Monitoring() {
     [historyQuery.data, services, now],
   );
 
-  const checkIntervalMinutes = Number(settings?.check_interval) || 5;
-  const hasAutoCheckData = services.some((service) => Boolean(service.last_checked));
+  // `autoCheckCadence` carries why this is read from the setting and never from `last_checked`.
+  const cadence = autoCheckCadence(settings?.check_interval);
   const probedCount = Object.keys(probes.probes).length;
 
   // --- filtering ----------------------------------------------------------
@@ -294,11 +295,19 @@ export function Monitoring() {
         description={t('monitoring.page_description')}
         icon={<Activity />}
         meta={
-          <span className="text-xs text-muted-foreground">
-            {hasAutoCheckData
-              ? t('monitoring.auto_checks_every', { minutes: checkIntervalMinutes })
-              : t('monitoring.auto_checks_waiting')}
-          </span>
+          cadence.state === 'every' ? (
+            <span className="text-xs text-muted-foreground">
+              {t('monitoring.auto_checks_every', { minutes: cadence.minutes })}
+            </span>
+          ) : cadence.state === 'off' ? (
+            // The only screen that can switch them back on, one click away from the bad news.
+            <Link
+              to="/settings?tab=general"
+              className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              {t('monitoring.auto_checks_disabled')}
+            </Link>
+          ) : null
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -436,8 +445,12 @@ export function Monitoring() {
         />
       </div>
 
+      {/* `min-w-0` on both children: a grid item defaults to `min-width: auto`, so the table's
+          `min-w-[820px]` climbed back up and sized the card at 820px on a phone. The card then
+          overflowed `main`, whose `overflow-x: hidden` cut 476px off with no scrollbar, while
+          the table's own `overflow-x-auto` had nothing left to scroll. */}
       <div className="grid gap-4 xl:grid-cols-12">
-        <Card className="xl:col-span-8">
+        <Card className="min-w-0 xl:col-span-8">
           <CardHeader className="gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle>{t('monitoring.route_health')}</CardTitle>
@@ -499,7 +512,7 @@ export function Monitoring() {
           </CardContent>
         </Card>
 
-        <div className="xl:col-span-4">
+        <div className="min-w-0 xl:col-span-4">
           <TunnelsCard
             data={tunnelsQuery.data}
             loading={tunnelsQuery.isPending}

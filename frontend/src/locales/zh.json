@@ -275,7 +275,7 @@
   "common.back": "返回",
   "monitoring.toast.check_failed": "无法检查服务",
   "monitoring.auto_checks_every": "自动检查：每 {minutes} 分钟",
-  "monitoring.auto_checks_waiting": "自动检查：等待首个周期",
+  "monitoring.auto_checks_disabled": "自动检查：已关闭",
   "monitoring.check_all": "检查所有服务",
   "monitoring.tunnels_down": "{count} 条隧道已中断",
   "monitoring.route_health": "路由健康状态",

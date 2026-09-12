@@ -275,7 +275,7 @@
   "common.back": "Retour",
   "monitoring.toast.check_failed": "Échec de vérification des services",
   "monitoring.auto_checks_every": "Vérifications auto : toutes les {minutes} min",
-  "monitoring.auto_checks_waiting": "Vérifications auto : en attente du premier cycle",
+  "monitoring.auto_checks_disabled": "Vérifications auto : désactivées",
   "monitoring.check_all": "Vérifier tous les services",
   "monitoring.tunnels_down": "{count} tunnel(s) hors ligne",
   "monitoring.route_health": "État des routes",

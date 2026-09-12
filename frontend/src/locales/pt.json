@@ -275,7 +275,7 @@
   "common.back": "Voltar",
   "monitoring.toast.check_failed": "Falha ao verificar os serviços",
   "monitoring.auto_checks_every": "Verificações automáticas: a cada {minutes} min",
-  "monitoring.auto_checks_waiting": "Verificações automáticas: aguardando o primeiro ciclo",
+  "monitoring.auto_checks_disabled": "Verificações automáticas: desligadas",
   "monitoring.check_all": "Verificar todos os serviços",
   "monitoring.tunnels_down": "{count} túnel(is) fora do ar",
   "monitoring.route_health": "Saúde das rotas",

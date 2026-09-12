@@ -66,6 +66,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **"Auto checks: waiting for the first cycle" was decided by a column the manual checks write
+  too.** The monitoring header chose between two sentences on `last_checked`: a timestamp meant
+  the scheduler had run, an empty one meant it had not yet. But `POST /api/services/check-all`
+  stamps that same column, so one click on "Check all" turned the header into "Auto checks every
+  5 min" on an instance whose `check_interval` was `0` — the value that disables the scheduler
+  outright (`app/api/settings.py`, range `0..1440`). The state was not shown late or shown
+  wrong; it could not be measured from there at all. It is gone, and the
+  `monitoring.auto_checks_waiting` string with it in all eight languages, replaced by
+  `monitoring.auto_checks_disabled`. The header now answers from `check_interval` alone,
+  through `autoCheckCadence()`: a cadence, "off" as a link to the one screen that switches them
+  back on, or nothing. That third branch renders nothing on purpose — a header that cannot
+  prove a state says nothing rather than guessing.
+
+- **On a phone the monitoring table's card was 820px wide inside a 358px frame, and 476px of it
+  were cut off with no scrollbar.** The card and the side column sit in a `grid`, where an
+  item's `min-width` defaults to `auto`: the table's `min-w-[820px]` therefore climbed back out
+  through the card and sized the grid item at 820px. `main` is `overflow-x: hidden`, so it cut
+  the excess instead of scrolling it, while the table's own `overflow-x-auto` had nothing left
+  to scroll and stood still. The filter row's right edge landed at 834px against a 402px
+  viewport, reachable by no gesture at all. `min-w-0` on both grid children brings the card back
+  to 326px and hands the overflow to the scroller built for it: 324 visible of 820, and nothing
+  on the page out of reach.
+
+  A second, quieter leak came out of the same measurement: `main` still reported 825px of scroll
+  width against a 358px frame. It was not the table, which is clipped correctly. Tailwind ships
+  `sr-only` as `position: absolute`, and the scroller was `position: static`, so the containing
+  block of the two screen-reader spans in the last column was an ancestor above the clip: they
+  sat at x=842 and pulled 467px of phantom scroll area into `main`. It was inert — no scrollbar,
+  and keyboard focus is absorbed by the inner scroller — but a phantom scroll area parked behind
+  an `overflow-x: hidden` is a horizontal scrollbar waiting for the day somebody removes that
+  `hidden`. `relative` on the scroller makes it the containing block those spans were missing,
+  and `/monitoring` now measures 358 = 358, like the `/services` table it was compared against.
+
 - **The guided panel counted "Step 1 of 1" and armed a second primary button that finished
   nothing.** Two of the ten types the API serves ship a single guided step (adguard, traefik),
   and the panel still printed a step counter over one pagination dot whose only destination was

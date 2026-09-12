@@ -275,7 +275,7 @@
   "common.back": "Back",
   "monitoring.toast.check_failed": "Failed to check services",
   "monitoring.auto_checks_every": "Auto checks: every {minutes} min",
-  "monitoring.auto_checks_waiting": "Auto checks: waiting first cycle",
+  "monitoring.auto_checks_disabled": "Auto checks: off",
   "monitoring.check_all": "Check all services",
   "monitoring.tunnels_down": "{count} tunnel(s) down",
   "monitoring.route_health": "Route Health",

@@ -67,6 +67,39 @@ export function serviceStatus(service: Service): MonitoringStatus {
   return service.status === 'ok' || service.status === 'error' ? service.status : 'unknown';
 }
 
+// ---------------------------------------------------------------------------
+// The scheduler's cadence
+// ---------------------------------------------------------------------------
+
+/** What the page may say about the scheduler, and nothing more than it can prove. */
+export type AutoCheckCadence =
+  | { state: 'unknown' }
+  | { state: 'off' }
+  | { state: 'every'; minutes: number };
+
+/**
+ * What `check_interval` says about the scheduler.
+ *
+ * `0` is the value that turns it off -- `app/settings.py` ranges it over (0, 1440) with the
+ * comment "0 disables automatic health checks" -- which is exactly the value a `Number(x) || 5`
+ * swallows. The one number carrying a meaning was the one the fallback replaced, so a page
+ * whose scheduler was off announced checks every five minutes.
+ *
+ * The other way this line used to be decided was `services.some((s) => s.last_checked)`. That
+ * column is written by the manual checks too (`app/api/services.py`), so clicking "Check every
+ * service" once made the header claim a scheduler was running. A trace left by a human is not
+ * evidence about a scheduler; the setting is, and it is the only thing read here.
+ *
+ * Anything unreadable -- settings not loaded yet, an empty string, a value that is not a number
+ * -- answers `unknown`, and the page then says nothing at all. Silence is never wrong.
+ */
+export function autoCheckCadence(raw: string | number | null | undefined): AutoCheckCadence {
+  if (raw === null || raw === undefined || raw === '') return { state: 'unknown' };
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes < 0) return { state: 'unknown' };
+  return minutes === 0 ? { state: 'off' } : { state: 'every', minutes };
+}
+
 /** Tunnel endpoints are never TCP-checked; the Cloudflare API is what says they are up. */
 export function isTunnelService(service: Service): boolean {
   return service.expose_mode === 'tunnel';

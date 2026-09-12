@@ -83,7 +83,12 @@ export function MonitoringTable({
   }
 
   return (
-    <div className="overflow-x-auto">
+    // `relative` is not cosmetic: Tailwind ships `sr-only` as `position: absolute`, and with a
+    // static scroller the containing block of those spans is a positioned ancestor further up,
+    // so the two in the last column escaped this clip at x=842 and handed `main` 467px of
+    // phantom scroll width. Positioning the scroller makes it their containing block; they keep
+    // their static position and get clipped with the rest of the row.
+    <div className="relative overflow-x-auto">
       <table className="w-full min-w-[820px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-border">

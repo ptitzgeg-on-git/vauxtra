@@ -275,7 +275,7 @@
   "common.back": "戻る",
   "monitoring.toast.check_failed": "サービスのチェックに失敗しました",
   "monitoring.auto_checks_every": "自動チェック：{minutes}分ごと",
-  "monitoring.auto_checks_waiting": "自動チェック：最初のサイクル待ち",
+  "monitoring.auto_checks_disabled": "自動チェック：無効",
   "monitoring.check_all": "すべてのサービスをチェック",
   "monitoring.tunnels_down": "{count}件のトンネルがダウンしています",
   "monitoring.route_health": "ルートの状態",
