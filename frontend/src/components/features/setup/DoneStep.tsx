@@ -96,7 +96,10 @@ export function DoneStep({ skipPassword, providers, onFinish, finishing }: DoneS
       key: 'password',
       icon: skipPassword ? <Unlock /> : <Lock />,
       tone: (skipPassword ? 'warning' : 'success') as Tone,
-      label: skipPassword ? t('setup.done.summary_open') : t('setup.done.summary_password'),
+      // One label, because both branches said "Panel access" in all eight locales.
+      // What changes with `skipPassword` is the value beside it, and the icon and the
+      // tone around it.
+      label: t('setup.done.summary_access'),
       value: skipPassword ? t('setup.done.value_open') : t('setup.done.value_protected'),
       active: true,
     },

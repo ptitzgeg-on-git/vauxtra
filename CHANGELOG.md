@@ -1090,6 +1090,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   deliberate drifts, including the one where the annotation is rewritten and the reader
   quietly answers the empty set.
 
+- **One screen, two names, and neither the tab nor the sidebar used the one the page answers
+  to.** The settings tab strip (`frontend/src/components/features/settings/tabs.ts:49`) and the
+  sidebar submenu (`Sidebar.tsx:212`) both render `settings.tab.logs`, which read "System Logs";
+  the page those two open renders `settings.logs.title`, which reads "Action Logs", above
+  `settings.logs.desc`: "Everything Vauxtra did, newest first." `GET /api/logs` reads the `logs`
+  table, the one `add_log` writes to, so the page is right and the two entry points were
+  promising something the product does not have — there is no system or daemon log viewer
+  anywhere in it. Both entry points now carry the page's own title, taken per file from that
+  file's `settings.logs.title` rather than translated again: "Journaux d'actions",
+  "Aktionsprotokolle", "Registros de acción", "Actielogs", "Logs de ação", 操作ログ, 操作日志.
+
+- **A sentence about several notification targets kept referring back to one of them.**
+  `settings.backup.restore_webhooks_disabled_other` says how many targets came back from a
+  secretless backup without their URL, and then in the same breath said to re-enter *it* and
+  switch *them* back on. English, French, Spanish, Dutch and Portuguese all carried some form of
+  it: `does not carry it. Re-enter it`, `ne la contient pas. Ressaisissez-la`, `no la incluye.
+  Vuelva a introducirla`, `Voer de URL opnieuw in`, `não o contém. Introduza-o`. German was
+  already right, because *sie* is both the feminine singular and the plural; Japanese and
+  Chinese do not mark number here at all. Each replacement is a word this file already uses:
+  `setup.restore.done_webhooks` tells the same operator the same thing about the same objects at
+  the end of the restore wizard, and has said it in the plural in every language all along —
+  "Re-enter them", "Ressaisissez-les", "introducirlas", "URL's". Nothing new was translated.
+
+- **The Spanish and Portuguese import summary called a route masculine.** `ruta` and `rota` are
+  feminine in both languages, and `settings.migration.discovered_one` / `_other` put the same
+  unchanging masculine participle in front of both forms: "Descubierto: {count} ruta" and
+  "Descubierto: {count} rutas", "Descoberto - {count} rota" and "Descoberto - {count} rotas" —
+  wrong gender at one, wrong gender and wrong number at many.
+  They now read "Descubierta" / "Descubiertas" and "Descoberta" / "Descobertas". Both files
+  already inflect this exact participle one screen over, in
+  `settings.docker.toast_discovered_one` / `_other` ("{count} contenedor descubierto" /
+  "{count} contenedores descubiertos"), and French already inflects this very key. German
+  *Entdeckt* and Dutch *Ontdekt* agree with nothing and are untouched.
+
+- **The setup summary chose between two labels that were the same label.** `DoneStep.tsx`
+  rendered `skipPassword ? t('setup.done.summary_open') : t('setup.done.summary_password')`, and
+  those two keys held byte-identical values in all eight locale files — "Panel access", "Accès
+  au panneau", パネルへのアクセス. Whichever way the branch fell the screen said the same thing,
+  so the branch had never shown anything and could not have been noticed by looking. The two
+  keys are replaced by one, `setup.done.summary_access`, named after its row the way its three
+  neighbours are (`summary_providers`, `summary_webhooks`, `summary_docker`). What `skipPassword`
+  actually changes on that row — the value beside the label, the lock icon and the tone — was
+  already correct and is unchanged.
+
 ### Changed
 
 - **`POST /api/settings/api-keys` answers `201`, not `200`.** The eleven other routes that
@@ -1152,6 +1196,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `test_upstream_failures.py`, `test_import_outcomes.py`, `test_unverified_answers.py` and
   `test_restore_reporting.py`. Their contents are unchanged.
 
+- **The em dash leaves the French interface.** Thirty-one strings in `fr.json` carried an em dash,
+  thirty-three of them in all, and `—` is a mark French typography does not set in running text:
+  `Connexion refusée — vérifiez le nom d'utilisateur`, `7 jours ou moins — à renouveler
+  maintenant`, `Ne partagez jamais ce jeton — il donne un accès en écriture`. Each now takes the
+  mark French sets there. Twenty-eight become a colon, where the second half explains the first.
+  Three become a comma, where it merely qualifies it: `Enregistrez, puis utilisez`, `IP ou nom
+  d'hôte uniquement, pas de suffixe /admin`, and `listées, le jeton a besoin de Zone:Read`, that
+  last one to keep a second colon three words away from `Zone:Read`. Two become a small dash, in
+  the lines that already end on a colon — `Option A - Non sécurisée (test rapide) :` — which is
+  also the mark `settings.migration.discovered_*` has always used in this file. `fr.json` now
+  holds no `—` at all. No wording changed and no placeholder moved; the other seven files keep
+  their own punctuation, because this is a claim about French, not about the strings.
+
+- `settings.docker.endpoints_load_failed` and `settings.docker.endpoints_load_failed_hint` move
+  up to sit after `settings.docker.endpoint_test_failed`, where they sort, in all eight files.
+  They had been appended between `no_endpoints_desc` and `no_port` — where the writer happened
+  to be reading, not where the key belongs. Measured across the whole file, they are the only
+  break in alphabetical order anywhere under `settings.docker`, so they were the one pair a
+  reader scanning that family in order could not find.
+
 ### Removed
 
 - `settings.docker.import_done`, in all eight locales — the single green line reporting
@@ -1165,6 +1229,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `dns_target_required` or `dns_target_detection_failed`; nothing in `app/`, `vauxtra_mcp/` or
   `frontend/src/` names it. (`monitoring.drawer.dns_unresolved` is a different key, and stays:
   the service drawer still renders it.)
+
+- `setup.done.summary_open` and `setup.done.summary_password`, in all eight locales. They held
+  the same value as each other in every file, and `setup.done.summary_access` replaces both;
+  the ternary that chose between them is written up under **Fixed** above.
 
 ---
 
