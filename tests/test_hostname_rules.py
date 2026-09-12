@@ -164,6 +164,25 @@ class FqdnRuleTests(unittest.TestCase):
         self.assertEqual(fqdn_problem("a" * 242, "example.com"), "too_long")
 
 
+    def test_a_case_that_names_a_length_names_its_own(self):
+        """`why` is prose, so nothing else in this file can catch it drifting.
+
+        Change the domain in the table and every composite name changes length with it. The
+        verdicts stay right, because a verdict only asks which side of 253 the name falls on,
+        and the sentences quietly stop being true. A green suite said nothing about it.
+        """
+        for case in _TABLE["fqdn"]:
+            claimed = re.match(r"(\d+)", case["why"])
+            if claimed is None:
+                continue
+            with self.subTest(why=case["why"]):
+                self.assertEqual(
+                    len(case["subdomain"]) + 1 + len(case["domain"]),
+                    int(claimed.group(1)),
+                    "the sentence names a length the case does not have",
+                )
+
+
 class MirrorTests(unittest.TestCase):
     """The panel's copy declares the same codes, in the same order, as the server's."""
 
