@@ -66,6 +66,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A service could name a second DNS server and a second proxy, and Vauxtra stored the
+  choice without ever acting on it.** `extra_dns_provider_ids` and `extra_proxy_provider_ids`
+  went into `service_push_targets` on create and on edit, the panel listed them, and the push
+  never looked at that table: only the service's primary proxy and primary DNS provider were
+  written. So the second DNS server held nothing, the drift report had nothing to compare, and
+  the one guarantee the feature exists for — the hostname keeps resolving when the first
+  server is down — was never true. `push_extra_targets()` now runs after every create and
+  every edit, and its failures are reported the same way the primary's are (a `207` on create
+  rather than a `201` that hides them).
+
+- **Dropping a second target from a service left its records live on the provider.** The row
+  disappeared from `service_push_targets`, so Vauxtra stopped seeing the record it had
+  written, and the record went on answering. Renaming a service had the same shape: the old
+  hostname stayed published on every extra target. `update_service` now withdraws from the
+  targets it is about to drop — and from the old hostname when the FQDN changes — using the
+  pre-update row, before it writes the new one.
+
+- **The "services still depend on it" dialog said something false about half the list.** It
+  claimed every dependent service would "stop being pushed anywhere", which is not what
+  happens to a service that also names a second DNS server: that one keeps being published,
+  exactly as before. `DELETE /api/providers/{id}` now returns `still_published` per dependent,
+  and the dialog says which services go dark and which do not, with a tag on each row.
+
+- **Deleting an integration in Vauxtra changed nothing on the integration.** Every record it
+  already served stayed live on it, and Vauxtra lost the ability to see them, let alone remove
+  them: the operator was left with a DNS server answering for hostnames no longer in any
+  panel. The confirmation now carries a checkbox — ticked by default — that takes the records
+  off the provider first (`?force=true&withdraw=true`), and a withdrawal that only half worked
+  is reported as such instead of a bare "deleted" toast. The Integrations page and the setup
+  wizard share one component for this dialog, so the two cannot drift apart again.
+
 - **Four screens read an empty list as a fact about the panel.** A request that fails and a
   request that answers "there are none" both leave the same empty array behind, and the
   screens above them said the second thing either way. The worst of them was the last step

@@ -41,11 +41,19 @@ import {
   useConfirmDialog,
 } from '@/components/ui';
 import { useFormat } from '@/hooks/useFormat';
-import { describeDeleteConflict, isProviderDeleteConflict } from '@/hooks/useProviderMutations';
+import {
+  type ProviderDeleteVars,
+  createWithdrawChoice,
+  describeWithdrawal,
+  isProviderDeleteConflict,
+  providerDeleteQuery,
+} from '@/hooks/useProviderMutations';
+import { ProviderDeleteConflictBody } from '@/components/features/providers/ProviderDeleteConflictBody';
 import { useT } from '@/i18n';
 import { getErrorDetail, translateApiError, getHttpStatus } from '@/lib/errors';
 import type {
   Provider,
+  ProviderDeleteResult,
   ProviderHealthStatus,
   ProviderHealthSummary,
   ProvidersHealthMap,
@@ -406,11 +414,16 @@ export function Providers() {
   });
 
   const deleteProvider = useMutation({
-    mutationFn: ({ id, force }: { id: number; force?: boolean }) => api.delete(`/providers/${id}${force ? '?force=true' : ''}`),
-    onSuccess: () => {
+    mutationFn: (vars: ProviderDeleteVars) =>
+      api.delete<ProviderDeleteResult>(`/providers/${vars.id}${providerDeleteQuery(vars)}`),
+    onSuccess: (result: ProviderDeleteResult, vars: ProviderDeleteVars) => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       queryClient.invalidateQueries({ queryKey: ['services'] });
-      toast.success(t('providers.toast.deleted'));
+      // A withdrawal that only half worked leaves records live on a server Vauxtra can no
+      // longer reach; announcing "deleted" and nothing else is how that stayed invisible.
+      const partial = describeWithdrawal(result, vars.name ?? '', t);
+      if (partial) toast.error(partial, { duration: 8000 });
+      else toast.success(t('providers.toast.deleted'));
     },
   });
 
@@ -426,22 +439,24 @@ export function Providers() {
     if (!ok) return;
     deleting.start(id);
     try {
-      await deleteProvider.mutateAsync({ id });
+      await deleteProvider.mutateAsync({ id, name });
       if (inspectId === id) setInspectId(null);
       deleting.end(id);
     } catch (error: unknown) {
       const detail = getErrorDetail(error);
       if (getHttpStatus(error) === 409 && isProviderDeleteConflict(detail)) {
-        const count = detail.services.length;
+        // `confirm()` resolves to a boolean and nothing else, so the checkbox inside the
+        // dialog writes into this box and we read it back once the question is answered.
+        const choiceRef = createWithdrawChoice();
         const force = await confirm({
           title: t('providers.delete.deps_title'),
-          message: t('providers.delete.deps_message', { count, name, list: describeDeleteConflict(detail, t) }),
+          message: <ProviderDeleteConflictBody name={name} detail={detail} choiceRef={choiceRef} />,
           confirmLabel: t('providers.delete.force_confirm'),
           variant: 'warning',
         });
         if (force) {
           deleteProvider.mutate(
-            { id, force: true },
+            { id, name, force: true, withdraw: choiceRef.current },
             {
               onSettled: () => deleting.end(id),
               onError: (err: unknown) => toast.error(translateApiError(err, t, t('providers.toast.delete_failed'))),

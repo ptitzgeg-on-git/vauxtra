@@ -4,7 +4,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from app.api.sync import withdraw_service_routes
+from app.api.sync import push_extra_targets, withdraw_service_routes
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -939,6 +939,14 @@ def add_service(request: Request, body: ServiceIn):
     if body.environment_ids:
         set_environments(conn, sid, body.environment_ids)
     conn.commit()
+
+    # The block above published on one proxy and one DNS server. The multi-sync targets were
+    # recorded a few lines up and nothing pushed to them, so a service created with a second
+    # DNS server answered 201 with no errors while that server stayed empty. Committed first:
+    # these are provider HTTP calls, and holding SQLite's single writer across them is what
+    # `update_service` already documents as the cause of `database is locked`.
+    errors.extend(push_extra_targets(conn, sid))
+
     conn.close()
 
     from fastapi.responses import JSONResponse
@@ -1252,6 +1260,27 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         if pid and pid != stored_dns_provider_id
     ]
 
+    # `set_push_targets` replaces the multi-sync list wholesale, and the UPDATE above may
+    # have moved the hostname. Either change leaves a record on a provider Vauxtra is about
+    # to stop addressing under that name: a target dropped from the list went on serving the
+    # hostname for good, and a rename left the old name published on every extra target
+    # while the new one was added beside it. Both are withdrawn here, through `old` -- the
+    # row that still spells the hostname and the address those records were written with.
+    # The primaries are left out: the block above already moved their record itself.
+    previous_extras = {
+        r["provider_id"]
+        for r in conn.execute(
+            "SELECT provider_id FROM service_push_targets WHERE service_id=?", (sid,)
+        )
+    }
+    still_targeted = set(extra_proxy_ids) | set(extra_dns_ids)
+    primaries = {pid for pid in (primary_proxy_provider_id, stored_dns_provider_id) if pid}
+    renamed = old_public_host != new_public_host
+    stale_targets = (previous_extras if renamed else previous_extras - still_targeted) - primaries
+    if stale_targets:
+        for message in withdraw_service_routes(conn, old, sid, only_provider_ids=stale_targets):
+            add_log("warn", f"Could not withdraw {old_public_host} from a former target: {message}", conn)
+
     set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
 
     set_tags(conn, sid, body.tag_ids)
@@ -1321,6 +1350,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     
     conn.commit()
     add_log("info", f"Service updated: {new_public_host}")
+
+    # Same gap as `add_service`: everything above addresses one proxy and one DNS server.
+    # Adding a second DNS server through this route answered 200 while that server stayed
+    # empty, and the drift check then contradicted the response about the same service.
+    errors.extend(push_extra_targets(conn, sid))
 
     row = conn.execute("""
         SELECT s.*,

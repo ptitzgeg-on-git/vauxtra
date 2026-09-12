@@ -251,6 +251,12 @@ export interface ProviderDependent {
   fqdn: string;
   /** `proxy`, `dns`, `tunnel`, or `extra proxy` / `extra dns` for push targets. */
   roles: string[];
+  /**
+   * Another provider still publishes this hostname once this one is gone. False means the
+   * service keeps its public name and nothing serves it: that is the case worth warning
+   * about, and the one the dialog used to claim for every dependent.
+   */
+  still_published?: boolean;
 }
 
 /** The 409 `detail` of `DELETE /api/providers/{pid}` when services depend on it and `?force=` was not set. */
@@ -261,8 +267,13 @@ export interface ProviderDeleteConflict {
 
 /** `DELETE /api/providers/{pid}?force=true`. */
 export interface ProviderDeleteResult {
+  /** False when `withdraw=true` was asked for and at least one record could not be taken off. */
   ok: boolean;
   unlinked_services: number[];
+  /** `withdraw=true` was honoured: the records were taken off the provider before it went. */
+  withdrawn?: boolean;
+  /** One `fqdn: reason` per record the withdrawal could not remove; it is still live there. */
+  errors?: string[];
 }
 
 /** Body of `POST /api/providers/{pid}/validate`. */
