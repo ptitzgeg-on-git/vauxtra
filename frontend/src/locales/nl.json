@@ -2020,6 +2020,8 @@
   "providers.diag.detail.zone_lookup_failed": "De DNS-zone voor deze hostnaam kon niet worden bepaald.",
   "providers.diag.detail.zone_lookup_no_hint": "Er is geen hostnaam opgegeven, dus het DNS-bereik is niet gecontroleerd.",
   "providers.diag.detail.zone_lookup_ok": "De DNS-zone voor deze hostnaam is gevonden.",
+  "providers.diag.detail.zone_match": "{host} valt binnen een gehoste zone.",
+  "providers.diag.detail.zone_missing": "Geen gehoste zone dekt {host}.",
   "providers.diag.detail.zone_readable": "De zone is leesbaar ({source}).",
   "providers.diag.detail.zone_unreadable": "De zone kon niet worden gelezen ({source}).",
   "providers.diag.detail.zones_denied": "De zones konden niet worden opgevraagd — het token heeft Zone:Read nodig.",

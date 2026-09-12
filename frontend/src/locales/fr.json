@@ -2020,6 +2020,8 @@
   "providers.diag.detail.zone_lookup_failed": "La zone DNS de ce nom d'hôte n'a pas pu être déterminée.",
   "providers.diag.detail.zone_lookup_no_hint": "Aucun nom d'hôte fourni : la portée DNS n'a pas été vérifiée.",
   "providers.diag.detail.zone_lookup_ok": "La zone DNS de ce nom d'hôte a été trouvée.",
+  "providers.diag.detail.zone_match": "{host} est couvert par une zone hébergée.",
+  "providers.diag.detail.zone_missing": "Aucune zone hébergée ne couvre {host}.",
   "providers.diag.detail.zone_readable": "La zone est lisible ({source}).",
   "providers.diag.detail.zone_unreadable": "La zone n'a pas pu être lue ({source}).",
   "providers.diag.detail.zones_denied": "Les zones n'ont pas pu être listées, le jeton a besoin de Zone:Read.",

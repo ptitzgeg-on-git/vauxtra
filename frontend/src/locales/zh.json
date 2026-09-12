@@ -1908,6 +1908,8 @@
   "providers.diag.detail.zone_lookup_failed": "无法确定该主机名所属的 DNS 区域。",
   "providers.diag.detail.zone_lookup_no_hint": "未提供主机名，因此未检查 DNS 适用范围。",
   "providers.diag.detail.zone_lookup_ok": "已找到该主机名所属的 DNS 区域。",
+  "providers.diag.detail.zone_match": "{host} 属于一个已托管的区域。",
+  "providers.diag.detail.zone_missing": "没有已托管的区域包含 {host}。",
   "providers.diag.detail.zone_readable": "该区域可读取（{source}）。",
   "providers.diag.detail.zone_unreadable": "无法读取该区域（{source}）。",
   "providers.diag.detail.zones_denied": "无法列出区域，令牌需要 Zone:Read 权限。",
