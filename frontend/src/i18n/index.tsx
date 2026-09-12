@@ -109,12 +109,22 @@ function getKey(obj: Translations, key: string, lang: Lang, count?: unknown): st
 }
 
 /**
- * The translate function as `useT()` hands it out, for code that takes it as an argument.
+ * What a sentence interpolates.
  *
- * Pass `count` as a **number**, never a pre-formatted string: it is what selects the plural
- * form, and `t()` writes it with the locale's grouping separators on the way out.
+ * `count` is singled out because it is the one name `t()` does anything with: it selects the
+ * plural form, and it is written with the locale's grouping separators on the way out. A call
+ * site that formats it first and passes a string gets `_other` at every value, silently -- the
+ * sentence still renders, in the wrong form, which is the hardest kind of wrong to notice. The
+ * paragraph that used to sit here asked callers not to do that; the type now declines it.
+ *
+ * Every other placeholder is printed as it arrives, so a number under any other name is a
+ * number no sentence can agree with. `scripts/check-locale-quality.mjs` is where that is
+ * argued, key by key.
  */
-export type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+export type TranslateParams = Record<string, string | number> & { count?: number };
+
+/** The translate function as `useT()` hands it out, for code that takes it as an argument. */
+export type TranslateFn = (key: string, params?: TranslateParams) => string;
 
 interface I18nContextValue {
   lang: Lang;
@@ -186,7 +196,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, [lang]);
 
   const t = useCallback(
-    (key: string, params?: Record<string, string | number>): string => {
+    (key: string, params?: TranslateParams): string => {
       let val = getKey(translations, key, lang, params?.count) ?? key;
       if (params) {
         for (const [k, v] of Object.entries(params)) {

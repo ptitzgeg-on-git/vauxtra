@@ -44,7 +44,7 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
         hint={
           services.enabled === undefined
             ? t('dashboard.stats.services_unknown')
-            : t('dashboard.stats.services_hint', { enabled: formatNumber(services.enabled) })
+            : t('dashboard.stats.services_hint', { count: services.enabled })
         }
         icon={<Globe />}
         tone={services.failed ? 'neutral' : 'primary'}
@@ -86,8 +86,8 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
           providers.failed
             ? t('dashboard.stats.providers_unknown')
             : t('dashboard.stats.providers_hint', {
-                healthy: formatNumber(providers.healthy),
-                enabled: formatNumber(providers.enabled),
+                healthy: t('dashboard.stats.providers_healthy', { count: providers.healthy }),
+                enabled: t('dashboard.stats.providers_enabled', { count: providers.enabled }),
               })
         }
         icon={<Plug />}
@@ -102,7 +102,7 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
           certificates.failed
             ? t('dashboard.stats.certificates_unknown')
             : t('dashboard.stats.certificates_hint', {
-                total: formatNumber(certificates.total),
+                count: certificates.total,
                 days: formatNumber(certificates.thresholdDays),
               })
         }
@@ -117,7 +117,7 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
         hint={
           logs.total === undefined
             ? t('dashboard.stats.logs_unknown')
-            : t('dashboard.stats.logs_today_hint', { total: formatNumber(logs.total) })
+            : t('dashboard.stats.logs_today_hint', { count: logs.total })
         }
         icon={<ScrollText />}
         tone="neutral"

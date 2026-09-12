@@ -563,7 +563,13 @@ export function Services() {
       invalidateServices();
       clearSelection();
       if (failed === 0) toast.success(t('services.bulk.result.checked', { count: ok }));
-      else toast(t('services.bulk.result.checked_mixed', { ok, failed }), { icon: '⚠️', duration: 6000 });
+      else toast(
+          t('services.bulk.result.checked_mixed', {
+            ok: t('services.bulk.result.reachable', { count: ok }),
+            failed: t('services.bulk.result.unreachable', { count: failed }),
+          }),
+          { icon: '⚠️', duration: 6000 },
+        );
     },
     [startAction, endAction, invalidateServices, clearSelection, t],
   );
@@ -813,7 +819,7 @@ export function Services() {
         description={t('services.description')}
         meta={
           !servicesQuery.isPending && !servicesQuery.isError ? (
-            <span className="text-xs text-muted-foreground">{t('services.meta', { shown, total })}</span>
+            <span className="text-xs text-muted-foreground">{t('services.meta', { count: shown, total })}</span>
           ) : undefined
         }
         actions={

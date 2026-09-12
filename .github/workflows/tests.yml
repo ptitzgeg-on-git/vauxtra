@@ -97,8 +97,14 @@ jobs:
       - name: ESLint
         run: cd frontend && npm run lint
 
+      # `tsc --noEmit` was checking nothing at all. The root tsconfig.json carries
+      # `"files": []` and two project references, and plain `tsc` does not build references:
+      # the step resolved zero source files and reported success unconditionally, for as long
+      # as it has existed. `-b --force` builds both referenced projects and ignores the
+      # incremental cache, so a type error fails here rather than three steps later in the
+      # build -- or not at all, if the build is ever changed to skip `tsc -b`.
       - name: TypeScript check
-        run: cd frontend && npx tsc --noEmit
+        run: cd frontend && npx tsc -b --force
 
       - name: Build
         run: cd frontend && npm run build

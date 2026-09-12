@@ -61,7 +61,7 @@ export function GeneralTab() {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       toast.success(successMessage);
       if (data?.ignored?.length) {
-        toast(t('settings.general.ignored_keys', { keys: data.ignored.join(', ') }));
+        toast(t('settings.general.ignored_keys', { count: data.ignored.length, keys: data.ignored.join(', ') }));
       }
       // Not the same news as `ignored`, and it used to be no news at all. The value *was*
       // saved, so the green toast above is true; it is the running scheduler that refused

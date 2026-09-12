@@ -525,6 +525,80 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   alone — SQL lives in the same string literals as prose — and it skips docstrings, `app/text.py`
   being a file that has to quote the crutch in order to explain it.
 
+- **The plural machinery only ever inflected the number called `{count}`, and the sentences
+  most likely to be wrong put their noun beside a different one.** "{shown} of {total} routes
+  shown" reads correctly at every value except the ones an operator sees most: one route, or a
+  filter that matched everything. `t()` selects a form from `{count}` alone — every other
+  placeholder is printed as it arrives — so twelve sentences carried a noun frozen at whichever
+  form the translator happened to write, and nothing in the repository asked about them. The
+  quality check had been looking for `{count}` since it was written, which is exactly the
+  number that was already safe.
+
+  Ten of the twelve are fixed by moving the noun next to the number it belongs to
+  (`services.meta`, `settings.webhooks.enabled_count`, `providers.refresh.failed_count`,
+  `templates.count_filtered`, `monitoring.tunnels.healthy_of`), or by counting each noun in its
+  own key and interpolating the finished phrase, the way `monitoring.tunnels.connections`
+  already did — `dashboard.stats.providers_hint`, `expose.preflight.summary`,
+  `services.bulk.result.checked_mixed`, `services.drift.out_of_sync_body`, and the restore
+  dialog, where one `{count}` had been asked to serve six different words at once. Which of two
+  numbers a noun belongs to is not the same in every language: English, German and Dutch hang
+  it on the total where French hangs it on the shown, and moving it is what makes the eight
+  files agree on which.
+
+  The other two hard-coded a plural around a joined list and are reachable with one item:
+  *"The server refused these settings: check_interval"* and *"These integrations were queried
+  and returned nothing"*. Both now have `_one` and `_other` forms whose text never prints
+  `{count}` at all — the length is passed only to choose the sentence.
+
+  `layout.nav.item_with_badge` gave up the name `{count}` it was never using as one. It is a
+  badge that can read "9+", it has no plural forms and nothing in it agrees with anything,
+  and holding the reserved name meant `TranslateFn` could not require `count` to be a number.
+  It now can: a call site that formats the number itself and passes a string used to get
+  `_other` at every value, silently, and that is now a type error rather than a paragraph of
+  documentation asking callers not to.
+
+- **`npx tsc --noEmit` type-checked zero files, and had reported success on every commit for
+  as long as the step has existed.** The root `tsconfig.json` carries `"files": []` and two
+  project references, and plain `tsc` does not build references: the program resolved no
+  sources at all, so the *TypeScript check* job passed unconditionally, whatever the code said.
+  It now runs `tsc -b --force`, which builds both referenced projects and ignores the
+  incremental cache. Nothing was actually broken behind it — `npm run build` runs `tsc -b` and
+  was doing the real work three steps later — but a green check that reads no files is worth
+  less than no check, because it is the one people trust.
+
+- **Two MCP contract tests had gone red in CI on a refusal that never stopped working.**
+  `vauxtra_mcp/requirements.txt` asks for `fastmcp>=2.0` and pins nothing, so CI resolves
+  whatever is current on the day it runs. Current fastmcp lets pydantic's own `ValidationError`
+  out of `Tool.run()` instead of wrapping it in `fastmcp.exceptions.ValidationError`, and these
+  two named the wrapper. The bridge still refuses `action="destroy"` and still refuses port
+  70000, still names the offending value, and still sends nothing — only the class of the
+  exception changed. The alias now accepts either. The neighbouring assertions in the same file
+  say `ValueError`, which pydantic's error is, and that is why only these two broke.
+
+  The floor stays unpinned: every requirement in this repository is a floor, and a cap here
+  would trade a one-line test fix for a frozen dependency.
+
+- **The locale quality check now asks about every number in a sentence, not just the one it can
+  inflect.** A placeholder is either a quantity a sentence could agree with, or a value no word
+  inflects around, and every use of the first kind has to say why nothing agrees with it —
+  because it is a unit symbol, a position in a wizard, a constant that is never 1, a phrase
+  already counted by another key, or a list that is already a string. A name in neither set is
+  a hard failure: writing `{routes}` into a sentence now stops the build until somebody says
+  which it is, which is the part that keeps this from going stale the next time a sentence
+  gains a number. Declarations are per key and not per name, because the same name is both —
+  `{providers}` is a list of integration names on the certificates page and a counted phrase in
+  the restore dialog, and `{error}` is a message everywhere except `monitoring.check_summary`,
+  where it is how many services came back down. A declaration whose sentence no longer prints
+  that placeholder fails too, so the table cannot quietly cover a number that comes back later.
+
+  It also compares the placeholder set of every locale against `en.json`, form by form. A
+  translation that drops one leaves a sentence missing its number and a translation that
+  invents one leaves the braces on screen, and neither was visible to anything here: the parity
+  check compares key *names*. Comparing forms rather than keys is deliberate — pooling `_one`
+  and `_other` together lets a number dropped from one of them be covered by the other, which
+  is the shape of the bug. The single exception is `{count}` in a `_one` form, where "One
+  tunnel is healthy" is better than "1 tunnel is healthy" and means the same thing.
+
 - **Two of the three checkers that hold "every locale carries the English key set" had been
   wrong since the files learned to inflect.** `check-locale-parity.mjs` was taught the plural
   categories; `tests/test_frontend_i18n.py` and `tests/test_regressions_v2.py` were not, and a
