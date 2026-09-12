@@ -249,7 +249,7 @@ export function MonitoringTable({
                 <td className="px-3 py-2.5 text-right">
                   <div onClick={(event) => event.stopPropagation()} role="presentation">
                     <IconButton
-                      label={t('monitoring.check_one', { host })}
+                      label={t('monitoring.check_row', { host })}
                       icon={<Radio />}
                       variant="ghost"
                       size="icon"

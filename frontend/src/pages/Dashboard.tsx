@@ -223,9 +223,7 @@ export function Dashboard() {
       id: 'services-error',
       tone: 'danger',
       icon: <AlertTriangle />,
-      title: t(servicesInError === 1 ? 'dashboard.attention.services_error_one' : 'dashboard.attention.services_error_other', {
-        count: formatNumber(servicesInError),
-      }),
+      title: t('dashboard.attention.services_error', { count: servicesInError }),
       hint: t('dashboard.attention.services_error_hint'),
       to: '/services?status=error',
     });
@@ -235,9 +233,7 @@ export function Dashboard() {
       id: 'providers-failing',
       tone: 'danger',
       icon: <PlugZap />,
-      title: t(providersFailing === 1 ? 'dashboard.attention.providers_failing_one' : 'dashboard.attention.providers_failing_other', {
-        count: formatNumber(providersFailing),
-      }),
+      title: t('dashboard.attention.providers_failing', { count: providersFailing }),
       to: '/providers',
     });
   } else if (providersHealthError && enabledProviders > 0) {
@@ -264,8 +260,8 @@ export function Dashboard() {
       id: 'certs-expiring',
       tone: 'warning',
       icon: <ShieldAlert />,
-      title: t(expiringCerts === 1 ? 'dashboard.attention.certs_expiring_one' : 'dashboard.attention.certs_expiring_other', {
-        count: formatNumber(expiringCerts),
+      title: t('dashboard.attention.certs_expiring', {
+        count: expiringCerts,
         days: formatNumber(warnDays),
       }),
       hint: t('dashboard.attention.certs_expiring_hint'),

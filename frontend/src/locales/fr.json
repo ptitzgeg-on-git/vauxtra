@@ -680,7 +680,7 @@
   "monitoring.alerts.title": "Alertes",
   "monitoring.alerts.webhook_disabled": "Désactivé",
   "monitoring.check_now": "Vérifier maintenant",
-  "monitoring.check_one": "Vérifier {host} maintenant",
+  "monitoring.check_row": "Vérifier {host} maintenant",
   "monitoring.check_running": "Vérification de tous les services…",
   "monitoring.check_skipped": "{count} service(s) en tunnel ont été ignorés : ils passent par un connecteur et ne sont donc jamais testés directement.",
   "monitoring.check_summary": "{checked} service(s) vérifiés : {ok} en ligne, {error} hors ligne",

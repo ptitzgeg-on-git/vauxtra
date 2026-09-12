@@ -680,7 +680,7 @@
   "monitoring.alerts.title": "Alertas",
   "monitoring.alerts.webhook_disabled": "Desactivado",
   "monitoring.check_now": "Comprobar ahora",
-  "monitoring.check_one": "Comprobar {host} ahora",
+  "monitoring.check_row": "Comprobar {host} ahora",
   "monitoring.check_running": "Comprobando todos los servicios…",
   "monitoring.check_skipped": "Se omitieron {count} servicio(s) por túnel: se alcanzan a través de un conector, así que nunca se sondean directamente.",
   "monitoring.check_summary": "{checked} servicio(s) comprobado(s): {ok} activos, {error} caídos",

@@ -680,7 +680,7 @@
   "monitoring.alerts.title": "Alarme",
   "monitoring.alerts.webhook_disabled": "Deaktiviert",
   "monitoring.check_now": "Jetzt prüfen",
-  "monitoring.check_one": "{host} jetzt prüfen",
+  "monitoring.check_row": "{host} jetzt prüfen",
   "monitoring.check_running": "Alle Dienste werden geprüft…",
   "monitoring.check_skipped": "{count} Tunnel-Dienst(e) wurden übersprungen: Sie sind über einen Connector erreichbar und werden daher nie direkt geprüft.",
   "monitoring.check_summary": "{checked} Dienst(e) geprüft: {ok} erreichbar, {error} ausgefallen",

@@ -113,7 +113,7 @@ interface CheckSummary extends CheckAllResult {
 
 export function Monitoring() {
   const t = useT();
-  const { formatPercent, formatLatency, formatNumber } = useFormat();
+  const { formatPercent, formatLatency } = useFormat();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -440,7 +440,7 @@ export function Monitoring() {
           value={probes.average === null ? EM_DASH : formatLatency(probes.average)}
           hint={
             probedCount > 0
-              ? t('monitoring.stat.latency_hint', { count: formatNumber(probedCount) })
+              ? t('monitoring.stat.latency_hint', { count: probedCount })
               : t('monitoring.stat.latency_empty')
           }
           icon={<Timer />}

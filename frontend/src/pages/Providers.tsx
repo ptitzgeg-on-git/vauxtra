@@ -489,7 +489,7 @@ export function Providers() {
           <div className="flex flex-wrap items-center gap-2">
             {providersQuery.isSuccess && (
               <Badge tone="neutral" size="sm">
-                {t(total === 1 ? 'providers.meta.count_one' : 'providers.meta.count_other', { count: total })}
+                {t('providers.meta.count', { count: total })}
               </Badge>
             )}
             {hasFreshManualCheck ? (

@@ -4,7 +4,6 @@ import { useQuery } from '@tanstack/react-query';
 import { CircleHelp, Clock, Lock, RefreshCw, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
-import { useFormat } from '@/hooks/useFormat';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -58,7 +57,6 @@ import type { Provider } from '@/types/api';
 
 export function Certificates() {
   const t = useT();
-  const { formatNumber } = useFormat();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const statusFilter = toCertFilter(searchParams.get('status'));
@@ -240,7 +238,7 @@ export function Certificates() {
         icon={<Lock />}
         meta={
           <span className="text-xs text-muted-foreground">
-            {t('certificates.meta', { count: formatNumber(certificates.length), days: warnDays })}
+            {t('certificates.meta', { count: certificates.length, days: warnDays })}
           </span>
         }
         actions={

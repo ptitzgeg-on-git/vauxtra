@@ -231,8 +231,7 @@ export function Templates() {
   const isLoading = templatesQuery.isLoading;
   const loadFailed = templatesQuery.isError;
   const total = templates.length;
-  const countLabel =
-    total === 1 ? t('templates.count_one', { count: total }) : t('templates.count_other', { count: total });
+  const countLabel = t('templates.count', { count: total });
 
   return (
     <div className="space-y-6 pb-8 animate-in fade-in duration-200">

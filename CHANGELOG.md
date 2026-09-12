@@ -87,6 +87,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Every counted sentence in the panel used the English plural rule, in all eight languages.**
+  There was no plural machinery: each call site that needed one wrote the test by hand, and
+  each one wrote `count === 1 ? singular : plural`. That is the English rule. French and
+  Portuguese put zero in the *singular* category, so an empty integrations page read
+  "0 intégrations" and an empty template library "0 modelos", both wrong in a place an
+  operator meets on their first run — the empty list is the first thing a new install shows.
+  Japanese and Chinese have a single form and were being handed a singular `Intl.PluralRules`
+  can never select, five dead keys a translator had written for nothing. `t()` now asks the
+  CLDR rules of the active locale, through one `Intl.PluralRules` per language, and the five
+  hand-written selectors are gone.
+
+  `t()` also writes `{count}` itself now, with the locale's grouping separators. Six call
+  sites used to format the number and hand `t()` a string, which is not a number and so could
+  not have selected anything: the plural choice and the printed number now have one writer.
+  A count that still arrives as a string resolves to the `_other` form rather than to nothing,
+  because a sentence in the wrong plural is a wording bug and a raw `providers.meta.count`
+  painted across the page is a broken build.
+
+  `check-locale-parity.mjs` no longer demands the English key set of every file, which would
+  force that dead Japanese singular back in. It reads `LOCALE_TAGS` out of the app so the
+  check and the runtime cannot drift, asks each locale which categories it declares, and
+  requires `_other` everywhere and `_one` wherever the language has one; the language's
+  remaining categories are allowed and never required — French declares `many`, and it fires
+  at a million routes — while a category the language does not declare is refused by name:
+  *"ja-JP has no 'one' plural category, this form can never be selected"*. A bare key
+  colliding with a plural base is refused too, `t(base)` and `t(base, {count})` having no
+  business reading the same name differently.
+
+  Also renamed `monitoring.check_one` to `monitoring.check_row`: it was never a plural. It
+  means "check this one host now", and it sat next to real plural keys wearing their suffix.
+
 - **The 24 h cell printed the same sentence twice, and printed it as a fact when the request
   behind it had failed.** `UptimeStrip` already writes "no check in the last 24 hours" inside
   its dashed box when there is nothing to draw, and the table wrote the same key again in a

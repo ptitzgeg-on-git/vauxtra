@@ -680,7 +680,7 @@
   "monitoring.alerts.title": "Alerts",
   "monitoring.alerts.webhook_disabled": "Disabled",
   "monitoring.check_now": "Check now",
-  "monitoring.check_one": "Check {host} now",
+  "monitoring.check_row": "Check {host} now",
   "monitoring.check_running": "Checking every service…",
   "monitoring.check_skipped": "{count} tunnel service(s) were skipped: they are reached through a connector, so they are never probed directly.",
   "monitoring.check_summary": "{checked} service(s) checked: {ok} up, {error} down",

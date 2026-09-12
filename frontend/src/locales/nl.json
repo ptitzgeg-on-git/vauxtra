@@ -680,7 +680,7 @@
   "monitoring.alerts.title": "Meldingen",
   "monitoring.alerts.webhook_disabled": "Uitgeschakeld",
   "monitoring.check_now": "Nu controleren",
-  "monitoring.check_one": "{host} nu controleren",
+  "monitoring.check_row": "{host} nu controleren",
   "monitoring.check_running": "Alle services controleren…",
   "monitoring.check_skipped": "{count} tunnelservice(s) zijn overgeslagen: die worden via een connector bereikt en dus nooit rechtstreeks gepolst.",
   "monitoring.check_summary": "{checked} service(s) gecontroleerd: {ok} online, {error} offline",
