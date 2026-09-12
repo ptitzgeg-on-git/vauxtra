@@ -135,7 +135,7 @@ export const descByType: Record<string, string> = {
   cloudflare: 'DNS records via Cloudflare API',
   cloudflare_tunnel: 'Cloudflare Zero Trust Tunnel',
   pihole: 'Local DNS & ad filtering',
-  npm: 'Nginx Proxy Manager',
+  npm: "Reverse proxy with Let's Encrypt certificates",
   traefik: 'Dynamic reverse proxy (read-only)',
   zoraxy: 'Zoraxy reverse proxy',
   adguard: 'DNS sinkhole & filtering',
