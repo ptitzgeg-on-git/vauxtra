@@ -19,6 +19,7 @@ from urllib.parse import quote
 import requests
 
 from app.providers.base import DNSProvider, TimeoutSession
+from app.text import plural
 
 DEFAULT_API = "https://desec.io/api/v1"
 DEFAULT_TTL = 3600
@@ -290,7 +291,7 @@ class DesecProvider(DNSProvider):
         _add(
             "List domains",
             True,
-            f"{len(domains)} domain(s) accessible" if domains else "No domains found",
+            f"{plural(len(domains), 'domain')} accessible" if domains else "No domains found",
             "zones_found" if domains else "zones_none",
             blocking=False,
             count=len(domains),

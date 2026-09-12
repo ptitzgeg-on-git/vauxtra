@@ -55,7 +55,12 @@ def get_certificate_expiry() -> dict[str, Any]:
 
 @mcp.tool()
 def check_all_services() -> dict[str, Any]:
-    """Trigger a manual health check for all services and return the results."""
+    """Trigger a manual health check for every service and return what it measured.
+
+    Counters (`checked`, `ok`, `error`) plus `results`, one entry per probed service with
+    its `status` and the `latency_ms` of the probe (`null` when the target never answered).
+    Tunnel services are skipped, so `checked` can exceed `len(results)`.
+    """
     r = client.post("/services/check-all")
     client.check(r)
     return r.json()

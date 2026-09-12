@@ -685,14 +685,14 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/preflight` | Preflight validation |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
-| `POST` | `/api/services/check-all` | Trigger health check for all |
+| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |
 | `GET` | `/api/services/{sid}/drift` | Check for drift |
 | `POST` | `/api/services/{sid}/reconcile` | Fix drift |
-| `GET` | `/api/services/{sid}/check` | Single health check |
+| `POST` | `/api/services/{sid}/check` | Single health check. The `GET` of the same path is a deprecated alias kept for one version; both need the `write` scope, because the check writes `status`, `last_checked` and an uptime event. |
 
 ### Providers
 
@@ -819,8 +819,8 @@ what it was created with. A request that falls short is refused with
 
 | Scope | Covers |
 |---|---|
-| `read` | Every `GET`, plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
-| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
+| `read` | Every `GET` except the deprecated `GET /api/services/{sid}/check`, which writes and therefore needs `write` like its `POST`. Plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
+| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/services/{sid}/check`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
 | `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`. |
 
 Two things a `write` key may **not** do, because they choose a URL rather than a value,

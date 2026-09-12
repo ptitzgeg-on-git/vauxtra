@@ -21,6 +21,10 @@ DEFAULT_PUBLIC_TARGET_TIMEOUT = 2.0
 DEFAULT_PUBLIC_TARGET_PRIORITY = ["server_public_ip", "proxy_provider_host", "current"]
 PUBLIC_TARGET_PRIORITY_CHOICES = {"server_public_ip", "proxy_provider_host", "current"}
 
+# Why `resolve_public_target` came back empty, as the `source` it reports. `manual` means it
+# was never asked to look anything up; `auto_unavailable` means it looked and found nothing.
+PUBLIC_TARGET_UNRESOLVED_SOURCES = {"manual", "auto_unavailable"}
+
 
 def _normalize_target(value: str) -> str:
     return (value or "").strip().lower()
@@ -58,18 +62,25 @@ def _parse_sources(raw: str) -> list[str]:
 
 
 def _parse_priority(raw: str) -> list[str]:
+    """The sources allowed to answer, in the operator's order. Omitting one excludes it.
+
+    Every value the operator left out used to be appended back at the end, so the field
+    could reorder the three sources but never drop one. What it names is the address
+    written into public DNS for every service left in `auto` mode: an operator who takes
+    `server_public_ip` out is saying this machine's WAN address must not be published, and
+    saw it published anyway, under a form that had answered "Saved".
+
+    An empty or unrecognisable setting is still the full default policy -- that is a field
+    nobody has filled in, not a request for no sources at all.
+    """
     parts = [p.strip() for p in (raw or "").replace(";", ",").split(",") if p.strip()]
     ordered = [p for p in parts if p in PUBLIC_TARGET_PRIORITY_CHOICES]
     if not ordered:
         return list(DEFAULT_PUBLIC_TARGET_PRIORITY)
-    # Keep unique order while preserving user preference.
     unique: list[str] = []
     for item in ordered:
         if item not in unique:
             unique.append(item)
-    for fallback in DEFAULT_PUBLIC_TARGET_PRIORITY:
-        if fallback not in unique:
-            unique.append(fallback)
     return unique
 
 
@@ -232,3 +243,27 @@ def resolve_public_target(
             break
 
     return value, source
+
+
+def describe_public_target_failure(source: str, provider_name: str = "") -> tuple[str, str]:
+    """Why no public target is available, as `(detail_key, sentence)`.
+
+    `resolve_public_target` already separates the two ways of coming back empty, and every
+    caller used to throw that apart and print one sentence for both: "Unable to resolve DNS
+    public target". Only one of the two resolves anything. In manual mode the function
+    returns on its first branch without a single lookup, so an operator who simply left the
+    field blank was told a resolution had failed, and went reading firewall logs over an
+    empty text box. The two cases have different remedies, so they get different sentences.
+    """
+    who = f' for "{provider_name}"' if provider_name else ""
+    if _normalize_target(source) == "auto_unavailable":
+        return (
+            "dns_target_detection_failed",
+            f"Automatic detection of the public DNS target{who} found nothing usable. "
+            "Check the WAN resolvers in Settings, or set the target by hand.",
+        )
+    return (
+        "dns_target_required",
+        f"A public DNS target is required{who}. "
+        "Enter an address, or turn on automatic detection.",
+    )

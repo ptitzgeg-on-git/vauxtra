@@ -9,6 +9,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **A read-only API key could rewrite the state of any route, and a link preview could do it
+  with nobody clicking anything.** `GET /api/services/{sid}/check` sat behind
+  `require_auth(request)` with no scope, and unscoped means "any authenticated caller": a key
+  minted with the default `["read"]` — for a dashboard, for a status page — could rewrite
+  `services.status` and `services.last_checked` on any id and append a line to the log. Being a
+  GET made it more than a scope mistake. A browser prefetch, a crawler, a link preview or an
+  uptime probe that merely follows the URL performs the write; there is no form and no click to
+  point at afterwards. The canonical route is now `POST /api/services/{sid}/check` with
+  `scope="write"`, and the GET stays one version as a deprecated alias carrying the same scope,
+  so the hole is shut on both verbs instead of staying open for the length of a deprecation
+  window.
+
+  The guard meant to catch exactly this could not see it: `test_no_write_route_is_left_without_a_scope`
+  scans for `@router.post|put|delete|patch`, and this was a GET. A second guard now walks the
+  AST of `app/api/*.py`, follows one level into module-level helpers — a route's body is as
+  likely to live in a `_helper()` as inline — and fails on any GET route that reaches an
+  `INSERT`, `UPDATE` or `DELETE` without a scope.
+
+  **Upgrading:** a script calling the `GET` keeps working this version; move it to `POST`. The
+  MCP bridge and the panel already call the POST.
+
 - **The port was published on every interface of the host, and what answers it holds the
   credentials of every provider.** `docker-compose.yml` mapped `"8888:8888"`, which means
   `0.0.0.0:8888`: every machine on the LAN, and whatever a router in front of it forwards.
@@ -65,6 +86,345 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   a test.
 
 ### Fixed
+
+- **Two hostname halves that each fit could be saved as a name no DNS zone will ever carry.**
+  A 250-character subdomain and `example.com` were each inside their own 253-character limit,
+  so `POST /api/services` answered `201` and stored a 261-character FQDN. Nothing downstream
+  caught it: the route was live in the panel, and each provider refused the record separately
+  at push time, later, phrased as a provider failure rather than as a name that was never
+  publishable.
+
+  `app/validators.py` gains `fqdn_problem(subdomain, domain)`, alongside `FQDN_PROBLEMS` and
+  `FQDN_REASONS`, measuring the joined name exactly as `_service_fqdn` builds it so the value
+  checked is the value published. `ServiceIn` applies it in a second `@model_validator`, since
+  a rule about the pair cannot live on either field — and `ServicePreflightIn` inherits it, so
+  the wizard's dry run refuses the same name the save would.
+
+  The panel carries the mirror as `fqdnProblem` in `frontend/src/lib/hostname.ts`. It shows in
+  the subdomain field's error slot: that is where the `Final route` preview already lives, and
+  the subdomain is the half an operator can shorten, the domain coming from a configured list.
+  It is evaluated only once both halves are individually sound, so a name that is malformed
+  *and* too long reports the first thing to fix rather than the second. `Continue` refuses it
+  before the round trip, and the composite preview disappears while it stands.
+
+  `hostname.cases.json` gains an `fqdn` block of eight pairs run through Python and TypeScript
+  in two different CI jobs, like the other two blocks. Both halves of every pair are asserted
+  valid on their own, because a pair whose subdomain breaks `label_length` would be refused by
+  a field rule first and would leave the composite rule untested. The boundary is pinned at
+  both ends: 253 characters is accepted, 254 is not.
+
+- **A subdomain the API would refuse was offered to the operator as a finished hostname, and
+  the refusal, when it arrived, did not say what was wrong.** Typing `vaux_dev1` — an
+  underscore, which RFC 1123 does not allow in a hostname and which several DNS APIs
+  nonetheless accept in other record types — produced a hint reading *"Final route:
+  vaux_dev1.<domain>"*, a `Continue` that spent a round trip, and a 422 the wizard rendered
+  as *"the checks could not run"*. Four layers had to agree on the mistake for that to happen,
+  and all four are closed.
+
+  `app/validators.py` no longer answers with a boolean. `subdomain_problem()` and
+  `domain_problem()` return a stable code — `empty`, `too_long`, `dot_edge`, `wildcard`,
+  `charset`, `label_length`, `hyphen_edge`, plus `url`, `no_dot` and `ip_address` for a domain
+  — and `is_valid_subdomain`/`is_valid_domain` are now that code being `None`. `ServiceIn` and
+  `POST /api/settings/domains` turn it into an English sentence, so a client with no
+  translations reads *"a subdomain holds lowercase letters, digits, hyphens and dots only"*
+  where it used to read *"Invalid subdomain"*.
+
+  The panel carries the same rule in `frontend/src/lib/hostname.ts`, a field having no way to
+  ask the server on every keystroke. Both hostname fields now turn red with their own sentence
+  as they are typed, in all eight languages; `Continue` refuses before the round trip rather
+  than after it; and the `Final route` hint disappears while either half is invalid, since it
+  was a promise about a name the server had already decided not to accept. A 422 that does
+  arrive now says *"the route was refused before the checks ran"* and lands in the form's own
+  banner — scrolled into view, `Continue` sitting at the bottom of a body that scrolls and the
+  banner at the top of it — instead of only in a toast in the opposite corner.
+
+  Two copies of one rule is the arrangement where one of them quietly stops agreeing, so
+  neither file owns it. `frontend/src/lib/hostname.cases.json` holds 53 values and the verdict
+  each one earns; `tests/test_hostname_rules.py` runs that table through Python and
+  `src/lib/hostname.test.ts` runs it through TypeScript, in a different CI job, so a change to
+  one side alone turns the other red. The table must also reach every code the module declares
+  and accept at least five values, because a table that only ever refuses would pass a
+  function that refuses everything. Where the two sides are allowed to differ — Python asks
+  `ipaddress.ip_address`, the panel reads the shape, and they can disagree on whether
+  `abc:def` is a bad charset or a bad address — only the verdict is asserted, never the code.
+
+  The rewrite widened what is accepted, deliberately. The old expression demanded a single
+  label, which refused `vaux-dev.sous` and `*.vaux-dev`: both ordinary DNS, and all four
+  providers derive the zone by walking labels from the right, so none of them ever needed the
+  restriction.
+
+- **Every counted sentence in the panel used the English plural rule, in all eight languages.**
+  There was no plural machinery: each call site that needed one wrote the test by hand, and
+  each one wrote `count === 1 ? singular : plural`. That is the English rule. French and
+  Portuguese put zero in the *singular* category, so an empty integrations page read
+  "0 intégrations" and an empty template library "0 modelos", both wrong in a place an
+  operator meets on their first run — the empty list is the first thing a new install shows.
+  Japanese and Chinese have a single form and were being handed a singular `Intl.PluralRules`
+  can never select, five dead keys a translator had written for nothing. `t()` now asks the
+  CLDR rules of the active locale, through one `Intl.PluralRules` per language, and the five
+  hand-written selectors are gone.
+
+  `t()` also writes `{count}` itself now, with the locale's grouping separators. Six call
+  sites used to format the number and hand `t()` a string, which is not a number and so could
+  not have selected anything: the plural choice and the printed number now have one writer.
+  A count that still arrives as a string resolves to the `_other` form rather than to nothing,
+  because a sentence in the wrong plural is a wording bug and a raw `providers.meta.count`
+  painted across the page is a broken build.
+
+  `check-locale-parity.mjs` no longer demands the English key set of every file, which would
+  force that dead Japanese singular back in. It reads `LOCALE_TAGS` out of the app so the
+  check and the runtime cannot drift, asks each locale which categories it declares, and
+  requires `_other` everywhere and `_one` wherever the language has one; the language's
+  remaining categories are allowed and never required — French declares `many`, and it fires
+  at a million routes — while a category the language does not declare is refused by name:
+  *"ja-JP has no 'one' plural category, this form can never be selected"*. A bare key
+  colliding with a plural base is refused too, `t(base)` and `t(base, {count})` having no
+  business reading the same name differently.
+
+  Also renamed `monitoring.check_one` to `monitoring.check_row`: it was never a plural. It
+  means "check this one host now", and it sat next to real plural keys wearing their suffix.
+
+- **Thirty-three sentences wrote their own plural inside a parenthesis, and no language reads
+  it.** "1 certificat(s)", "1 service(s) utilise(nt)", "99 % sur 1 contrôle(s)": the crutch is a
+  note to a reader who is supposed to pick a form themselves, and it shipped in all eight
+  files. It also hid that four of these languages do not build a plural by adding letters to
+  the end. Spanish drops the written accent once the plural adds a syllable (`conexión` →
+  `conexiones`), Portuguese replaces the ending outright (`verificação` → `verificações`,
+  `túnel` → `túneis`), Dutch doubles a vowel in the singular and not in the plural
+  (`certificaat` / `certificaten`), and German fronts the stem vowel (`Eintrag` / `Einträge`).
+  A parenthesis cannot express any of those, so the crutch was not merely lazy, it was
+  unwritable in half the catalogue. Each of the thirty-three is now a `_one` / `_other` pair.
+
+  The crutch also only ever marked the noun, never the verb. "{count} service(s) still point
+  at {name}" has a second word that agrees, and every sentence with one had its singular
+  rewritten by hand rather than mechanically: eighteen keys across French, German, Spanish,
+  Portuguese and Dutch, plus three machine translations that had put the number in the wrong
+  place to begin with ("Los servicios {count} utilizan" for "{count} servicios usan").
+
+  `monitoring.tunnels.connections` was not a plural at all but two of them in one sentence,
+  "{connections} connexion(s), {clients} client(s)", and one count cannot choose two forms. It
+  is now two counted keys and a joiner that owns the separator, which was the real defect
+  underneath: Japanese separates a list with `、` and Chinese with `，`, and the old key had a
+  comma hard-coded in all eight files. `monitoring.check_summary` carries three numbers of
+  which only the first inflects, so its selector is renamed `{checked}` → `{count}` and the
+  Spanish wording moved to an invariable tail ("{ok} en línea, {error} fuera de línea").
+
+  `check-locale-quality.mjs` now refuses a short parenthesised ending next to a `{count}`,
+  which is what should have caught these in the first place: the parity check counts keys, and
+  the quality check held only a table of known-bad translations. `http(s)` and the `(days)` of
+  a field label are not touched, having no count beside them and nothing to inflect.
+
+  Also deleted `monitoring.tunnels_down`, written in all eight files and read by nothing: the
+  connectors card has shown "{healthy}/{total} healthy" for some time. It would otherwise have
+  become two dead keys instead of one.
+
+- **Fourteen sentences the server writes itself carried the same crutch, and one of them got
+  five words wrong in the dialog that asks before deleting a provider.** These never reach
+  `t()`: they are composed in Python, in English, and they surface in the activity log, in the
+  validation detail the provider wizard shows when the panel has no wording of its own, in a
+  cert-expiry alert, in a webhook body, and in the 409 that answers `DELETE /api/providers/{id}`
+  when services still point at it. That last one read `1 service(s) still use "AdGuard"`, and
+  because the parenthesis only ever marks the noun, the paragraph under it had been written for
+  the plural and left there: *"1 of them have no other target: they keep the public hostname and
+  stop being published anywhere"*, then *"1 go on being published by their other targets"*. Five
+  disagreements in the sentence an operator reads while deciding whether to remove a target, and
+  the crutch is why nobody saw them — `service(s)` looks deliberate, so the eye stops checking.
+
+  `app.text` now holds `plural()` and `verb()`. English only, and deliberately so: the panel
+  asks the browser, because eight languages disagree about where zero belongs and about whether
+  a plural is built by adding letters at all, while these sentences have one language and one
+  rule. `plural(0, "service")` gives "0 services" — English puts zero in the plural, which is
+  exactly the assumption the locale files are forbidden to make, French and Portuguese putting
+  it in the singular.
+
+  The guard is `tests/test_server_wording.py`, and it reads the AST rather than the lines, so a
+  sentence split across three source lines is judged as the one sentence it becomes: that is how
+  two of the fourteen had hidden, their `day(s)` sitting on a different line from the number
+  feeding it. It refuses an English plural ending glued to a word in a string that also counts
+  something, which leaves `http(s)`, `INSERT INTO domains (name)` and `REFERENCES services(id)`
+  alone — SQL lives in the same string literals as prose — and it skips docstrings, `app/text.py`
+  being a file that has to quote the crutch in order to explain it.
+
+- **Two of the three checkers that hold "every locale carries the English key set" had been
+  wrong since the files learned to inflect.** `check-locale-parity.mjs` was taught the plural
+  categories; `tests/test_frontend_i18n.py` and `tests/test_regressions_v2.py` were not, and a
+  Japanese file that correctly omits a singular it can never select failed both. They now
+  compare *logical* keys, `certificates.meta_one` and `certificates.meta_other` being one
+  sentence, require an `_other` form everywhere, and refuse a bare key that shadows a counted
+  base. The per-language rule stays in the `.mjs` alone, it being the only one of the three that
+  can ask `Intl.PluralRules` which categories a language actually has; restating it in Python
+  would mean two writers of a rule that neither can verify.
+
+- **The 24 h cell printed the same sentence twice, and printed it as a fact when the request
+  behind it had failed.** `UptimeStrip` already writes "no check in the last 24 hours" inside
+  its dashed box when there is nothing to draw, and the table wrote the same key again in a
+  `<p>` underneath, so the cell read the sentence, a gap, then the sentence. The second copy
+  hid the real defect. When `GET /api/services/history` had *failed*, the `<p>` correctly said
+  so, but the box above it still stated "no check in the last 24 hours" — a claim about the
+  infrastructure made from a request that never came back, sitting one line above the sentence
+  saying the opposite. An operator reading the box alone would have concluded their scheduler
+  was down when all that was down was one fetch. The strip now takes the sentence it should
+  print for an empty state, the table hands it the failure wording when the fetch failed, the
+  drawer says the same thing as the table, and the `<p>` only appears when there is a
+  percentage to state in it.
+
+- **The check button of every row was cut in half, at every window width.** The monitoring
+  grid gave the routes card eight of its twelve columns, which sounds like a ratio and is not
+  one: the page container caps the grid at 1280px, so the card was 798px on a 1440px screen
+  and 798px on a 2560px one. The table's min-content width is 820px. The missing 22px became a
+  horizontal scrollbar that parked itself over the last column, and the last column is
+  ACTIONS — the per-row "check this service" button. Widening the window did nothing, because
+  the cap meant there was nothing to widen. Nor would lowering the table's `min-w`: 820px
+  *is* the content minimum, not a floor somebody chose. The split is now 9/3, which gives the
+  scroller 906px against those same 820px and leaves the tunnels card 308px for a
+  min-content of 237px.
+
+- **The 24 h column read "no check in the last 24 hours" directly above a status cell reading
+  "OK, checked just now".** Only the scheduler ever inserted into `uptime_events`. The two
+  manual endpoints wrote `services.status` and `services.last_checked` and nothing else, so
+  pressing "Check" filled the status cell and left the history the column beside it is built
+  from empty. On an instance with automatic checks switched off, the strip and the availability
+  tile stayed blank no matter how many checks an operator ran by hand — the page contradicted
+  itself, and the contradiction was not a display lag but a row nobody had written. Both
+  endpoints now write the same row the scheduler writes.
+
+  `POST /api/services/check-all` got back two things it was already doing the work for. It
+  opens a TCP connection to every service, so it measures every latency on the way through, and
+  it threw them all away — which is what the footnote under the table was apologising for when
+  it told operators to check rows one at a time to fill the LATENCY column. It now returns
+  `results`, one entry per probed service with its `status` and `latency_ms` (`null` when the
+  target never answered, never a zero pretending to be a measurement), and the page folds them
+  into the same store a per-row check writes to. The footnote now names the button that fills
+  the whole column in one click, and only appears while the column is still empty; once a check
+  has filled it, the sentence was telling operators to do the thing they had just done. And the
+  fleet check left no trace whatsoever in "Recent activity" while the per-service check logged
+  every probe: it now logs once for the run, one line rather than one per service, so a fleet of
+  fifty does not bury everything else in the journal.
+
+- **"Auto checks: waiting for the first cycle" was decided by a column the manual checks write
+  too.** The monitoring header chose between two sentences on `last_checked`: a timestamp meant
+  the scheduler had run, an empty one meant it had not yet. But `POST /api/services/check-all`
+  stamps that same column, so one click on "Check all" turned the header into "Auto checks every
+  5 min" on an instance whose `check_interval` was `0` — the value that disables the scheduler
+  outright (`app/api/settings.py`, range `0..1440`). The state was not shown late or shown
+  wrong; it could not be measured from there at all. It is gone, and the
+  `monitoring.auto_checks_waiting` string with it in all eight languages, replaced by
+  `monitoring.auto_checks_disabled`. The header now answers from `check_interval` alone,
+  through `autoCheckCadence()`: a cadence, "off" as a link to the one screen that switches them
+  back on, or nothing. That third branch renders nothing on purpose — a header that cannot
+  prove a state says nothing rather than guessing.
+
+- **On a phone the monitoring table's card was 820px wide inside a 358px frame, and 476px of it
+  were cut off with no scrollbar.** The card and the side column sit in a `grid`, where an
+  item's `min-width` defaults to `auto`: the table's `min-w-[820px]` therefore climbed back out
+  through the card and sized the grid item at 820px. `main` is `overflow-x: hidden`, so it cut
+  the excess instead of scrolling it, while the table's own `overflow-x-auto` had nothing left
+  to scroll and stood still. The filter row's right edge landed at 834px against a 402px
+  viewport, reachable by no gesture at all. `min-w-0` on both grid children brings the card back
+  to 326px and hands the overflow to the scroller built for it: 324 visible of 820, and nothing
+  on the page out of reach.
+
+  A second, quieter leak came out of the same measurement: `main` still reported 825px of scroll
+  width against a 358px frame. It was not the table, which is clipped correctly. Tailwind ships
+  `sr-only` as `position: absolute`, and the scroller was `position: static`, so the containing
+  block of the two screen-reader spans in the last column was an ancestor above the clip: they
+  sat at x=842 and pulled 467px of phantom scroll area into `main`. It was inert — no scrollbar,
+  and keyboard focus is absorbed by the inner scroller — but a phantom scroll area parked behind
+  an `overflow-x: hidden` is a horizontal scrollbar waiting for the day somebody removes that
+  `hidden`. `relative` on the scroller makes it the containing block those spans were missing,
+  and `/monitoring` now measures 358 = 358, like the `/services` table it was compared against.
+
+- **The guided panel counted "Step 1 of 1" and armed a second primary button that finished
+  nothing.** Two of the ten types the API serves ship a single guided step (adguard, traefik),
+  and the panel still printed a step counter over one pagination dot whose only destination was
+  the step already on screen. Below it sat "Finish", `variant="primary"` — the same blue as the
+  footer's "Validate" 161 pixels down, and the one of the two that creates nothing: it moves the
+  panel past its last step, where the field that names the integration is waiting. The counter
+  and the dots now appear only from two steps up; the button is demoted to `outline`, so one
+  blue button is left on the screen and it is the one in the footer; and
+  `provider_modal.guided.finish` was renamed in all eight languages after where it actually
+  goes, using the word each file already uses for `provider_modal.field.name`. The button
+  itself was kept: nothing else reaches the naming step.
+
+- **Confirmation dialogs opened with the destructive button armed on exactly the dangerous
+  ones.** The opening focus was chosen from `variant === 'danger'`, read as a severity dial.
+  It is not one: `danger` is what the harmless confirmations use, and `warning` is what the
+  worse ones are built with — forcing an integration out while services still depend on it,
+  deleting a domain that is in use, running a reconcile that writes to a live provider.
+  Measured on a running instance, both pairs came out the same way round: deleting an unused
+  domain opened on Cancel, deleting one in use opened on Delete; the first screen of an
+  integration removal opened on Cancel, the escalated second screen opened on "Force
+  removal". So Enter was safe on the question that changed nothing and destructive on the
+  one that did. The rule is now "does confirming remove something": only `info`, which adds,
+  opens on Confirm. `EXPECTED_FOCUS` in the new test is typed over the variant union, so
+  adding a sixth variant without deciding this fails the build.
+
+- **Choosing an integration type pre-filled the address field with the example address, and
+  the example is a real machine on most home networks.** The type metadata carries a
+  `placeholder_url`, which is also that field's placeholder — so the box held a value
+  indistinguishable from the grey hint, being the same string. Nine of the twelve types name
+  `http://192.168.1.10:3000`, the tenth address of the commonest home range, where something
+  usually does answer. Anyone who read the box as already correct typed a username and a
+  password beside it and pressed Validate, and the credentials were sent there. The rule now
+  lives in `seedFormForType()`: a type change clears the URL, re-picking the same type keeps
+  what was typed, and nothing else may put a value in it. The first-run wizard, which shares
+  the same metadata and type picker, had only ever seeded the name.
+
+- **The validation panel of both wizards answered in English inside a translated screen.**
+  `providers.diag.detail.*` holds 41 translated sentences and `checkDetailText()` exists to
+  pick them, but two of the three call sites printed the API's identifier for the check
+  (`test_connection`) and its English sentence instead. The health line had the same shape,
+  interpolating the wire value into a translated sentence to produce "État : healthy". Both
+  wizards now go through `checkDetailText()` and a new `healthStatusLabel()`; the six status
+  words were added to all eight locales by copying keys that already carried them, so no
+  translation was invented.
+
+- **Fifteen French strings and three more in pt/de had lost their accents**, all in the
+  Settings panels and clustered in `settings.backup.*`: "Cles API" one line above "Clés API",
+  "Backup versao {version}", "Webhook-Eintrage". Valid JSON, non-empty, invisible to every
+  check in the build. `git blame` put the French ones in two commits four months apart, so
+  the channel that eats them was still open. `NoWordLostItsAccentsTests` now closes it: the
+  locale file is its own dictionary — every form it spells with diacritics, stripped, is
+  searched again in the same file. Three filters keep it a spelling question and never a
+  grammar one (a placeholder name and a URL are not prose; a diacritic on the final letter is
+  a verb ending; under four letters is a function word), which leaves fourteen real
+  homographs listed with their reason. It ships with its own controls: stripping "Clés API"
+  must name that key, and `activé` beside `active` must stay silent.
+
+- **`providers.type.npm.desc` described Nginx Proxy Manager as "Nginx Proxy Manager"** in all
+  eight languages — the only one of the ten types whose description repeated its own name
+  instead of saying what the tool does.
+
+- **A service could name a second DNS server and a second proxy, and Vauxtra stored the
+  choice without ever acting on it.** `extra_dns_provider_ids` and `extra_proxy_provider_ids`
+  went into `service_push_targets` on create and on edit, the panel listed them, and the push
+  never looked at that table: only the service's primary proxy and primary DNS provider were
+  written. So the second DNS server held nothing, the drift report had nothing to compare, and
+  the one guarantee the feature exists for — the hostname keeps resolving when the first
+  server is down — was never true. `push_extra_targets()` now runs after every create and
+  every edit, and its failures are reported the same way the primary's are (a `207` on create
+  rather than a `201` that hides them).
+
+- **Dropping a second target from a service left its records live on the provider.** The row
+  disappeared from `service_push_targets`, so Vauxtra stopped seeing the record it had
+  written, and the record went on answering. Renaming a service had the same shape: the old
+  hostname stayed published on every extra target. `update_service` now withdraws from the
+  targets it is about to drop — and from the old hostname when the FQDN changes — using the
+  pre-update row, before it writes the new one.
+
+- **The "services still depend on it" dialog said something false about half the list.** It
+  claimed every dependent service would "stop being pushed anywhere", which is not what
+  happens to a service that also names a second DNS server: that one keeps being published,
+  exactly as before. `DELETE /api/providers/{id}` now returns `still_published` per dependent,
+  and the dialog says which services go dark and which do not, with a tag on each row.
+
+- **Deleting an integration in Vauxtra changed nothing on the integration.** Every record it
+  already served stayed live on it, and Vauxtra lost the ability to see them, let alone remove
+  them: the operator was left with a DNS server answering for hostnames no longer in any
+  panel. The confirmation now carries a checkbox — ticked by default — that takes the records
+  off the provider first (`?force=true&withdraw=true`), and a withdrawal that only half worked
+  is reported as such instead of a bare "deleted" toast. The Integrations page and the setup
+  wizard share one component for this dialog, so the two cannot drift apart again.
 
 - **Four screens read an empty list as a fact about the panel.** A request that fails and a
   request that answers "there are none" both leave the same empty array behind, and the

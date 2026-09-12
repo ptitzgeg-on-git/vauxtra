@@ -39,6 +39,7 @@ import {
   type ProviderTypeMeta,
   type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { checkDetailText, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 
@@ -234,16 +235,15 @@ export function ProviderFormStep({
                 ) : (
                   <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
                 )}
-                <span>
-                  <span className="font-medium">{check.name || t('provider_modal.validation.check_fallback')}</span>
-                  {check.detail ? ` — ${check.detail}` : ''}
-                </span>
+                {/* Same rule as the Integrations modal: the reader gets the translated
+                    sentence, never the server's identifier for the check. */}
+                <span>{checkDetailText(check, t) || t('provider_modal.validation.check_fallback')}</span>
               </li>
             ))}
         </ul>
       )}
       {validationResult.health?.status && (
-        <p className="mt-1">{t('provider_modal.validation.health', { status: validationResult.health.status })}</p>
+        <p className="mt-1">{t('provider_modal.validation.health', { status: healthStatusLabel(validationResult.health.status, t) })}</p>
       )}
     </InlineAlert>
   ) : null;

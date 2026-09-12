@@ -66,8 +66,9 @@ const VARIANT_STYLES: Record<ConfirmVariant, { icon: string; variant: ButtonVari
 /**
  * Styled confirmation dialog in place of `window.confirm()`.
  *
- * Danger opens with focus on Cancel so a stray Enter cannot delete anything; the other
- * variants focus Confirm. Escape, the backdrop and the close button all cancel, unless
+ * Anything that removes something opens with focus on Cancel, so a stray Enter cannot destroy
+ * what the dialog is asking about; only `info`, which adds, opens on Confirm. Escape, the
+ * backdrop and the close button all cancel, unless
  * `loading` says the confirmed action is still running. The panel is mounted fresh on
  * every opening, so the typed confirmation text never carries over.
  */
@@ -120,12 +121,18 @@ function ConfirmDialogPanel({
   useScrollLock(true);
 
   // useModalDialog focuses the box first (so the title is announced); the safest control next.
+  // The test is "does confirming destroy something", not "which colour is the icon".
+  // `warning` is not a gentler `danger` here: it is what the worse confirmations use -- the
+  // forced removal of an integration services still depend on, a domain that is in use, a
+  // reconcile that writes to a live provider. Keying the focus on `danger` alone armed the
+  // destructive button on exactly those. Only `info`, which adds without removing, opens on
+  // Confirm.
   useEffect(() => {
     const target = requireText
       ? inputRef.current
-      : variant === 'danger'
-        ? cancelRef.current
-        : confirmRef.current;
+      : variant === 'info'
+        ? confirmRef.current
+        : cancelRef.current;
     target?.focus({ preventScroll: true });
   }, [requireText, variant]);
 

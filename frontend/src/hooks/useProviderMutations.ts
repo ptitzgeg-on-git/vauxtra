@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT, type TranslateFn } from '@/i18n';
 import { isHttpStatus, translateApiError } from '@/lib/errors';
-import type { ProviderDeleteConflict, ProviderUpdate } from '@/types/api';
+import type { ProviderDeleteConflict, ProviderDeleteResult, ProviderUpdate } from '@/types/api';
 import {
   type ProviderFormState,
   type ProviderValidationResult,
@@ -33,6 +33,48 @@ export interface ProviderDeleteVars {
   id: number;
   /** Cut the link to every service still pointing at this provider. Ask the user first. */
   force?: boolean;
+  /**
+   * Take those services' records off the provider before it goes, instead of leaving them
+   * live on a server Vauxtra will no longer be able to see. Only read with `force`.
+   */
+  withdraw?: boolean;
+  /**
+   * The provider's name, for the toast. The form this hook is built on holds the provider
+   * being *created*, which in the wizard is never the one being deleted.
+   */
+  name?: string;
+}
+
+/**
+ * The withdrawal checkbox lives inside the confirm dialog, and `confirm()` resolves to a
+ * boolean and nothing else. The checkbox writes into this box; the caller reads it back once
+ * the question is answered. A plain object rather than a `useRef`: it is built outside React.
+ */
+export interface WithdrawChoice {
+  current: boolean;
+}
+
+/**
+ * Ticked to start with: leaving records live on a server Vauxtra can no longer see is not
+ * an outcome anyone asks for on purpose, and the box says plainly what unticking it keeps.
+ */
+export const WITHDRAW_BY_DEFAULT = true;
+
+/** Builds the box, so the checkbox and the request cannot start on different answers. */
+export function createWithdrawChoice(): WithdrawChoice {
+  return { current: WITHDRAW_BY_DEFAULT };
+}
+
+/**
+ * `?force=true&withdraw=true`, in that order, and nothing at all for a plain delete.
+ * Exported because the Integrations page owns its own delete mutation (it has no provider
+ * form to hand this hook) and the two must build the same URL.
+ */
+export function providerDeleteQuery({ force, withdraw }: ProviderDeleteVars): string {
+  const params: string[] = [];
+  if (force) params.push('force=true');
+  if (force && withdraw) params.push('withdraw=true');
+  return params.length ? `?${params.join('&')}` : '';
 }
 
 /** The 409 body of `DELETE /providers/{id}`: the services that still point at it. */
@@ -41,18 +83,15 @@ export function isProviderDeleteConflict(detail: unknown): detail is ProviderDel
 }
 
 /**
- * The bullet list shown before forcing the delete through. The API names the role each
- * service fills (proxy, dns, tunnel, extra dns): which link is about to be cut is what
- * decides whether to go ahead. Five rows at most, then a line counting the rest.
+ * What to say once the delete has gone through. A withdrawal that failed halfway is the one
+ * outcome a plain "deleted" toast would hide: the integration is gone from Vauxtra and some
+ * of its records are still live on the server, which is exactly the state the checkbox was
+ * ticked to avoid. Returns null when there is nothing to add.
  */
-export function describeDeleteConflict(detail: ProviderDeleteConflict, t: TranslateFn): string {
-  const list = detail.services
-    .slice(0, 5)
-    .map((s) => (s.roles?.length ? `${s.fqdn} (${s.roles.join(', ')})` : s.fqdn))
-    .join('\n\u2022 ');
-  const rest = detail.services.length - 5;
-  const suffix = rest > 0 ? `\n${t('providers.delete.deps_more', { count: rest })}` : '';
-  return `\u2022 ${list}${suffix}`;
+export function describeWithdrawal(result: unknown, name: string, t: TranslateFn): string | null {
+  const errors = (result as ProviderDeleteResult | null | undefined)?.errors;
+  if (!Array.isArray(errors) || errors.length === 0) return null;
+  return t('providers.delete.withdraw_failed', { count: errors.length, name });
 }
 
 export function useProviderMutations(
@@ -133,11 +172,13 @@ export function useProviderMutations(
    * hardcoded on, so the wizard unlinked every service silently.
    */
   const deleteProvider = useMutation({
-    mutationFn: ({ id, force }: ProviderDeleteVars) =>
-      api.delete(`/providers/${id}${force ? '?force=true' : ''}`),
-    onSuccess: async () => {
+    mutationFn: (vars: ProviderDeleteVars) =>
+      api.delete<ProviderDeleteResult>(`/providers/${vars.id}${providerDeleteQuery(vars)}`),
+    onSuccess: async (result: ProviderDeleteResult, vars: ProviderDeleteVars) => {
       invalidateProviderQueries();
-      toast.success(t('provider_modal.toast.deleted'));
+      const partial = describeWithdrawal(result, vars.name ?? '', t);
+      if (partial) toast.error(partial, { duration: 8000 });
+      else toast.success(t('provider_modal.toast.deleted'));
       await opts?.onDeleted?.();
     },
     onError: (err: unknown) => {

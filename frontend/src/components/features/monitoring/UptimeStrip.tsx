@@ -28,13 +28,19 @@ export interface UptimeStripProps {
   summary: UptimeSummary;
   /** Accessible name — say what the strip shows, e.g. "99.2 % up over 24 h". */
   label: string;
+  /**
+   * What the dashed box says when there is nothing to draw. Defaults to "no check in the
+   * last 24 hours", which is a claim about the infrastructure: a caller whose history
+   * request failed knows nothing of the sort and must pass its own sentence.
+   */
+  emptyLabel?: string;
   /** Tailwind height of the strip; the width always fills its container. */
   heightClass?: string;
   className?: string;
 }
 
 /** A 24-hour availability heat strip; empty cells are the hours the scheduler did not run. */
-export function UptimeStrip({ summary, label, heightClass = 'h-5', className }: UptimeStripProps) {
+export function UptimeStrip({ summary, label, emptyLabel, heightClass = 'h-5', className }: UptimeStripProps) {
   const t = useT();
   const { formatTime, formatDateTime } = useFormat();
 
@@ -55,12 +61,15 @@ export function UptimeStrip({ summary, label, heightClass = 'h-5', className }: 
   );
 
   if (summary.total === 0) {
+    // `title` because the span truncates: the box is one table cell wide and the sentence
+    // is longer than that on most locales.
+    const empty = emptyLabel ?? t('monitoring.uptime.no_history');
     return (
       <div
         className={cn('flex items-center rounded-md border border-dashed border-border px-2', heightClass, className)}
-        title={t('monitoring.uptime.no_history')}
+        title={empty}
       >
-        <span className="truncate text-[10px] text-muted-foreground">{t('monitoring.uptime.no_history')}</span>
+        <span className="truncate text-[10px] text-muted-foreground">{empty}</span>
       </div>
     );
   }

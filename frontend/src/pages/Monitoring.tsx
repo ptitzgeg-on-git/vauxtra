@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { Activity, ArrowDownCircle, CircleHelp, Gauge, Radio, ShieldCheck, Timer } from 'lucide-react';
@@ -30,6 +30,7 @@ import { useServiceProbes } from '@/components/features/monitoring/useServicePro
 import {
   STATUS_FILTERS,
   STATUS_LABEL_KEY,
+  autoCheckCadence,
   overallAvailability,
   serviceHost,
   serviceStatus,
@@ -55,7 +56,7 @@ import type {
  *  - `GET  /api/logs`                    the recent lines, matched to a host in the drawer
  *  - `GET  /api/providers/tunnels/health` the Cloudflare connectors
  *  - `POST /api/services/check-all`      probe everything now
- *  - `GET  /api/services/{sid}/check`    probe one service and measure its latency
+ *  - `POST /api/services/{sid}/check`    probe one service and resolve its hostname
  */
 
 const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
@@ -112,7 +113,7 @@ interface CheckSummary extends CheckAllResult {
 
 export function Monitoring() {
   const t = useT();
-  const { formatPercent, formatLatency, formatNumber } = useFormat();
+  const { formatPercent, formatLatency } = useFormat();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -199,6 +200,9 @@ export function Monitoring() {
       const ok = result?.ok ?? 0;
       const error = result?.error ?? 0;
       setSummary({ checked, ok, error, skipped: Math.max(0, checked - ok - error) });
+      // The fleet check measured every latency on its way through; `results` is absent on
+      // an instance older than 1.5.0, and the column then stays as it was.
+      probes.record(result?.results ?? []);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['services'] }),
         queryClient.invalidateQueries({ queryKey: ['services-history'] }),
@@ -225,8 +229,8 @@ export function Monitoring() {
     [historyQuery.data, services, now],
   );
 
-  const checkIntervalMinutes = Number(settings?.check_interval) || 5;
-  const hasAutoCheckData = services.some((service) => Boolean(service.last_checked));
+  // `autoCheckCadence` carries why this is read from the setting and never from `last_checked`.
+  const cadence = autoCheckCadence(settings?.check_interval);
   const probedCount = Object.keys(probes.probes).length;
 
   // --- filtering ----------------------------------------------------------
@@ -294,11 +298,19 @@ export function Monitoring() {
         description={t('monitoring.page_description')}
         icon={<Activity />}
         meta={
-          <span className="text-xs text-muted-foreground">
-            {hasAutoCheckData
-              ? t('monitoring.auto_checks_every', { minutes: checkIntervalMinutes })
-              : t('monitoring.auto_checks_waiting')}
-          </span>
+          cadence.state === 'every' ? (
+            <span className="text-xs text-muted-foreground">
+              {t('monitoring.auto_checks_every', { minutes: cadence.minutes })}
+            </span>
+          ) : cadence.state === 'off' ? (
+            // The only screen that can switch them back on, one click away from the bad news.
+            <Link
+              to="/settings?tab=general"
+              className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              {t('monitoring.auto_checks_disabled')}
+            </Link>
+          ) : null
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -343,7 +355,7 @@ export function Monitoring() {
         <InlineAlert
           tone={summary.error > 0 ? 'warning' : 'success'}
           title={t('monitoring.check_summary', {
-            checked: summary.checked,
+            count: summary.checked,
             ok: summary.ok,
             error: summary.error,
           })}
@@ -428,7 +440,7 @@ export function Monitoring() {
           value={probes.average === null ? EM_DASH : formatLatency(probes.average)}
           hint={
             probedCount > 0
-              ? t('monitoring.stat.latency_hint', { count: formatNumber(probedCount) })
+              ? t('monitoring.stat.latency_hint', { count: probedCount })
               : t('monitoring.stat.latency_empty')
           }
           icon={<Timer />}
@@ -436,8 +448,18 @@ export function Monitoring() {
         />
       </div>
 
+      {/* `min-w-0` on both children: a grid item defaults to `min-width: auto`, so the table's
+          `min-w-[820px]` climbed back up and sized the card at 820px on a phone. The card then
+          overflowed `main`, whose `overflow-x: hidden` cut 476px off with no scrollbar, while
+          the table's own `overflow-x-auto` had nothing left to scroll.
+
+          9/3 and not 8/4: the page container caps the grid at 1280px, so the split is the
+          same at 1440px and at 2560px. Eight columns left the table scroller 798px against
+          a table whose min-content width is 820px, and that missing 22px was a permanent
+          horizontal scrollbar that hid most of the ACTIONS column. The tunnels card's own
+          min-content is 237px, so it still has room at three columns. */}
       <div className="grid gap-4 xl:grid-cols-12">
-        <Card className="xl:col-span-8">
+        <Card className="min-w-0 xl:col-span-9">
           <CardHeader className="gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle>{t('monitoring.route_health')}</CardTitle>
@@ -499,7 +521,7 @@ export function Monitoring() {
           </CardContent>
         </Card>
 
-        <div className="xl:col-span-4">
+        <div className="min-w-0 xl:col-span-3">
           <TunnelsCard
             data={tunnelsQuery.data}
             loading={tunnelsQuery.isPending}

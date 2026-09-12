@@ -17,6 +17,12 @@ The rest of the file is about the answers coming back, and about the numbers wri
 next to them: a resolver that replies `127.0.0.1` used to be believed, the secure-export
 passphrase floor was eight where the login password's was twelve, and three `minLength={8}`
 attributes let the browser accept what the server was always going to refuse.
+
+And about which of the three sources is allowed to answer at all. `public_target_priority`
+reads as a list the operator writes, but every value they left out was appended back at the
+end of it, so the field could reorder the sources and never exclude one. Taking
+`server_public_ip` out is how an operator says this machine's WAN address must not be
+published; the form said "Saved" and published it anyway.
 """
 
 import base64
@@ -381,6 +387,103 @@ class AResolverThatAnswersWithALanAddressIsNotAnAnswerTests(unittest.TestCase):
                 ),
                 "1.1.1.1",
             )
+
+
+class ASourceLeftOutOfThePriorityIsNotUsedTests(_ScopedClient):
+    """`public_target_priority` names which of the three sources may answer, in order.
+
+    What answers is written into public DNS for every service left in `auto` mode, so an
+    operator taking `server_public_ip` out of the list is stating a policy about their own
+    WAN address, not expressing a mild preference about ordering.
+    """
+
+    WAN = "203.0.113.9"
+
+    def _resolve(self, priority: str, **kwargs) -> tuple[str, str]:
+        self._write(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('public_target_priority', ?)",
+            (priority,),
+        )
+        conn = models.get_db()
+        try:
+            return public_target.resolve_public_target(
+                conn,
+                mode="auto",
+                manual_value="",
+                server_public_ip=self.WAN,
+                **kwargs,
+            )
+        finally:
+            conn.close()
+
+    def test_a_source_the_operator_removed_is_not_appended_back(self) -> None:
+        self.assertEqual(
+            public_target._parse_priority("proxy_provider_host,current"),
+            ["proxy_provider_host", "current"],
+        )
+
+    def test_the_order_written_down_is_the_order_used(self) -> None:
+        for written, expected in (
+            ("current,server_public_ip", ["current", "server_public_ip"]),
+            ("server_public_ip", ["server_public_ip"]),
+            ("current; current, current", ["current"]),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(public_target._parse_priority(written), expected)
+
+    def test_a_field_nobody_filled_in_is_still_the_full_policy(self) -> None:
+        """An empty setting is a field nobody touched, not a request for no sources."""
+        for written in ("", "   ", ",,", "nonsense", "first_born_child"):
+            with self.subTest(written=written):
+                self.assertEqual(
+                    public_target._parse_priority(written),
+                    public_target.DEFAULT_PUBLIC_TARGET_PRIORITY,
+                )
+
+    def test_the_wan_address_is_not_published_when_its_source_was_removed(self) -> None:
+        value, source = self._resolve("proxy_provider_host,current")
+        self.assertEqual(value, "")
+        self.assertEqual(source, "auto_unavailable")
+
+    def test_the_same_call_publishes_it_when_the_source_is_listed(self) -> None:
+        """The control. Without it the test above passes on any broken fixture."""
+        value, source = self._resolve("server_public_ip,proxy_provider_host,current")
+        self.assertEqual(value, self.WAN)
+        self.assertEqual(source, "server_public_ip")
+
+    def test_a_value_already_on_the_service_still_answers_when_it_is_listed(self) -> None:
+        """Excluding one source must not take the others down with it."""
+        value, source = self._resolve("current", current_value="198.51.100.4")
+        self.assertEqual(value, "198.51.100.4")
+        self.assertEqual(source, "current")
+
+    def test_the_address_is_still_offered_as_a_candidate(self) -> None:
+        """The manual picker keeps listing every candidate it found.
+
+        Only the recommendation follows the policy: an operator who excluded the source
+        from automatic resolution may still read the value and decide to type it in.
+        """
+        self._write(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES "
+            "('public_target_priority', 'proxy_provider_host,current')"
+        )
+        conn = models.get_db()
+        try:
+            result = public_target.suggest_public_targets(conn, server_public_ip=self.WAN)
+        finally:
+            conn.close()
+        self.assertIn(
+            {"value": self.WAN, "source": "server_public_ip"}, result["candidates"]
+        )
+        self.assertEqual(result["recommended"], "")
+
+    def test_the_refusal_tells_the_operator_a_lookup_came_back_empty(self) -> None:
+        """`auto_unavailable`, so the sentence is the one about detection, not about a
+        field left blank. The remedy here is the priority list, and it is in Settings."""
+        _, source = self._resolve("proxy_provider_host,current")
+        key, sentence = public_target.describe_public_target_failure(source)
+        self.assertEqual(key, "dns_target_detection_failed")
+        self.assertIn("Settings", sentence)
 
 
 class TheExportPassphraseMeetsTheSameFloorAsThePasswordTests(_ScopedClient):

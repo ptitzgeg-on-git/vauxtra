@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.auth import require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
-from app.validators import is_valid_domain, normalize_domain
+from app.validators import DOMAIN_REASONS, domain_problem, normalize_domain
 
 try:
     from sse_starlette.sse import EventSourceResponse as _SSEResponse
@@ -449,8 +449,9 @@ def list_domains(request: Request):
 def add_domain(request: Request, body: dict):
     require_auth(request, scope="write")
     name = normalize_domain(body.get("name", ""))
-    if not is_valid_domain(name, require_dot=True):
-        raise HTTPException(400, "Invalid domain name")
+    problem = domain_problem(name, require_dot=True)
+    if problem:
+        raise HTTPException(400, f"Invalid domain name: {DOMAIN_REASONS[problem]}")
     conn = get_db()
     conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (name,))
     conn.commit()

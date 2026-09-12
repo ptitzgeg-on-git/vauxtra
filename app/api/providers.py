@@ -4,10 +4,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
+from app.api.sync import withdraw_service_routes
 from app.auth import require_auth, require_auth_or_setup
 from app.config import encrypt_secret
 from app.models import add_log, get_db, get_db_ctx
 from app.providers.factory import PROVIDER_TYPES, create_provider
+from app.text import plural, verb
 from app.validators import is_valid_url
 
 router = APIRouter()
@@ -197,8 +199,15 @@ def all_providers_health(request: Request):
         pid = r["id"]
         try:
             provider = create_provider(dict(r))
-            provider.test_connection()
-            results[str(pid)] = {"status": "healthy", "error": None}
+            # `test_connection` answers False; it does not raise. Every other caller in the
+            # code base reads that boolean. This one dropped it, so an integration that had
+            # just refused the connection was written down as healthy -- and this map is
+            # what paints the dashboard tiles and feeds the Integrations page score.
+            ok = bool(provider.test_connection())
+            results[str(pid)] = {
+                "status": "healthy" if ok else "unhealthy",
+                "error": None,
+            }
         except Exception as e:
             results[str(pid)] = {"status": "unhealthy", "error": str(e)}
     return results
@@ -382,12 +391,14 @@ def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
     """
     rows = conn.execute(
         """
-        SELECT s.id, s.subdomain, s.domain,
+        SELECT s.id, s.subdomain, s.domain, s.enabled,
                s.proxy_provider_id  AS proxy_id,
                s.dns_provider_id    AS dns_id,
                s.tunnel_provider_id AS tunnel_id,
                (SELECT GROUP_CONCAT(t.role) FROM service_push_targets t
-                 WHERE t.service_id = s.id AND t.provider_id = ?) AS extra_roles
+                 WHERE t.service_id = s.id AND t.provider_id = ?) AS extra_roles,
+               (SELECT GROUP_CONCAT(t.provider_id) FROM service_push_targets t
+                 WHERE t.service_id = s.id) AS all_extra_ids
           FROM services s
          WHERE s.proxy_provider_id = ? OR s.dns_provider_id = ? OR s.tunnel_provider_id = ?
             OR EXISTS (SELECT 1 FROM service_push_targets t
@@ -410,18 +421,67 @@ def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
             extra = extra.strip()
             if extra and extra not in roles:
                 roles.append(f"extra {extra}")
+
+        # What the service is left with once this provider is gone. A multi-sync service
+        # keeps being published by its other targets, and telling its operator it "stops
+        # being pushed anywhere" was simply false -- the one thing that does happen to it is
+        # the record left live on the provider being removed, which is what `withdraw` is for.
+        attached = {row["proxy_id"], row["dns_id"], row["tunnel_id"]}
+        attached.update(
+            int(x) for x in str(row["all_extra_ids"] or "").split(",") if x.strip().isdigit()
+        )
+        attached.discard(None)
+        attached.discard(pid)
+
         dependents.append(
             {
                 "id": row["id"],
                 "fqdn": f"{row['subdomain']}.{row['domain']}".strip(".").lower(),
                 "roles": roles,
+                "still_published": bool(attached),
             }
         )
     return dependents
 
 
+def _describe_provider_removal(name: str, dependents: list[dict[str, Any]]) -> str:
+    """What the operator actually gets, told apart service by service.
+
+    The single sentence this replaces said every dependent service "stops being pushed
+    anywhere until another provider is chosen". For a service whose only DNS server is the
+    one being removed, that is true. For a multi-sync service it is not: the other targets
+    keep publishing it, and the thing that really happens is the record already written on
+    the provider being removed, which outlives the deletion and which Vauxtra can no longer
+    see once the provider row is gone.
+    """
+    kept = [d for d in dependents if d.get("still_published")]
+    orphaned = [d for d in dependents if not d.get("still_published")]
+
+    parts = [
+        f'{plural(len(dependents), "service")} still {verb(len(dependents), "uses", "use")} "{name}".'
+    ]
+    if orphaned:
+        parts.append(
+            f"{len(orphaned)} of them {verb(len(orphaned), 'has', 'have')} no other target: "
+            f"{verb(len(orphaned), 'it keeps', 'they keep')} the public hostname and "
+            f"{verb(len(orphaned), 'stops', 'stop')} being published anywhere until another "
+            "provider is chosen."
+        )
+    if kept:
+        parts.append(
+            f"{len(kept)} {verb(len(kept), 'goes', 'go')} on being published by "
+            f"{verb(len(kept), 'its', 'their')} other targets."
+        )
+    parts.append(
+        f'Whatever "{name}" already serves for them stays live on it after the deletion, '
+        "and Vauxtra stops being able to see it. Re-send with ?force=true&withdraw=true to "
+        "take those records off it first, or ?force=true alone to leave them in place."
+    )
+    return " ".join(parts)
+
+
 @router.delete("/api/providers/{pid}")
-def delete_provider(pid: int, request: Request, force: bool = False):
+def delete_provider(pid: int, request: Request, force: bool = False, withdraw: bool = False):
     require_auth_or_setup(request, scope="write")
     conn = get_db()
     row  = conn.execute("SELECT name FROM providers WHERE id=?", (pid,)).fetchone()
@@ -439,15 +499,29 @@ def delete_provider(pid: int, request: Request, force: bool = False):
         raise HTTPException(
             409,
             {
-                "message": (
-                    f"{len(dependents)} service(s) still use \"{row['name']}\". Deleting it "
-                    "unlinks them -- they keep their public hostname but stop being pushed "
-                    "anywhere until another provider is chosen. Re-send with ?force=true to "
-                    "do it anyway."
-                ),
+                "message": _describe_provider_removal(row["name"], dependents),
                 "services": dependents,
             },
         )
+
+    # Asked for: take this provider's own routes down before forgetting it. Only its own --
+    # the other targets of a multi-sync service are none of this deletion's business, and a
+    # service left with no target at all still keeps its configuration in Vauxtra.
+    withdrawal_errors: list[str] = []
+    if dependents and withdraw:
+        for dep in dependents:
+            svc = conn.execute("SELECT * FROM services WHERE id=?", (dep["id"],)).fetchone()
+            if not svc:
+                continue
+            for message in withdraw_service_routes(conn, svc, dep["id"], only_provider_ids={pid}):
+                withdrawal_errors.append(f"{dep['fqdn']}: {message}")
+        if withdrawal_errors:
+            add_log(
+                "error",
+                f"Provider {row['name']}: {plural(len(withdrawal_errors), 'record')} could not be "
+                "withdrawn before deletion and are still live on it",
+                conn,
+            )
 
     conn.execute("DELETE FROM providers WHERE id=?", (pid,))
     conn.commit()
@@ -456,13 +530,22 @@ def delete_provider(pid: int, request: Request, force: bool = False):
         names = ", ".join(d["fqdn"] for d in dependents[:5])
         if len(dependents) > 5:
             names += f", and {len(dependents) - 5} more"
+        # Named either way: without `withdraw` these hostnames are exactly what stays
+        # published on a provider Vauxtra no longer knows about, and this line is the only
+        # trace left of it.
+        what = "withdrawn from it and unlinked" if withdraw else "unlinked, still served by it"
         add_log(
             "warn",
-            f"Provider deleted: {row['name']} -- {len(dependents)} service(s) unlinked ({names})",
+            f"Provider deleted: {row['name']} -- {plural(len(dependents), 'service')} {what} ({names})",
         )
     else:
         add_log("info", f"Provider deleted: {row['name']}")
-    return {"ok": True, "unlinked_services": [d["id"] for d in dependents]}
+    return {
+        "ok": not withdrawal_errors,
+        "unlinked_services": [d["id"] for d in dependents],
+        "withdrawn": bool(dependents and withdraw),
+        "errors": withdrawal_errors,
+    }
 
 
 @router.post("/api/providers/{pid}/validate")

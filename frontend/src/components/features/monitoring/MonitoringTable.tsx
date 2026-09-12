@@ -20,10 +20,10 @@ import {
 /**
  * The uptime table. One row per service: status, 24 h strip, latency, last check.
  *
- * Latency has no column in `uptime_events`, so the cell shows what the session measured
- * with "check now" and an em dash until then — never a zero pretending to be a
- * measurement. Tunnel services are marked instead of being shown as stale: neither the
- * scheduler nor `check-all` ever probes them.
+ * Latency has no column in `uptime_events`, so the cell shows what the session measured —
+ * by a per-row check or by a fleet run, both of which report it — and an em dash until
+ * then, never a zero pretending to be a measurement. Tunnel services are marked instead of
+ * being shown as stale: neither the scheduler nor `check-all` ever probes them.
  */
 
 export interface MonitoringTableProps {
@@ -83,7 +83,12 @@ export function MonitoringTable({
   }
 
   return (
-    <div className="overflow-x-auto">
+    // `relative` is not cosmetic: Tailwind ships `sr-only` as `position: absolute`, and with a
+    // static scroller the containing block of those spans is a positioned ancestor further up,
+    // so the two in the last column escaped this clip at x=842 and handed `main` 467px of
+    // phantom scroll width. Positioning the scroller makes it their containing block; they keep
+    // their static position and get clipped with the rest of the row.
+    <div className="relative overflow-x-auto">
       <table className="w-full min-w-[820px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-border">
@@ -185,19 +190,21 @@ export function MonitoringTable({
                     <div className="space-y-1">
                       <UptimeStrip
                         summary={summary}
+                        emptyLabel={historyError ? t('monitoring.uptime.history_failed') : undefined}
                         label={
                           availability
                             ? t('monitoring.uptime.aria', { host, percent: availability })
                             : t('monitoring.uptime.aria_empty', { host })
                         }
                       />
-                      <p className="text-[11px] tabular-nums text-muted-foreground">
-                        {availability
-                          ? t('monitoring.uptime.summary', { percent: availability, count: summary.total })
-                          : historyError
-                            ? t('monitoring.uptime.history_failed')
-                            : t('monitoring.uptime.no_history')}
-                      </p>
+                      {/* Only when there is a percentage to state. With no history the strip
+                          already carries the sentence, and printing it again underneath put
+                          it twice in the same cell. */}
+                      {availability && (
+                        <p className="text-[11px] tabular-nums text-muted-foreground">
+                          {t('monitoring.uptime.summary', { percent: availability, count: summary.total })}
+                        </p>
+                      )}
                     </div>
                   )}
                 </td>
@@ -242,7 +249,7 @@ export function MonitoringTable({
                 <td className="px-3 py-2.5 text-right">
                   <div onClick={(event) => event.stopPropagation()} role="presentation">
                     <IconButton
-                      label={t('monitoring.check_one', { host })}
+                      label={t('monitoring.check_row', { host })}
                       icon={<Radio />}
                       variant="ghost"
                       size="icon"
@@ -257,10 +264,14 @@ export function MonitoringTable({
         </tbody>
       </table>
 
-      <p className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
-        <Activity className="h-3 w-3 shrink-0" aria-hidden />
-        {t('monitoring.latency.column_hint')}
-      </p>
+      {/* Only while the column is empty. Once a check has filled it the sentence is noise,
+          telling operators to do the thing they just did. */}
+      {Object.keys(probes).length === 0 && (
+        <p className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+          <Activity className="h-3 w-3 shrink-0" aria-hidden />
+          {t('monitoring.latency.column_hint')}
+        </p>
+      )}
     </div>
   );
 }

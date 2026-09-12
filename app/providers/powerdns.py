@@ -18,6 +18,7 @@ import ipaddress
 import requests
 
 from app.providers.base import DNSProvider, TimeoutSession
+from app.text import plural
 
 DEFAULT_SERVER_ID = "localhost"
 DEFAULT_TTL = 3600
@@ -288,7 +289,7 @@ class PowerDNSProvider(DNSProvider):
         _add(
             "List zones",
             True,
-            f"{len(zones)} zone(s) accessible" if zones else "No zones found",
+            f"{plural(len(zones), 'zone')} accessible" if zones else "No zones found",
             "zones_found" if zones else "zones_none",
             blocking=False,
             count=len(zones),

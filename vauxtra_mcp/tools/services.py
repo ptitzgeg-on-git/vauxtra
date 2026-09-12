@@ -260,7 +260,9 @@ def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, An
 @mcp.tool()
 def check_service_health(service_id: int) -> dict[str, Any]:
     """Run a live health/TCP and DNS check for one service."""
-    r = client.get(f"/services/{service_id}/check")
+    # POST since 1.5.0: the route writes `status`, `last_checked` and an uptime event, so
+    # it now asks for the `write` scope like every other mutation.
+    r = client.post(f"/services/{service_id}/check")
     client.check(r)
     return r.json()
 

@@ -27,8 +27,9 @@ import {
   type ProviderFormState,
   type ProviderValidationResult as ValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { ProviderDeleteConflictBody } from '@/components/features/providers/ProviderDeleteConflictBody';
 import {
-  describeDeleteConflict,
+  createWithdrawChoice,
   isProviderDeleteConflict,
   useProviderMutations,
 } from '@/hooks/useProviderMutations';
@@ -324,22 +325,21 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const handleDeleteProvider = async (id: number) => {
     const name = providers.find((p) => p.id === id)?.name ?? '';
     try {
-      await deleteProviderMutation.mutateAsync({ id });
+      await deleteProviderMutation.mutateAsync({ id, name });
     } catch (error: unknown) {
       // Anything else has already been reported by the mutation's own `onError`.
       const detail = getErrorDetail(error);
       if (getHttpStatus(error) !== 409 || !isProviderDeleteConflict(detail)) return;
+      // The checkbox lives inside the dialog and `confirm()` only ever answers yes or no;
+      // this box is how its state gets back out. Same flow as the Integrations page.
+      const choiceRef = createWithdrawChoice();
       const force = await confirm({
         title: t('providers.delete.deps_title'),
-        message: t('providers.delete.deps_message', {
-          count: detail.services.length,
-          name,
-          list: describeDeleteConflict(detail, t),
-        }),
+        message: <ProviderDeleteConflictBody name={name} detail={detail} choiceRef={choiceRef} />,
         confirmLabel: t('providers.delete.force_confirm'),
         variant: 'warning',
       });
-      if (force) deleteProviderMutation.mutate({ id, force: true });
+      if (force) deleteProviderMutation.mutate({ id, name, force: true, withdraw: choiceRef.current });
     }
   };
 

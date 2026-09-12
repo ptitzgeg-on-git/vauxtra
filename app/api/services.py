@@ -4,7 +4,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from app.api.sync import withdraw_service_routes
+from app.api.sync import push_extra_targets, withdraw_service_routes
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -15,13 +15,22 @@ from app.models import (
     set_tags,
 )
 from app.providers.factory import create_provider, host_id_is_hostname
-from app.public_target import resolve_public_target, suggest_public_targets
+from app.public_target import (
+    describe_public_target_failure,
+    resolve_public_target,
+    suggest_public_targets,
+)
+from app.text import plural
 from app.validators import (
-    is_valid_domain,
+    DOMAIN_REASONS,
+    FQDN_REASONS,
+    SUBDOMAIN_REASONS,
+    domain_problem,
+    fqdn_problem,
     is_valid_hostname,
     is_valid_port,
-    is_valid_subdomain,
     normalize_domain,
+    subdomain_problem,
 )
 
 router = APIRouter()
@@ -123,6 +132,20 @@ def _service_target_reachable(host: str, port: int, timeout: float = 2.0) -> tup
 #: clients) plus `detail_key` -- the short code the sentence was written from -- and the
 #: values it was built out of. The UI looks up `expose.preflight.detail.<detail_key>` so the
 #: line is read in the reader's language, and falls back to `detail` when the code is new.
+def _public_target_refusal(conn, source: str, dns_provider_id: int | None) -> dict:
+    """The body of the 400 raised when a DNS provider has no target to write.
+
+    Named after the provider the operator chose: an instance holding several DNS providers
+    would otherwise give the same anonymous sentence whichever one is at fault.
+    """
+    name = ""
+    if dns_provider_id:
+        row = conn.execute("SELECT name FROM providers WHERE id=?", (int(dns_provider_id),)).fetchone()
+        name = row["name"] if row else ""
+    detail_key, sentence = describe_public_target_failure(source, name)
+    return {"message": sentence, "detail_key": detail_key}
+
+
 def _detail(key: str, text: str, **params) -> dict:
     out = {"detail": text, "detail_key": key}
     if params:
@@ -374,7 +397,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                             source=str(target_source),
                         )
                         if resolved_target
-                        else _detail("dns_unresolved", "Unable to resolve DNS public target")
+                        else _detail(*describe_public_target_failure(target_source))
                     ),
                     "data": {"resolved_target": resolved_target, "source": target_source},
                 }
@@ -427,17 +450,22 @@ class ServiceIn(BaseModel):
     @field_validator("subdomain")
     @classmethod
     def val_subdomain(cls, v):
+        # The message names the rule that was broken, not just the field: eight different
+        # mistakes used to answer "Invalid subdomain", which tells an operator nothing about
+        # the one character to change.
         v = v.strip().lower()
-        if not is_valid_subdomain(v, allow_wildcard=True):
-            raise ValueError("Invalid subdomain")
+        problem = subdomain_problem(v, allow_wildcard=True)
+        if problem:
+            raise ValueError(f"Invalid subdomain: {SUBDOMAIN_REASONS[problem]}")
         return v
 
     @field_validator("domain")
     @classmethod
     def val_domain(cls, v):
         val = normalize_domain(v)
-        if not is_valid_domain(val):
-            raise ValueError("Invalid domain")
+        problem = domain_problem(val)
+        if problem:
+            raise ValueError(f"Invalid domain: {DOMAIN_REASONS[problem]}")
         return val
 
     @field_validator("target_ip")
@@ -498,6 +526,17 @@ class ServiceIn(BaseModel):
     def validate_mode_dependencies(self):
         if self.expose_mode == "tunnel" and not self.tunnel_provider_id:
             raise ValueError("Tunnel provider is required in tunnel mode")
+        return self
+
+    @model_validator(mode="after")
+    def validate_hostname_length(self):
+        # A rule about the pair, so it cannot live on either field: a 250-character
+        # subdomain and a 10-character domain are each acceptable on their own and the name
+        # they make is not. Raised here it is a 422 with a sentence; left out it was a saved
+        # route every provider refused separately, later, each in its own words.
+        problem = fqdn_problem(self.subdomain, self.domain)
+        if problem:
+            raise ValueError(f"Invalid hostname: {FQDN_REASONS[problem]}")
         return self
 
 
@@ -781,10 +820,28 @@ def add_service(request: Request, body: ServiceIn):
             "hostname push over each other -- edit that one, or choose another hostname.",
         )
 
+    # Resolved before a single provider is touched. This refusal used to live past the
+    # proxy creation, so a target nobody could resolve first created a host on the remote
+    # proxy and then deleted it again -- through a compensating delete whose own failure was
+    # swallowed by a bare `except: pass`. Nothing to compensate if nothing was done yet.
+    dns_target = ""
+    dns_target_source = ""
+    if body.expose_mode == "proxy_dns" and body.dns_provider_id:
+        dns_target, dns_target_source = resolve_public_target(
+            conn,
+            mode=body.public_target_mode,
+            manual_value=body.dns_ip,
+            proxy_provider_id=body.proxy_provider_id,
+            current_value="",
+        )
+        if not dns_target:
+            refusal = _public_target_refusal(conn, dns_target_source, body.dns_provider_id)
+            conn.close()
+            raise HTTPException(400, refusal)
+
     errors = []
 
     npm_host_id = None
-    dns_target = ""
 
     if body.expose_mode == "tunnel":
         row = conn.execute("SELECT * FROM providers WHERE id=?", (body.tunnel_provider_id,)).fetchone()
@@ -842,24 +899,6 @@ def add_service(request: Request, body: ServiceIn):
                     errors.append(str(e))
 
         if body.dns_provider_id:
-            dns_target, dns_target_source = resolve_public_target(
-                conn,
-                mode=body.public_target_mode,
-                manual_value=body.dns_ip,
-                proxy_provider_id=body.proxy_provider_id,
-                current_value="",
-            )
-            if not dns_target:
-                if npm_host_id and body.proxy_provider_id:
-                    try:
-                        proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.proxy_provider_id,)).fetchone()
-                        if proxy_row:
-                            create_provider(proxy_row).delete_host(npm_host_id)
-                    except Exception:
-                        pass
-                conn.close()
-                raise HTTPException(400, "Unable to resolve DNS public target")
-
             row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
             if row and not body.enabled:
                 # The resolved target is still stored, so the enable path can re-add the
@@ -921,6 +960,14 @@ def add_service(request: Request, body: ServiceIn):
     if body.environment_ids:
         set_environments(conn, sid, body.environment_ids)
     conn.commit()
+
+    # The block above published on one proxy and one DNS server. The multi-sync targets were
+    # recorded a few lines up and nothing pushed to them, so a service created with a second
+    # DNS server answered 201 with no errors while that server stayed empty. Committed first:
+    # these are provider HTTP calls, and holding SQLite's single writer across them is what
+    # `update_service` already documents as the cause of `database is locked`.
+    errors.extend(push_extra_targets(conn, sid))
+
     conn.close()
 
     from fastapi.responses import JSONResponse
@@ -961,6 +1008,29 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     new_mode = body.expose_mode
     new_public_host = _service_public_hostname(new_mode, body.tunnel_hostname, body.subdomain, body.domain)
     old_public_host = _service_public_hostname(old_mode, old["tunnel_hostname"] or "", old["subdomain"], old["domain"])
+
+    # `add_service` refuses a DNS provider it has no target for. Editing one in accepted the
+    # same state and answered 200: the service listed its DNS provider in the interface, no
+    # record was ever written, and `push_service` then reported `{"ok": true, "errors": []}`
+    # for it while `push/dry-run` reported the opposite about the very same service.
+    dns_ip = ""
+    dns_target_source = "n/a"
+    if new_mode == "proxy_dns":
+        dns_ip, dns_target_source = resolve_public_target(
+            conn,
+            mode=body.public_target_mode,
+            manual_value=body.dns_ip,
+            proxy_provider_id=body.proxy_provider_id,
+            current_value=old["dns_ip"] or "",
+        )
+        if not dns_ip:
+            # Detection can blip. A target the service already holds beats no target at all.
+            dns_ip = old["dns_ip"] or ""
+        if body.dns_provider_id and not dns_ip:
+            refusal = _public_target_refusal(conn, dns_target_source, body.dns_provider_id)
+            conn.close()
+            raise HTTPException(400, refusal)
+
     errors = []
 
     next_npm_host_id = None
@@ -1050,8 +1120,6 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             except Exception as e:
                 errors.append(str(e))
 
-        dns_ip = ""
-        dns_target_source = "n/a"
     else:
         if old_mode == "tunnel" and old["tunnel_provider_id"]:
             old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
@@ -1121,16 +1189,6 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                         add_log("info", f"Proxy updated: {new_public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
                 except Exception as e:
                     errors.append(str(e))
-
-        dns_ip, dns_target_source = resolve_public_target(
-            conn,
-            mode=body.public_target_mode,
-            manual_value=body.dns_ip,
-            proxy_provider_id=body.proxy_provider_id,
-            current_value=old["dns_ip"] or "",
-        )
-        if not dns_ip:
-            dns_ip = old["dns_ip"] or ""
 
         if body.dns_provider_id and dns_ip and not body.enabled:
             # Publishing the record here and letting the enable/disable block below undo it
@@ -1223,6 +1281,27 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         if pid and pid != stored_dns_provider_id
     ]
 
+    # `set_push_targets` replaces the multi-sync list wholesale, and the UPDATE above may
+    # have moved the hostname. Either change leaves a record on a provider Vauxtra is about
+    # to stop addressing under that name: a target dropped from the list went on serving the
+    # hostname for good, and a rename left the old name published on every extra target
+    # while the new one was added beside it. Both are withdrawn here, through `old` -- the
+    # row that still spells the hostname and the address those records were written with.
+    # The primaries are left out: the block above already moved their record itself.
+    previous_extras = {
+        r["provider_id"]
+        for r in conn.execute(
+            "SELECT provider_id FROM service_push_targets WHERE service_id=?", (sid,)
+        )
+    }
+    still_targeted = set(extra_proxy_ids) | set(extra_dns_ids)
+    primaries = {pid for pid in (primary_proxy_provider_id, stored_dns_provider_id) if pid}
+    renamed = old_public_host != new_public_host
+    stale_targets = (previous_extras if renamed else previous_extras - still_targeted) - primaries
+    if stale_targets:
+        for message in withdraw_service_routes(conn, old, sid, only_provider_ids=stale_targets):
+            add_log("warn", f"Could not withdraw {old_public_host} from a former target: {message}", conn)
+
     set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
 
     set_tags(conn, sid, body.tag_ids)
@@ -1292,6 +1371,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     
     conn.commit()
     add_log("info", f"Service updated: {new_public_host}")
+
+    # Same gap as `add_service`: everything above addresses one proxy and one DNS server.
+    # Adding a second DNS server through this route answered 200 while that server stayed
+    # empty, and the drift check then contradicted the response about the same service.
+    errors.extend(push_extra_targets(conn, sid))
 
     row = conn.execute("""
         SELECT s.*,
@@ -1382,9 +1466,15 @@ def delete_service(sid: int, request: Request):
     return {"ok": True, "errors": errors}
 
 
-@router.get("/api/services/{sid}/check")
-def check_service(sid: int, request: Request):
-    require_auth(request)
+def _check_one(sid: int) -> dict:
+    """Probe one service, record the result, and return what the caller measured.
+
+    Shared by both verbs below. The `uptime_events` insert is the same line the scheduler
+    writes (`scheduler.py`): without it the 24 h column and the availability tile stayed
+    empty no matter how many times an operator pressed the button, and the page ended up
+    contradicting itself -- "no check in the last 24 hours" printed above a row that said
+    "OK, checked just now".
+    """
     conn = get_db()
     svc  = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not svc:
@@ -1419,10 +1509,35 @@ def check_service(sid: int, request: Request):
         "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
         (status, sid),
     )
+    conn.execute(
+        "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+        (sid, status),
+    )
     conn.commit()
     conn.close()
     add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
     return {"id": sid, "status": status, "latency_ms": latency_ms, "dns_resolved": dns_resolved}
+
+
+@router.post("/api/services/{sid}/check")
+def check_service(sid: int, request: Request):
+    # `write`: this rewrites `status` and `last_checked`, appends to `uptime_events` and
+    # writes a log line. It read as a GET until 1.5.0 and answered any authenticated key,
+    # scope or not, which let a read-only key rewrite the state of any route.
+    require_auth(request, scope="write")
+    return _check_one(sid)
+
+
+@router.get("/api/services/{sid}/check", deprecated=True)
+def check_service_get(sid: int, request: Request):
+    """Deprecated alias of `POST /api/services/{sid}/check`, kept one version for scripts.
+
+    It carries the same `write` scope as the POST. A GET that writes is also a GET a
+    browser prefetch, a crawler or an uptime probe can fire just by following the link,
+    which is the other half of why the POST is the one to call.
+    """
+    require_auth(request, scope="write")
+    return _check_one(sid)
 
 
 @router.post("/api/services/check-all")
@@ -1434,15 +1549,22 @@ def check_all(request: Request):
         "SELECT id, target_ip, target_port, subdomain, domain, expose_mode FROM services WHERE enabled=1"
     ).fetchall()
     ok_count = error_count = 0
+    # The connection is opened either way, so the latency is already measured: throwing it
+    # away is what forced the table to tell operators to check rows one at a time to fill
+    # the LATENCY column.
+    results: list[dict] = []
 
     for svc in services:
         if (svc["expose_mode"] or "").strip().lower() == "tunnel":
             continue
-        status = "unknown"
+        status     = "unknown"
+        latency_ms = None
+        start      = time.monotonic()
         try:
             with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
-                status = "ok"
-                ok_count += 1
+                status     = "ok"
+                latency_ms = round((time.monotonic() - start) * 1000, 1)
+                ok_count  += 1
         except OSError:
             status = "error"
             error_count += 1
@@ -1450,10 +1572,27 @@ def check_all(request: Request):
             "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
             (status, svc["id"]),
         )
+        # Same row the scheduler writes, so a manual run feeds the 24 h history too.
+        conn.execute(
+            "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+            (svc["id"], status),
+        )
+        results.append({"id": svc["id"], "status": status, "latency_ms": latency_ms})
 
     conn.commit()
     conn.close()
-    return {"checked": len(services), "ok": ok_count, "error": error_count}
+    # One line for the run, not one per service: the per-service check already logs each
+    # probe, and a fleet of fifty would otherwise bury everything else in "Recent activity".
+    add_log(
+        "info" if error_count == 0 else "error",
+        f"Manual check of {plural(len(results), 'service')}: {ok_count} ok, {error_count} error",
+    )
+    return {
+        "checked": len(services),
+        "ok":      ok_count,
+        "error":   error_count,
+        "results": results,
+    }
 
 
 class _BulkActionBody(BaseModel):
@@ -1598,7 +1737,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
             body.ids,
         ).fetchone()[0]
         conn.commit()
-        add_log("info", f"Bulk {body.action}: {affected} service(s)")
+        add_log("info", f"Bulk {body.action}: {plural(affected, 'service')}")
 
     elif body.action == "delete":
         for sid in body.ids:
@@ -1627,7 +1766,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
             affected += 1
 
         conn.commit()
-        add_log("info", f"Bulk delete: {affected} service(s)")
+        add_log("info", f"Bulk delete: {plural(affected, 'service')}")
 
     conn.close()
     return {"ok": True, "affected": affected, "errors": errors}

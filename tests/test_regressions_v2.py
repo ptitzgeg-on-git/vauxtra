@@ -908,19 +908,53 @@ class I18nLocaleIntegrityTests(unittest.TestCase):
                 data = self._load(lang)
                 self.assertIsInstance(data, dict, f"{lang}.json root must be a dict")
 
+    # A counted sentence is stored once per plural category the language has, so `foo` is
+    # written as `foo_one` / `foo_other` and compared by its base name. WHICH categories a
+    # language declares is not decidable here: `frontend/scripts/check-locale-parity.mjs`
+    # asks `Intl.PluralRules` and owns that rule, and CI runs it.
+    _PLURAL_SUFFIXES = ("_zero", "_one", "_two", "_few", "_many", "_other")
+
+    def _sentences(self, lang: str) -> set:
+        keys = self._flatten(self._load(lang))
+        out = set()
+        for key in keys:
+            for suffix in self._PLURAL_SUFFIXES:
+                if key.endswith(suffix):
+                    key = key[: -len(suffix)]
+                    break
+            out.add(key)
+        return out
+
     def test_all_locales_have_en_keys(self) -> None:
-        """Every locale must contain all keys that exist in en.json."""
-        en_keys = self._flatten(self._load("en"))
+        """Every locale must carry every sentence en.json has, in the forms it has."""
+        en_keys = self._sentences("en")
         for lang in _SUPPORTED_LANGS:
             if lang == "en":
                 continue
             with self.subTest(lang=lang):
-                lang_keys = self._flatten(self._load(lang))
-                missing = en_keys - lang_keys
+                missing = en_keys - self._sentences(lang)
                 self.assertEqual(
                     missing,
                     set(),
                     f"{lang}.json is missing keys: {sorted(missing)}",
+                )
+
+    def test_every_counted_sentence_keeps_its_other_form(self) -> None:
+        """`other` is the one category every language has, and what `t()` falls back to."""
+        for lang in _SUPPORTED_LANGS:
+            keys = self._flatten(self._load(lang))
+            counted = {
+                k[: -len(s)]
+                for k in keys
+                for s in self._PLURAL_SUFFIXES
+                if k.endswith(s)
+            }
+            self.assertGreater(len(counted), 20, f"{lang}: the suffix scan found almost nothing")
+            with self.subTest(lang=lang):
+                self.assertEqual(
+                    sorted(b for b in counted if f"{b}_other" not in keys),
+                    [],
+                    f"{lang}.json has a counted sentence with no _other form",
                 )
 
     def test_no_empty_translation_values(self) -> None:

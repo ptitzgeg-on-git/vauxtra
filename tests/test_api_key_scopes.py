@@ -113,6 +113,50 @@ class ApiKeyScopeTests(unittest.TestCase):
         resp = self.client.post("/api/services/1/push/dry-run", headers=self._headers("ro"))
         self.assertNotEqual(resp.status_code, 403, resp.text)
 
+    def test_the_single_service_check_needs_a_write_key_on_both_verbs(self):
+        """It rewrites `status` and `last_checked`, appends history, and writes a log line.
+
+        Until 1.5.0 it was a GET behind an unscoped `require_auth`, so a key minted for a
+        dashboard could rewrite the state of any route -- and, being a GET, a prefetch or a
+        crawler following the link did the write with nobody pressing anything. The probe
+        itself is stubbed: what is under test here is the gate in front of it.
+        """
+        from unittest.mock import patch as _patch
+
+        import app.api.services as services_api
+
+        probe = {"id": 1, "status": "ok", "latency_ms": 1.0, "dns_resolved": []}
+        for verb in ("post", "get"):
+            with self.subTest(verb=verb):
+                call = getattr(self.client, verb)
+
+                refused = call("/api/services/1/check", headers=self._headers("ro"))
+                self.assertEqual(refused.status_code, 403, refused.text)
+                self.assertIn("Insufficient scope", refused.json().get("detail", ""))
+
+                with _patch.object(services_api, "_check_one", return_value=probe):
+                    allowed = call("/api/services/1/check", headers=self._headers("rw"))
+                self.assertEqual(allowed.status_code, 200, allowed.text)
+
+    def test_the_get_form_of_the_check_is_a_deprecated_alias_of_the_post(self):
+        """The POST is the canonical verb; the GET stays one version for existing scripts.
+
+        Asked of the published schema rather than of `app.routes`. FastAPI 0.141 stopped
+        copying an included router's routes into that list and leaves an opaque wrapper
+        there instead, so walking it matched nothing and the failure read `'POST' not found
+        in {}` -- a sentence about this test, not about the application, which answered both
+        verbs correctly throughout. The schema is also what a caller reads to learn the GET
+        is on its way out, so it is the right thing to hold to.
+        """
+        verbs = app_main.app.openapi()["paths"]["/api/services/{sid}/check"]
+        self.assertIn("post", verbs)
+        self.assertIn("get", verbs)
+        self.assertFalse(verbs["post"].get("deprecated", False))
+        self.assertTrue(
+            verbs["get"].get("deprecated", False),
+            "the GET alias must be marked deprecated",
+        )
+
     def test_an_unauthenticated_caller_still_gets_401_not_403(self):
         resp = self.client.post("/api/services/check-all")
         self.assertEqual(resp.status_code, 401, resp.text)
@@ -140,6 +184,75 @@ class ApiKeyScopeTests(unittest.TestCase):
                         offenders.append(f"{path.name}:{lineno} {pending[1]}")
                     pending = None
         self.assertEqual(offenders, [], "write routes without an explicit scope: " + "; ".join(offenders))
+
+
+    def test_no_get_route_writes_behind_an_unscoped_auth(self):
+        """The textual guard above cannot see F18: `check_service` was a GET.
+
+        A GET that writes is reachable by a prefetch, a crawler or an uptime probe, and an
+        unscoped one answers a read-only key. This walks the AST instead of the text, and
+        follows one level of module-level helper calls, since the body of a route is as
+        likely to live in a `_helper()` as inline.
+        """
+        import ast
+        import re
+        from pathlib import Path
+
+        write_sql = re.compile(r"\b(INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b", re.I)
+
+        def writes(node, helpers, depth=2):
+            for child in ast.walk(node):
+                if (
+                    isinstance(child, ast.Constant)
+                    and isinstance(child.value, str)
+                    and write_sql.search(child.value)
+                ):
+                    return True
+            if depth:
+                for child in ast.walk(node):
+                    if (isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                            and child.func.id in helpers
+                            and writes(helpers[child.func.id], helpers, depth - 1)):
+                        return True
+            return False
+
+        def router_verbs(node):
+            verbs = set()
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                if (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                        and target.value.id == "router"):
+                    verbs.add(target.attr)
+            return verbs
+
+        offenders = []
+        for path in sorted((Path(__file__).resolve().parent.parent / "app" / "api").glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            helpers, routes = {}, []
+            for node in tree.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                verbs = router_verbs(node)
+                if verbs:
+                    routes.append((node, verbs))
+                else:
+                    helpers[node.name] = node
+
+            for node, verbs in routes:
+                if "get" not in verbs or not writes(node, helpers):
+                    continue
+                scoped = any(
+                    "scope=" in (ast.get_source_segment(source, call) or "")
+                    for call in ast.walk(node)
+                    if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id == "require_auth"
+                )
+                if not scoped:
+                    offenders.append(f"{path.name}:{node.lineno} {node.name}")
+        self.assertEqual(
+            offenders, [], "GET routes that write without a scope: " + "; ".join(offenders)
+        )
 
 
 if __name__ == "__main__":

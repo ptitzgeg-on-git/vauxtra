@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from app.auth import require_auth, require_auth_or_setup
 from app.models import add_log, get_db
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
-from app.public_target import resolve_public_target
+from app.public_target import describe_public_target_failure, resolve_public_target
 
 router = APIRouter()
 
@@ -168,7 +168,9 @@ def _all_route_holders(conn, svc, sid: int) -> tuple[str, str, list, list]:
     return expose_mode, public_host, proxy_rows, dns_rows
 
 
-def withdraw_service_routes(conn, svc, sid: int) -> list[str]:
+def withdraw_service_routes(
+    conn, svc, sid: int, *, only_provider_ids: set[int] | None = None
+) -> list[str]:
     """Take a service's public route off every provider that may still serve it.
 
     Deleting a service walked `proxy_provider_id` and `dns_provider_id` and stopped there.
@@ -177,9 +179,16 @@ def withdraw_service_routes(conn, svc, sid: int) -> list[str]:
     deletion, the hostname stayed resolvable, the proxy kept forwarding, and nothing was
     left in Vauxtra to show for it.
 
+    `only_provider_ids` narrows the withdrawal to part of the holders, for the two cases
+    where the service itself survives: a multi-sync target dropped from an edit, and a
+    provider being deleted while other targets go on serving the same hostname.
+
     Returns one message per failure; an empty list means everything is withdrawn.
     """
     expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
+    if only_provider_ids is not None:
+        proxy_rows = [r for r in proxy_rows if r["id"] in only_provider_ids]
+        dns_rows = [r for r in dns_rows if r["id"] in only_provider_ids]
     errors: list[str] = []
 
     for row in proxy_rows:
@@ -234,7 +243,10 @@ def withdraw_service_routes(conn, svc, sid: int) -> list[str]:
         except Exception as e:
             errors.append(f"DNS ({row['name']}): {e}")
 
-    if expose_mode == "tunnel" and not proxy_rows:
+    if expose_mode == "tunnel" and not proxy_rows and only_provider_ids is None:
+        # Only when the whole service is being withdrawn. A narrowed withdrawal legitimately
+        # leaves the tunnel out of the selection, and reporting that as a missing provider
+        # would turn "this DNS server no longer serves it" into a failure.
         errors.append("No tunnel provider left to remove the route from")
 
     return errors
@@ -299,7 +311,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
 
     if expose_mode != "tunnel":
         if not dns_target and dns_targets:
-            errors.append("Unable to resolve DNS target for dry-run")
+            errors.append(describe_public_target_failure(dns_target_source)[1])
 
         if dns_target:
             for row in dns_targets:
@@ -480,9 +492,17 @@ def _execute_push(svc, sid: int) -> dict:
         conn.close()
 
 
-def _push_service_row(conn, svc, sid: int) -> dict:
-    """The push itself. Commits; the caller owns the connection and closes it."""
+def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None = None) -> dict:
+    """The push itself. Commits; the caller owns the connection and closes it.
+
+    `only_provider_ids` narrows the push to part of the targets. `push_extra_targets` uses
+    it to reach the multi-sync providers on their own, once the write routes have dealt
+    with the primary proxy and the primary DNS server themselves.
+    """
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
+    if only_provider_ids is not None:
+        proxy_targets = [r for r in proxy_targets if r["id"] in only_provider_ids]
+        dns_targets = [r for r in dns_targets if r["id"] in only_provider_ids]
     errors = []
 
     for row in proxy_targets:
@@ -554,6 +574,15 @@ def _push_service_row(conn, svc, sid: int) -> dict:
             current_value=svc["dns_ip"] or "",
         )
 
+        if not dns_target and dns_targets:
+            # The dry-run has always refused this. The push skipped the loop below without a
+            # word and returned `{"ok": true, "errors": []}`, so the preview of the action and
+            # the action itself contradicted each other about the same service, and the one
+            # that reported success is the one that writes records.
+            sentence = describe_public_target_failure(dns_target_source)[1]
+            errors.append(sentence)
+            add_log("error", f"[Push] Nothing pushed to DNS for {public_host}: {sentence}", conn)
+
         if dns_target and dns_target != (svc["dns_ip"] or ""):
             conn.execute("UPDATE services SET dns_ip=? WHERE id=?", (dns_target, sid))
             add_log("info", f"[Push] DNS target refreshed for {public_host}: {svc['dns_ip']} → {dns_target} ({dns_target_source})", conn)
@@ -590,6 +619,37 @@ def _push_service_row(conn, svc, sid: int) -> dict:
 
     conn.commit()
     return {"ok": not errors, "errors": errors}
+
+
+def push_extra_targets(conn, sid: int) -> list[str]:
+    """Publish a service on the multi-sync targets its write route never touches.
+
+    `add_service` and `update_service` address one proxy and one DNS server -- the two
+    columns on the service row -- and record everything else in `service_push_targets`
+    afterwards. Nothing then pushed to those rows. A service created with a second DNS
+    server answered `201 {"errors": []}` while that server received nothing, and the very
+    next call to `/drift` reported `missing_dns_rewrite` on a service the operator had just
+    been told was published. The second target only ever filled in on the next scheduler
+    cycle, or on an explicit push nobody knew to make.
+
+    Returns one message per failure, in the shape both routes already put in `errors`.
+    """
+    svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not svc or not svc["enabled"]:
+        # A disabled service withholds its primary push too: the extras follow the same rule
+        # rather than publishing a hostname the interface shows as off.
+        return []
+
+    extra_ids = {
+        r["provider_id"]
+        for r in conn.execute(
+            "SELECT provider_id FROM service_push_targets WHERE service_id=?", (sid,)
+        )
+    }
+    if not extra_ids:
+        return []
+
+    return _push_service_row(conn, svc, sid, only_provider_ids=extra_ids)["errors"]
 
 
 @router.post("/api/services/{sid}/push/dry-run")

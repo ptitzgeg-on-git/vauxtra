@@ -14,6 +14,7 @@ from app.public_target import (
     resolve_public_target,
 )
 from app.security import mask_secret_url
+from app.text import plural
 
 _scheduler = BackgroundScheduler(daemon=True)
 _lock      = threading.Lock()
@@ -592,13 +593,13 @@ def _run_cert_expiry_alerts(conn) -> None:
                     level = "error"
                     msg = (
                         f"[CertExpiry] CRITICAL: '{cert.get('nice_name')}' (ID {cert_id}) "
-                        f"expires in {days_left} day(s)"
+                        f"expires in {plural(days_left, 'day')}"
                     )
                 elif days_left < 30:
                     level = "warn"
                     msg = (
                         f"[CertExpiry] WARNING: '{cert.get('nice_name')}' (ID {cert_id}) "
-                        f"expires in {days_left} day(s)"
+                        f"expires in {plural(days_left, 'day')}"
                     )
                 else:
                     _cert_alert_state.pop(key, None)
@@ -1060,7 +1061,7 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
         if not webhooks:
             return
 
-        lines = [f"Auto-reconcile corrected {len(corrected)} service(s):"]
+        lines = [f"Auto-reconcile corrected {plural(len(corrected), 'service')}:"]
         lines.extend(f"  ✓ {fqdn}" for fqdn in corrected)
         if errors:
             lines.append(f"Errors ({len(errors)}):")

@@ -1105,7 +1105,7 @@ class TestSchedulerCertExpiryAlertsCoverZoraxy(unittest.TestCase):
             rows = self._cert_expiry_logs(conn)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["level"], "error")
-        self.assertIn("CRITICAL: '_.example.com' (ID _.example.com) expires in 5 day(s)", rows[0]["message"])
+        self.assertIn("CRITICAL: '_.example.com' (ID _.example.com) expires in 5 days", rows[0]["message"])
 
     def test_scheduler_stays_quiet_for_a_zoraxy_certificate_with_time_left(self):
         with patch.object(scheduler, "create_provider", lambda _row: self._zoraxy_with_cert_expiring_in(120)), \

@@ -13,6 +13,7 @@ import {
   cn,
 } from '@/components/ui';
 import { useT } from '@/i18n';
+import { checkDetailText, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import type { ProviderCapability } from '@/types/api';
 import {
   type GuidedStep,
@@ -207,24 +208,27 @@ export function StepCredentials({
 
       {effectiveMode === 'guided' && !guidedDone && currentStep && (
         <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-primary">
-              {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
-            </span>
-            <div className="flex gap-1.5" role="list" aria-label={t('provider_modal.mode.guided')}>
-              {guidedSteps.map((_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  role="listitem"
-                  aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
-                  aria-current={i === guidedStepIndex ? 'step' : undefined}
-                  onClick={() => onGuidedStepChange(i)}
-                  className={cn('h-2 w-2 rounded-full transition-colors', i === guidedStepIndex ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60')}
-                />
-              ))}
+          {/* A single step is not a journey: no "1 of 1", no lone dot to click. */}
+          {guidedSteps.length > 1 && (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold uppercase tracking-wider text-primary">
+                {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
+              </span>
+              <div className="flex gap-1.5" role="list" aria-label={t('provider_modal.mode.guided')}>
+                {guidedSteps.map((_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    role="listitem"
+                    aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
+                    aria-current={i === guidedStepIndex ? 'step' : undefined}
+                    onClick={() => onGuidedStepChange(i)}
+                    className={cn('h-2 w-2 rounded-full transition-colors', i === guidedStepIndex ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60')}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
           <p className="text-sm font-semibold text-foreground">{currentStep.title}</p>
           <p className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">{currentStep.body}</p>
 
@@ -243,7 +247,7 @@ export function StepCredentials({
                 {t('provider_modal.guided.next')}
               </Button>
             ) : (
-              <Button type="button" size="sm" rightIcon={<Check />} onClick={() => onGuidedStepChange(guidedSteps.length)}>
+              <Button type="button" size="sm" variant="outline" rightIcon={<Check />} onClick={() => onGuidedStepChange(guidedSteps.length)}>
                 {t('provider_modal.guided.finish')}
               </Button>
             )}
@@ -348,13 +352,13 @@ export function StepCredentials({
           title={validationResult.ok ? t('provider_modal.validation.title_ok') : t('provider_modal.validation.title_failed')}
         >
           <ul className="mt-1 space-y-1 text-xs">
+            {/* `check.name` is the server's identifier for the check (`test_connection`), not a
+                sentence anyone wrote to be read. `checkDetailText` turns `detail_code` into the
+                reader's language; the raw name only stands in when there is no detail at all. */}
             {(validationResult.validation?.checks || []).slice(0, 6).map((check, idx) => (
               <li key={`${check.name || 'check'}-${idx}`} className={cn('flex items-start gap-1.5', check.ok ? 'text-success' : 'text-destructive')}>
                 {check.ok ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-                <span>
-                  {check.name || t('provider_modal.validation.check_fallback')}
-                  {check.detail ? `: ${check.detail}` : ''}
-                </span>
+                <span>{checkDetailText(check, t) || t('provider_modal.validation.check_fallback')}</span>
               </li>
             ))}
             {(validationResult.validation?.warnings || []).length > 0 && (
@@ -363,7 +367,9 @@ export function StepCredentials({
               </li>
             )}
             {validationResult.health?.status && (
-              <li className="text-muted-foreground">{t('provider_modal.validation.health', { status: validationResult.health.status })}</li>
+              <li className="text-muted-foreground">
+                {t('provider_modal.validation.health', { status: healthStatusLabel(validationResult.health.status, t) })}
+              </li>
             )}
             {validationResult.health?.error && <li className="text-destructive">{validationResult.health.error}</li>}
           </ul>

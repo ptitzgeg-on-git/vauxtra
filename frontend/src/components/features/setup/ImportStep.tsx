@@ -20,7 +20,6 @@ import {
   type Tone,
 } from '@/components/ui';
 import { fallbackIconByType } from '@/components/features/providers/providerConstants';
-import { useFormat } from '@/hooks/useFormat';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 import type { ImportableService, ProviderItem } from './types';
@@ -56,7 +55,6 @@ export function ImportStep({
   importing = false,
 }: ImportStepProps) {
   const t = useT();
-  const { formatNumber } = useFormat();
 
   const total = importableServices.length;
   const selected = importableServices.filter((s) => s.selected).length;
@@ -135,7 +133,7 @@ export function ImportStep({
             />
             <span className="nums text-xs text-muted-foreground">
               {t('setup.import.found', { count: total })}
-              {selected > 0 && <> · {t('setup.import.selected_count', { count: formatNumber(selected) })}</>}
+              {selected > 0 && <> · {t('setup.import.selected_count', { count: selected })}</>}
             </span>
           </div>
 

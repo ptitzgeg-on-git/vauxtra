@@ -251,6 +251,12 @@ export interface ProviderDependent {
   fqdn: string;
   /** `proxy`, `dns`, `tunnel`, or `extra proxy` / `extra dns` for push targets. */
   roles: string[];
+  /**
+   * Another provider still publishes this hostname once this one is gone. False means the
+   * service keeps its public name and nothing serves it: that is the case worth warning
+   * about, and the one the dialog used to claim for every dependent.
+   */
+  still_published?: boolean;
 }
 
 /** The 409 `detail` of `DELETE /api/providers/{pid}` when services depend on it and `?force=` was not set. */
@@ -261,8 +267,13 @@ export interface ProviderDeleteConflict {
 
 /** `DELETE /api/providers/{pid}?force=true`. */
 export interface ProviderDeleteResult {
+  /** False when `withdraw=true` was asked for and at least one record could not be taken off. */
   ok: boolean;
   unlinked_services: number[];
+  /** `withdraw=true` was honoured: the records were taken off the provider before it went. */
+  withdrawn?: boolean;
+  /** One `fqdn: reason` per record the withdrawal could not remove; it is still live there. */
+  errors?: string[];
 }
 
 /** Body of `POST /api/providers/{pid}/validate`. */
@@ -456,7 +467,7 @@ export interface PreflightResult {
   summary: PreflightSummary;
 }
 
-/** `GET /api/services/{sid}/check` — one on-demand health check. */
+/** `POST /api/services/{sid}/check` — one on-demand health check. */
 export interface ServiceCheckResult {
   id: number;
   status: ServiceStatus;
@@ -465,11 +476,24 @@ export interface ServiceCheckResult {
   dns_resolved: string[] | null;
 }
 
+/** One line of `CheckAllResult.results`: what the fleet probe measured for one service. */
+export interface CheckAllEntry {
+  id: number;
+  status: ServiceStatus;
+  /** Null when the target never answered. */
+  latency_ms: number | null;
+}
+
 /** `POST /api/services/check-all`. */
 export interface CheckAllResult {
   checked: number;
   ok: number;
   error: number;
+  /**
+   * One entry per service actually probed — so `results.length` is `checked` minus the
+   * tunnel services, which are skipped. Absent on instances older than 1.5.0.
+   */
+  results?: CheckAllEntry[];
 }
 
 export type BulkAction = 'enable' | 'disable' | 'delete';

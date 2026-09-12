@@ -62,6 +62,18 @@ export function checkDetailText(check: ProviderValidationCheck, t: Translate): s
   return line === key ? fallback : line;
 }
 
+/**
+ * The health word in the reader's language. The API answers `healthy`, `degraded`, `down` or
+ * `unknown`; those are wire values, and interpolating one into a translated sentence produced
+ * half-English lines like "État : healthy". An unknown word is returned as it came, so a newer
+ * API never blanks the line.
+ */
+export function healthStatusLabel(status: string, t: Translate): string {
+  const key = `providers.health.status.${status}`;
+  const line = t(key);
+  return line === key ? status : line;
+}
+
 export function isDiagnosticsFresh(diag: ProviderDiagnostics | undefined, now = Date.now()): boolean {
   const testedAt = Number(diag?.testedAt || 0);
   return testedAt > 0 && now - testedAt <= DIAGNOSTIC_TTL_MS;
@@ -98,7 +110,9 @@ export function getHealthScore(provider: Provider, signals: HealthSignals, t: Tr
     const status = String(auto.status || '').toLowerCase();
     if (status !== 'healthy') {
       score = 20;
-      reason = auto.error || status || t('providers.health.reason.unhealthy');
+      // `status` is always a non-empty string here, so it used to shadow the translated
+      // sentence and put the bare English token `unhealthy` in front of the operator.
+      reason = auto.error || t('providers.health.reason.unhealthy');
     }
   }
 
