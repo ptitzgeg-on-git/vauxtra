@@ -33,6 +33,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app import models
+from app.api import providers as providers_api
 from app.api import services as services_api
 from app.api import settings as settings_api
 from app.api import sync as sync_api
@@ -624,6 +625,90 @@ class MissingDnsTargetIsReportedTests(_IsolatedDB):
 
         self.assertEqual(caught.exception.detail["detail_key"], "dns_target_required")
 
+
+class _ConnectionProvider:
+    """A provider whose `test_connection` answers the way the real ones do."""
+
+    def __init__(self, answer):
+        self._answer = answer
+
+    def test_connection(self):
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return self._answer
+
+
+class BatchHealthReadsTheAnswerTests(_IsolatedDB):
+    """`GET /providers/health` is the map that paints the dashboard tiles.
+
+    It called `test_connection()` and threw the boolean away, so the only refusal it could
+    report was an exception. None of the providers raise: an unreachable AdGuard, an NPM
+    with a revoked token and a Pi-hole answering 401 all return False. Six integrations
+    that had just refused the connection were drawn green, next to a journal full of
+    `authentication failed` lines from the certificate checker looking at the same hosts.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch.object(providers_api, "require_auth", lambda _req, scope=None: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        conn = models.get_db()
+        for pid, name in ((1, "AdGuard"), (2, "NPM"), (3, "Pi-hole")):
+            conn.execute(
+                """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
+                   VALUES (?, ?, 'adguard', 'http://unreachable', 'admin', 'pass', '{}', 1)""",
+                (pid, name),
+            )
+        conn.commit()
+        conn.close()
+
+    def _health(self, answers: dict) -> dict:
+        def _create(row):
+            return _ConnectionProvider(answers[row["id"]])
+
+        with patch.object(providers_api, "create_provider", _create):
+            return providers_api.all_providers_health(_request("GET", "/api/providers/health"))
+
+    def test_a_refused_connection_is_not_healthy(self) -> None:
+        health = self._health({1: False, 2: False, 3: False})
+        self.assertEqual(
+            {k: v["status"] for k, v in health.items()},
+            {"1": "unhealthy", "2": "unhealthy", "3": "unhealthy"},
+        )
+
+    def test_a_working_provider_is_still_healthy(self) -> None:
+        """The positive control: the fix must not paint everything red instead."""
+        health = self._health({1: True, 2: True, 3: True})
+        self.assertEqual(
+            {k: v["status"] for k, v in health.items()},
+            {"1": "healthy", "2": "healthy", "3": "healthy"},
+        )
+
+    def test_each_provider_is_judged_on_its_own_answer(self) -> None:
+        health = self._health({1: True, 2: False, 3: True})
+        self.assertEqual(health["1"]["status"], "healthy")
+        self.assertEqual(health["2"]["status"], "unhealthy")
+        self.assertEqual(health["3"]["status"], "healthy")
+
+    def test_an_exception_still_reports_its_message(self) -> None:
+        health = self._health({1: RuntimeError("name does not resolve"), 2: True, 3: True})
+        self.assertEqual(health["1"]["status"], "unhealthy")
+        self.assertIn("name does not resolve", health["1"]["error"])
+
+    def test_a_truthy_non_boolean_answer_is_accepted(self) -> None:
+        """Some providers return the parsed payload rather than True."""
+        health = self._health({1: {"version": "1.2"}, 2: True, 3: True})
+        self.assertEqual(health["1"]["status"], "healthy")
+
+    def test_a_disabled_provider_is_left_out_of_the_map(self) -> None:
+        conn = models.get_db()
+        conn.execute("UPDATE providers SET enabled=0 WHERE id=3")
+        conn.commit()
+        conn.close()
+        health = self._health({1: True, 2: True})
+        self.assertEqual(sorted(health), ["1", "2"])
 
 if __name__ == "__main__":
     unittest.main()

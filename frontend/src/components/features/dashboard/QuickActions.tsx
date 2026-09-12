@@ -72,9 +72,11 @@ export function QuickActions({ onCreateService, onAddProvider }: QuickActionsPro
   ];
 
   return (
-    <Card className="p-5 sm:p-6">
+    <Card className="@container p-5 sm:p-6">
       <SectionHeading title={t('dashboard.quick_actions.title')} description={t('dashboard.quick_actions.description')} />
-      <ul className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {/* Card width, not window width: this card sits in a narrow column and `sm:` split
+          the tiles in two there, leaving "Créer un..." for a four-word label. */}
+      <ul className="mt-4 grid grid-cols-1 gap-2 @[38rem]:grid-cols-2">
         {actions.map((action) => {
           const c = toneClasses(action.tone);
           return (
@@ -94,7 +96,7 @@ export function QuickActions({ onCreateService, onAddProvider }: QuickActionsPro
                   <span className="block truncate font-medium text-foreground">{action.title}</span>
                   <span className="block truncate text-xs text-muted-foreground">{action.hint}</span>
                 </span>
-                <span className="hidden shrink-0 items-center gap-1 sm:inline-flex" aria-hidden="true">
+                <span className="hidden shrink-0 items-center gap-1 @[22rem]:inline-flex" aria-hidden="true">
                   {action.keys.map((key, index) => (
                     <span key={key} className="inline-flex items-center gap-1">
                       {index > 0 && (

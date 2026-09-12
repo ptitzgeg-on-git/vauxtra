@@ -12,6 +12,7 @@ workflow only runs `i18n:quality`, never `i18n:check` -- so nothing gated it.
 
 import json
 import re
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -89,6 +90,122 @@ class EveryKeyTheUiAsksForExistsTests(unittest.TestCase):
     def test_the_scan_actually_found_the_calls(self):
         """A regex that matches nothing would make the test above pass for free."""
         self.assertGreater(len(self._used_keys()), 100)
+
+class NoWordLostItsAccentsTests(unittest.TestCase):
+    """A string can arrive stripped of its accents and still be perfectly valid JSON.
+
+    That is how "Cles API" shipped one line above "Clés API", how pt read "Backup versao" and
+    de "Webhook-Eintrage" -- all in `settings.backup.*`, so one edit ate the accents in four
+    languages at once. The `?`-for-accent check above cannot see this one: nothing about
+    `cles` is malformed, it is simply the wrong spelling of a word the same file spells
+    correctly forty lines further down.
+
+    The file is its own dictionary, so no word list has to be maintained and none can be
+    forgotten: collect every form the locale writes WITH diacritics, strip them, and look for
+    that bare form again in the same file. A hit means one document spells one word two ways.
+
+    Three filters keep the rule about spelling and away from grammar, which it cannot judge:
+
+      * a placeholder name and a URL are not prose. `{detail}`, `{version}` and
+        `ssh://usuario@host` are written unaccented on purpose.
+      * a diacritic on the LAST letter is a verb ending: `activé`/`active`, `pasó`/`paso`,
+        `alterá`/`altera`, `là`/`la`. Both spellings are correct and only the sentence says
+        which. An accent in the MIDDLE of a word has no such excuse.
+      * under four letters it is a function word, which is never silently stripped alone.
+
+    What survives is `HOMOGRAPHS`: fourteen words, listed one language at a time because each
+    one is a real pair a human had to look at. Adding to it means asserting that both
+    spellings are correct French, Spanish, Portuguese or German -- not that the test is noisy.
+    """
+
+    # Both spellings are real words. Checked one by one; the count is deliberately small.
+    HOMOGRAPHS = {
+        # `connexions actives` (adjective) and `services activés` (participle).
+        # `Zero Trust` is Cloudflare's product name, `zéro` the number.
+        "fr": {"actives", "zero"},
+        # The Spanish interrogatives carry an accent the relative pronouns do not,
+        # and `publica` (he publishes) is not `pública` (public).
+        "es": {"como", "cual", "cuando", "cuanto", "donde", "quien", "publica"},
+        # `pode` (he can) / `pôde` (he could), `publica` / `pública`, as in Spanish.
+        "pt": {"pode", "publica"},
+        # `konnte`/`könnte` and `wurden`/`würden` are indicative against subjunctive,
+        # `lange` (long) is not `Länge` (length).
+        "de": {"konnte", "lange", "wurden"},
+        "nl": set(),
+    }
+
+    _PLACEHOLDER_NAME = re.compile(r"\{[^}]*\}")
+    _URLISH = re.compile(r"\S*(?:://|\w\.\w{2,4}\b|@)\S*")
+    _WORD = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
+    _MIN_LETTERS = 4
+
+    @staticmethod
+    def _bare(text: str) -> str:
+        return "".join(
+            c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+        )
+
+    @classmethod
+    def _prose(cls, value: str) -> str:
+        return cls._URLISH.sub(" ", cls._PLACEHOLDER_NAME.sub(" ", value))
+
+    @classmethod
+    def _words(cls, value: str) -> list[str]:
+        return [w.lower() for w in cls._WORD.findall(cls._prose(value))]
+
+    @classmethod
+    def _accented_vocabulary(cls, values) -> dict[str, str]:
+        """bare form -> the accented spelling this file already uses, for the judgeable words."""
+        vocabulary: dict[str, str] = {}
+        for value in values:
+            for word in cls._words(value):
+                if len(word) < cls._MIN_LETTERS or cls._bare(word) == word:
+                    continue
+                if cls._bare(word[-1]) != word[-1]:  # verb ending, not a lost accent
+                    continue
+                vocabulary.setdefault(cls._bare(word), word)
+        return vocabulary
+
+    @classmethod
+    def _collisions(cls, entries: dict, allowed: set) -> dict[str, str]:
+        vocabulary = cls._accented_vocabulary(entries.values())
+        found: dict[str, str] = {}
+        for key, value in entries.items():
+            for word in cls._words(value):
+                if word in vocabulary and word not in allowed:
+                    found[key] = f"{word!r} is spelled {vocabulary[word]!r} elsewhere"
+        return found
+
+    def test_a_word_is_never_spelled_both_with_and_without_its_accents(self):
+        for lang, allowed in self.HOMOGRAPHS.items():
+            with self.subTest(lang=lang):
+                self.assertEqual(self._collisions(_load(lang), allowed), {})
+
+    def test_the_dictionary_it_builds_is_not_empty(self):
+        """A vocabulary of zero words would make the test above pass without looking."""
+        for lang in self.HOMOGRAPHS:
+            if lang == "nl":  # Dutch writes almost no diacritics; six words is all there is
+                continue
+            with self.subTest(lang=lang):
+                self.assertGreater(len(self._accented_vocabulary(_load(lang).values())), 100)
+
+    def test_it_catches_an_accent_that_has_been_removed(self):
+        """The positive control: strip one real string and the rule must name that key."""
+        entries = _load("fr")
+        key = "settings.api_keys.title"
+        self.assertEqual(entries[key], "Clés API")  # the string F23 shipped as "Cles API"
+        damaged = dict(entries, **{key: self._bare(entries[key])})
+        self.assertIn(key, self._collisions(damaged, self.HOMOGRAPHS["fr"]))
+
+    def test_a_verb_ending_is_not_reported(self):
+        """The negative control: `activé` next to `active` is grammar, and must stay silent."""
+        entries = {"a": "Le service est activé.", "b": "Une connexion active."}
+        self.assertEqual(self._collisions(entries, set()), {})
+
+    def test_a_placeholder_name_is_not_read_as_a_word(self):
+        """`Prochaine étape : {detail}` must not be read as a misspelling of `détail`."""
+        entries = {"a": "Voir le détail complet.", "b": "Prochaine étape : {detail}"}
+        self.assertEqual(self._collisions(entries, set()), {})
 
 
 if __name__ == "__main__":

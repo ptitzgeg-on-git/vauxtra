@@ -10,6 +10,7 @@ import {
   getGuidedSteps,
   isUrlOptional,
   requiresUsername,
+  seedFormForType,
 } from '@/components/features/providers/providerConstants';
 import { StepCredentials, StepTypeSelector, type WizardMode } from '@/components/features/provider-modal';
 import { useProviderMutations } from '@/hooks/useProviderMutations';
@@ -133,12 +134,8 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
 
   const chooseProviderType = (type: string, meta: ProviderTypeMeta) => {
     setIsDockerMode(false);
-    setFormData((prev) => ({
-      ...prev,
-      type,
-      name: prev.type === type && prev.name.trim() ? prev.name : String(meta.label || type),
-      url: prev.type === type && prev.url.trim() ? prev.url : String(meta.placeholder_url || ''),
-    }));
+    // `seedFormForType` carries the rule that the URL is never seeded from `placeholder_url`.
+    setFormData((prev) => seedFormForType(prev, type, String(meta.label || type)));
     setGuidedStepIndex(0);
     setValidationResult(null);
   };

@@ -251,6 +251,28 @@ export function getProjectUrl(type: string, meta?: ProviderTypeMeta): string | u
 
 // ─── Helpers ────────────────────────────────────────────────────
 
+/**
+ * The form state after the user picks a type in the Integrations modal.
+ *
+ * `url` is the whole reason this is a function rather than a spread. The type metadata carries
+ * a `placeholder_url`, and seeding the field from it puts a value in the box that is
+ * indistinguishable from the grey hint, because it IS the hint: the same string is the
+ * placeholder. Nine of the twelve types name `http://192.168.1.10:3000`, the tenth address of
+ * the commonest home range, where a real machine usually answers. Left untouched by someone
+ * who read a filled box as empty, the username and password are sent there. So a type change
+ * clears the URL, a re-pick of the same type keeps what was typed, and nothing else may ever
+ * put a value in it. The first-run wizard has only ever seeded the name.
+ */
+export function seedFormForType(prev: ProviderFormState, type: string, label: string): ProviderFormState {
+  const sameType = prev.type === type;
+  return {
+    ...prev,
+    type,
+    name: sameType && prev.name.trim() ? prev.name : label,
+    url: sameType ? prev.url : '',
+  };
+}
+
 export function buildPayload(formData: ProviderFormState) {
   return {
     name: formData.name.trim(),

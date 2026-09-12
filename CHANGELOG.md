@@ -66,6 +66,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Confirmation dialogs opened with the destructive button armed on exactly the dangerous
+  ones.** The opening focus was chosen from `variant === 'danger'`, read as a severity dial.
+  It is not one: `danger` is what the harmless confirmations use, and `warning` is what the
+  worse ones are built with — forcing an integration out while services still depend on it,
+  deleting a domain that is in use, running a reconcile that writes to a live provider.
+  Measured on a running instance, both pairs came out the same way round: deleting an unused
+  domain opened on Cancel, deleting one in use opened on Delete; the first screen of an
+  integration removal opened on Cancel, the escalated second screen opened on "Force
+  removal". So Enter was safe on the question that changed nothing and destructive on the
+  one that did. The rule is now "does confirming remove something": only `info`, which adds,
+  opens on Confirm. `EXPECTED_FOCUS` in the new test is typed over the variant union, so
+  adding a sixth variant without deciding this fails the build.
+
+- **Choosing an integration type pre-filled the address field with the example address, and
+  the example is a real machine on most home networks.** The type metadata carries a
+  `placeholder_url`, which is also that field's placeholder — so the box held a value
+  indistinguishable from the grey hint, being the same string. Nine of the twelve types name
+  `http://192.168.1.10:3000`, the tenth address of the commonest home range, where something
+  usually does answer. Anyone who read the box as already correct typed a username and a
+  password beside it and pressed Validate, and the credentials were sent there. The rule now
+  lives in `seedFormForType()`: a type change clears the URL, re-picking the same type keeps
+  what was typed, and nothing else may put a value in it. The first-run wizard, which shares
+  the same metadata and type picker, had only ever seeded the name.
+
+- **The validation panel of both wizards answered in English inside a translated screen.**
+  `providers.diag.detail.*` holds 41 translated sentences and `checkDetailText()` exists to
+  pick them, but two of the three call sites printed the API's identifier for the check
+  (`test_connection`) and its English sentence instead. The health line had the same shape,
+  interpolating the wire value into a translated sentence to produce "État : healthy". Both
+  wizards now go through `checkDetailText()` and a new `healthStatusLabel()`; the six status
+  words were added to all eight locales by copying keys that already carried them, so no
+  translation was invented.
+
+- **Fifteen French strings and three more in pt/de had lost their accents**, all in the
+  Settings panels and clustered in `settings.backup.*`: "Cles API" one line above "Clés API",
+  "Backup versao {version}", "Webhook-Eintrage". Valid JSON, non-empty, invisible to every
+  check in the build. `git blame` put the French ones in two commits four months apart, so
+  the channel that eats them was still open. `NoWordLostItsAccentsTests` now closes it: the
+  locale file is its own dictionary — every form it spells with diacritics, stripped, is
+  searched again in the same file. Three filters keep it a spelling question and never a
+  grammar one (a placeholder name and a URL are not prose; a diacritic on the final letter is
+  a verb ending; under four letters is a function word), which leaves fourteen real
+  homographs listed with their reason. It ships with its own controls: stripping "Clés API"
+  must name that key, and `activé` beside `active` must stay silent.
+
+- **`providers.type.npm.desc` described Nginx Proxy Manager as "Nginx Proxy Manager"** in all
+  eight languages — the only one of the ten types whose description repeated its own name
+  instead of saying what the tool does.
+
 - **A service could name a second DNS server and a second proxy, and Vauxtra stored the
   choice without ever acting on it.** `extra_dns_provider_ids` and `extra_proxy_provider_ids`
   went into `service_push_targets` on create and on edit, the panel listed them, and the push

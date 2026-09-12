@@ -13,6 +13,7 @@ import {
   cn,
 } from '@/components/ui';
 import { useT } from '@/i18n';
+import { checkDetailText, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import type { ProviderCapability } from '@/types/api';
 import {
   type GuidedStep,
@@ -348,13 +349,13 @@ export function StepCredentials({
           title={validationResult.ok ? t('provider_modal.validation.title_ok') : t('provider_modal.validation.title_failed')}
         >
           <ul className="mt-1 space-y-1 text-xs">
+            {/* `check.name` is the server's identifier for the check (`test_connection`), not a
+                sentence anyone wrote to be read. `checkDetailText` turns `detail_code` into the
+                reader's language; the raw name only stands in when there is no detail at all. */}
             {(validationResult.validation?.checks || []).slice(0, 6).map((check, idx) => (
               <li key={`${check.name || 'check'}-${idx}`} className={cn('flex items-start gap-1.5', check.ok ? 'text-success' : 'text-destructive')}>
                 {check.ok ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-                <span>
-                  {check.name || t('provider_modal.validation.check_fallback')}
-                  {check.detail ? `: ${check.detail}` : ''}
-                </span>
+                <span>{checkDetailText(check, t) || t('provider_modal.validation.check_fallback')}</span>
               </li>
             ))}
             {(validationResult.validation?.warnings || []).length > 0 && (
@@ -363,7 +364,9 @@ export function StepCredentials({
               </li>
             )}
             {validationResult.health?.status && (
-              <li className="text-muted-foreground">{t('provider_modal.validation.health', { status: validationResult.health.status })}</li>
+              <li className="text-muted-foreground">
+                {t('provider_modal.validation.health', { status: healthStatusLabel(validationResult.health.status, t) })}
+              </li>
             )}
             {validationResult.health?.error && <li className="text-destructive">{validationResult.health.error}</li>}
           </ul>

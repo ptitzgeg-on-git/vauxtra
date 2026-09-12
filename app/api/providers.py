@@ -198,8 +198,15 @@ def all_providers_health(request: Request):
         pid = r["id"]
         try:
             provider = create_provider(dict(r))
-            provider.test_connection()
-            results[str(pid)] = {"status": "healthy", "error": None}
+            # `test_connection` answers False; it does not raise. Every other caller in the
+            # code base reads that boolean. This one dropped it, so an integration that had
+            # just refused the connection was written down as healthy -- and this map is
+            # what paints the dashboard tiles and feeds the Integrations page score.
+            ok = bool(provider.test_connection())
+            results[str(pid)] = {
+                "status": "healthy" if ok else "unhealthy",
+                "error": None,
+            }
         except Exception as e:
             results[str(pid)] = {"status": "unhealthy", "error": str(e)}
     return results

@@ -51,7 +51,14 @@ export function IntegrationsGlance({
     if (!p.enabled) return { tone: 'neutral', label: t('providers.status.disabled'), dot: true };
     const entry = health?.[String(p.id)];
     if (entry?.status === 'unhealthy') {
-      return { tone: 'danger', label: t('dashboard.integrations.health.unhealthy'), error: entry.error, dot: false };
+      // The batch check reports a refused connection without a message. The tile still owes
+      // the reader a reason, so fall back to the sentence rather than to no tooltip at all.
+      return {
+        tone: 'danger',
+        label: t('dashboard.integrations.health.unhealthy'),
+        error: entry.error || t('providers.health.reason.unhealthy'),
+        dot: false,
+      };
     }
     if (entry?.status === 'healthy') return { tone: 'success', label: t('dashboard.integrations.health.healthy'), dot: true };
     if (healthError) return { tone: 'warning', label: t('dashboard.integrations.health.unknown'), dot: true };
@@ -100,7 +107,11 @@ export function IntegrationsGlance({
     const shown = providers.slice(0, limit);
     const rest = providers.length - shown.length;
     body = (
-      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      // Two-up on the *card* width, not the window width. `sm:` is a viewport query, and
+      // this card lives in a narrow side column: on any laptop the window cleared 640px,
+      // the tiles split in two, and the name was ellipsed down to three characters next to
+      // a status pill that never shrinks. A tile needs ~17rem to hold both.
+      <ul className="grid grid-cols-1 gap-2 @[38rem]:grid-cols-2">
         {shown.map((p) => {
           const badge = badgeFor(p);
           const typeLabel = types?.[p.type]?.label ?? p.type;
@@ -134,7 +145,7 @@ export function IntegrationsGlance({
           );
         })}
         {rest > 0 && (
-          <li className="sm:col-span-2">
+          <li className="@[38rem]:col-span-2">
             <Link
               to="/providers"
               className="flex items-center justify-center rounded-xl border border-dashed border-border px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
@@ -148,7 +159,7 @@ export function IntegrationsGlance({
   }
 
   return (
-    <Card className="p-5 sm:p-6">
+    <Card className="@container p-5 sm:p-6">
       <SectionHeading title={t('dashboard.integrations.title')}>
         <Link to="/providers" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
           {t('dashboard.integrations.manage')}
