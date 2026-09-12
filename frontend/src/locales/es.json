@@ -2020,6 +2020,8 @@
   "providers.diag.detail.zone_lookup_failed": "No se pudo determinar la zona DNS de este nombre de host.",
   "providers.diag.detail.zone_lookup_no_hint": "No se indicó ningún nombre de host, así que no se comprobó el alcance DNS.",
   "providers.diag.detail.zone_lookup_ok": "Se encontró la zona DNS de este nombre de host.",
+  "providers.diag.detail.zone_match": "{host} está dentro de una zona alojada.",
+  "providers.diag.detail.zone_missing": "Ninguna zona alojada cubre {host}.",
   "providers.diag.detail.zone_readable": "La zona se puede leer ({source}).",
   "providers.diag.detail.zone_unreadable": "No se pudo leer la zona ({source}).",
   "providers.diag.detail.zones_denied": "No se pudieron listar las zonas: el token necesita Zone:Read.",

@@ -2020,6 +2020,8 @@
   "providers.diag.detail.zone_lookup_failed": "The DNS zone for this hostname could not be resolved.",
   "providers.diag.detail.zone_lookup_no_hint": "No hostname was given, so the DNS scope was not checked.",
   "providers.diag.detail.zone_lookup_ok": "The DNS zone for this hostname was resolved.",
+  "providers.diag.detail.zone_match": "{host} falls inside a hosted zone.",
+  "providers.diag.detail.zone_missing": "No hosted zone covers {host}.",
   "providers.diag.detail.zone_readable": "The zone is readable ({source}).",
   "providers.diag.detail.zone_unreadable": "The zone could not be read ({source}).",
   "providers.diag.detail.zones_denied": "Zones could not be listed — the token needs Zone:Read.",

@@ -2020,6 +2020,8 @@
   "providers.diag.detail.zone_lookup_failed": "Die DNS-Zone für diesen Hostnamen konnte nicht ermittelt werden.",
   "providers.diag.detail.zone_lookup_no_hint": "Kein Hostname angegeben, daher wurde der DNS-Bereich nicht geprüft.",
   "providers.diag.detail.zone_lookup_ok": "Die DNS-Zone für diesen Hostnamen wurde gefunden.",
+  "providers.diag.detail.zone_match": "{host} liegt in einer gehosteten Zone.",
+  "providers.diag.detail.zone_missing": "Keine gehostete Zone deckt {host} ab.",
   "providers.diag.detail.zone_readable": "Die Zone ist lesbar ({source}).",
   "providers.diag.detail.zone_unreadable": "Die Zone konnte nicht gelesen werden ({source}).",
   "providers.diag.detail.zones_denied": "Zonen konnten nicht aufgelistet werden — das Token braucht Zone:Read.",

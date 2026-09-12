@@ -1908,6 +1908,8 @@
   "providers.diag.detail.zone_lookup_failed": "このホスト名の DNS ゾーンを特定できませんでした。",
   "providers.diag.detail.zone_lookup_no_hint": "ホスト名が指定されていないため、DNS の範囲は確認していません。",
   "providers.diag.detail.zone_lookup_ok": "このホスト名の DNS ゾーンが見つかりました。",
+  "providers.diag.detail.zone_match": "{host} はホストされているゾーンに含まれています。",
+  "providers.diag.detail.zone_missing": "{host} を含むホストされたゾーンがありません。",
   "providers.diag.detail.zone_readable": "ゾーンを読み取れます ({source})。",
   "providers.diag.detail.zone_unreadable": "ゾーンを読み取れませんでした ({source})。",
   "providers.diag.detail.zones_denied": "ゾーンを一覧できませんでした。トークンに Zone:Read 権限が必要です。",

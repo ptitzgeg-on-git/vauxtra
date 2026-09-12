@@ -211,6 +211,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **deSEC and PowerDNS reported their zone check in English, inside a panel that was
+  otherwise translated.** Both answer their "Domain match" / "Zone match" check with the
+  short code `zone_match` or `zone_missing`, and the diagnostics panel looks up
+  `providers.diag.detail.<code>` to say it in the operator's language. Neither key had ever
+  been written, in any of the eight locale files. Nothing broke, and that is exactly why it
+  lasted: `checkDetailText()` compares what the lookup returned against the key it asked
+  for, and falls back to the English sentence the API sends beside the code. A French,
+  German or Japanese operator saw one English line among translated ones, with nothing to
+  mark it as a defect rather than a sentence somebody chose not to translate. Both keys now
+  exist in all eight locales.
+
+  The two ends never referenced each other — one is a string literal in a provider, the
+  other a line of JSON — so nothing was in a position to notice. `check_detail_code_parity.py`
+  now joins them in CI: it reads the codes out of the backend and asks `en.json` about each
+  one, in one direction only. A code with no key fails, because that is decidable: the code
+  was found, and the key either exists or does not. A key no code claims does not fail and
+  is not reported, because extraction cannot be complete — a code can arrive through a
+  variable, or inside a tuple — so an unclaimed key is evidence about the script, not about
+  the repository. An early draft flagged three that way, and all three were emitted by
+  shapes it could not yet read.
+
 - **Three rows that could never become a service were reported as "all services already
   imported".** `POST /api/services/import` answered with two fields, `imported` and
   `errors`, and `errors` only ever carried the message of an exception. Every other outcome

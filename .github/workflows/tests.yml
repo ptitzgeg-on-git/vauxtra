@@ -70,6 +70,13 @@ jobs:
       - name: Repo hygiene gate
         run: python scripts/check_repo_hygiene.py
 
+      # A short code travels from a provider check to the panel, which looks up a locale
+      # key named after it. Nothing joins the two ends, and a missing key does not break
+      # the page: the panel prints the English sentence the API sent alongside the code,
+      # so the only symptom is one untranslated line in an otherwise translated panel.
+      - name: Detail code parity gate
+        run: python scripts/check_detail_code_parity.py
+
       # A base image bump that lands in the Dockerfile alone leaves every job here
       # installing the runtime the image used to have, and nothing goes red: the suite
       # passes, the image is signed, and the two no longer describe each other.
