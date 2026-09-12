@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "清除筛选",
   "monitoring.empty.filter_hint": "请更换状态，或清除筛选条件以查看所有路由。",
   "monitoring.filters_label": "按状态筛选路由",
-  "monitoring.latency.column_hint": "延迟为按需测量：对某一行运行检查即可填充该列。",
+  "monitoring.latency.column_hint": "延迟在检查时测量：运行“检查所有服务”即可填充该列。",
   "monitoring.latency.measured_at": "测量于 {when}",
   "monitoring.load_failed": "无法加载服务",
   "monitoring.load_failed_hint": "后端没有响应。请确认它正在运行后重试。",

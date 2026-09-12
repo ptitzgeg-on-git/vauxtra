@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "Effacer les filtres",
   "monitoring.empty.filter_hint": "Essayez un autre statut, ou effacez les filtres pour voir toutes les routes.",
   "monitoring.filters_label": "Filtrer les routes par statut",
-  "monitoring.latency.column_hint": "La latence est mesurée à la demande : lancez un contrôle sur une ligne pour remplir cette colonne.",
+  "monitoring.latency.column_hint": "La latence est mesurée pendant un contrôle : lancez « Vérifier tous les services » pour remplir cette colonne.",
   "monitoring.latency.measured_at": "Mesurée {when}",
   "monitoring.load_failed": "Impossible de charger les services",
   "monitoring.load_failed_hint": "Le backend n'a pas répondu. Vérifiez qu'il est démarré, puis réessayez.",

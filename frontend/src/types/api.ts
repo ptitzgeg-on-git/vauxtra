@@ -467,7 +467,7 @@ export interface PreflightResult {
   summary: PreflightSummary;
 }
 
-/** `GET /api/services/{sid}/check` — one on-demand health check. */
+/** `POST /api/services/{sid}/check` — one on-demand health check. */
 export interface ServiceCheckResult {
   id: number;
   status: ServiceStatus;
@@ -476,11 +476,24 @@ export interface ServiceCheckResult {
   dns_resolved: string[] | null;
 }
 
+/** One line of `CheckAllResult.results`: what the fleet probe measured for one service. */
+export interface CheckAllEntry {
+  id: number;
+  status: ServiceStatus;
+  /** Null when the target never answered. */
+  latency_ms: number | null;
+}
+
 /** `POST /api/services/check-all`. */
 export interface CheckAllResult {
   checked: number;
   ok: number;
   error: number;
+  /**
+   * One entry per service actually probed — so `results.length` is `checked` minus the
+   * tunnel services, which are skipped. Absent on instances older than 1.5.0.
+   */
+  results?: CheckAllEntry[];
 }
 
 export type BulkAction = 'enable' | 'disable' | 'delete';

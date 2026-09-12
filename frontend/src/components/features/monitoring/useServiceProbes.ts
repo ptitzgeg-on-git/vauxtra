@@ -1,11 +1,12 @@
 /**
- * On-demand checks — `POST /api/services/{sid}/check`.
+ * On-demand checks — `POST /api/services/{sid}/check`, plus whatever a fleet run measured.
  *
- * This is the only route that measures latency, and it measures exactly one service, so
- * the probes are collected as the operator asks for them and kept in memory for the life
- * of the page. The route also writes `status` and `last_checked` on the service, hence the
- * invalidation of `['services']` and `['logs']` after every probe. It is a POST since
- * 1.5.0 for that reason: a route that writes is not a GET.
+ * Latency has no column in `uptime_events`, so it only exists for as long as the page is
+ * open. Two routes produce it and both land here: the per-row check, which also resolves
+ * the public hostname, and `POST /api/services/check-all`, which opens the same connection
+ * for every service and reports what it measured — fed in through `record()`. Both routes
+ * write `status` and `last_checked`, hence the invalidation of `['services']` and
+ * `['logs']` after a probe.
  */
 
 import { useCallback, useMemo, useState } from 'react';
@@ -14,7 +15,7 @@ import toast from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
-import type { ServiceCheckResult } from '@/types/api';
+import type { CheckAllEntry, ServiceCheckResult } from '@/types/api';
 import { averageLatency, type LatencyProbes } from './uptime';
 
 export interface ServiceProbes {
@@ -25,6 +26,11 @@ export interface ServiceProbes {
   /** Mean of every latency measured this session, `null` while none has been. */
   average: number | null;
   check: (serviceId: number) => void;
+  /**
+   * Fold the per-service results of a fleet check into the same store. It carries no DNS
+   * answer, so a hostname an earlier per-row check resolved is kept rather than erased.
+   */
+  record: (entries: CheckAllEntry[]) => void;
 }
 
 export function useServiceProbes(): ServiceProbes {
@@ -63,7 +69,25 @@ export function useServiceProbes(): ServiceProbes {
 
   const { mutate } = mutation;
   const check = useCallback((serviceId: number) => mutate(serviceId), [mutate]);
+
+  const record = useCallback((entries: CheckAllEntry[]) => {
+    if (entries.length === 0) return;
+    const at = Date.now();
+    setProbes((current) => {
+      const next = { ...current };
+      for (const entry of entries) {
+        next[entry.id] = {
+          latencyMs: typeof entry.latency_ms === 'number' ? entry.latency_ms : null,
+          status: entry.status,
+          at,
+          dns: current[entry.id]?.dns ?? null,
+        };
+      }
+      return next;
+    });
+  }, []);
+
   const average = useMemo(() => averageLatency(probes), [probes]);
 
-  return { probes, checkingId, average, check };
+  return { probes, checkingId, average, check, record };
 }

@@ -685,7 +685,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/preflight` | Preflight validation |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
-| `POST` | `/api/services/check-all` | Trigger health check for all |
+| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |

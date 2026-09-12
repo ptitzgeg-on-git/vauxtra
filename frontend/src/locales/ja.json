@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "フィルターをクリア",
   "monitoring.empty.filter_hint": "別のステータスを選ぶか、フィルターをクリアしてすべてのルートを表示してください。",
   "monitoring.filters_label": "ステータスでルートを絞り込む",
-  "monitoring.latency.column_hint": "レイテンシは必要に応じて計測されます。行のチェックを実行するとこの列が埋まります。",
+  "monitoring.latency.column_hint": "レイテンシはチェック中に計測されます。「すべてのサービスをチェック」を実行するとこの列が埋まります。",
   "monitoring.latency.measured_at": "計測 {when}",
   "monitoring.load_failed": "サービスを読み込めませんでした",
   "monitoring.load_failed_hint": "バックエンドが応答しませんでした。起動しているか確認してから再試行してください。",

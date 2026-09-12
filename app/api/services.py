@@ -1448,7 +1448,11 @@ def delete_service(sid: int, request: Request):
 def _check_one(sid: int) -> dict:
     """Probe one service, record the result, and return what the caller measured.
 
-    Shared by the two verbs below, which differ only in that one of them is deprecated.
+    Shared by both verbs below. The `uptime_events` insert is the same line the scheduler
+    writes (`scheduler.py`): without it the 24 h column and the availability tile stayed
+    empty no matter how many times an operator pressed the button, and the page ended up
+    contradicting itself -- "no check in the last 24 hours" printed above a row that said
+    "OK, checked just now".
     """
     conn = get_db()
     svc  = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
@@ -1484,6 +1488,10 @@ def _check_one(sid: int) -> dict:
         "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
         (status, sid),
     )
+    conn.execute(
+        "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+        (sid, status),
+    )
     conn.commit()
     conn.close()
     add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
@@ -1492,9 +1500,9 @@ def _check_one(sid: int) -> dict:
 
 @router.post("/api/services/{sid}/check")
 def check_service(sid: int, request: Request):
-    # `write`: this rewrites `status` and `last_checked` and writes a log line. It read as
-    # a GET until 1.5.0 and answered any authenticated key, scope or not, which let a
-    # read-only key rewrite the state of any route.
+    # `write`: this rewrites `status` and `last_checked`, appends to `uptime_events` and
+    # writes a log line. It read as a GET until 1.5.0 and answered any authenticated key,
+    # scope or not, which let a read-only key rewrite the state of any route.
     require_auth(request, scope="write")
     return _check_one(sid)
 
@@ -1520,15 +1528,22 @@ def check_all(request: Request):
         "SELECT id, target_ip, target_port, subdomain, domain, expose_mode FROM services WHERE enabled=1"
     ).fetchall()
     ok_count = error_count = 0
+    # The connection is opened either way, so the latency is already measured: throwing it
+    # away is what forced the table to tell operators to check rows one at a time to fill
+    # the LATENCY column.
+    results: list[dict] = []
 
     for svc in services:
         if (svc["expose_mode"] or "").strip().lower() == "tunnel":
             continue
-        status = "unknown"
+        status     = "unknown"
+        latency_ms = None
+        start      = time.monotonic()
         try:
             with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
-                status = "ok"
-                ok_count += 1
+                status     = "ok"
+                latency_ms = round((time.monotonic() - start) * 1000, 1)
+                ok_count  += 1
         except OSError:
             status = "error"
             error_count += 1
@@ -1536,10 +1551,27 @@ def check_all(request: Request):
             "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
             (status, svc["id"]),
         )
+        # Same row the scheduler writes, so a manual run feeds the 24 h history too.
+        conn.execute(
+            "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+            (svc["id"], status),
+        )
+        results.append({"id": svc["id"], "status": status, "latency_ms": latency_ms})
 
     conn.commit()
     conn.close()
-    return {"checked": len(services), "ok": ok_count, "error": error_count}
+    # One line for the run, not one per service: the per-service check already logs each
+    # probe, and a fleet of fifty would otherwise bury everything else in "Recent activity".
+    add_log(
+        "info" if error_count == 0 else "error",
+        f"Manual check of {len(results)} service(s): {ok_count} ok, {error_count} error",
+    )
+    return {
+        "checked": len(services),
+        "ok":      ok_count,
+        "error":   error_count,
+        "results": results,
+    }
 
 
 class _BulkActionBody(BaseModel):

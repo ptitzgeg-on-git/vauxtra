@@ -56,7 +56,7 @@ import type {
  *  - `GET  /api/logs`                    the recent lines, matched to a host in the drawer
  *  - `GET  /api/providers/tunnels/health` the Cloudflare connectors
  *  - `POST /api/services/check-all`      probe everything now
- *  - `GET  /api/services/{sid}/check`    probe one service and measure its latency
+ *  - `POST /api/services/{sid}/check`    probe one service and resolve its hostname
  */
 
 const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
@@ -200,6 +200,9 @@ export function Monitoring() {
       const ok = result?.ok ?? 0;
       const error = result?.error ?? 0;
       setSummary({ checked, ok, error, skipped: Math.max(0, checked - ok - error) });
+      // The fleet check measured every latency on its way through; `results` is absent on
+      // an instance older than 1.5.0, and the column then stays as it was.
+      probes.record(result?.results ?? []);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['services'] }),
         queryClient.invalidateQueries({ queryKey: ['services-history'] }),

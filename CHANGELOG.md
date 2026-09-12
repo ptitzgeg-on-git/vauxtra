@@ -87,6 +87,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The 24 h column read "no check in the last 24 hours" directly above a status cell reading
+  "OK, checked just now".** Only the scheduler ever inserted into `uptime_events`. The two
+  manual endpoints wrote `services.status` and `services.last_checked` and nothing else, so
+  pressing "Check" filled the status cell and left the history the column beside it is built
+  from empty. On an instance with automatic checks switched off, the strip and the availability
+  tile stayed blank no matter how many checks an operator ran by hand — the page contradicted
+  itself, and the contradiction was not a display lag but a row nobody had written. Both
+  endpoints now write the same row the scheduler writes.
+
+  `POST /api/services/check-all` got back two things it was already doing the work for. It
+  opens a TCP connection to every service, so it measures every latency on the way through, and
+  it threw them all away — which is what the footnote under the table was apologising for when
+  it told operators to check rows one at a time to fill the LATENCY column. It now returns
+  `results`, one entry per probed service with its `status` and `latency_ms` (`null` when the
+  target never answered, never a zero pretending to be a measurement), and the page folds them
+  into the same store a per-row check writes to. The footnote now names the button that fills
+  the whole column in one click, and only appears while the column is still empty; once a check
+  has filled it, the sentence was telling operators to do the thing they had just done. And the
+  fleet check left no trace whatsoever in "Recent activity" while the per-service check logged
+  every probe: it now logs once for the run, one line rather than one per service, so a fleet of
+  fifty does not bury everything else in the journal.
+
 - **"Auto checks: waiting for the first cycle" was decided by a column the manual checks write
   too.** The monitoring header chose between two sentences on `last_checked`: a timestamp meant
   the scheduler had run, an empty one meant it had not yet. But `POST /api/services/check-all`

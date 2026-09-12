@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "Filters wissen",
   "monitoring.empty.filter_hint": "Probeer een andere status, of wis de filters om elke route te zien.",
   "monitoring.filters_label": "Routes filteren op status",
-  "monitoring.latency.column_hint": "De latentie wordt op aanvraag gemeten: voer een controle uit op een rij om deze kolom te vullen.",
+  "monitoring.latency.column_hint": "De latentie wordt tijdens een controle gemeten: voer “Alle services controleren” uit om deze kolom te vullen.",
   "monitoring.latency.measured_at": "Gemeten {when}",
   "monitoring.load_failed": "Kan de services niet laden",
   "monitoring.load_failed_hint": "De backend gaf geen antwoord. Controleer of die draait en probeer het opnieuw.",

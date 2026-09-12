@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "Filter zurücksetzen",
   "monitoring.empty.filter_hint": "Versuchen Sie einen anderen Status oder setzen Sie die Filter zurück, um alle Routen zu sehen.",
   "monitoring.filters_label": "Routen nach Status filtern",
-  "monitoring.latency.column_hint": "Die Latenz wird auf Anforderung gemessen: Führen Sie eine Prüfung in einer Zeile aus, um diese Spalte zu füllen.",
+  "monitoring.latency.column_hint": "Die Latenz wird während einer Prüfung gemessen: Führen Sie „Alle Dienste prüfen“ aus, um diese Spalte zu füllen.",
   "monitoring.latency.measured_at": "Gemessen {when}",
   "monitoring.load_failed": "Die Dienste konnten nicht geladen werden",
   "monitoring.load_failed_hint": "Das Backend hat nicht geantwortet. Prüfen Sie, ob es läuft, und versuchen Sie es erneut.",

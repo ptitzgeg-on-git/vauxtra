@@ -20,10 +20,10 @@ import {
 /**
  * The uptime table. One row per service: status, 24 h strip, latency, last check.
  *
- * Latency has no column in `uptime_events`, so the cell shows what the session measured
- * with "check now" and an em dash until then — never a zero pretending to be a
- * measurement. Tunnel services are marked instead of being shown as stale: neither the
- * scheduler nor `check-all` ever probes them.
+ * Latency has no column in `uptime_events`, so the cell shows what the session measured —
+ * by a per-row check or by a fleet run, both of which report it — and an em dash until
+ * then, never a zero pretending to be a measurement. Tunnel services are marked instead of
+ * being shown as stale: neither the scheduler nor `check-all` ever probes them.
  */
 
 export interface MonitoringTableProps {
@@ -262,10 +262,14 @@ export function MonitoringTable({
         </tbody>
       </table>
 
-      <p className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
-        <Activity className="h-3 w-3 shrink-0" aria-hidden />
-        {t('monitoring.latency.column_hint')}
-      </p>
+      {/* Only while the column is empty. Once a check has filled it the sentence is noise,
+          telling operators to do the thing they just did. */}
+      {Object.keys(probes).length === 0 && (
+        <p className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+          <Activity className="h-3 w-3 shrink-0" aria-hidden />
+          {t('monitoring.latency.column_hint')}
+        </p>
+      )}
     </div>
   );
 }

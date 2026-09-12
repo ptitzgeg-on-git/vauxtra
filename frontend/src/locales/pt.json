@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "Limpar filtros",
   "monitoring.empty.filter_hint": "Tente outro status ou limpe os filtros para ver todas as rotas.",
   "monitoring.filters_label": "Filtrar rotas por status",
-  "monitoring.latency.column_hint": "A latência é medida sob demanda: execute uma verificação em uma linha para preencher esta coluna.",
+  "monitoring.latency.column_hint": "A latência é medida durante uma verificação: execute “Verificar todos os serviços” para preencher esta coluna.",
   "monitoring.latency.measured_at": "Medida {when}",
   "monitoring.load_failed": "Não foi possível carregar os serviços",
   "monitoring.load_failed_hint": "O backend não respondeu. Verifique se ele está em execução e tente novamente.",

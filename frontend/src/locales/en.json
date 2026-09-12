@@ -702,7 +702,7 @@
   "monitoring.empty.clear_filters": "Clear filters",
   "monitoring.empty.filter_hint": "Try another status, or clear the filters to see every route.",
   "monitoring.filters_label": "Filter routes by status",
-  "monitoring.latency.column_hint": "Latency is measured on demand: run a check on a row to fill this column.",
+  "monitoring.latency.column_hint": "Latency is measured during a check: run “Check all services” to fill this column.",
   "monitoring.latency.measured_at": "Measured {when}",
   "monitoring.load_failed": "Could not load the services",
   "monitoring.load_failed_hint": "The backend did not answer. Check that it is running, then try again.",
