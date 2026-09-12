@@ -139,16 +139,23 @@ class ApiKeyScopeTests(unittest.TestCase):
                 self.assertEqual(allowed.status_code, 200, allowed.text)
 
     def test_the_get_form_of_the_check_is_a_deprecated_alias_of_the_post(self):
-        """The POST is the canonical verb; the GET stays one version for existing scripts."""
-        by_verb = {
-            verb: route
-            for route in app_main.app.routes
-            if getattr(route, "path", "") == "/api/services/{sid}/check"
-            for verb in getattr(route, "methods", ())
-        }
-        self.assertIn("POST", by_verb)
-        self.assertFalse(by_verb["POST"].deprecated)
-        self.assertTrue(by_verb["GET"].deprecated, "the GET alias must be marked deprecated")
+        """The POST is the canonical verb; the GET stays one version for existing scripts.
+
+        Asked of the published schema rather than of `app.routes`. FastAPI 0.141 stopped
+        copying an included router's routes into that list and leaves an opaque wrapper
+        there instead, so walking it matched nothing and the failure read `'POST' not found
+        in {}` -- a sentence about this test, not about the application, which answered both
+        verbs correctly throughout. The schema is also what a caller reads to learn the GET
+        is on its way out, so it is the right thing to hold to.
+        """
+        verbs = app_main.app.openapi()["paths"]["/api/services/{sid}/check"]
+        self.assertIn("post", verbs)
+        self.assertIn("get", verbs)
+        self.assertFalse(verbs["post"].get("deprecated", False))
+        self.assertTrue(
+            verbs["get"].get("deprecated", False),
+            "the GET alias must be marked deprecated",
+        )
 
     def test_an_unauthenticated_caller_still_gets_401_not_403(self):
         resp = self.client.post("/api/services/check-all")
