@@ -211,6 +211,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Two test modules ran against the database of whatever checkout they were on, and one
+  of them emptied a table on it before every test.** `test_templates_api.py` and
+  `test_metrics_endpoint.py` set `DATA_DIR` and `DB_PATH` in `os.environ` and called
+  `init_db()`, under a comment reading "Redirect DB to a temp file so tests are isolated".
+  `app/config.py` builds both paths with `os.path.join` from its own location and never
+  reads the environment, so neither assignment moved anything. The templates module then
+  ran `DELETE FROM service_templates` in `setUp`, once per test, on the real file — and
+  every assertion still held, because a table the test had just emptied and refilled is
+  exactly what the test expected to find. Measured on a working checkout: a marker row
+  inserted beforehand was gone afterwards, one fixture row was left behind, and the run
+  reported 17 passed. Both modules now rebind `DATA_DIR` and `DB_PATH` on `app.models` and
+  `app.db`, the way `IsolatedDBTestCase` already did, and restore them in teardown.
+
+  Nothing could have caught this, so `tests/conftest.py` now can: it hashes
+  `data/vauxtra.db` before the session and after it, and fails the run if the file changed,
+  appeared or vanished. It does not inspect how a test redirects the database, only whether
+  the operator's own file came out of the run as it went in — which is the property that
+  was actually violated, and the one that stays true however a future test gets it wrong.
+  The three `os.environ` keys the two modules set are gone with them: `DISABLE_AUTH` was
+  read by nothing in `app/` or `vauxtra_mcp/`, and the tests had been passing on the
+  implicit admin scope that `_get_auth_context()` grants when no password is configured.
+
+  It found a third case on its first full run, in a file whose own docstring says every
+  HTTP call is mocked — which was true, and the call it missed was not an HTTP one.
+  `_resolve_tunnel_id()` warns through `add_log()` when Cloudflare returns several tunnels
+  and it cannot choose, so `test_resolve_returns_empty_for_multiple_tunnels` appended a
+  line to the operator's activity journal on every run of the suite. `add_log` is patched
+  there now, and the warning is asserted rather than discarded: it is the only thing that
+  branch produces for the operator, it names the tunnels so the choice can be made, and
+  nothing had been looking at it.
+
 - **deSEC and PowerDNS reported their zone check in English, inside a panel that was
   otherwise translated.** Both answer their "Domain match" / "Zone match" check with the
   short code `zone_match` or `zone_missing`, and the diagnostics panel looks up
