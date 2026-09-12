@@ -566,14 +566,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   was doing the real work three steps later — but a green check that reads no files is worth
   less than no check, because it is the one people trust.
 
-- **Two MCP contract tests had gone red in CI on a refusal that never stopped working.**
-  `vauxtra_mcp/requirements.txt` asks for `fastmcp>=2.0` and pins nothing, so CI resolves
-  whatever is current on the day it runs. Current fastmcp lets pydantic's own `ValidationError`
-  out of `Tool.run()` instead of wrapping it in `fastmcp.exceptions.ValidationError`, and these
-  two named the wrapper. The bridge still refuses `action="destroy"` and still refuses port
-  70000, still names the offending value, and still sends nothing — only the class of the
-  exception changed. The alias now accepts either. The neighbouring assertions in the same file
-  say `ValueError`, which pydantic's error is, and that is why only these two broke.
+- **Two MCP contract tests passed or failed depending on which `fastmcp` the resolver
+  happened to pick.** `vauxtra_mcp/requirements.txt` asks for `fastmcp>=2.0` and pins nothing,
+  and the versions that satisfy it do not agree on what `Tool.run()` raises when its own schema
+  turns an argument away. On 3.2.4 pydantic's `ValidationError` comes out directly; on 4.0.3,
+  which is what CI resolves today, it arrives wrapped in `fastmcp.exceptions.ValidationError`.
+  These two tests named the wrapper, so CI stayed green while anyone who had resolved a 3.x —
+  an existing checkout, a lockfile, a machine that installed last month — saw two failures
+  reporting a refusal that works perfectly in both. The bridge refuses `action="destroy"` and
+  refuses port 70000 either way, names the offending value either way, and sends nothing either
+  way; only the class of the exception moved. The alias now accepts both. The neighbouring
+  assertions in the same file say `ValueError`, which pydantic's error is, and that is why only
+  these two were version-dependent.
 
   The floor stays unpinned: every requirement in this repository is a floor, and a cap here
   would trade a one-line test fix for a frozen dependency.
