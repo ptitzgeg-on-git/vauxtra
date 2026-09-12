@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_TYPES = {
     "npm": {
         "label": "Nginx Proxy Manager", "category": "proxy", "available": True,
-        "description": "Nginx Proxy Manager",
+        "description": "Reverse proxy with Let's Encrypt certificates",
         "category_label": "Reverse Proxy",
         "category_color": "bg-green-500/10 text-green-700 dark:text-green-400",
         "provider_color": "bg-green-500/10 text-green-700 border-green-500/30 dark:text-green-400",
