@@ -301,7 +301,7 @@ export function DockerSection() {
                   disabled={selectable.length === 0}
                   onChange={(e) => docker.setSelectedDockerIds(e.target.checked ? selectable.map((c) => c.id) : [])}
                   label={t('settings.docker.select_all_ready')}
-                  description={t('settings.migration.selected_count', { count: selected.length })}
+                  description={t('settings.docker.selected_count', { count: selected.length })}
                 />
                 <Button variant="ghost" size="sm" disabled={selected.length === 0} onClick={() => docker.setSelectedDockerIds([])}>
                   {t('settings.migration.clear_selection')}

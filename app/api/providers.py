@@ -686,9 +686,32 @@ def _check_provider_capability(provider_type: str, capability: str) -> tuple[boo
     return True, ""
 
 
+def _provider_client(row):
+    """Build the client for a stored integration, and keep our own faults ours.
+
+    `create_provider` opens no connection: it looks the type up in the registry and decrypts
+    the stored secret. An unknown type, or a secret this instance can no longer read, is a
+    fault on this side of the wire. It is built here rather than inside the `try` that wraps
+    the call, so that it cannot leave as a 502 blaming a provider nobody ever contacted.
+    """
+    try:
+        return create_provider(row)
+    except Exception as e:
+        raise HTTPException(500, f"Could not build a client for '{row['name']}': {str(e)}")
+
+
 # ──────────────────────────────────────────────────────────────
 # DNS Records CRUD (All providers with 'dns' capability)
 # ──────────────────────────────────────────────────────────────
+#
+# The six record routes below and in the proxy section share one shape: build the client,
+# then ask the far end. A refusal from that far end answers 502, not 500. Vauxtra did not
+# break -- it relayed a question and got back nothing it could use, and a 500 made the
+# integration inspector print "the server had a problem" over an expired AdGuard token, next
+# to a Retry button that could not help until the token was renewed. 503 is not the code
+# either: it says *this* server is unavailable, which is the same false accusation in
+# another number. 504 would claim a timeout, and a bare provider exception does not let us
+# tell a timeout from a flat refusal. What stays 500 is `_provider_client` above.
 
 class DNSRecordIn(BaseModel):
     domain: str
@@ -711,12 +734,12 @@ def list_dns_records(pid: int, request: Request):
     if not has_dns:
         raise HTTPException(400, error_msg)
 
+    provider = _provider_client(row)
     try:
-        provider = create_provider(row)
         records = provider.list_rewrites()
         return {"provider": row["name"], "records": records or []}
     except Exception as e:
-        raise HTTPException(500, f"Failed to list DNS records: {str(e)}")
+        raise HTTPException(502, f"Failed to list DNS records: {str(e)}")
 
 
 @router.post("/api/providers/{pid}/dns-records", status_code=201)
@@ -735,8 +758,8 @@ def create_dns_record(pid: int, request: Request, body: DNSRecordIn):
     if not has_dns:
         raise HTTPException(400, error_msg)
 
+    provider = _provider_client(row)
     try:
-        provider = create_provider(row)
         success = provider.add_rewrite(body.domain, body.answer)
         if not success:
             raise HTTPException(400, "Failed to create DNS record (provider rejected)")
@@ -745,7 +768,7 @@ def create_dns_record(pid: int, request: Request, body: DNSRecordIn):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to create DNS record: {str(e)}")
+        raise HTTPException(502, f"Failed to create DNS record: {str(e)}")
 
 
 @router.delete("/api/providers/{pid}/dns-records/{domain}")
@@ -764,8 +787,8 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
     if not has_dns:
         raise HTTPException(400, error_msg)
 
+    provider = _provider_client(row)
     try:
-        provider = create_provider(row)
         # If answer not provided, find it from list
         if not answer:
             records = provider.list_rewrites() or []
@@ -785,7 +808,7 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to delete DNS record: {str(e)}")
+        raise HTTPException(502, f"Failed to delete DNS record: {str(e)}")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -815,14 +838,14 @@ def list_proxy_hosts(pid: int, request: Request):
     if not has_proxy:
         raise HTTPException(400, error_msg)
 
+    provider = _provider_client(row)
     try:
-        provider = create_provider(row)
         hosts = provider.list_hosts()
         return {"provider": row["name"], "hosts": hosts or []}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to list proxy hosts: {str(e)}")
+        raise HTTPException(502, f"Failed to list proxy hosts: {str(e)}")
 
 
 @router.post("/api/providers/{pid}/proxy-hosts", status_code=201)
@@ -841,8 +864,8 @@ def create_proxy_host(pid: int, request: Request, body: ProxyHostIn):
     if not has_proxy:
         raise HTTPException(400, error_msg)
 
+    provider = _provider_client(row)
     try:
-        provider = create_provider(row)
         primary_domain = body.domain_names[0].strip()
         if not primary_domain:
             raise HTTPException(400, "domain_names must contain at least one non-empty domain")
@@ -860,7 +883,7 @@ def create_proxy_host(pid: int, request: Request, body: ProxyHostIn):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to create proxy host: {str(e)}")
+        raise HTTPException(502, f"Failed to create proxy host: {str(e)}")
 
 
 @router.delete("/api/providers/{pid}/proxy-hosts/{host_id}")
@@ -879,8 +902,8 @@ def delete_proxy_host(pid: int, host_id: str, request: Request):
     if not has_proxy:
         raise HTTPException(400, error_msg)
 
+    provider = _provider_client(row)
     try:
-        provider = create_provider(row)
         # Passed through. A route identifier does not have the same shape for every
         # provider: NPM numbers its hosts, Cloudflare Tunnel addresses its ingress rules by
         # hostname, Traefik by router name. `int(host_id)` therefore raised ValueError for
@@ -896,4 +919,4 @@ def delete_proxy_host(pid: int, host_id: str, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to delete proxy host: {str(e)}")
+        raise HTTPException(502, f"Failed to delete proxy host: {str(e)}")

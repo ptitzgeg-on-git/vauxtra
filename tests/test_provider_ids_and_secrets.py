@@ -403,7 +403,11 @@ class TheDockerSocketIsDescribedAsWhatItIsTests(unittest.TestCase):
     def test_the_way_to_spend_less_is_written_down(self) -> None:
         deployment = self._read("docs/DEPLOYMENT.md")
         self.assertIn("docker-socket-proxy", deployment)
-        self.assertIn("503", deployment)
+        # The number moves with the code. An unreachable daemon -- and a dropped socket
+        # mount is exactly that -- answers 502 from `app/api/docker.py::_docker_client`,
+        # not the 503 it used to. Pinning the sentence rather than the bare digits keeps
+        # this from passing on a "502" that happens to appear somewhere else in the file.
+        self.assertIn("the Docker screens then answer 502", deployment)
 
 
 if __name__ == "__main__":

@@ -271,10 +271,11 @@ def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
     """Deleting a webhook left its queued sends behind, and the retry job kept firing them.
 
     `webhook_delivery_log.webhook_id` named a webhook without referencing one, so
-    `DELETE FROM webhooks WHERE id=?` -- the whole body of `delete_webhook` -- removed the
-    row and nothing else. The retry job reads the destination off the log row rather than
-    off `webhooks`, so Vauxtra went on POSTing to a URL the operator had just revoked, for
-    the full length of the backoff: up to twenty-four hours after the delete.
+    `DELETE FROM webhooks WHERE id=?` -- the one statement in `delete_webhook` that removes
+    anything, next to a lookup that answers 404 and a commit -- took the row and left the
+    queue standing. The retry job reads the destination off the log row rather than off
+    `webhooks`, so Vauxtra went on POSTing to a URL the operator had just revoked, for the
+    full length of the backoff: up to twenty-four hours after the delete.
 
     Two things are needed and neither replaces the other. The cascade stops it happening
     again; the copy below drops the rows it has already happened to, which no cascade can

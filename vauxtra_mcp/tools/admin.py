@@ -1,8 +1,9 @@
 """MCP tools — auth, settings, domains, tags, envs, webhooks, api keys, backups."""
 import json
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -121,16 +122,60 @@ def list_tags() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def create_tag(name: str, color: str = "blue") -> dict[str, Any]:
-    """Create a tag."""
+def create_tag(name: str, color: Literal[
+        "azure",
+        "blue",
+        "cyan",
+        "dark",
+        "green",
+        "indigo",
+        "lime",
+        "orange",
+        "pink",
+        "purple",
+        "red",
+        "secondary",
+        "teal",
+        "yellow",
+    ] = "blue") -> dict[str, Any]:
+    """
+    Create a tag.
+
+    `color` is a `Literal` because `TagIn` does not refuse an unknown colour: it silently
+    replaces it with blue. A caller that asked for one thing and got another, with a 200 and
+    no mention of the substitution, has no way to notice. The fourteen names are the palette
+    the API accepts, repeated here by hand -- `scripts/check_api_mcp_parity.py` fails the
+    build if the two lists stop matching.
+    """
     r = client.post("/tags", json={"name": name, "color": color})
     client.check(r)
     return r.json()
 
 
 @mcp.tool()
-def update_tag(tag_id: int, name: str, color: str = "blue") -> dict[str, Any]:
-    """Update a tag by id."""
+def update_tag(tag_id: int, name: str, color: Literal[
+        "azure",
+        "blue",
+        "cyan",
+        "dark",
+        "green",
+        "indigo",
+        "lime",
+        "orange",
+        "pink",
+        "purple",
+        "red",
+        "secondary",
+        "teal",
+        "yellow",
+    ] = "blue") -> dict[str, Any]:
+    """
+    Update a tag by id.
+
+    This replaces both fields, so pass the name back even when only the colour changes.
+    `color` carries the same `Literal` as `create_tag`, for the same reason: an unknown
+    colour is quietly turned into blue rather than refused.
+    """
     r = client.put(f"/tags/{tag_id}", json={"name": name, "color": color})
     client.check(r)
     return r.json()
@@ -266,9 +311,24 @@ def list_api_keys() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def create_api_key(name: str, scopes: list[Literal["read", "write", "admin"]]) -> dict[str, Any]:
-    """Create an API key and return the secret once."""
-    r = client.post("/settings/api-keys", json={"name": name, "scopes": scopes})
+def create_api_key(
+    name: str,
+    scopes: Annotated[list[Literal["read", "write", "admin"]], Field(min_length=1)] = ("read",),
+) -> dict[str, Any]:
+    """Create an API key and return the secret once.
+
+    `scopes` repeats the default and the minimum of one that `app.api.api_keys.ApiKeyCreate`
+    carries, because nothing derives this signature from that model: the bridge declares its
+    tools by hand, and a normal install publishes no schema to derive them from (`DEBUG` is
+    false by default, so `openapi_url` is None). Without them a model could send `scopes: []`
+    -- the list that used to be stored as an empty column and read back as one scope named
+    nothing, which authorized every unscoped route and no scoped one.
+
+    The default is a tuple rather than a list because a list default is ruff B006 here;
+    measured, the two build the same `{"default": ["read"], "minItems": 1}` in the tool
+    schema. `tests/test_api_key_scope_residues.py` fails if either end drifts.
+    """
+    r = client.post("/settings/api-keys", json={"name": name, "scopes": list(scopes)})
     client.check(r)
     return r.json()
 

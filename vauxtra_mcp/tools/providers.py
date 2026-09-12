@@ -1,5 +1,5 @@
 """MCP tools — provider management and health checks."""
-from typing import Any
+from typing import Any, Literal
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -24,7 +24,18 @@ def get_provider_types() -> list[dict[str, Any]]:
 @mcp.tool()
 def create_provider(
     name: str,
-    type: str,
+    type: Literal[
+        "adguard",
+        "cloudflare",
+        "cloudflare_tunnel",
+        "desec",
+        "npm",
+        "pihole",
+        "powerdns",
+        "technitium",
+        "traefik",
+        "zoraxy",
+    ],
     url: str = "",
     username: str = "",
     password: str = "",
@@ -35,8 +46,12 @@ def create_provider(
 
     Args:
         name: Display name for this provider.
-        type: Provider type (npm, zoraxy, traefik, cloudflare, cloudflare_tunnel, pihole, adguard, technitium).
-        url: Connection URL (e.g. http://npm:81 or https://api.cloudflare.com).
+        type: One of the ten types the API knows. The list used to be repeated in this
+            docstring and had lost `powerdns` and `desec`, which the API has accepted for
+            two releases; it is a `Literal` now, so the schema and the route cannot drift.
+        url: Connection URL (e.g. http://npm:81). May be left empty for `cloudflare`,
+            `cloudflare_tunnel` and `desec`, whose API endpoint the route fills in; every
+            other type is refused with 422 without one.
         username: Username or email for authentication.
         password: Password or API token.
         extra: Additional provider-specific config (e.g. zone_id, account_id, tunnel_id).
@@ -129,15 +144,33 @@ def test_provider_connection(provider_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def validate_provider_draft(
-    type: str,
-    url: str,
+    type: Literal[
+        "adguard",
+        "cloudflare",
+        "cloudflare_tunnel",
+        "desec",
+        "npm",
+        "pihole",
+        "powerdns",
+        "technitium",
+        "traefik",
+        "zoraxy",
+    ],
+    url: str = "",
     username: str = "",
     password: str = "",
     extra: dict[str, Any] | None = None,
     hostname_hint: str = "",
     write_probe: bool = False,
 ) -> dict[str, Any]:
-    """Validate a provider draft before creation (no DB write)."""
+    """
+    Validate a provider draft before creation (no DB write).
+
+    Same fields as `create_provider` minus the name, which nothing stores here. `url` is
+    optional for the same reason and in the same three cases: `cloudflare`,
+    `cloudflare_tunnel` and `desec` have a known endpoint the route fills in. Declaring it
+    required here would have forced a caller to type an address the API already knows.
+    """
     r = client.post("/providers/validate-draft", json={
         "type": type,
         "url": url,

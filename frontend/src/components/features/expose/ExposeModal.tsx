@@ -729,11 +729,26 @@ export function ExposeModal({
               </span>
             </SectionHeading>
             <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-              {preflight.checks.map((check) => {
+              {preflight.checks.map((check, index) => {
                 const tone = checkTone(check);
                 const detail = checkDetail(check);
                 return (
-                  <li key={check.name} className="flex items-start gap-3 px-4 py-3">
+                  // The name is not a key: the server emits one `extra_proxy_provider` line
+                  // per extra proxy and one `extra_dns_provider` line per extra DNS server,
+                  // so a route published on two spare proxies really does produce two list
+                  // items called the same thing. Measured on React 19.2.8: both <li> render,
+                  // so nothing vanishes from the panel -- but React logs "Encountered two
+                  // children with the same key", warns that such children "may be duplicated
+                  // and/or omitted", and calls the behaviour unsupported. What a shared key
+                  // costs today is identity, which is the only thing a key is for: with one
+                  // key for two rows the reconciler fell back to matching by position, so
+                  // swapping the two lines left each row's state and DOM node on the other
+                  // line, and a later change of keys left a stale third <li> standing for two
+                  // lines of data. A panel whose whole job is to say what the save will touch
+                  // cannot afford a row that belongs to a different target. The list is
+                  // rebuilt whole on every preflight and never reordered, so the index is
+                  // stable enough to carry the name.
+                  <li key={`${check.name}:${index}`} className="flex items-start gap-3 px-4 py-3">
                     <span aria-hidden="true" className="mt-0.5 shrink-0">
                       {CHECK_ICONS[tone]}
                     </span>

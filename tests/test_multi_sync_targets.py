@@ -18,6 +18,13 @@ addressing -- and, for the deletion, stopped being able to see at all. The 409 t
 before deleting a provider said those services "stop being pushed anywhere", which is false
 for a multi-sync service: the other targets keep publishing it. What actually happens is the
 orphan, and that is what the operator now reads.
+
+And once the push reached every target, the preflight was left promising for one. It read
+the extra ids only to answer "is at least one target set", so a second DNS server that was
+dead, disabled, or simply gone read as six green checks naming the primary alone; the save
+that followed pushed to it for real and came back 207 with a refusal the panel had had every
+chance to foresee. Worse for the id that no longer exists: `_unknown_references` turns that
+one into a 400, so the preflight said "0 blocking" about a body the API refuses outright.
 """
 
 import os
@@ -44,13 +51,21 @@ class _FakeProvider:
     route returns is the assertion, not the order of the calls.
     """
 
-    def __init__(self, name: str, calls: list, *, ok: bool = True):
+    def __init__(self, name: str, calls: list, *, ok: bool = True, reachable: bool = True):
         self.name = name
         self.calls = calls
         self.ok = ok
+        self.reachable = reachable
         self.hosts: list[dict] = []
         self.rewrites: list[dict] = []
         self._next_id = 100
+
+    # -- preflight --------------------------------------------------------------------
+    def test_connection(self) -> bool:
+        """The probe, kept apart from `ok`: answering the door and accepting a record are
+        two different permissions, and a read-only token passes the first and fails the
+        second."""
+        return self.reachable
 
     # -- proxy ------------------------------------------------------------------------
     def find_best_certificate(self, _domain):
@@ -159,16 +174,25 @@ class _MultiSyncTestCase(unittest.TestCase):
     def _provider_for(self, row):
         return self.providers[row["id"]]
 
-    def _add_provider(self, pid: int, name: str, ptype: str, *, ok: bool = True) -> _FakeProvider:
+    def _add_provider(
+        self,
+        pid: int,
+        name: str,
+        ptype: str,
+        *,
+        ok: bool = True,
+        reachable: bool = True,
+        enabled: bool = True,
+    ) -> _FakeProvider:
         conn = models.get_db()
         conn.execute(
             """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
-               VALUES (?,?,?,'http://x','u','p','{}',1)""",
-            (pid, name, ptype),
+               VALUES (?,?,?,'http://x','u','p','{}',?)""",
+            (pid, name, ptype, int(enabled)),
         )
         conn.commit()
         conn.close()
-        self.providers[pid] = _FakeProvider(name, self.calls, ok=ok)
+        self.providers[pid] = _FakeProvider(name, self.calls, ok=ok, reachable=reachable)
         return self.providers[pid]
 
     def _body(self, **overrides) -> services_api.ServiceIn:
@@ -189,6 +213,25 @@ class _MultiSyncTestCase(unittest.TestCase):
 
         return response.status_code, json.loads(bytes(response.body))
 
+    def _preflight(self, **overrides) -> dict:
+        """The preflight on the same body `_create` would send.
+
+        The socket to the target is answered here so the run stays offline: what these tests
+        weigh is the providers the checks name, not a backend nobody started.
+        """
+        body = services_api.ServicePreflightIn(
+            **self._body(**overrides).model_dump(), service_id=None
+        )
+        with patch.object(
+            services_api,
+            "_service_target_reachable",
+            lambda _host, _port, timeout=2.0: (True, "Reachable in 3.0 ms"),
+        ):
+            return services_api.preflight_service(_request("POST", "/preflight"), body)
+
+    def _named(self, result: dict, name: str) -> list[dict]:
+        return [c for c in result["checks"] if c["name"] == name]
+
     def _push_targets(self, sid: int) -> set[int]:
         conn = models.get_db()
         rows = {
@@ -205,6 +248,112 @@ class _MultiSyncTestCase(unittest.TestCase):
         rows = [r[0] for r in conn.execute("SELECT message FROM logs ORDER BY id")]
         conn.close()
         return rows
+
+
+class PreflightLooksAtEveryTargetTests(_MultiSyncTestCase):
+    """Each verdict here is measured against what the save route then does with the same body.
+
+    That is the only thing that makes a preflight worth reading: `blocking` where the API
+    answers 400, a warning where it publishes and reports the refusal afterwards.
+    """
+
+    def test_a_dead_extra_dns_target_is_named(self):
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(3, "Technitium", "technitium", reachable=False)
+
+        result = self._preflight(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3])
+
+        checks = self._named(result, "extra_dns_provider")
+        self.assertEqual(len(checks), 1, [c["name"] for c in result["checks"]])
+        self.assertFalse(checks[0]["ok"])
+        self.assertEqual(checks[0]["detail_key"], "extra_provider_failed")
+        self.assertEqual(
+            checks[0]["detail_params"]["name"],
+            "Technitium",
+            "a line that says one target is dead without saying which names nothing",
+        )
+        self.assertEqual(result["summary"]["warnings"], 1)
+        self.assertEqual(result["summary"]["blocking_failures"], 0)
+        self.assertTrue(result["ok"], "a secondary that is down must not lock the route away")
+
+    def test_an_extra_target_that_answers_raises_nothing(self):
+        """The witness. A check that failed on every extra would satisfy the test above."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(3, "Technitium", "technitium")
+
+        result = self._preflight(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3])
+
+        checks = self._named(result, "extra_dns_provider")
+        self.assertEqual(len(checks), 1)
+        self.assertTrue(checks[0]["ok"])
+        self.assertEqual(checks[0]["detail_params"]["name"], "Technitium")
+        self.assertEqual(result["summary"]["warnings"], 0)
+
+    def test_a_dead_extra_proxy_target_is_named_too(self):
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(4, "NPM bis", "npm", reachable=False)
+
+        result = self._preflight(
+            proxy_provider_id=1, dns_provider_id=2, extra_proxy_provider_ids=[4]
+        )
+
+        checks = self._named(result, "extra_proxy_provider")
+        self.assertEqual(len(checks), 1)
+        self.assertFalse(checks[0]["ok"])
+        self.assertEqual(checks[0]["detail_params"]["name"], "NPM bis")
+        self.assertEqual(result["summary"]["warnings"], 1)
+
+    def test_an_extra_id_the_save_refuses_is_blocking(self):
+        """The two verdicts have to agree: this body is a 400, and the panel must say so."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        payload = {"proxy_provider_id": 1, "dns_provider_id": 2, "extra_dns_provider_ids": [999]}
+
+        result = self._preflight(**payload)
+
+        self.assertEqual(result["summary"]["blocking_failures"], 1)
+        self.assertFalse(result["ok"])
+        self.assertEqual(self._named(result, "extra_dns_provider")[0]["detail_key"], "provider_missing")
+
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as raised:
+            self._create(**payload)
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_a_disabled_extra_target_warns_without_blocking(self):
+        """The push skips a disabled target instead of failing on it, so the panel does too."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        second = self._add_provider(3, "Technitium", "technitium", enabled=False)
+        payload = {"proxy_provider_id": 1, "dns_provider_id": 2, "extra_dns_provider_ids": [3]}
+
+        result = self._preflight(**payload)
+
+        check = self._named(result, "extra_dns_provider")[0]
+        self.assertFalse(check["ok"])
+        self.assertFalse(check["blocking"])
+        self.assertEqual(check["detail_key"], "extra_provider_disabled")
+        self.assertEqual(result["summary"]["warnings"], 1)
+        self.assertEqual(result["summary"]["blocking_failures"], 0)
+
+        status, body = self._create(**payload)
+        self.assertEqual(status, 201)
+        self.assertEqual(body["errors"], [])
+        self.assertFalse(second.holds("vault.example.com"), "a disabled target receives nothing")
+
+    def test_the_primary_is_not_probed_a_second_time_as_an_extra(self):
+        """Same de-duplication as `add_service`, which drops an extra equal to its primary."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+
+        result = self._preflight(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[2])
+
+        self.assertEqual(self._named(result, "extra_dns_provider"), [])
+        self.assertEqual(result["summary"]["warnings"], 0)
 
 
 class CreationReachesEveryTargetTests(_MultiSyncTestCase):

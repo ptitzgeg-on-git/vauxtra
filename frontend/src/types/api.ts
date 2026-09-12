@@ -436,8 +436,17 @@ export interface PreflightRequest extends ServicePayload {
 /**
  * One preflight check. Known names: `public_host_conflict`, `target_reachable`,
  * `https_port_hint`, `tunnel_health` (data = the tunnel's health dict),
- * `provider_target_required`, `proxy_connection`, `dns_target_resolution`
- * (data = `{resolved_target, source}`), and one per provider role that was checked.
+ * `provider_target_required`, `proxy_connection`, `dns_connection`,
+ * `dns_target_resolution` (data = `{resolved_target, source}`), `extra_proxy_provider`,
+ * `extra_dns_provider`, and one per provider role that was checked
+ * (`proxy_provider`, `dns_provider`, `tunnel_provider`).
+ *
+ * `name` is not unique within a result: `extra_proxy_provider` and `extra_dns_provider` are
+ * emitted once per extra target, so a route with two spare proxies carries two lines under
+ * the same name. Anything keying on the name has to add the index.
+ *
+ * `tests/test_preflight_symmetry.py` drives the API and fails when it emits a name this
+ * list does not hold.
  */
 export interface PreflightCheck {
   name: string;
@@ -705,8 +714,17 @@ export interface AppSettings {
 /** `POST /api/settings`. A 400 with "Nothing was saved -- key: reason; …" means every key was rejected. */
 export interface SettingsSaveResult {
   ok: boolean;
+  /** Written to the database. */
   saved: string[];
+  /** Refused: not written, and the old value still stands. */
   ignored: string[];
+  /**
+   * Written, but the running process could not be told -- rescheduling the health check or
+   * the reconciler raised. Neither `saved` nor `ignored` is the truth here: the value is in
+   * the database and will be read at the next start, and until then the behaviour on screen
+   * is still the old one. Reported apart because only this one needs a restart.
+   */
+  not_applied: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -822,10 +840,20 @@ export interface DockerContainer {
   suggestion: ContainerSuggestion | null;
 }
 
-/** `POST /api/docker/import`. */
+/**
+ * `POST /api/docker/import`.
+ *
+ * `skipped` was an integer standing for two outcomes that have nothing in common: a container
+ * Vauxtra already tracks, which is the ordinary result of ticking a whole page, and one this
+ * route refused. It is now the first of those alone, and a list, because a count gives the
+ * operator nothing to go and fix. Sentences, already named and already translated server-side
+ * -- render `.length` through the plural keys, not the strings themselves.
+ */
 export interface DockerImportResult {
   imported: number;
-  skipped: number;
+  /** Passed over on purpose: already tracked under that hostname. One sentence per container. */
+  skipped: string[];
+  /** Refused: no address, no usable port, or the insert raised. One sentence per container. */
   errors: string[];
 }
 
@@ -892,9 +920,17 @@ export interface SyncResult {
   [key: string]: unknown;
 }
 
-/** `POST /api/services/import`. */
+/**
+ * `POST /api/services/import`. Four outcomes, and one run can hold several of them: a
+ * batch can create two services, attach a DNS record to a third that already existed,
+ * pass over a fourth that was already tracked and refuse a fifth. `skipped` is not a
+ * failure -- "Quick import" sends the whole scan back, tracked rows included -- and
+ * `errors` is, so they are separate lists rather than one with a colour guessed from it.
+ */
 export interface ImportResult {
   imported: number;
+  linked: number;
+  skipped: string[];
   errors: string[];
 }
 
@@ -1030,12 +1066,20 @@ export interface RestoreRequest {
   passphrase?: string;
 }
 
-/** `POST /api/restore`. `webhooks_needing_url` counts webhooks whose URL could not be restored and must be re-entered. */
+/**
+ * `POST /api/restore`. Three of these are things the operator has to act on and none of
+ * them is an error: `webhooks_needing_url` counts notification targets that came back
+ * disabled because a backup without secrets carries no URL, `settings_not_restored` names
+ * the settings the file did not bring back, and `domains_without_name` counts domain rows
+ * in it that had no name to be recreated under.
+ */
 export interface RestoreResult {
   ok: boolean;
   services: number;
   providers: number;
   webhooks_needing_url: number;
+  settings_not_restored: string[];
+  domains_without_name: number;
 }
 
 // ---------------------------------------------------------------------------

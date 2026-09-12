@@ -14,6 +14,7 @@ import { Button, Field, InlineAlert, Input } from '@/components/ui';
 import { translateApiError } from '@/lib/errors';
 import { useFormat } from '@/hooks/useFormat';
 import { useT } from '@/i18n';
+import type { RestoreResult } from '@/types/api';
 import { SetupStepShell } from './SetupStepShell';
 
 type RestoreSummary = {
@@ -21,6 +22,10 @@ type RestoreSummary = {
   services: number;
   secretsIncluded: boolean;
   webhooksNeedingUrl: number;
+  /** Setting names the file carried and this version does not accept. */
+  settingsNotRestored: string[];
+  /** Domain rows in the file that had no name, and so could not be recreated. */
+  domainsWithoutName: number;
 };
 
 interface BackupFileContent {
@@ -76,6 +81,20 @@ export function RestoreStep({
     }
   };
 
+  /**
+   * No typed-word confirmation here, unlike `RestoreSection` in the settings panel, which makes
+   * the operator type RESTORE before the very same route empties the very same sixteen tables.
+   *
+   * The difference is the precondition, not the blast radius. The server only offers this wizard
+   * while `setup_required` is true -- `setup_completed` unset *and* zero providers, an instance
+   * nobody has finished configuring. Restoring is the declared purpose of this screen, the
+   * backup's version, date and contents are listed above the button, and a word demanded on
+   * every restore is a word typed without reading the sentence above it.
+   *
+   * `tests/test_destructive_confirmations.py` pins that precondition rather than waiving it:
+   * widen `setup_required`, or render this step from anywhere else, and it fails instead of
+   * letting the exception be inherited.
+   */
   const handleRestore = async () => {
     if (!backupData || restoring) return;
 
@@ -88,12 +107,7 @@ export function RestoreStep({
     setError('');
 
     try {
-      const result = await api.post<{
-        ok: boolean;
-        services?: number;
-        providers?: number;
-        webhooks_needing_url?: number;
-      }>('/restore', {
+      const result = await api.post<RestoreResult>('/restore', {
         backup: backupData,
         passphrase: passphrase,
       });
@@ -103,6 +117,8 @@ export function RestoreStep({
         services: result?.services ?? backupData.services?.length ?? 0,
         secretsIncluded: Boolean(backupData.secrets_included),
         webhooksNeedingUrl: result?.webhooks_needing_url ?? 0,
+        settingsNotRestored: result?.settings_not_restored ?? [],
+        domainsWithoutName: result?.domains_without_name ?? 0,
       });
     } catch (err: unknown) {
       setError(translateApiError(err, t, t('setup.restore.error_failed')));
@@ -151,6 +167,31 @@ export function RestoreStep({
             title={t('setup.restore.done_webhooks_title', { count: restoreSummary.webhooksNeedingUrl })}
           >
             {t('setup.restore.done_webhooks')}
+          </InlineAlert>
+        )}
+
+        {/* The restore answers with two more outcomes, and this screen is the only place the
+            operator will ever be told: the wizard leaves for the dashboard straight after.
+            A setting this version refuses is gone without a trace, and a domain row with no
+            name takes every route that used it down with it. */}
+        {restoreSummary.settingsNotRestored.length > 0 && (
+          <InlineAlert
+            tone="warning"
+            title={t('setup.restore.done_settings_title', { count: restoreSummary.settingsNotRestored.length })}
+          >
+            {t('setup.restore.done_settings', {
+              count: restoreSummary.settingsNotRestored.length,
+              keys: restoreSummary.settingsNotRestored.join(', '),
+            })}
+          </InlineAlert>
+        )}
+
+        {restoreSummary.domainsWithoutName > 0 && (
+          <InlineAlert
+            tone="warning"
+            title={t('setup.restore.done_domains_title', { count: restoreSummary.domainsWithoutName })}
+          >
+            {t('setup.restore.done_domains', { count: restoreSummary.domainsWithoutName })}
           </InlineAlert>
         )}
       </SetupStepShell>

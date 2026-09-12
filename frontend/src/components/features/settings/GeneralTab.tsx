@@ -63,6 +63,17 @@ export function GeneralTab() {
       if (data?.ignored?.length) {
         toast(t('settings.general.ignored_keys', { keys: data.ignored.join(', ') }));
       }
+      // Not the same news as `ignored`, and it used to be no news at all. The value *was*
+      // saved, so the green toast above is true; it is the running scheduler that refused
+      // it, and nothing on screen said so. The operator saw "saved", watched the interval
+      // not change, and had no reason to connect the two. It carries a warning icon and a
+      // longer read because, unlike every other line here, it asks for something to be done.
+      if (data?.not_applied?.length) {
+        toast(t('settings.general.not_applied', { keys: data.not_applied.join(', ') }), {
+          icon: '⚠️',
+          duration: 8000,
+        });
+      }
     },
     onError: (err: unknown) => toast.error(translateApiError(err, t, t('settings.general.policy_save_failed'))),
   });
