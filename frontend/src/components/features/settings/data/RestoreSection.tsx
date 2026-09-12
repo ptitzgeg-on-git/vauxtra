@@ -118,7 +118,14 @@ export function RestoreSection() {
     if (!pending) return;
     const ok = await confirm({
       title: t('settings.backup.restore_confirm_title'),
-      message: t('settings.backup.restore_confirm_message', pending.summary),
+      // Each noun is counted in its own language before the sentence is assembled: `t()`
+      // inflects exactly one `{count}`, and six numbers cannot share it.
+      message: t(
+        'settings.backup.restore_confirm_message',
+        Object.fromEntries(
+          SUMMARY_KEYS.map((key) => [key, t(`settings.backup.restore_count.${key}`, { count: pending.summary[key] })]),
+        ),
+      ),
       confirmLabel: t('settings.backup.restore'),
       variant: 'danger',
       // `POST /api/restore` empties the same sixteen tables `POST /api/reset` does, and the

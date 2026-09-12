@@ -384,7 +384,7 @@ export function WebhooksTab() {
           <>
             {webhooks.length > 0 && (
               <Badge tone={enabledCount > 0 ? 'success' : 'neutral'} dot>
-                {t('settings.webhooks.enabled_count', { enabled: enabledCount, total: webhooks.length })}
+                {t('settings.webhooks.enabled_count', { count: enabledCount, total: webhooks.length })}
               </Badge>
             )}
             <Button

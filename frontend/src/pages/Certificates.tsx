@@ -219,6 +219,7 @@ export function Certificates() {
     return {
       title: t('certificates.empty.none'),
       description: t('certificates.empty.none_hint', {
+        count: (capableProviders ?? []).length,
         providers: (capableProviders ?? []).map((provider) => provider.name).join(', '),
       }),
       action: (

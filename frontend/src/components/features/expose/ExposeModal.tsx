@@ -722,9 +722,9 @@ export function ExposeModal({
             >
               <span className="text-xs text-muted-foreground">
                 {t('expose.preflight.summary', {
-                  total: preflight.summary.total,
-                  blocking: blockingFailures,
-                  warnings: warningCount,
+                  checks: t('expose.preflight.checks_count', { count: preflight.summary.total }),
+                  blocking: t('expose.preflight.blocking_count', { count: blockingFailures }),
+                  warnings: t('expose.preflight.warnings_count', { count: warningCount }),
                 })}
               </span>
             </SectionHeading>

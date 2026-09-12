@@ -99,7 +99,10 @@ function DriftSummary({ drift }: { drift: DriftResult }) {
       tone={errors > 0 ? 'danger' : 'warning'}
       title={t('services.drift.out_of_sync_title', { count: drift.issues.length })}
     >
-      {t('services.drift.out_of_sync_body', { errors, warnings: warns })}
+      {t('services.drift.out_of_sync_body', {
+        errors: t('services.drift.errors', { count: errors }),
+        warnings: t('services.drift.warnings', { count: warns }),
+      })}
     </InlineAlert>
   );
 }

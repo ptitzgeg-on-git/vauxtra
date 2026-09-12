@@ -350,7 +350,7 @@ export function Providers() {
       setDiagnostics((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
       const failed = entries.filter(([, data]) => !data?.ok).length;
       if (failed === 0) toast.success(t('providers.refresh.success_all_passed'));
-      else toast.error(t('providers.refresh.failed_count', { failed, total: enabled.length }));
+      else toast.error(t('providers.refresh.failed_count', { count: failed, total: enabled.length }));
     } catch {
       toast.error(t('providers.refresh.failed'));
     } finally {

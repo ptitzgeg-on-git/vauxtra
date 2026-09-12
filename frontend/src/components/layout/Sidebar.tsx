@@ -274,7 +274,7 @@ export function Sidebar({
                       // `aria-label` replaces the whole subtree in the name -- so the count goes into the name.
                       aria-label={
                         item.badge !== undefined
-                          ? t('layout.nav.item_with_badge', { label: item.label, count: formatBadge(item.badge) })
+                          ? t('layout.nav.item_with_badge', { label: item.label, badge: formatBadge(item.badge) })
                           : item.label
                       }
                       aria-current={active ? 'page' : undefined}
