@@ -85,7 +85,7 @@ def list_api_keys(request: Request):
         conn.close()
 
 
-@router.post("/api/settings/api-keys")
+@router.post("/api/settings/api-keys", status_code=201)
 @limiter.limit("10/minute")
 def create_api_key(request: Request, body: ApiKeyCreate):
     require_auth(request, scope="admin")

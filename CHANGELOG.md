@@ -66,6 +66,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   nothing about the sixty commits behind it, and reported green for a history it never
   opened.
 
+- **The runtime image shipped fourteen fixable CRITICAL/HIGH CVEs, and the removal of pip had
+  quietly stopped happening.** Two independent defects in the same `Dockerfile`, one of them
+  red on every build, the other invisible.
+
+  `python:3.14-slim` is rebuilt on its own schedule, and between two of its rebuilds Debian
+  publishes security updates for packages already baked into it. With no `apt-get upgrade`,
+  the image never receives them. perl-base carried three CRITICAL advisories; libsqlite3-0,
+  libpcre2-8-0 and gzip carried HIGH ones; every one of those fixes was already sitting in
+  the Debian archive. The image scan gate failed on exactly this, and it failed on something
+  upstream rather than on anything written here, which is why nothing in the source looked
+  wrong.
+
+  The second defect never failed anything. The two `rm -rf` calls that remove pip and the
+  bundled `ensurepip` wheel named `/usr/local/lib/python3.13/...`, and the base image had
+  moved to 3.14. Removing a path that does not exist succeeds and prints nothing, so from
+  that version onward the removal simply stopped happening while the build stayed green. The
+  1.8 MB `ensurepip` wheel, and with it a complete copy of the vendored dependency tree that
+  the comment above spends fifteen lines arguing must go, shipped in every image since. Both
+  directories are now asked of `sysconfig` instead of being spelled out, and the build fails
+  outright if `ensurepip` survives its own removal, so the next Python bump cannot break this
+  the same silent way.
+
+  Measured on the rebuilt image: zero fixable CRITICAL or HIGH findings, OS packages and
+  Python packages alike, against fourteen before.
+
 ### Added
 
 - **A frontend test runner, because three fixes in a row shipped with the same caveat.** The
@@ -591,6 +616,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   tracks the two paths a human types through instead. `TemplateModal` compares against the
   template it was opened on, with the tag list sorted first, since tag order is click order and
   a tag turned off and back on is not a change anybody made.
+
+### Changed
+
+- **`POST /api/settings/api-keys` answers `201`, not `200`.** The eleven other routes that
+  create a resource already answered `201`; this one did not. Nothing broke, because both the
+  panel and the MCP bridge accept any 2xx, which is exactly why it went unnoticed for so long.
+  It was wrong in the one place that matters least to us and most to everyone else: the
+  published OpenAPI schema, which is what a third-party client reads to learn what a
+  successful creation looks like. A test now holds every creation route to `201` as declared
+  in that schema, and holds the list of those routes against the schema in both directions so
+  it cannot rot unnoticed.
+
+  **Upgrading:** a client that compares the status to `200` exactly must accept `201`. Both
+  clients shipped with Vauxtra already accept any 2xx and need no change.
 
 ---
 
