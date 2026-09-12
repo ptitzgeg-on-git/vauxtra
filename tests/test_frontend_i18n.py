@@ -162,9 +162,11 @@ class NoWordLostItsAccentsTests(unittest.TestCase):
         which. An accent in the MIDDLE of a word has no such excuse.
       * under four letters it is a function word, which is never silently stripped alone.
 
-    What survives is `HOMOGRAPHS`: fourteen words, listed one language at a time because each
-    one is a real pair a human had to look at. Adding to it means asserting that both
-    spellings are correct French, Spanish, Portuguese or German -- not that the test is noisy.
+    What survives is `HOMOGRAPHS`: a short list, kept one language at a time because every
+    entry is a real pair a human had to look at, and no entry earns its place by being
+    inconvenient. Adding to it means asserting that both spellings are correct French,
+    Spanish, Portuguese or German -- not that the test is noisy. When it fires on a word
+    that is not in it, the locale is wrong until somebody shows otherwise.
     """
 
     # Both spellings are real words. Checked one by one; the count is deliberately small.
@@ -178,9 +180,10 @@ class NoWordLostItsAccentsTests(unittest.TestCase):
         "es": {"como", "cual", "cuando", "cuanto", "donde", "quien", "publica"},
         # `pode` (he can) / `pôde` (he could), `publica` / `pública`, as in Spanish.
         "pt": {"pode", "publica"},
-        # `konnte`/`könnte` and `wurden`/`würden` are indicative against subjunctive,
-        # `lange` (long) is not `Länge` (length).
-        "de": {"konnte", "lange", "wurden"},
+        # `konnte`/`könnte`, `wurden`/`würden` and `waren`/`wären` are indicative against
+        # subjunctive, `lange` (long) is not `Länge` (length), and `eintragen` (to enter) is
+        # not `Einträgen` (the dative plural of `Eintrag`, which this test lowercases first).
+        "de": {"eintragen", "konnte", "lange", "waren", "wurden"},
         "nl": set(),
     }
 

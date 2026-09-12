@@ -13,6 +13,7 @@ from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, 
 from app.limiter import limiter
 from app.models import add_log, get_db
 from app.security import mask_secret_url, validate_password_strength
+from app.text import plural, verb
 
 router = APIRouter()
 
@@ -72,6 +73,23 @@ _RESTORE_WIPE_TABLES = (
 # decision rather than an oversight. `settings` is wiped separately, down to the protected
 # keys; `api_keys` is never touched.
 _RESTORE_KEEPS = frozenset({"settings", "api_keys"})
+
+# Settings a backup file carries and a restore does NOT take, on purpose, so that they are
+# never reported as lost.
+#
+# `_PROTECTED_SETTINGS` is the set the wipe above leaves standing: the admin password hash,
+# the setup marker, the schema version, the auth mode, the session epoch. Those belong to the
+# instance in front of you and not to the file -- restoring a five-month-old `schema_version`
+# would tell the migrations that work already done is still pending, and restoring an old
+# `session_epoch` would revive sessions the operator revoked.
+#
+# `webhook_log_purge_done` is a one-shot marker for a security migration that deletes webhook
+# URLs out of old log lines. Losing it costs one idempotent re-run at the next boot, which is
+# the safe direction.
+#
+# Anything else in the file that `_VALID_SETTINGS` does not accept is a setting the operator
+# configured and is not getting back, and that is what gets named.
+_RESTORE_DROPS_ON_PURPOSE = frozenset(_PROTECTED_SETTINGS) | {"webhook_log_purge_done"}
 
 
 _BACKUP_VERSION = "8"  # Version 8 encrypts the webhook URLs too, and says which fields
@@ -362,10 +380,18 @@ def import_backup(request: Request, body: RestoreRequest):
                 (env.get("id"), env.get("name"), env.get("color", "blue"), env.get("created_at")),
             )
 
+        domains_without_name = 0
+        settings_not_restored: list[str] = []
+
         for dom in data.get("domains", []):
             name = dom.get("name") if isinstance(dom, dict) else dom
             created_at = dom.get("created_at") if isinstance(dom, dict) else None
             if not name:
+                # Counted rather than passed over. A domain row with no name cannot be
+                # written, and every service that referenced it comes back pointing at a
+                # domain the list no longer offers -- which the operator discovers on the
+                # next edit, not here, unless the count says so.
+                domains_without_name += 1
                 continue
             if created_at:
                 conn.execute(
@@ -501,6 +527,14 @@ def import_backup(request: Request, body: RestoreRequest):
             # `detect_server_public_ip` refuses an answer that is not publicly routable.
             key = setting.get("key")
             if key not in _VALID_SETTINGS:
+                # Named, unless the drop is one the restore makes on purpose. A key that is
+                # neither accepted nor deliberately dropped is configuration the operator
+                # saved and is not getting back: a setting this version has retired, or a
+                # file written by a newer Vauxtra. The restore still succeeds -- refusing the
+                # whole file over one unknown key would be worse -- but it stops being the
+                # kind of success that hides a loss.
+                if key and key not in _RESTORE_DROPS_ON_PURPOSE:
+                    settings_not_restored.append(str(key))
                 continue
             value = setting.get("value")
             if key == "webhook_url":
@@ -538,13 +572,40 @@ def import_backup(request: Request, body: RestoreRequest):
 
     conn.close()
     add_log("info", f"Backup restored (version {data.get('version')})")
+    # One line each, and only when there is something to say. A restore writes a single
+    # "Backup restored" line by design, and two more that appeared on every run would make
+    # the three of them read as ceremony.
+    if settings_not_restored:
+        n = len(settings_not_restored)
+        add_log(
+            "warning",
+            "Backup restored: "
+            + plural(n, "setting")
+            + " in the file "
+            + verb(n, "is", "are")
+            + " not accepted by this version, and "
+            + verb(n, "was", "were")
+            + " dropped rather than restored ("
+            + ", ".join(sorted(settings_not_restored))
+            + ")",
+        )
+    if domains_without_name:
+        add_log(
+            "warning",
+            "Backup restored: "
+            + plural(domains_without_name, "domain")
+            + " in the file carried no name and could not be recreated",
+        )
     svc_count = len(data.get("services", []))
     prv_count = len(data.get("providers", []))
     # Reported, not buried: without this the operator has no way of knowing that some
-    # notification targets came back switched off.
+    # notification targets came back switched off, that a setting did not survive the file,
+    # or that a domain row in it had no name to be recreated under.
     return {
         "ok": True,
         "services": svc_count,
         "providers": prv_count,
         "webhooks_needing_url": webhooks_needing_url,
+        "settings_not_restored": sorted(settings_not_restored),
+        "domains_without_name": domains_without_name,
     }

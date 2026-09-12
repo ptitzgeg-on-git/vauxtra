@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from app.auth import require_auth, require_auth_or_setup
+from app.importing import refuse_import, set_aside
 from app.models import add_log, get_db
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import describe_public_target_failure, resolve_public_target
+from app.text import plural
 
 router = APIRouter()
 
@@ -782,24 +784,104 @@ def sync_services(request: Request):
 
 @router.post("/api/services/import")
 def import_services(request: Request, data: dict = Body(...)):
+    """Turn scanned provider rows into services, and say what happened to every one of them.
+
+    Four outcomes, because two were not enough to tell the operator anything. A row is
+    `imported` (a new service), `linked` (an existing service gained the DNS half it was
+    missing -- a real write that used to be reported as nothing at all), set aside on purpose
+    (`skipped`), or refused because something is wrong with it (`errors`).
+
+    Two rows can make one service, and that is the point of the pairing: a DNS record whose
+    name matches a proxy host in the same payload is folded into that host, and the pair is
+    counted once under `imported`. Apart from that fold every submitted row lands in exactly
+    one of the four -- and `skipped` may carry extra lines for names *inside* a row that could
+    not become a service of their own, so it is the one bucket that can outrun the row count.
+
+    `imported` and `errors` keep the meaning and the shape they always had, so every existing
+    caller keeps working; `linked` and `skipped` are additions.
+    """
     require_auth_or_setup(request, scope="write")
     imported = 0
+    linked   = 0
+    skipped  = []
     errors   = []
     conn     = get_db()
 
-    dns_by_fqdn = {r["domain"]: r for r in data.get("dns_rewrites", []) if r.get("domain")}
+    # Built one row at a time rather than by a comprehension: the comprehension dropped a
+    # nameless record, and a second record for a name already in the map, without either the
+    # loop below or the caller ever hearing of them. Both shapes are real -- AdGuard and
+    # Pi-hole hold two rewrites for one name without complaining.
+    #
+    # Two deliberate changes live here, neither of them a side effect of rewriting the loop.
+    #
+    # Names are compared stripped. Unstripped, " nas.maison.lan " was a different key from
+    # "nas.maison.lan" and imported a second service whose subdomain was " nas" and whose
+    # domain was "maison.lan " -- a row that matches no scan and pushes nowhere. The proxy
+    # loop strips the same way, so a padded name on one side still pairs with a clean one on
+    # the other.
+    #
+    # And on a name two providers answer for, the comprehension kept the LAST record; this
+    # keeps the first. Neither is a better guess: `sync_services` selects providers with no
+    # ORDER BY, so which one arrives first is not the repository's to promise. What changed is
+    # that the choice is no longer silent -- the message below names both providers, so the
+    # operator settles it at the provider instead of discovering months later which address
+    # `push_service` has been writing.
+    dns_by_fqdn: dict[str, dict] = {}
+    for r in data.get("dns_rewrites", []):
+        fqdn = str(r.get("domain") or "").strip()
+        if not fqdn:
+            refuse_import(
+                errors, conn,
+                f"a DNS record from {r.get('_provider_name') or 'the provider'}",
+                "it carries no name to import under",
+            )
+            continue
+        if fqdn in dns_by_fqdn:
+            kept = dns_by_fqdn[fqdn].get("_provider_name") or "the first provider"
+            other = r.get("_provider_name") or "another provider"
+            if kept == other:
+                # One provider answering twice for one name is not two integrations
+                # disagreeing, it is a duplicate row inside one of them, and naming the
+                # provider twice in the same sentence reads like a bug in the message.
+                reason = (
+                    f"{kept} holds two records for this name. The first is the one imported; "
+                    f"remove the duplicate at the provider"
+                )
+            else:
+                reason = (
+                    f"{kept} and {other} both answer for this name. The answer from {kept} is "
+                    f"the one imported; remove the other, or the two will drift apart"
+                )
+            refuse_import(errors, conn, fqdn, reason)
+            continue
+        dns_by_fqdn[fqdn] = r
 
     for h in data.get("proxy_hosts", []):
+        where = f"proxy host {h.get('id', '?')} on {h.get('_provider_name') or 'the provider'}"
         try:
-            domains = h.get("domains") or h.get("domain_names", [])
+            raw = h.get("domains") or h.get("domain_names") or []
+            domains = [str(d).strip() for d in raw if str(d).strip()]
             if not domains:
+                refuse_import(errors, conn, where, "the provider listed no domain name for it")
                 continue
             fqdn  = domains[0]
+            # A proxy host may serve several names; a service carries one. The rest are named
+            # rather than dropped, because the operator ticked one row and gets one service.
+            for spare in domains[1:]:
+                set_aside(
+                    skipped, spare,
+                    f"{where} also answers for {fqdn}, and a service carries a single name",
+                )
             parts = fqdn.split(".", 1)
             if len(parts) < 2:
+                refuse_import(
+                    errors, conn, fqdn,
+                    "a domain needs at least one dot, so this name has no subdomain to split off",
+                )
                 continue
             subdomain, domain = parts[0], parts[1]
             if conn.execute("SELECT id FROM services WHERE subdomain=? AND domain=?", (subdomain, domain)).fetchone():
+                set_aside(skipped, fqdn, "Vauxtra already tracks this name")
                 continue
 
             provider_type = (h.get("_provider_type") or "").strip().lower()
@@ -847,13 +929,25 @@ def import_services(request: Request, data: dict = Body(...)):
             dns_by_fqdn.pop(fqdn, None)
             add_log("info", f"Imported: {fqdn}" + (" (proxy + DNS)" if dns_match else ""), conn)
         except Exception as e:
-            errors.append(str(e))
+            # Through the helper like every other refusal: an exception here is still a row
+            # the operator ticked, and `str(e)` on its own named neither the row nor a place
+            # to look, and wrote nothing to the journal.
+            refuse_import(errors, conn, where, f"importing it raised {type(e).__name__}: {e}")
 
     for fqdn, r in dns_by_fqdn.items():
         try:
             ip    = r.get("answer", "")
             parts = fqdn.split(".", 1)
-            if not ip or len(parts) < 2:
+            # Split in two, because the two causes are not cured the same way: one is a
+            # record to fix at the provider, the other a name that can never be a service.
+            if not ip:
+                refuse_import(errors, conn, fqdn, "its record answers with no address")
+                continue
+            if len(parts) < 2:
+                refuse_import(
+                    errors, conn, fqdn,
+                    "a domain needs at least one dot, so this name has no subdomain to split off",
+                )
                 continue
             subdomain, domain = parts[0], parts[1]
             existing = conn.execute(
@@ -864,7 +958,11 @@ def import_services(request: Request, data: dict = Body(...)):
                     "UPDATE services SET dns_provider_id=?, dns_ip=? WHERE id=?",
                     (r.get("_provider_id"), ip, existing["id"]),
                 )
-                add_log("info", f"DNS linked: {fqdn} → {ip}", conn)
+                # Counted, because this writes to the row `push_service` reads next. It used
+                # to update the service, log it, and still answer `{"imported": 0,
+                # "errors": []}` -- the answer for "there was nothing to do".
+                linked += 1
+                add_log("info", f"DNS linked: {fqdn} -> {ip}", conn)
             else:
                 conn.execute(
                     """INSERT INTO services
@@ -874,10 +972,14 @@ def import_services(request: Request, data: dict = Body(...)):
                 )
                 conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
                 imported += 1
-                add_log("info", f"Imported from DNS: {fqdn} → {ip}", conn)
+                add_log("info", f"Imported from DNS: {fqdn} -> {ip}", conn)
         except Exception as e:
-            errors.append(str(e))
+            refuse_import(errors, conn, fqdn, f"importing it raised {type(e).__name__}: {e}")
+
+    if skipped:
+        # One line for the run. See `set_aside`.
+        add_log("info", f"Import passed over {plural(len(skipped), 'row')} already accounted for", conn)
 
     conn.commit()
     conn.close()
-    return {"imported": imported, "errors": errors}
+    return {"imported": imported, "linked": linked, "skipped": skipped, "errors": errors}

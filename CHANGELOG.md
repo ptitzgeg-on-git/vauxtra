@@ -91,6 +91,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   Measured on the rebuilt image: zero fixable CRITICAL or HIGH findings, OS packages and
   Python packages alike, against fourteen before.
 
+- **An invisible character pasted into a permission column granted admin.** `_split_scopes`
+  called a bare `str.strip()` on each segment of the stored `scopes` column, and the boundary
+  that draws is the Unicode blank table, not a rule anyone had written down. Measured against
+  a live admin route, `GET /api/settings/api-keys`, with a key whose column held one code
+  point in front of `admin`: U+0009, U+000A, U+0020, U+00A0 (no-break space) and U+2007
+  (figure space) all answered **200, admin granted**; U+200B (zero-width space) answered
+  **401**. Three invisible prefixes opened the admin routes and a fourth did not, and no line
+  in the source said which was which. The padding is now named — `_SCOPE_PADDING =
+  string.whitespace` — and it is the whole of it: the six ASCII blanks, the ones a keyboard or
+  a shell produces. After: U+0009, U+000A and U+0020 still grant admin, and **U+00A0, U+2007
+  and U+200B are all refused with 401**. A pasted blank stays part of the token, so the scope
+  becomes a word the build has never heard of, `_get_auth_context` turns the key away, and the
+  warning it logs prints the stored value, which is how an operator discovers that the column
+  holds something invisible. `" admin"` with an ordinary space still grants admin: that one
+  was already a decision, pinned in `tests/test_api_key_scope_residues.py`, and it stays one.
+
+  **Upgrading:** a key whose `scopes` column was pasted out of rendered text stops
+  authenticating and says so in the log. Revoke it and create a replacement.
+
 ### Added
 
 - **A frontend test runner, because three fixes in a row shipped with the same caveat.** The
@@ -110,7 +129,225 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   at all — a test whose result depends on what happens to be running on the machine is not
   a test.
 
+- **The API and the MCP bridge are compared on what they accept, not just on what they
+  answer.** `scripts/check_api_mcp_parity.py` matched the bridge's 84 tools to the API by
+  method and path, which catches a tool pointed at a route that does not exist and nothing
+  else. Every constraint on the way in was outside the comparison. The checker now walks the
+  AST of both sides: it resolves Pydantic model inheritance, reads `Literal` members,
+  `Field(ge=…, le=…)` bounds and the membership and range predicates written inside
+  `field_validator` bodies, and compares each against the matching tool's signature.
+
+  Run against the tree this work started from, it reported **25 divergences** in four shapes.
+  Sixteen were a closed set declared as an open `str`: `forward_scheme` against
+  `Literal["http", "https"]`, `expose_mode`, `public_target_mode`, a bulk `action` against
+  three verbs, a provider `type` against ten names, a tag `color` against fourteen. Five were
+  `target_port` as an unbounded `int` against a 1–65535 bound. Two were a parameter the tool
+  demanded that the route does not — `create_api_key`'s `scopes`, `validate_provider_draft`'s
+  `url` — so the assistant was being refused a body the API would have taken. The last two
+  are `apply_template` inventing a domain and a port for a template that names neither, which
+  is written up under **Fixed** below — the checker found that one rather than agreeing with
+  it afterwards.
+
+  `CONTRACT_DIVERGENCE_COUNT` is now **0**, and the build fails when it moves. Twenty tool
+  calls are compared against a model, three findings are exempt with the reason recorded
+  beside each, and ten routes validate a plain dict by hand and so carry no contract for a
+  tool to declare. That last number is printed with the routes named, rather than passed over
+  silently, so the size of the un-compared remainder is visible instead of implied.
+
+- `tests/test_unique_violation_race.py` runs the race itself rather than describing it: a
+  second connection commits the competing key at the instant the route issues its INSERT, so
+  the lookup reads a table without the row and the INSERT meets one with it. It also pins the
+  two halves that must both survive — the lookup still refuses the ordinary duplicate without
+  reaching the index, and a locked base is still a 500.
+
+- `tests/test_docker_fault_boundary.py` drives a fault through each of the three helpers and
+  reads the status code, keeps the daemon's own refusals at 502 (including the lazy image
+  lookup), and reads the boundary back out of the source so a helper moved inside the guard is
+  red the day it moves. The reader carries a positive control built from the shape the faults
+  were measured on, so a rule that matched nothing could not pass for a clean result.
+
+- `tests/test_docker_import_outcomes.py`, 17 tests over the four things that can happen to a
+  ticked container, and `tests/test_api_key_write_scope.py`, which walks the router instead of
+  keeping a list of paths (see **Changed**). The Docker file holds the two import routes to
+  one contract by identity — it asserts that both modules hold the *same* function objects,
+  not that their source looks alike, because two routes that merely resemble each other are
+  exactly what drifted apart in the first place.
+
+- `expose.preflight.detail.dns_target_required` and
+  `expose.preflight.detail.dns_target_detection_failed`, in all eight locales. The preflight
+  has been emitting both detail keys from `describe_public_target_failure()` since the DNS
+  target check was split in two, and the panel had a translation for neither, so the one
+  reachable state a first-time operator meets — no public target set, on a hostname that needs
+  one — fell through to the raw English sentence in every language. They are the two halves of
+  the same gate: an address was never entered, or automatic detection ran and found nothing
+  usable. Each says which of the two it is and what to do about it, which is the whole reason
+  they were split.
+
+- Six counted sentences for the restore outcomes below:
+  `settings.backup.restore_settings_dropped`, `settings.backup.restore_domains_skipped`,
+  `setup.restore.done_settings_title`, `setup.restore.done_settings`,
+  `setup.restore.done_domains_title` and `setup.restore.done_domains`. The bodies are plural
+  families and not just the titles, so that French, Spanish, Portuguese, German and Dutch
+  agree at one as well as at many; `{count}` selects the form even where the text does not
+  repeat the number.
+
 ### Fixed
+
+- **Three rows that could never become a service were reported as "all services already
+  imported".** `POST /api/services/import` answered with two fields, `imported` and
+  `errors`, and `errors` only ever carried the message of an exception. Every other outcome
+  was a bare `continue`, which meant the panel had one branch for all of them: when nothing
+  was imported and nothing raised, it showed the green *Sync complete - all services already
+  imported*. For twenty routes Vauxtra already tracks, that sentence is true. For a proxy
+  host the provider listed with no domain name, a DNS record answering with no address, or a
+  single-label name with no dot to split on, the identical path produces the identical
+  sentence, and it is false in every word: those rows were not imported, are not tracked,
+  and never will be until somebody fixes them at the provider. Nothing in the answer, and
+  nothing in the journal, told the two cases apart.
+
+  The route now answers with four outcomes: `imported`, `linked`, `skipped` and `errors`.
+  `imported` and `errors` keep the meaning and the shape they had, so every existing caller
+  keeps working. `skipped` names the rows passed over on purpose, which is not a failure and
+  must not be painted as one. `linked` counts a write that was previously counted nowhere:
+  an existing service gaining the DNS half it was missing is a real `UPDATE` that creates no
+  row, so it fell through every field of the old answer and the operator was told zero.
+
+  Refusals are named rather than counted — *"Import skipped proxy host 91 on the provider:
+  the provider listed no domain name for it"* — and a row that raises names itself and its
+  provider, where the old answer surfaced a bare `invalid literal for int() with base 10`
+  with nothing to attach it to.
+
+  Two providers answering for the same name used to resolve silently and by the last one
+  seen, which was not something the code could promise: providers are read with no
+  `ORDER BY`, so the winner depended on the order SQLite happened to return. The first
+  record is now the one kept, both providers are named, and the message says which answer
+  was imported, because the loser is the row the operator has to go and remove. One provider
+  holding that name twice reads differently — a duplicate inside one integration, not two
+  integrations disagreeing — and no longer produces a sentence naming the same provider
+  twice.
+
+  Apart from one deliberate fold, every submitted row lands in exactly one of the four: a
+  DNS record whose name matches a proxy host in the same payload is the other half of that
+  host, not a second service, so the pair is counted once under `imported`. The route
+  docstring, `tests/test_import_outcomes.py` and the MCP tool that wraps the route all say
+  so in those terms, because a reader who adds the four up is owed the exception rather than
+  left to discover it.
+
+  The journal follows the rule `check_all` already set: one line for the run, not one per
+  row. Twenty rows already tracked add a single line saying twenty, where a line each would
+  bury the rest of *Recent activity*. Refusals still get one line apiece, because those are
+  the ones with somewhere to go and something to fix.
+
+  Naming four outcomes on the wire changes nothing until something reads them, and neither
+  screen did. The settings panel read `imported`, and read `errors` only when `imported` was
+  zero: a batch that created two services and refused a third reported the two and swallowed
+  the refusal, and a batch that only linked reported nothing at all. The setup wizard was
+  worse in one specific way — it announced refusals under the word *skipped*, which is the
+  name of the other outcome, so the one case the operator has to go and fix was labelled
+  with the one they can ignore. Both now raise a line per outcome, and the counted line is
+  enough on its own because the sentence behind it is in *Recent activity*, which the same
+  handler refetches.
+
+  *Sync complete — all services already imported* is gone with them. It was the fallback for
+  every quiet run, and now that rows set aside are counted and named on their own it was
+  claiming something the answer no longer needs it to claim; what is left for that line is
+  the run that had nothing to act on, so it says *Nothing to import* in all eight languages.
+
+- **A setting could be stored and never take effect, under a green "Saved".**
+  `POST /api/settings` writes the row, commits, and only then hands the value to the running
+  scheduler. That order is the right one — the database is the record and the scheduler is a
+  consequence of it — but the window it opens was handled by
+  `except (ImportError, TypeError, ValueError): pass`, and each of those three was wrong in
+  its own way.
+
+  Two of them could not happen. `_validate_setting` stores `str(number)` for every key in
+  `_SETTING_RANGES` or refuses the whole payload with a `400`, so the `int()` that follows
+  cannot raise `TypeError` or `ValueError` on a value that reached it: two thirds of the
+  clause were guarding against a state the validation above already makes impossible. The
+  third could and did. A scheduler module that fails to import leaves `check_interval`
+  written and the health checks running at the old value, answered with
+  `{"ok": true, "saved": ["check_interval"]}` — and confirmed by a settings page that reads
+  the stored value back and shows the operator exactly the number they typed. Nothing
+  anywhere said the two had diverged.
+
+  Everything the clause did *not* name went the other way and left the route as a `500`, for
+  a setting that had already been written. The obvious reaction to that is to try again,
+  which repeats a write that succeeded.
+
+  The answer now carries `not_applied` beside `saved`, because those answer two different
+  questions and both can be true at once, and the journal carries the exception that caused
+  it. The stored value stands: it was committed before the scheduler was called, it is the
+  record, and rolling it back to agree with a scheduler that is itself broken would throw
+  away the operator's input to make the two agree on the wrong one. `auto_reconcile` keeps
+  its `int()` inside the guard, unlike `check_interval`, because it reads its value back out
+  of the database rather than from the payload just validated, and a row written before
+  `_SETTING_RANGES` existed can still hold a word.
+
+- **A restore dropped rows out of the file and answered `{"ok": true}`.** Two `continue`
+  statements in `POST /api/restore` decided the fate of rows and said nothing about it. A
+  domain row carrying no name could not be written, and every service that referenced it
+  came back pointing at a domain the list no longer offers — which the operator meets on
+  the next edit, with no reason to connect it to the restore. A setting the running version
+  does not accept went the same way, and *dropped* is the accurate word rather than *kept*:
+  the restore empties the `settings` table before refilling it, so an unaccepted key does
+  not retain the value this instance already had, it ends up absent.
+
+  The answer now carries `settings_not_restored`, naming each one, and
+  `domains_without_name`, counting them. The journal gets one warning line per category,
+  never one per row, and the sentence agrees with the count in the noun, the verb and the
+  auxiliary rather than in the noun alone.
+
+  The hard part was not detecting the loss, it was not crying wolf. Six keys travel in every
+  backup file and are dropped on purpose by every restore: the five in `_PROTECTED_SETTINGS`
+  — the admin hash, the setup marker, the schema version, the auth mode, the session epoch,
+  each belonging to the instance in front of you rather than to the file — plus
+  `webhook_log_purge_done`, a one-shot migration marker whose loss costs one idempotent
+  re-run at the next start. Naming those would have fired on every single restore and taught
+  the operator to skip the line that matters. `_RESTORE_DROPS_ON_PURPOSE` is therefore built
+  from `_PROTECTED_SETTINGS` instead of written out by hand, so a key added to the protected
+  tuple cannot start being reported as lost, and `tests/test_restore_reporting.py`
+  fails if that calibration is ever given up.
+
+  **Upgrading:** the four fields the panel already reads — `ok`, `services`, `providers`,
+  `webhooks_needing_url` — are unchanged; the two above are additions.
+
+- **A template could hold every value a service refuses, and the refusal arrived at the
+  worst possible moment.** A service template is a `POST /api/services` payload saved once
+  and applied many times, and `TemplateIn` validated three of its fields.
+  `public_target_mode: "garbage"`, `dns_ip: "not an address"` and a domain no zone will ever
+  carry were each stored with a `201`. Nothing was wrong until the template was used, and
+  then the refusal named a field the operator was not editing, on a form they had just
+  opened, about a decision somebody else took weeks earlier. `domain`, `dns_ip` and
+  `public_target_mode` are now checked exactly as `ServiceIn` checks them, with the one
+  difference that is the whole point of a template: any of them may be left empty, because
+  filling it in is the operator's job at apply time. A value that is *present* is a value
+  the service route will be handed verbatim, so it is refused once, where it was typed.
+
+  The two kinds of id a template names failed in two different ways, neither of them
+  useful. `proxy_provider_id`, `dns_provider_id` and `tunnel_provider_id` are real foreign
+  keys — `service_templates` declares `ON DELETE SET NULL` on all three — so an id naming no
+  row reached SQLite and came back as an `IntegrityError`: a `500` on a form that was
+  correct apart from one dropdown. `tag_ids` lives in `tag_ids_json`, a TEXT column no
+  constraint reaches, so an unknown tag was stored without a word and handed back by
+  `GET /api/templates/{id}/apply` for as long as the template existed; the refusal finally
+  arrived from `POST /api/services`, naming a tag id nobody had chosen. Both are now checked
+  before the write, by the same `_unknown_references` shape `app/api/services.py` has used
+  all along, and both answer `400` naming every unknown id — `Nothing was created -- unknown
+  tag 12, provider 4` — with nothing written.
+
+  A reference that rots *after* the save was the other half of the same asymmetry. A deleted
+  provider empties its column, because the foreign key says so. A deleted tag left its id in
+  the JSON and the panel went on sending it. Every read now drops ids naming tags that no
+  longer exist, so a tag rots the way a provider already did: quietly, before anybody is
+  asked to do something about it. Dropping it on `apply` alone would have been worse than
+  not dropping it at all — the editor draws one chip per existing tag, so a dead id has no
+  chip to click off, and the refusal added above would then have blocked the save for
+  something the form gave no way to remove. The stored column is left untouched, so a tag
+  deleted by mistake and put back by hand returns to the templates that named it.
+
+  `tag_ids` now always reads back as a list of ints. `{"a": 1}` is valid JSON, so the old
+  `except` never fired and the object reached the panel under a name every caller reads as a
+  list of ids.
 
 - **Two hostname halves that each fit could be saved as a name no DNS zone will ever carry.**
   A 250-character subdomain and `example.com` were each inside their own 253-character limit,
@@ -617,6 +854,242 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   template it was opened on, with the tag list sorted first, since tag order is click order and
   a tag turned off and back on is not a change anybody made.
 
+- **The Docker import reported a container it had refused with the same number, the same
+  colour and the same word as one it had passed over on purpose.** `POST /api/docker/import`
+  answered `{"imported": n, "skipped": n, "errors": [...]}`, and `skipped` was a single integer
+  standing for two outcomes that have nothing in common: a container Vauxtra already tracks,
+  which is the ordinary result of ticking a whole page, and one this route *refused* — no
+  address, or no usable port — which is the one case the operator has to go and fix. Neither
+  was named and neither reached the journal, so a run that dropped five of six selected
+  containers answered "5 skipped" and left no record anywhere of which five, or why. This is
+  the defect `POST /api/services/import` was taken through one version ago, still standing in
+  the other import.
+
+  `skipped` and `errors` are now both lists of sentences naming the container Docker named,
+  refusals are written to the journal as warnings, and containers passed over on purpose get
+  one `info` line for the run rather than one line each. The panel reads all three: one toast
+  per outcome, green for what was imported, neutral for what was already tracked, red for what
+  was refused — the same three lines the migration panel already shows, in the same words,
+  because they are the same three things happening to a different inventory. Before this,
+  `errors` was not rendered at all: a run that refused every container it was given reported
+  success.
+
+  The two routes now report through one module, `app/importing.py`, rather than through a
+  helper each. That is what stops the next fix from landing on one import and not the other,
+  and it is asserted by identity rather than by resemblance.
+
+- **A preflight check could say `blocking`, grey the save button out, and the update route
+  would save that exact body anyway.** `blocking: True` is not a severity in this codebase, it
+  is a claim about another route: the Expose panel disables "Create route" while
+  `summary.blocking_failures` is above zero and offers nothing to press instead, so a check
+  that blocks is promising the save route refuses the same body. Measured on a service whose
+  DNS provider was kept and whose address was cleared, `POST /api/services/preflight` answered
+  `{"blocking_failures": 1, "ok": false}` with `dns_target_resolution` failing on
+  `dns_target_required`, `POST /api/services` answered `400 dns_target_required` on the same
+  body — and `PUT /api/services/1` answered `200` with `errors: []`. The saved service kept
+  serving, because after resolution had already failed `update_service` fell back to
+  `old["dns_ip"] or ""` and wrote a DNS rewrite pointing at whatever address the row happened
+  to be holding. The operator saw a red badge, a dead button, and a service that saved and
+  worked; three routes, three answers, on one body.
+
+  A second, narrower gap sat next to it. `add_service` opens by refusing a `proxy_dns` service
+  with no provider target at all; `update_service` never had that guard. Measured on
+  `{proxy_provider_id: null, dns_provider_id: null}`: preflight `{"blocking_failures": 1,
+  "ok": false}` on `provider_target_required` / `target_none`, `POST` `400 At least one proxy
+  or DNS provider target is required`, `PUT` `200` — the hostname moved and nothing anywhere
+  was left to serve it. `update_service` now raises the same 400, after the 404 so that a PUT
+  on a service that is not there still says so first.
+
+  The third asymmetry pointed the other way, and cost the operator a refusal they did not
+  deserve. `_run_preflight` always resolved the public target from nothing, which is what
+  `add_service` does; `update_service` resolves from the row it is about to overwrite. A
+  service already holding a target, in automatic mode, on a network where detection found
+  nothing, therefore read `dns_target_detection_failed` and `{"blocking_failures": 2,
+  "ok": false}` while the `PUT` on the same body kept that very target and answered `200` —
+  a greyed-out button in front of a save that would have succeeded. The preflight now reads
+  the stored row when the body carries `service_id`, which is what the panel sends when it is
+  editing, and answers `dns_resolved` with `{"resolved_target": "203.0.113.9", "source":
+  "current"}` and `{"blocking_failures": 0, "ok": true}` for that case.
+
+  The blanket `old["dns_ip"]` fallback is gone rather than mirrored into the preflight. A
+  detection blip is already absorbed one layer down: the update passes the stored address to
+  `resolve_public_target` as `current_value`, and `current` is a ranked candidate like any
+  other under the priority policy in Settings. The fallback ran after that policy had spoken,
+  so an operator who had deliberately removed `current` from their priority list got it back
+  anyway, silently, on every save.
+
+  **Upgrading:** a `PUT /api/services/{sid}` that used to be accepted is now refused with the
+  same 400 the creation gives, in two cases: a `proxy_dns` service edited down to no provider
+  target at all, and a DNS provider kept with no resolvable public target. A client that
+  relied on the stored address being silently restored must send an address, or switch the
+  service to automatic detection with `current` present in the public-target priority policy.
+
+- **A check that blocked for a good reason was named in no doctrine list, and the guard meant
+  to catch that could not see it.** The `provider_missing` branch of `_check_provider` is
+  legitimately blocking — `_unknown_references` answers `400 Nothing was created -- unknown
+  provider 404` for a primary provider id pointing at nothing, and the same for an extra one —
+  but it appeared in neither of the two doctrine lists in `app/api/services.py` and was
+  excluded from `_MAY_BLOCK` in `tests/test_preflight_symmetry.py`. Both now name it. More to
+  the point, `_MAY_BLOCK` is no longer keyed on the check name. `proxy_provider` and
+  `dns_provider` each carry four branches and two of the four land on opposite verdicts, so a
+  name-level list cannot say which one it is approving; it is now a set of eleven
+  `(name, detail_key)` pairs, and a new branch that blocks without being declared fails the
+  suite instead of being absorbed by its neighbours.
+
+- **The symmetry suite only ever drove the creation route.** `tests/test_preflight_symmetry.py`
+  measured every corpus case through `add_service` and nothing else, which is how three
+  measurable asymmetries lived under a green suite. Each of the 17 cases is now driven through
+  both `POST /api/services` and `PUT /api/services/{sid}` from one route table, and a guard
+  test fails if a case is not measured against every route — so a case added later covers both
+  by construction. The file went from 12 tests and 14 subtests to 18 tests and 34 subtests.
+
+- **`apply_template` invented a port when neither the call nor the template named one.**
+  `POST /api/services` requires a domain and a port; a template is allowed to carry neither,
+  which is what lets one template serve several domains. The bridge tool filled both gaps with
+  `or 80` and `or ""` before sending. The empty domain came back as a 422 and the operator saw
+  it; `80` did not, because 80 is a valid port. Every call that named no port, against a
+  template that sets none, created a service pointing at a port nobody had chosen — and
+  reported success. Both masks are gone: when neither side supplies a value the tool refuses
+  and sends nothing, naming which one is missing.
+
+- **A duplicate that arrives during the write is answered again, instead of crashing the
+  route.** `POST /api/docker/endpoints`, `POST /api/environments` and `POST /api/tags` each
+  ask for the duplicate before they write it, which is what produces the sentence an operator
+  can act on. But a SELECT followed by an INSERT is two statements, not one atomic step: two
+  calls carrying the same key both pass the lookup on a table that does not hold it yet, the
+  second INSERT meets the UNIQUE index, and the `sqlite3.IntegrityError` that nobody caught
+  reached the caller as `500 Internal Server Error` — the server announcing that it had broken
+  over a conflict it has a word for. Measured on all three routes by letting a second
+  connection commit the same key between the lookup and the INSERT: **500 before, 409 after**,
+  with the same sentence the lookup gives. The lookup stays, and it is still what answers the
+  ordinary duplicate; the new handler catches `sqlite3.IntegrityError` and nothing wider, so a
+  locked database, a missing column and a full disk — all `sqlite3.OperationalError` — keep
+  leaving as our own 500 rather than being renamed duplicates, which is the bug the lookup was
+  introduced to end.
+
+- **`GET /api/docker/containers` stops blaming the Docker daemon for Vauxtra's own bugs.** The
+  `try` in that route carried a comment saying it wrapped the remote call. It wrapped roughly
+  thirty lines: `_extract_container_port`, `_extract_container_ip` (`app/api/docker.py`) and
+  `analyze_container` (`app/services/docker_analyzer.py`) all ran inside it, and every fault in
+  them was rewritten as `502 Failed to list Docker containers: …`. 502 means "I asked someone
+  else and what came back was not usable", so a `TypeError` of ours arrived as an accusation
+  against the operator's Docker host, with a sentence sending them to inspect a daemon that had
+  just answered correctly. Measured by injecting a fault into each of the three helpers in
+  turn: **502 before, 500 with our traceback after**. The guard now covers only the statements
+  that put a request on the socket — `containers.list()`, and the read of `Container.image`,
+  which docker-py resolves lazily through `client.images.get()` on the same daemon — so a
+  daemon that refuses either of them is still a 502, and everything in between is ours.
+
+- **One container with a deleted image took the whole discovery list down.** docker-py returns
+  `None` for `Container.image` when the image id is gone — an image removed while its container
+  kept running, which Docker allows — and the expression building the listing fell through to
+  `image.short_id` in exactly that case. The `AttributeError` left as a 500, so every other
+  container on that host disappeared from the discovery panel behind one unusable row. It is
+  now the one row with a blank image name.
+
+- **A restore told you two thirds of what it had done.** `POST /api/restore` has always
+  answered with `settings_not_restored` and `domains_without_name` alongside
+  `webhooks_needing_url`, and both panels that call it declared their own narrow response type
+  — `{ ok, webhooks_needing_url? }` in the settings card, a four-field inline type in the setup
+  wizard — so TypeScript agreed the other two fields did not exist and nothing was there to
+  print them. Neither is a failure: the restore succeeded. They are the two things the file
+  could not bring back, and nothing else in the panel ever mentions them. A setting this
+  version does not accept is simply absent afterwards, with the old value gone and no row to
+  show it was ever there; a domain the file carried without a name is not recreated, so every
+  service and route that pointed at it now points at a domain the list no longer offers. Both
+  components now consume the `RestoreResult` type the API module already declared, and both
+  report all three outcomes in the idiom of the screen they live on: the settings card adds two
+  neutral toasts beside the existing webhook one — no red, because nothing failed — and the
+  setup wizard adds two warning panels to the summary it already shows, which is the operator's
+  only chance to read this at all, since the wizard leaves for the dashboard straight after.
+  The dropped setting names travel with the sentence; a count with no names would only tell
+  somebody that something is missing.
+
+- **A setting could be saved and never take effect, and the screen said only "saved".**
+  `POST /api/settings` answers with `not_applied` when a value was written but the running
+  process could not be told — rescheduling the health check or the reconciler raised — and
+  `GeneralTab.tsx` read `saved` and `ignored` and dropped the third. The operator saw a green
+  toast, watched the interval not change, and had nothing connecting the two. It now renders
+  as a warning that names the keys and says a restart applies them, which is the only line on
+  that screen that asks for something to be done.
+
+- **The guard against blaming ourselves for somebody else's refusal recognised one of the six
+  shapes it claims to catch, and the three files it swept were a list somebody typed.**
+  `tests/test_upstream_failures.py` walks the AST looking for a 500 or a 503 raised over a call
+  that left the process. It found the carrier by asking what built it, from a fixed set of six
+  factory names, which is a rule that only ever sees the code that existed when the set was
+  written. Measured against six recidive shapes: it flagged one. An `httpx.Client` or a
+  `requests.Session` held in a variable, a factory nobody had added to the set, and a call
+  relayed through a second local name (`target = provider`) all walked past it — and a bare
+  `_PARSE_ONLY = {"add"}`, written for apprise's URL parsing, exempted `add` on *anything*, so
+  `provider.add(record)` — a write to a DNS zone — was waved through without a word.
+
+  A name is now a carrier when what built it ends in `client`, `session` or `provider`, so a
+  factory written next year needs no entry anywhere; when it is relayed from another carrier;
+  or when it is bound by `with`, by `:=` or by an unpacking rather than a plain `=`. A verb on
+  `httpx`, `requests`, `docker`, `apprise` and five other wire modules counts with no variable
+  in front of it at all. The exemption is now keyed on the carrier and not on the method name:
+  `add` is parse-only *on an apprise bag*, which is the one place where it instantiates a
+  plugin locally and sends nothing. `connection` is deliberately absent from the factory words,
+  because `get_connection()` in `app/models.py` hands back a SQLite handle on a local file;
+  counting it put every `conn.execute` in `app/api/` under a rule about somebody else's
+  refusal, and a detector that flags the database is a detector nobody reads.
+
+  Every one of the eight shapes now has a snippet the detector must flag, asserted one per
+  subtest, because a rule that matches nothing passes an empty sweep for free. Two negative
+  controls sit beside them: our own client construction, and the local database handle. The
+  three-entry `_GUARDED` tuple is gone; the sweep reads every module under `app/`, discovered
+  rather than listed. Measured over the whole directory: 48 of its 258 try blocks reach
+  somebody else, spread over 9 files, and 0 of them answer 500 or 503. A second test counts
+  those 48, so a change that makes the carrier rule blind fails loudly instead of leaving the
+  sweep green over an empty question.
+
+- **Four sentences described code that no longer does what they say.** Each was re-measured
+  before it was rewritten.
+
+  `docs/DEPLOYMENT.md` and `docker-compose.yml` told an operator that dropping the Docker
+  socket mount leaves "the Docker screens answer 503". An unreachable daemon has answered 502
+  since `app/api/docker.py::_docker_client` stopped blaming this server for a socket that was
+  never mounted; measured against a dead `tcp://` host, the route answers `502 Docker daemon
+  unavailable`. The documents and the assertion in
+  `tests/test_provider_ids_and_secrets.py::test_the_way_to_spend_less_is_written_down` moved
+  together, and that assertion now pins the sentence rather than three digits that could match
+  anything else on the page.
+
+  `tests/test_regressions_v2.py` and `app/models.py` both said `delete_webhook` was "one
+  `DELETE FROM webhooks WHERE id=?` and nothing else" — "the whole body". It has not been that
+  since the route learned to answer 404: it looks the id up, refuses a missing one, deletes,
+  commits and closes. What is actually load-bearing for the cascade is narrower and still true,
+  and is what the prose says now: that one `DELETE` is the only statement in the route that
+  removes anything, and nothing in it reaches `webhook_delivery_log`, which is why the queue
+  has to leave with the row by itself.
+
+  `frontend/src/components/features/expose/ExposeModal.tsx` and
+  `tests/test_preflight_symmetry.py::TheCheckListIsKeyedOnMoreThanTheNameTests` both said React
+  keeps the first of two siblings sharing a key and drops the second, which is why a second
+  spare target "disappears" from the preflight panel. Measured on React 19.2.8: both `<li>`
+  render. Nothing disappears. React logs `Encountered two children with the same key`, says
+  such children "may be duplicated and/or omitted", and calls the behaviour unsupported and
+  liable to change. What a shared key actually costs is identity, which is the only thing a key
+  is for: with one key for two rows the reconciler fell back to matching by position, so
+  swapping the two lines left each row's state and DOM node sitting on the other line, and a
+  later change of keys left a stale third `<li>` standing for two lines of data. The key change
+  itself was right and stays; only the reason given for it was wrong.
+
+- **Three copies of the scope vocabulary, and nothing comparing them.** `VALID_SCOPES`, the
+  `Literal["read", "write", "admin"]` on `ApiKeyCreate.scopes` (both in `app/api/api_keys.py`)
+  and the keys of `_SCOPE_LEVEL` in `app/auth.py` each write the same three words, and only
+  the last decides anything at request time. Measured: the three agree today, so this is a
+  guard rather than a repair. What it guards is asymmetric and silent in both directions. A
+  scope that creation accepts and the ladder does not know is read as level -1 and authorizes
+  nothing, so the key is minted, listed, and useless. A scope the ladder knows but creation
+  refuses can never be granted at all, so a route gated on it is unreachable. Neither raises.
+  `tests/test_api_key_scope_vocabulary.py::TheThreeScopeListsAgree` now compares all three as
+  sets, and the failure message names the file and the symbol that moved rather than printing
+  two sets and leaving the reader to work out which is the odd one. Witnessed against four
+  deliberate drifts, including the one where the annotation is rewritten and the reader
+  quietly answers the empty set.
+
 ### Changed
 
 - **`POST /api/settings/api-keys` answers `201`, not `200`.** The eleven other routes that
@@ -630,6 +1103,68 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
   **Upgrading:** a client that compares the status to `200` exactly must accept `201`. Both
   clients shipped with Vauxtra already accept any 2xx and need no change.
+
+- **Forty-five routes sit behind the `write` scope; six were watched, by a list somebody had
+  to remember to extend.** `tests/test_api_key_scopes.py` drives a write key through five
+  paths written out by hand plus the single-service check, and asserts only that the answer is
+  not 403. The gap showed up in the measurement behind the security entry above: a key whose
+  column read `'read, write '` moved from 403 to 200 on forty-two routes when segment stripping
+  was added, and nothing in the suite would have noticed. Creating a service, deleting a
+  provider, bulk-disabling everything, importing from Docker: all of them moved without an
+  assertion watching. `tests/test_api_key_write_scope.py` no longer keeps a list. It walks the
+  application's own router, follows the `_IncludedRouter` wrappers FastAPI 0.141 leaves in
+  `app.routes`, reads the scope out of each endpoint's source because the gate is a call in
+  the body rather than a dependency, and synthesises the smallest body the route's model will
+  accept so a 422 cannot be mistaken for a decision. A route added next month is swept the day
+  it is added. Both directions are pinned on all forty-five: a read-only key is refused on
+  every one, a write key and a padded `'read, write '` key are accepted on every one. And
+  because a sweep over an empty list would pass every assertion in the file, the walk is
+  witnessed before it is trusted. `POST /api/services/bulk` is then driven for real, with no
+  stop and no patching, and the row it disables is read back out of SQLite rather than out of
+  the response body.
+
+- **The MCP bridge refuses a bad value instead of forwarding it.** `forward_scheme`,
+  `expose_mode` and `public_target_mode` are declared `Literal` on the tools that take them,
+  and `target_port` is bounded to 1–65535, matching the models the routes already validate
+  against. FastMCP reads those signatures, so a wrong value is now refused at the call with the
+  allowed set in the message, rather than after a round trip as a 422 the assistant has to
+  interpret. `bulk_service_action` carries its verb set the same way. The tool docstrings state
+  each constraint in prose beside the declaration, and the parity checker above fails the build
+  if the two descriptions of the same rule ever disagree.
+
+- **A comment justified a field constraint with something measurably untrue.** The minimum on
+  `ApiKeyCreate.scopes` was explained by "only something that sees the list itself can refuse
+  an empty one", and a `field_validator` sees the list itself: it is handed the whole of it.
+  Measured side by side, a model refusing `[]` from the field and one refusing it from a
+  validator both refuse it. The real difference is where the refusal lands. Only the field
+  constraint reaches `model_json_schema()`, where the `scopes` property reads `{"default":
+  ["read"], "items": {"enum": [...]}, "minItems": 1, "type": "array"}`; move the refusal into
+  the validator and the property is the same document with the `minItems` line gone. That
+  document is what `tests/test_api_key_scope_residues.py::BridgeSignatureParity` compares
+  against the MCP bridge's own tool parameters, so a constraint the schema cannot carry is a
+  constraint that comparison cannot see. The comment now says that, and the measurement behind
+  it runs as a test instead of sitting in prose.
+
+- Five test files carried French names in a repository whose code, comments and tests are
+  otherwise English: `test_api_key_scopes_vides.py`, `test_erreur_de_la_destination.py`,
+  `test_import_silencieux.py`, `test_reponse_non_mesuree.py` and
+  `test_restauration_silencieuse.py` are now `test_api_key_empty_scopes.py`,
+  `test_upstream_failures.py`, `test_import_outcomes.py`, `test_unverified_answers.py` and
+  `test_restore_reporting.py`. Their contents are unchanged.
+
+### Removed
+
+- `settings.docker.import_done`, in all eight locales — the single green line reporting
+  "{imported} imported, {skipped} skipped" for the Docker import. It is replaced by
+  `settings.docker.import_success`, `settings.docker.import_skipped` and
+  `settings.docker.import_errors`, which are the three outcomes the route now distinguishes,
+  each a plural family so the sentence agrees at one as well as at many.
+
+- `expose.preflight.detail.dns_unresolved`, in all eight locales. No preflight check has
+  emitted that detail key since the DNS target gate was rewritten to answer `dns_resolved`,
+  `dns_target_required` or `dns_target_detection_failed`; nothing in `app/`, `vauxtra_mcp/` or
+  `frontend/src/` names it. (`monitoring.drawer.dns_unresolved` is a different key, and stays:
+  the service drawer still renders it.)
 
 ---
 

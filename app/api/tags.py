@@ -1,3 +1,5 @@
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
@@ -51,8 +53,17 @@ def create_tag(request: Request, body: TagIn):
         existing = conn.execute("SELECT id FROM tags WHERE name=?", (body.name,)).fetchone()
         if existing:
             raise HTTPException(409, "A tag with this name already exists")
-        cur = conn.execute("INSERT INTO tags (name, color) VALUES (?,?)", (body.name, body.color))
-        conn.commit()
+        try:
+            cur = conn.execute(
+                "INSERT INTO tags (name, color) VALUES (?,?)", (body.name, body.color)
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # The lookup above and this INSERT are two statements: another writer can store
+            # the name in between, and then the UNIQUE index is the only thing that still
+            # knows. Same refusal, same sentence. Narrow on purpose -- an `OperationalError`
+            # for a locked base or a full disk is ours, and keeps its 500.
+            raise HTTPException(409, "A tag with this name already exists")
         tid = cur.lastrowid
         return {"id": tid, "name": body.name, "color": body.color}
     finally:

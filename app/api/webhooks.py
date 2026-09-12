@@ -225,10 +225,23 @@ def update_webhook(wid: int, request: Request, body: dict):
 
 @router.delete("/api/webhooks/{wid}")
 def delete_webhook(wid: int, request: Request):
-    """Delete a webhook by ID."""
+    """Delete a webhook by ID. 404 when there is nothing at that id.
+
+    `DELETE /api/webhooks/999999` on an instance that has no webhook 999999 answered
+    `200 {"ok": true}` -- a receipt for a deletion that never happened, handed to a caller
+    that had just been told the row existed. `update_webhook` above already answers 404 for
+    that same missing row, so the two verbs disagreed about whether the id was real, and the
+    MCP bridge (`vauxtra_mcp/tools/admin.py::delete_webhook`) returned the `ok` to its own
+    caller as proof. The lookup is the half that was missing here.
+    """
     require_auth(request, scope="write")
     conn = get_db()
     try:
+        row = conn.execute("SELECT id FROM webhooks WHERE id=?", (wid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Webhook not found")
+        # `webhook_delivery_log` cascades off this one statement (schema 11): the queued
+        # sends go with the row, which is why nothing else is deleted here by hand.
         conn.execute("DELETE FROM webhooks WHERE id=?", (wid,))
         conn.commit()
         return {"ok": True}
@@ -236,6 +249,15 @@ def delete_webhook(wid: int, request: Request):
         conn.close()
 
 
+# Both test routes below send one message and report what came back. A refusal from the
+# target answers 502, not 500. Nothing broke here: the URL parsed, the request left, and the
+# far end is the one that said no -- an unreachable collector, a revoked Discord webhook, a
+# host that drops the packet. Answering 500 made the notification tab tell the operator the
+# server had a problem, and sent them reading Vauxtra's own journal for a fault that was
+# never ours. 503 would be the same accusation written in another number, since it says
+# *this* server is unavailable; 504 would claim a timeout, and apprise reports a refusal and
+# a timeout with the same bare `False`. What stays 500 is the missing package: that one is
+# genuinely a broken installation of Vauxtra.
 @router.post("/api/webhooks/test-url")
 def test_webhook_url(request: Request, body: dict):
     """Test a webhook URL without saving it (for pre-validation in setup wizard)."""
@@ -247,14 +269,20 @@ def test_webhook_url(request: Request, body: dict):
         a.add(url)
         ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
         if not ok:
-            raise HTTPException(500, "Send failed - check your URL and try again")
+            raise HTTPException(
+                502,
+                "The notification target refused the message. Check the URL, "
+                "and that the destination is reachable from this instance.",
+            )
         return {"ok": True}
     except ImportError:
         raise HTTPException(500, "Package 'apprise' not installed")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # `_validate_apprise_url` already parsed this URL above the try, so whatever apprise
+        # raises from here on comes out of the send itself.
+        raise HTTPException(502, str(e))
 
 
 @router.post("/api/webhooks/{wid}/test")
@@ -274,14 +302,16 @@ def test_webhook(wid: int, request: Request):
             raise HTTPException(400, "Invalid or unrecognized Apprise URL")
         ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
         if not ok:
-            raise HTTPException(500, "Send failed")
+            # Same reattribution as `test-url` above, on a URL the operator stored earlier.
+            raise HTTPException(502, "The notification target refused the message.")
         return {"ok": True}
     except ImportError:
         raise HTTPException(500, "Package 'apprise' not installed")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # `a.add()` answered above, so anything raised past it comes out of the send.
+        raise HTTPException(502, str(e))
 
 
 # ── Per-service alerts ─────────────────────────────────────────────────────

@@ -289,6 +289,39 @@ One case is deliberate: if the stale DNS record could not be removed, the new on
 created. AdGuard and Pi-hole will happily hold two rewrites for the same name, and the host
 would then resolve to whichever the resolver picked.
 
+### Reading the answer to an import
+
+`POST /api/services/import` takes the rows a scan found and answers with four outcomes:
+
+```json
+{
+  "imported": 3,
+  "linked": 1,
+  "skipped": ["Import passed over nas.example.lan: Vauxtra already tracks this name"],
+  "errors": ["Import skipped proxy host 91 on NPM: the provider listed no domain name for it"]
+}
+```
+
+Four, because two could not tell you anything. `imported` is a new service. `linked` is an
+existing service that gained the DNS half it was missing: a real write, and one the older
+two-field answer counted nowhere, so re-scanning after adding a rewrite reported zero.
+`skipped` is a row passed over **on purpose** — it is already tracked, or it is the second
+name on a proxy host that carries several, and a service holds a single name. It is not a
+failure and the panel does not paint it as one. `errors` is a row that is *wrong*: no domain
+name, no address, no dot to split a subdomain off, or an import that raised. Each one names
+the row, so there is something to go and fix.
+
+Apart from one fold, every row you submit lands in exactly one of the four. The fold: a DNS
+record whose name matches a proxy host **in the same payload** is the other half of that
+host, not a second service, so the two rows produce one service counted once under
+`imported`. `skipped` can also carry extra lines for names *inside* a row, so it is the one
+bucket that can outrun the row count.
+
+When two DNS providers answer for the same name, the first record is kept and the refusal
+names both providers and says which answer was imported — the other one is what you remove.
+Only refusals go to the journal one line at a time; rows passed over are summed into a
+single line, because fifty of them would bury everything else in *Recent activity*.
+
 ### Drift detection
 
 Drift occurs when provider state differs from Vauxtra's expected state (e.g., someone modified NPM directly).
@@ -329,7 +362,7 @@ scope, to anyone:
   `webhook_url_masked` (`discord://***`) and no `url` field at all. The create and update
   responses answer the same way.
 - The legacy global `webhook_url` no longer exists as a setting. It could be written, it
-  was masked on the way out, and it delivered nothing -- alerting reads the `webhooks`
+  was masked on the way out, and it delivered nothing — alerting reads the `webhooks`
   table. Any value already stored is moved into that table on the next start, as a target
   named *Global notifications (migrated)*; writing the key now returns 400 and points at
   `POST /api/webhooks`.
@@ -345,6 +378,17 @@ service a webhook points at, never the token. And restoring a *plain* backup bri
 notification targets back **disabled**, with `webhooks_needing_url` in the response saying
 how many — their names, scopes and rules survive, only the one field a secret-free file
 cannot carry is missing. Restoring a secure backup restores them working.
+
+`POST /api/restore` names two other things it could not take. `settings_not_restored` lists
+every setting in the file this version does not accept — a key an older Vauxtra wrote, or a
+newer one — and *not restored* is literal: the restore empties the settings table before
+refilling it, so such a key ends up absent rather than keeping the value this instance had.
+`domains_without_name` counts domain rows in the file with no name, which cannot be
+recreated; services that referenced one come back pointing at a domain the list no longer
+offers. Both also write a single journal line each. The keys a restore drops **on purpose**
+— the admin password hash, the setup marker, the schema version, the auth mode, the session
+epoch, and the one-shot webhook log purge marker — are never reported, because a warning
+that fires on every restore is one you learn to skip.
 
 ### Events
 
@@ -524,7 +568,7 @@ Service Templates are pre-configured blueprints that pre-fill the service creati
 | `forward_scheme` | `http` or `https` |
 | `target_port` | Default backend port (1–65535) |
 | `websocket` | Enable WebSocket support |
-| `expose_mode` | `proxy_dns`, `dns_only`, or `tunnel` |
+| `expose_mode` | `proxy_dns` or `tunnel` |
 | `proxy_provider_id` | Pre-selected reverse proxy |
 | `dns_provider_id` | Pre-selected DNS provider |
 | `tunnel_provider_id` | Pre-selected Cloudflare Tunnel |
@@ -533,6 +577,36 @@ Service Templates are pre-configured blueprints that pre-fill the service creati
 | `dns_ip` | Default DNS record target |
 | `tag_ids` | Default tags to attach |
 | `icon_url` | Service icon URL |
+
+### What a template refuses
+
+A template is a service payload saved for later, so it is checked with the rules of the
+service form — once, when you type it, instead of every time you apply it.
+
+| Field | Accepted values |
+|---|---|
+| `forward_scheme` | `http` or `https` |
+| `expose_mode` | `proxy_dns` or `tunnel` |
+| `public_target_mode` | `manual` or `auto` |
+| `target_port` | 1–65535 |
+| `domain` | empty, or a valid domain name |
+| `dns_ip` | empty, or an IP address or hostname |
+
+Anything else answers `422`. `domain` and `dns_ip` may be left empty on purpose — that is
+what makes a template a template — but a value that is there has to be a usable one.
+
+Every `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id` and `tag_ids` entry has
+to name a row that exists. If one does not, the call is refused with `400`, the id is named,
+and nothing is written:
+
+```json
+{ "detail": "Nothing was created -- unknown tag 12, provider 4" }
+```
+
+A provider or a tag deleted *after* the template was saved is not an error and is never
+reported as one: the provider field empties itself, which the database does on its own, and
+the tag stops being listed. The stored template is not rewritten, so putting the tag back
+restores it.
 
 ### Using templates from the UI
 
@@ -682,11 +756,11 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services` | Create a service — 400 naming any unknown tag/environment/provider id, 409 if the hostname is taken |
 | `GET` | `/api/services/history` | Recent service activity |
 | `GET` | `/api/services/public-target/suggest` | Suggest public target IP |
-| `POST` | `/api/services/preflight` | Preflight validation |
+| `POST` | `/api/services/preflight` | Preflight validation. A check marked `blocking` is a promise that the save route refuses the same body. Add `service_id` to preflight an edit: the public target is then resolved from that service's stored row, exactly as the `PUT` resolves it. |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
 | `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
-| `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation |
+| `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |

@@ -109,7 +109,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `toggle_service` | Enable or disable a service without touching its provider routes |
 | `check_service_health` | Run a live health/TCP and DNS check for one service |
 | `get_services_history` | Last 24 h of uptime history for every service |
-| `bulk_service_action` | Enable, disable or delete several services at once |
+| `bulk_service_action` | Enable, disable or delete several services at once (`action` is one of those three words) |
 | `suggest_public_targets` | Suggest WAN/public DNS targets from current connectivity |
 | `sync_services_from_providers` | Discover services already configured in the providers |
 | `import_services_from_sync` | Import what `sync_services_from_providers` found |
@@ -160,7 +160,7 @@ provider rows follow, so reaching underneath them is a way to manufacture drift.
 | `create_template` | Create a template |
 | `update_template` | Replace a template's settings (full replacement, not a patch) |
 | `delete_template` | Delete a template; services already created from it are untouched |
-| `apply_template` | Create a service from a template |
+| `apply_template` | Create a service from a template; refuses when neither the call nor the template supplies a domain and a port |
 
 ### Monitoring (`tools/monitoring.py`)
 
@@ -243,6 +243,53 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 | `create_secure_backup` | Export a backup with credentials encrypted by a passphrase |
 | `restore_backup` | Restore from a backup payload — this replaces current data |
 | `reset_all_data` | Delete all application data |
+
+---
+
+## What the tools refuse before calling
+
+A tool's parameters are its whole contract. FastMCP builds the schema from the function
+signature, and a normal install publishes no OpenAPI document to derive one from
+(`DEBUG` is false, so `openapi_url` is None), so whatever the route enforces has to be
+repeated here by hand. Where that had not been done the bridge sent bodies the API refused
+-- and, in one case, a body it accepted that nobody had asked for.
+
+| Parameter | Accepted values | Tools |
+|---|---|---|
+| `forward_scheme` | `http`, `https` | `create_service`, `update_service`, `create_template`, `update_template`, `run_preflight` |
+| `expose_mode` | `proxy_dns`, `tunnel` | `create_service`, `create_template`, `update_template`, `run_preflight` |
+| `public_target_mode` | `auto`, `manual` | the same four, plus `create_service` |
+| `target_port` | 1 to 65535 | every tool that takes a port |
+| `action` | `enable`, `disable`, `delete` | `bulk_service_action` |
+| `type` | the ten provider types | `create_provider`, `validate_provider_draft` |
+| `color` | the fourteen tag colours | `create_tag`, `update_tag` |
+| `scopes` | `read`, `write`, `admin`, at least one | `create_api_key` |
+
+A value outside one of these sets is refused by the schema, before any request is built.
+Two of them are worth knowing about specifically:
+
+- `bulk_service_action` used to take any string and let the API answer 400. `delete` is one
+  of the three words, so the round trip now being saved is one that deletes services.
+- a tag colour the API does not know is not refused by the API: it is quietly stored as
+  blue, with a 200 and no mention of the substitution. The bridge is the only place that
+  can tell you the colour you asked for does not exist.
+
+`apply_template` is the one place where the tool is deliberately looser than the route.
+`POST /api/services` requires a domain and a port, and a template may legitimately carry
+neither -- that is what lets one template serve several domains. So both stay optional on
+the tool and are taken from the template when the call omits them; when neither side has a
+value, the call is refused and nothing is sent. It used to fall back to `or 80` and `or ""`.
+The empty domain came back as a 422, but port 80 did not, because 80 is a valid port: a
+call that named no port, against a template that sets none, created a service pointing at a
+port nobody had chosen, and reported success.
+
+One rule no parameter schema can carry: `expose_mode: tunnel` also needs a
+`tunnel_provider_id`. That is a rule about a pair of fields, and a schema describes one
+field at a time, so the route is still what decides.
+
+`scripts/check_api_mcp_parity.py` compares every tool's parameters against the model its
+route validates -- names, required or optional, types, value sets, bounds -- and fails the
+build on any difference that is not in its commented exemption list.
 
 ---
 

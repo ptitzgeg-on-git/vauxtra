@@ -70,7 +70,7 @@ else, and `VAUXTRA_BIND=0.0.0.0` publishes it on every interface if you would ra
    only lists and inspects containers, but the grant is not bounded by what Vauxtra does
    with it — it is bounded by what anyone who reaches this container can do with it.
    Two ways to spend less: drop the mount entirely if you do not use the Docker features
-   (the Docker screens then answer 503 and nothing else changes), or run a read-only socket
+   (the Docker screens then answer 502 and nothing else changes), or run a read-only socket
    proxy — for example `tecnativa/docker-socket-proxy` with `CONTAINERS=1` and everything
    else left off — and set the endpoint's Docker host to `tcp://docker-proxy:2375`.
 

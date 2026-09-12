@@ -605,7 +605,8 @@ class DockerApiTests(IsolatedDBTestCase):
             )
 
             self.assertEqual(result["imported"], 1)
-            self.assertEqual(result["skipped"], 0)
+            # `skipped` is a list of sentences on both import routes now, not a count.
+            self.assertEqual(result["skipped"], [])
 
             conn = models.get_db()
             service = conn.execute(

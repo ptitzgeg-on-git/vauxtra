@@ -1,5 +1,7 @@
 """MCP tools — service CRUD and inspection."""
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -54,13 +56,13 @@ def create_service(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: int,
-    forward_scheme: str = "http",
-    expose_mode: str = "proxy_dns",
+    target_port: Annotated[int, Field(ge=1, le=65535)],
+    forward_scheme: Literal["http", "https"] = "http",
+    expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
     tunnel_provider_id: int | None = None,
-    public_target_mode: str = "manual",
+    public_target_mode: Literal["auto", "manual"] = "manual",
     dns_ip: str = "",
     websocket: bool = False,
     enabled: bool = True,
@@ -70,6 +72,13 @@ def create_service(
 
     expose_mode: 'proxy_dns' for NPM/Traefik + DNS, 'tunnel' for Cloudflare Tunnel.
     public_target_mode: 'manual' (use dns_ip) or 'auto' (detect WAN IP).
+
+    The three `Literal` sets repeat, by hand, the values `ServiceIn` validates. Nothing
+    derives them: FastMCP builds the schema from this signature, and a normal install
+    publishes no OpenAPI document to read the model from. Declared as plain `str` they
+    let a caller spend a round trip discovering that 'ftp' is not a forward scheme --
+    and this schema is the only place an agent can learn the answer before calling.
+    `scripts/check_api_mcp_parity.py` fails the build if these sets drift from the model.
     """
     payload: dict[str, Any] = {
         "subdomain": subdomain,
@@ -100,8 +109,8 @@ def create_service(
 def update_service(
     service_id: int,
     target_ip: str | None = None,
-    target_port: int | None = None,
-    forward_scheme: str | None = None,
+    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
+    forward_scheme: Literal["http", "https"] | None = None,
     subdomain: str | None = None,
     domain: str | None = None,
     dns_ip: str | None = None,
@@ -115,6 +124,10 @@ def update_service(
 
     Only provided (non-None) fields are changed; omitted fields keep their current values.
     The current service state is fetched first and merged with your overrides.
+
+    `forward_scheme` carries the same `Literal` as `create_service`: the route validates
+    the merged body with `ServiceIn`, so an override it refuses fails the whole update,
+    including the fields that were valid.
     """
     current = client.get(f"/services/{service_id}")
     client.check(current)
@@ -176,7 +189,19 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
     Import services discovered by sync_services_from_providers.
 
     Pass the proxy_hosts and/or dns_rewrites arrays from the sync result.
-    Returns {"imported": int, "errors": list[str]}.
+
+    Returns four outcomes, and every submitted row lands in one of them:
+      imported (int)      new services created;
+      linked   (int)      existing services that gained the DNS half they were missing;
+      skipped  (list[str]) rows passed over on purpose, nothing is wrong with them: a name
+                          Vauxtra already tracks, or the 2nd..Nth name of a proxy host that
+                          answers for several, since a service carries one name;
+      errors   (list[str]) rows that are wrong and that the operator has somewhere to fix.
+
+    A skipped list is not a failure: re-importing a scan Vauxtra already knows fills it and
+    leaves errors empty. The one row that is not counted separately is a DNS record whose
+    name matches a proxy host in the same payload: it is folded into that host and the pair
+    counts once under imported.
     """
     payload = {
         "proxy_hosts": proxy_hosts or [],
@@ -268,8 +293,17 @@ def check_service_health(service_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-def bulk_service_action(service_ids: list[int], action: str) -> dict[str, Any]:
-    """Run bulk service actions: enable, disable, or delete."""
+def bulk_service_action(
+    service_ids: list[int], action: Literal["enable", "disable", "delete"]
+) -> dict[str, Any]:
+    """
+    Run bulk service actions: enable, disable, or delete.
+
+    `action` was declared as a plain `str` while `POST /api/services/bulk` accepts three
+    words, so every other value reached the API and came back a 400 -- after the request
+    had been sent, and with no list of what would have worked. The `Literal` refuses it
+    here, before the call, and publishes the three words in the tool's schema.
+    """
     r = client.post("/services/bulk", json={"ids": service_ids, "action": action})
     client.check(r)
     return r.json()

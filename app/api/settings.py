@@ -204,6 +204,24 @@ def get_settings(request: Request):
     }
 
 
+def _not_applied(collected: list[str], key: str, exc: Exception) -> None:
+    """Record a setting that was written but could not be handed to the running scheduler.
+
+    The row is committed before either of these calls, so there are only two honest answers
+    left once one of them raises, and the code used to give neither. Letting the exception
+    out answers `500` for a setting that *was* saved, so the operator retries a write that
+    already happened. Swallowing it answers `{"ok": true, "saved": ["check_interval"]}` for
+    a value that is in the database and not in the scheduler, which is the more expensive of
+    the two: the settings page reads the stored value back and shows the new interval, while
+    the health checks go on running at the old one until the next restart quietly fixes it.
+
+    So the value stands, the answer names the key under `not_applied`, and the journal gets
+    the reason -- the same channel `_refuse_import` uses for a row it could not take.
+    """
+    collected.append(key)
+    add_log("warning", f"Saved {key}, but it could not be applied now: {type(exc).__name__}: {exc}")
+
+
 @router.post("/api/settings")
 def save_settings(request: Request, body: dict):
     require_auth(request, scope="write")
@@ -245,12 +263,22 @@ def save_settings(request: Request, body: dict):
         )
     conn.commit()
     conn.close()
+    # Applied to the running scheduler below. Anything that cannot be applied is named in
+    # the answer rather than dropped -- see `_not_applied`.
+    not_applied: list[str] = []
+
     if "check_interval" in accepted:
+        # `_validate_setting` stores `str(number)` or refuses the whole payload, so the
+        # conversion here cannot fail and is not what this guards. `configure` is: it talks
+        # to APScheduler, and the old `except (ImportError, TypeError, ValueError): pass`
+        # caught two exceptions this line cannot raise and let the scheduler's own through,
+        # while hiding the one that mattered -- a missing scheduler module, which left the
+        # interval stored and never running under a `{"ok": true}`.
         try:
             from app.scheduler import configure
             configure(int(accepted["check_interval"]))
-        except (ImportError, TypeError, ValueError):
-            pass
+        except Exception as exc:  # noqa: BLE001 -- named in the answer, not swallowed
+            _not_applied(not_applied, "check_interval", exc)
 
     if {"auto_reconcile_enabled", "auto_reconcile_interval"} & set(accepted):
         # Applied now rather than at the next restart, the same way `check_interval` is.
@@ -269,10 +297,19 @@ def save_settings(request: Request, body: dict):
                 cfg.get("auto_reconcile_enabled") == "true",
                 int(cfg.get("auto_reconcile_interval") or 0),
             )
-        except (ImportError, TypeError, ValueError):
-            pass
+        except Exception as exc:  # noqa: BLE001 -- named in the answer, not swallowed
+            # `int()` is kept inside the guard here, unlike above: this value is read back
+            # out of the database rather than from the payload just validated, and a row
+            # written before `_SETTING_RANGES` existed can still hold a word. Both keys are
+            # named because either of them can be the one that moved.
+            _not_applied(not_applied, "auto_reconcile", exc)
 
-    return {"ok": True, "saved": sorted(accepted), "ignored": sorted(ignored)}
+    return {
+        "ok": True,
+        "saved": sorted(accepted),
+        "ignored": sorted(ignored),
+        "not_applied": sorted(not_applied),
+    }
 
 
 @router.get("/api/stats")

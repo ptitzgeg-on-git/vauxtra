@@ -304,10 +304,12 @@ class BackupSecureRoundTripTests(IsolatedDBTestCase):
 class WebhookDeliveryLogCascadeTests(IsolatedDBTestCase):
     """Schema 11: deleting a webhook must take its queued sends with it.
 
-    `delete_webhook` is one `DELETE FROM webhooks WHERE id=?` and nothing else. Before the
-    cascade, the rows in `webhook_delivery_log` stayed -- and since the retry job reads the
-    destination off the log row rather than off `webhooks`, Vauxtra kept POSTing to a URL the
-    operator had just revoked, for the whole length of the backoff.
+    `delete_webhook` looks the id up, answers 404 when nothing is there, and then removes
+    exactly one row: `DELETE FROM webhooks WHERE id=?`. No statement in it reaches
+    `webhook_delivery_log`. Before the cascade the queued sends therefore stayed -- and
+    since the retry job reads the destination off the log row rather than off `webhooks`,
+    Vauxtra kept POSTing to a URL the operator had just revoked, for the whole length of
+    the backoff.
     """
 
     SECRET = "discord://1234567890/aTokenTheOperatorRevoked"
@@ -333,7 +335,10 @@ class WebhookDeliveryLogCascadeTests(IsolatedDBTestCase):
             self._queue(conn, wid)
             conn.commit()
 
-            # Exactly the body of app/api/webhooks.py::delete_webhook.
+            # The only statement in app/api/webhooks.py::delete_webhook that removes
+            # anything. The rest of that route is the 404 lookup, the commit and the
+            # close; nothing there touches webhook_delivery_log, which is the whole
+            # reason the queue has to go with the row by itself.
             conn.execute("DELETE FROM webhooks WHERE id=?", (wid,))
             conn.commit()
 

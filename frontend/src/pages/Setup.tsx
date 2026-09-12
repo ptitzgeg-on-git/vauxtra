@@ -21,7 +21,7 @@ import { IconButton, Select, useConfirmDialog } from '@/components/ui';
 import { getErrorDetail, getHttpStatus, translateApiError } from '@/lib/errors';
 import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
-import type { SyncResult } from '@/types/api';
+import type { ImportResult, SyncResult } from '@/types/api';
 import {
   emptyForm,
   type ProviderFormState,
@@ -246,11 +246,18 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
           proxy_hosts: selected.filter((s) => s.kind === 'proxy').map((s) => s.raw),
           dns_rewrites: selected.filter((s) => s.kind === 'dns').map((s) => s.raw),
         };
-        const result = await api.post<{ imported: number; errors?: string[] }>('/services/import', payload);
+        const result = await api.post<ImportResult>('/services/import', payload);
+        // The wizard reported refusals under the word "skipped", which is the name of the
+        // other outcome: a row set aside because it was already tracked is the nominal
+        // case of this screen and not something to go and fix. They are separate counts
+        // on the wire and are separate lines here, and `linked` -- an existing service
+        // that just gained its DNS record -- was not reported at all.
+        const skipped = result.skipped?.length ?? 0;
+        const refused = result.errors?.length ?? 0;
         if (result.imported > 0) toast.success(t('setup.toast.imported', { count: result.imported }));
-        if (result.errors && result.errors.length > 0) {
-          toast.error(t('setup.toast.import_skipped', { count: result.errors.length }));
-        }
+        if (result.linked > 0) toast.success(t('setup.toast.import_linked', { count: result.linked }));
+        if (skipped > 0) toast(t('setup.toast.import_skipped', { count: skipped }));
+        if (refused > 0) toast.error(t('setup.toast.import_errors', { count: refused }));
       } catch (err) {
         if (import.meta.env.DEV) console.error('Import error:', err);
         toast.error(translateApiError(err, t, t('setup.toast.import_failed')));

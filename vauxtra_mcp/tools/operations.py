@@ -1,5 +1,7 @@
 """MCP tools — preflight, dry-run, drift detection, and reconcile."""
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -10,14 +12,14 @@ def run_preflight(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: int,
-    forward_scheme: str = "http",
-    expose_mode: str = "proxy_dns",
+    target_port: Annotated[int, Field(ge=1, le=65535)],
+    forward_scheme: Literal["http", "https"] = "http",
+    expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
     tunnel_provider_id: int | None = None,
     tunnel_hostname: str = "",
-    public_target_mode: str = "manual",
+    public_target_mode: Literal["auto", "manual"] = "manual",
     dns_ip: str = "",
     service_id: int | None = None,
 ) -> dict[str, Any]:
@@ -29,6 +31,11 @@ def run_preflight(
     - TCP reachability of the target
     - Provider connection tests
     - DNS target resolution
+
+    The body is validated by `ServicePreflightIn`, which is `ServiceIn` plus `service_id`,
+    so the constrained fields carry the same `Literal` sets and port bounds as
+    `create_service`. A preflight that is refused for a bad scheme has checked nothing, and
+    the point of this tool is to answer before anything is created.
     """
     payload: dict[str, Any] = {
         "subdomain": subdomain,

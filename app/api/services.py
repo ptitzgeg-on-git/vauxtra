@@ -128,10 +128,56 @@ def _service_target_reachable(host: str, port: int, timeout: float = 2.0) -> tup
         return False, str(e)
 
 
+def _primary_push_targets(body) -> tuple[int | None, int | None]:
+    """The proxy and DNS ids the service row will really hold, given the mode.
+
+    The de-duplication of the multi-sync targets is written against these: an extra equal to
+    a primary is not an extra, because the primary already receives the route. But the write
+    routes blank the columns the mode does not use *before* comparing -- `add_service` stores
+    `tunnel_provider_id` only in tunnel mode, and `dns_provider_id` only in proxy_dns mode --
+    so the comparison is not the one a reading of the payload alone suggests.
+
+    The preflight compared against `proxy_provider_id or tunnel_provider_id` regardless of
+    mode, and so answered a different question from the route it is a preflight for. Measured
+    on `{expose_mode: proxy_dns, proxy_provider_id: null, tunnel_provider_id: 5,
+    extra_proxy_provider_ids: [5]}`: the preflight emitted no `extra_proxy_provider` line at
+    all, and POST /api/services answered 201 with provider 5 holding the new host and a
+    `service_push_targets` row for it. The mirror case is a tunnel-mode body whose
+    `dns_provider_id` repeats an id in `extra_dns_provider_ids`. Shared, so that the two
+    cannot drift apart again.
+    """
+    if body.expose_mode == "tunnel":
+        return body.tunnel_provider_id, None
+    return body.proxy_provider_id, body.dns_provider_id
+
+
 #: Every preflight check carries `detail` (the English sentence, kept for logs and older
 #: clients) plus `detail_key` -- the short code the sentence was written from -- and the
 #: values it was built out of. The UI looks up `expose.preflight.detail.<detail_key>` so the
 #: line is read in the reader's language, and falls back to `detail` when the code is new.
+#:
+#: `blocking` is not a severity, it is a claim about the save routes. The Expose panel greys
+#: out "Create route" while `summary.blocking_failures` is above zero and offers nothing to
+#: press instead, so `blocking: True` promises that POST /api/services -- and, for a body
+#: carrying a `service_id`, PUT /api/services/{sid} -- would refuse the same body. A check
+#: that promises that and is wrong is a dead end: a red badge, a "Re-run checks" button that
+#: will fail forever, and an API that accepts the body anyway.
+#:
+#: So the rule, for every check in `_run_preflight` and `_check_provider`: block only what
+#: the save routes really refuse, warn about everything else. The unit of the rule is the
+#: branch and not the check name: `proxy_provider` and `dns_provider` each carry four of
+#: them, and two of the four land on opposite verdicts. Measured through all three routes on
+#: the same body, these refuse and keep their badge -- `host_taken` (409), `target_none`
+#: (400), `dns_target_required` and `dns_target_detection_failed` (400), `provider_missing`
+#: on a primary provider and on an extra one alike (400, from `_unknown_references`), and
+#: `provider_required`, which never reaches this function at all because
+#: `validate_mode_dependencies` answers 422 first.
+#: These do not, and are warnings: `target_reachable`, `proxy_connection`, `dns_connection`,
+#: `extra_provider_disabled`, `provider_disabled` on the primary proxy or DNS server, and
+#: `tunnel_health` in all three of its shapes. Each of the last four was measured answering
+#: `201 {"errors": []}` with the proxy host created, the DNS rewrite written, or the tunnel
+#: ingress rule published -- `add_service` reads no `enabled` column and asks no tunnel how
+#: it feels; it fetches the provider row and pushes.
 def _public_target_refusal(conn, source: str, dns_provider_id: int | None) -> dict:
     """The body of the 400 raised when a DNS provider has no target to write.
 
@@ -178,10 +224,15 @@ def _check_provider(conn, provider_id: int | None, *, role: str, required: bool)
             **_detail("provider_missing", f"{role.capitalize()} provider not found"),
         }
     if not row["enabled"]:
+        # A warning under the blocking rule above: `add_service` selects the provider row and
+        # pushes to it without ever reading `enabled`, so a disabled primary answers 201 with
+        # the proxy host created and the DNS rewrite written. `extra_provider_disabled` below
+        # is already a warning for the weaker case -- the extras really are skipped -- and it
+        # would have been absurd for the target that does receive the route to be the gate.
         return dict(row), {
             "name": f"{role}_provider",
             "ok": False,
-            "blocking": True,
+            "blocking": False,
             **_detail("provider_disabled", f"{role.capitalize()} provider is disabled"),
         }
 
@@ -201,6 +252,17 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
     checks: list[dict] = []
 
     public_host = _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain)
+
+    # The address the save route resolves from. `add_service` starts from nothing and
+    # `update_service` starts from the row it is about to overwrite, so a preflight that
+    # always started from nothing answered for one route and guessed for the other: in auto
+    # mode a service already holding a target read `dns_target_resolution` red while the PUT
+    # kept that very target and answered 200. `service_id` is what the panel sends when it
+    # is editing; the two branches below are the two save routes, spelled the same way.
+    current_dns_ip = ""
+    if service_id:
+        current_row = conn.execute("SELECT dns_ip FROM services WHERE id=?", (int(service_id),)).fetchone()
+        current_dns_ip = (current_row["dns_ip"] or "") if current_row else ""
 
     # Route uniqueness check
     rows = conn.execute(
@@ -240,6 +302,13 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
 
     # Target reachability. The round trip is timed here rather than read back out of the
     # helper's sentence, so the number survives translation.
+    #
+    # A warning under the blocking rule above: `add_service` never probes the target -- this
+    # function is the only caller of `_service_target_reachable`, and it is not on the save
+    # path. Blocking here forbade a configuration the product publishes without a murmur: a
+    # Vauxtra that cannot see the target's VLAN while the reverse proxy can, a firewall that
+    # only opens for the proxy, a backend switched off while its route is prepared, a name
+    # only the proxy's Docker network resolves.
     started = time.monotonic()
     reachable, detail = _service_target_reachable(body.target_ip, body.target_port)
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
@@ -247,7 +316,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
         {
             "name": "target_reachable",
             "ok": reachable,
-            "blocking": True,
+            "blocking": False,
             **(
                 _detail("target_reachable", detail, ms=elapsed_ms)
                 if reachable
@@ -279,6 +348,13 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
         checks.append(tunnel_check)
 
         if tunnel_provider_row:
+            # Warnings under the blocking rule above, all three shapes of it. `add_service`
+            # asks the tunnel nothing: it fetches the row and calls `create_host`. Measured on
+            # the same body through both routes, a provider answering `health_status()` with
+            # `{"ok": False}`, one whose `test_connection()` returns False, and one whose
+            # health endpoint raises each came back `201 {"errors": []}` with the ingress rule
+            # published. A tunnel that is down at preflight time is also the case most likely
+            # to be up a minute later, which is exactly what the greyed-out button forbade.
             try:
                 provider = create_provider(tunnel_provider_row)
                 if hasattr(provider, "health_status"):
@@ -287,7 +363,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         {
                             "name": "tunnel_health",
                             "ok": bool(health.get("ok")),
-                            "blocking": True,
+                            "blocking": False,
                             **_detail(
                                 "tunnel_status",
                                 f"Tunnel status: {health.get('status', 'unknown')}",
@@ -302,7 +378,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         {
                             "name": "tunnel_health",
                             "ok": ok,
-                            "blocking": True,
+                            "blocking": False,
                             **(
                                 _detail("tunnel_reachable", "Tunnel provider reachable")
                                 if ok
@@ -315,7 +391,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                     {
                         "name": "tunnel_health",
                         "ok": False,
-                        "blocking": True,
+                        "blocking": False,
                         **_detail(
                             "tunnel_check_failed",
                             f"Tunnel health check failed: {e}",
@@ -376,13 +452,44 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                 }
             )
 
+        if dns_provider_row:
+            # The DNS server receives the record exactly as the proxy receives the host, and
+            # only the proxy was ever dialled: `dns_provider` above reads a row, it does not
+            # knock. A server that had moved, lost its token or closed its port read "Ready"
+            # in green and refused the rewrite one click later. Named, because an instance
+            # holding several DNS providers would otherwise not say which one went quiet.
+            try:
+                ok = bool(create_provider(dns_provider_row).test_connection())
+            except Exception:
+                ok = False
+            checks.append(
+                {
+                    "name": "dns_connection",
+                    "ok": ok,
+                    "blocking": False,
+                    **(
+                        _detail(
+                            "dns_ok",
+                            f"DNS provider connection is healthy: {dns_provider_row['name']}",
+                            name=dns_provider_row["name"],
+                        )
+                        if ok
+                        else _detail(
+                            "dns_failed",
+                            f"DNS provider connection test failed: {dns_provider_row['name']}",
+                            name=dns_provider_row["name"],
+                        )
+                    ),
+                }
+            )
+
         if body.dns_provider_id:
             resolved_target, target_source = resolve_public_target(
                 conn,
                 mode=body.public_target_mode,
                 manual_value=body.dns_ip,
                 proxy_provider_id=body.proxy_provider_id,
-                current_value="",
+                current_value=current_dns_ip,
             )
             checks.append(
                 {
@@ -400,6 +507,82 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         else _detail(*describe_public_target_failure(target_source))
                     ),
                     "data": {"resolved_target": resolved_target, "source": target_source},
+                }
+            )
+
+    # A route published on several DNS servers, or several proxies, had exactly one of them
+    # looked at: the extra ids only ever fed the "at least one target is set" boolean above.
+    # Since the save route learned to push to them, the silence became a false green -- a
+    # second server that was down answered "all checks passed" and then refused the record,
+    # in a 207 the panel had had every chance to foresee. Outside the mode branch on purpose:
+    # a tunnel service carries extra proxies too, and `_collect_push_targets` reads the same
+    # table for it.
+    primary_proxy_id, primary_dns_id = _primary_push_targets(body)
+    for role, extra_ids, primary_id in (
+        ("proxy", body.extra_proxy_provider_ids, primary_proxy_id),
+        ("dns", body.extra_dns_provider_ids, primary_dns_id),
+    ):
+        for pid in dict.fromkeys(int(p) for p in (extra_ids or []) if p):
+            if pid == primary_id:
+                # A primary is not an extra. `_primary_push_targets` is what makes that the
+                # same sentence here and in `add_service`, mode included.
+                continue
+            name = f"extra_{role}_provider"
+            row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+            if not row:
+                # The one gate of the three, and it is earned: `_unknown_references` turns an
+                # id pointing at nothing into a 400, so this body really is refused.
+                checks.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "blocking": True,
+                        **_detail(
+                            "provider_missing",
+                            f"Extra {role} provider #{pid} no longer exists",
+                            id=pid,
+                        ),
+                    }
+                )
+                continue
+            if not row["enabled"]:
+                # The push skips a disabled target instead of failing on it, so this one costs
+                # the operator nothing but a target that will receive nothing.
+                checks.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "blocking": False,
+                        **_detail(
+                            "extra_provider_disabled",
+                            f"Extra {role} provider is disabled: {row['name']}",
+                            name=row["name"],
+                        ),
+                    }
+                )
+                continue
+            try:
+                ok = bool(create_provider(dict(row)).test_connection())
+            except Exception:
+                ok = False
+            checks.append(
+                {
+                    "name": name,
+                    "ok": ok,
+                    "blocking": False,
+                    **(
+                        _detail(
+                            "extra_provider_ok",
+                            f"Extra {role} provider answers: {row['name']}",
+                            name=row["name"],
+                        )
+                        if ok
+                        else _detail(
+                            "extra_provider_failed",
+                            f"Extra {role} provider does not answer: {row['name']}",
+                            name=row["name"],
+                        )
+                    ),
                 }
             )
 
@@ -941,7 +1124,8 @@ def add_service(request: Request, body: ServiceIn):
     )
     sid = cur.lastrowid
 
-    primary_proxy_provider_id = stored_proxy_provider_id or stored_tunnel_provider_id
+    # Same call the preflight makes, so the two agree on which ids are extras.
+    primary_proxy_provider_id, primary_dns_provider_id = _primary_push_targets(body)
     extra_proxy_ids = [
         int(pid)
         for pid in dict.fromkeys(body.extra_proxy_provider_ids)
@@ -950,7 +1134,7 @@ def add_service(request: Request, body: ServiceIn):
     extra_dns_ids = [
         int(pid)
         for pid in dict.fromkeys(body.extra_dns_provider_ids)
-        if pid and pid != stored_dns_provider_id
+        if pid and pid != primary_dns_provider_id
     ]
 
     set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
@@ -983,6 +1167,19 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         conn.close()
         raise HTTPException(404, "Service not found")
 
+    # The refusal `add_service` opens with, missing here. A service could be edited down to
+    # no provider target at all: measured on `{proxy_provider_id: null, dns_provider_id:
+    # null}`, POST answered 400 and PUT answered 200 with the hostname moved and nothing
+    # left anywhere to serve it -- on a body whose preflight had already marked `target_none`
+    # blocking and greyed the button out. Raised after the 404 so a PUT on a service that is
+    # not there still says so first.
+    if body.expose_mode == "proxy_dns":
+        has_any_proxy_target = bool(body.proxy_provider_id) or bool(body.extra_proxy_provider_ids)
+        has_any_dns_target = bool(body.dns_provider_id) or bool(body.extra_dns_provider_ids)
+        if not (has_any_proxy_target or has_any_dns_target):
+            conn.close()
+            raise HTTPException(400, "At least one proxy or DNS provider target is required")
+
     unknown = _unknown_references(conn, body)
     if unknown:
         # Same reasoning as `add_service`: the providers are reconfigured before the row is
@@ -1013,6 +1210,16 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     # same state and answered 200: the service listed its DNS provider in the interface, no
     # record was ever written, and `push_service` then reported `{"ok": true, "errors": []}`
     # for it while `push/dry-run` reported the opposite about the very same service.
+    #
+    # That refusal was reachable only in theory. A blanket `dns_ip = old["dns_ip"]` sat in
+    # front of it to absorb a detection blip, and it fired in manual mode too -- where
+    # nothing is detected and so nothing can blip. An operator who cleared the address field
+    # got 200 and the stale address written back, on a body `POST /api/services` refuses
+    # with 400 and the preflight had just marked `blocking_failures: 1, ok: false`. A blip is
+    # already absorbed one layer down: `resolve_public_target` receives the stored value as
+    # `current_value` and `suggest_public_targets` offers it as the `current` candidate,
+    # ranked by the operator's own priority policy. Doing it a second time here only
+    # overrode a policy that had dropped `current` on purpose.
     dns_ip = ""
     dns_target_source = "n/a"
     if new_mode == "proxy_dns":
@@ -1023,9 +1230,6 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             proxy_provider_id=body.proxy_provider_id,
             current_value=old["dns_ip"] or "",
         )
-        if not dns_ip:
-            # Detection can blip. A target the service already holds beats no target at all.
-            dns_ip = old["dns_ip"] or ""
         if body.dns_provider_id and not dns_ip:
             refusal = _public_target_refusal(conn, dns_target_source, body.dns_provider_id)
             conn.close()
@@ -1269,7 +1473,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
          stored_dns_ip, next_npm_host_id, body.icon_url, sid),
     )
 
-    primary_proxy_provider_id = stored_proxy_provider_id or stored_tunnel_provider_id
+    # Same call the preflight makes, so the two agree on which ids are extras.
+    primary_proxy_provider_id, primary_dns_provider_id = _primary_push_targets(body)
     extra_proxy_ids = [
         int(pid)
         for pid in dict.fromkeys(body.extra_proxy_provider_ids)
@@ -1278,7 +1483,7 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     extra_dns_ids = [
         int(pid)
         for pid in dict.fromkeys(body.extra_dns_provider_ids)
-        if pid and pid != stored_dns_provider_id
+        if pid and pid != primary_dns_provider_id
     ]
 
     # `set_push_targets` replaces the multi-sync list wholesale, and the UPDATE above may

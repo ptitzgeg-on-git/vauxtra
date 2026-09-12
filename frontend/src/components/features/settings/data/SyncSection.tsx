@@ -105,12 +105,28 @@ export function SyncSection() {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
+      // The four outcomes are not exclusive, and reading them as if they were lost
+      // most of what happened. `imported > 0` painted the whole run green, so a batch
+      // that created two services and refused a third reported only the two; and the
+      // refusals were read only when nothing at all was imported, so a refusal that
+      // shared a run with a success was never spoken. Each outcome now gets its own line.
+      //
+      // The count carries the line because the reason is not lost with it: every refusal
+      // is written to the journal by `_refuse_import`, and `logs` is one of the three
+      // queries invalidated just above, so Recent activity holds the sentence. Rows set
+      // aside on purpose are not failures and get no line each -- the run gets one.
+      const skipped = data.skipped?.length ?? 0;
+      const refused = data.errors?.length ?? 0;
       if (data.imported > 0) {
         toast.success(t('settings.migration.import_success', { count: data.imported }));
-      } else if (data.errors && data.errors.length > 0) {
-        toast.error(t('settings.migration.import_exists_or_failed', { count: data.errors.length }));
-      } else {
-        toast.success(t('settings.migration.sync_complete'));
+      }
+      if (data.linked > 0) {
+        toast.success(t('settings.migration.import_linked', { count: data.linked }));
+      }
+      if (skipped > 0) toast(t('settings.migration.import_skipped', { count: skipped }));
+      if (refused > 0) toast.error(t('settings.migration.import_errors', { count: refused }));
+      if (!data.imported && !data.linked && !skipped && !refused) {
+        toast.success(t('settings.migration.import_nothing'));
       }
     },
     onError: (err: unknown) => toast.error(translateApiError(err, t, t('settings.migration.import_failed'))),

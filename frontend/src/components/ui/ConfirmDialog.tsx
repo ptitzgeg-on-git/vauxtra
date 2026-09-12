@@ -30,8 +30,17 @@ export interface ConfirmDialogProps {
   cancelLabel?: string;
   variant?: ConfirmVariant;
   /**
-   * The exact text the user has to type before the confirm button enables -- for the
-   * actions that cannot be undone (reset, restore, deleting a provider with services).
+   * The exact text the user has to type before the confirm button enables.
+   *
+   * It guards the actions that destroy more than the one object on screen: the two that
+   * empty the database (`POST /api/reset` and `POST /api/restore`, same sixteen tables)
+   * ask for RESET and RESTORE, and a bulk deletion asks for the number of routes it is
+   * about to delete. Deleting one service, one provider or one domain does not: the dialog
+   * names the thing, and the thing is what goes.
+   *
+   * This comment used to say "restore" while the restore dialog passed nothing, which is
+   * how a whole database sat behind one unguarded click. Add the action here only when the
+   * call site actually passes the word.
    */
   requireText?: string;
   /** While true the confirm button spins and neither Escape, the backdrop nor the buttons close the dialog. */
