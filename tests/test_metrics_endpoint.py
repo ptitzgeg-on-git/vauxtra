@@ -1,4 +1,11 @@
-"""Tests for the Prometheus metrics endpoint."""
+"""Tests for the Prometheus metrics endpoint.
+
+These only read, so pointing at the wrong database cost nothing here beyond counting the
+caller's rows instead of a known set. It was still the wrong database: `DATA_DIR` and
+`DB_PATH` were set in `os.environ`, and `app/config.py` builds both from its own location
+without ever reading the environment. Rebinding the module attributes is what the rest of
+this suite does and what actually redirects the connection.
+"""
 
 import os
 import tempfile
@@ -11,15 +18,20 @@ class TestMetricsEndpoint(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        import app.db as _app_db
+        from app import models
+
         cls._tmpdir = tempfile.mkdtemp()
         cls._db_path = os.path.join(cls._tmpdir, "test.db")
-        os.environ["DATA_DIR"] = cls._tmpdir
-        os.environ["DB_PATH"] = cls._db_path
-        os.environ["SECRET_KEY"] = "test-secret-key-for-metrics"
-        os.environ["DISABLE_AUTH"] = "1"
 
-        from app.models import init_db
-        init_db()
+        cls._orig = (models.DATA_DIR, models.DB_PATH, _app_db.DATA_DIR, _app_db.DB_PATH)
+        models.DATA_DIR = _app_db.DATA_DIR = cls._tmpdir
+        models.DB_PATH = _app_db.DB_PATH = cls._db_path
+
+        # See the note in `test_templates_api.py`: read when `app.config` is first imported.
+        os.environ["SECRET_KEY"] = "test-secret-key-for-metrics"
+
+        models.init_db()
 
         from app.main import app
         cls.client = TestClient(app, raise_server_exceptions=True)
@@ -27,8 +39,12 @@ class TestMetricsEndpoint(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         import shutil
+
+        import app.db as _app_db
+        from app import models
+
+        models.DATA_DIR, models.DB_PATH, _app_db.DATA_DIR, _app_db.DB_PATH = cls._orig
         shutil.rmtree(cls._tmpdir, ignore_errors=True)
-        os.environ.pop("DISABLE_AUTH", None)
 
     def test_metrics_endpoint_returns_200(self):
         r = self.client.get("/metrics")

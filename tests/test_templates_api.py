@@ -1,6 +1,13 @@
 """Integration tests for the service templates API.
 
-Uses FastAPI TestClient against the real app so the SQLite DB path is patched.
+`setUp` empties `service_templates` before every test, so where the database lives is not
+a detail here: aimed at the wrong file this class deletes the operator's own templates and
+leaves its fixtures behind, and every assertion still passes.
+
+It used to be aimed at the wrong file. `DATA_DIR` and `DB_PATH` were set in `os.environ`,
+and `app/config.py` builds both from its own location without ever reading the
+environment, so the assignments moved nothing. Rebinding the module attributes is what
+the rest of this suite does and what actually redirects the connection.
 """
 
 import os
@@ -14,16 +21,22 @@ class TestTemplatesAPI(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Redirect DB to a temp file so tests are isolated
+        import app.db as _app_db
+        from app import models
+
         cls._tmpdir = tempfile.mkdtemp()
         cls._db_path = os.path.join(cls._tmpdir, "test.db")
-        os.environ["DATA_DIR"] = cls._tmpdir
-        os.environ["DB_PATH"] = cls._db_path
-        os.environ["SECRET_KEY"] = "test-secret-key-for-templates"
-        os.environ["DISABLE_AUTH"] = "1"
 
-        from app.models import init_db
-        init_db()
+        cls._orig = (models.DATA_DIR, models.DB_PATH, _app_db.DATA_DIR, _app_db.DB_PATH)
+        models.DATA_DIR = _app_db.DATA_DIR = cls._tmpdir
+        models.DB_PATH = _app_db.DB_PATH = cls._db_path
+
+        # Read once, when `app.config` is first imported. That is usually some earlier test
+        # module, which makes this a no-op in a full run and the real key in a single-file
+        # one; harmless either way, and templates carry nothing encrypted.
+        os.environ["SECRET_KEY"] = "test-secret-key-for-templates"
+
+        models.init_db()
 
         from app.main import app
         cls.client = TestClient(app, raise_server_exceptions=True)
@@ -31,8 +44,12 @@ class TestTemplatesAPI(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         import shutil
+
+        import app.db as _app_db
+        from app import models
+
+        models.DATA_DIR, models.DB_PATH, _app_db.DATA_DIR, _app_db.DB_PATH = cls._orig
         shutil.rmtree(cls._tmpdir, ignore_errors=True)
-        os.environ.pop("DISABLE_AUTH", None)
 
     def setUp(self):
         """Clean templates table before each test."""

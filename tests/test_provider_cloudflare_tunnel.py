@@ -1,7 +1,7 @@
 """Unit tests for CloudflareTunnelProvider — all HTTP calls are mocked."""
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -73,8 +73,17 @@ class TestCFTunnelResolveId(unittest.TestCase):
     def test_resolve_returns_empty_for_multiple_tunnels(self):
         self.p.tunnel_id = ""
         self._mock_request([{"id": "t1", "name": "T1"}, {"id": "t2", "name": "T2"}])
-        result = self.p._resolve_tunnel_id()
+        # `add_log` writes a row. Left alone it writes it into the journal of whatever
+        # database this checkout runs on, which is the operator's -- see tests/conftest.py.
+        # Patching it also lets the warning be checked: it is the only thing this branch
+        # produces for the operator, and it names the tunnels so the choice can be made.
+        with patch("app.models.add_log") as add_log:
+            result = self.p._resolve_tunnel_id()
         self.assertEqual(result, "")
+        level, message = add_log.call_args.args[:2]
+        self.assertEqual(level, "warning")
+        self.assertIn("T1, T2", message)
+        self.assertIn("tunnel_id", message)
 
     def test_resolve_returns_empty_when_api_fails(self):
         self.p.tunnel_id = ""
