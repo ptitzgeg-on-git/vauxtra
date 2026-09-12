@@ -380,7 +380,7 @@ class RemovingAProviderTellsTheTruthTests(_MultiSyncTestCase):
         detail = self._conflict(3)
 
         self.assertNotIn("stop being pushed anywhere", detail["message"])
-        self.assertIn("go on being published by their other targets", detail["message"])
+        self.assertIn("goes on being published by its other targets", detail["message"])
         self.assertTrue(detail["services"][0]["still_published"])
 
     def test_a_service_left_with_nothing_still_says_so(self):
@@ -390,7 +390,7 @@ class RemovingAProviderTellsTheTruthTests(_MultiSyncTestCase):
 
         detail = self._conflict(2)
 
-        self.assertIn("stop being published anywhere", detail["message"])
+        self.assertIn("stops being published anywhere", detail["message"])
         self.assertFalse(detail["services"][0]["still_published"])
 
     def test_the_message_names_what_stays_live_on_the_provider(self):

@@ -6,8 +6,9 @@ And five French strings were shipped with a plain `?` where the accent belonged 
 "?chec de v?rification" -- which no compiler or linter has any reason to notice.
 
 These are static checks over `frontend/src/locales/`: they need no browser and no Node.
-`frontend/scripts/check-locale-parity.mjs` covers the key parity too, but the CI
-workflow only runs `i18n:quality`, never `i18n:check` -- so nothing gated it.
+`frontend/scripts/check-locale-parity.mjs` covers the same files from the Node side and CI
+runs it, but only it can ask `Intl.PluralRules` which forms a language actually has. So the
+plural rule lives there and only there, and this file stays on what needs no CLDR.
 """
 
 import json
@@ -24,6 +25,19 @@ _REFERENCE = "en"
 _T_CALL = re.compile(r"""\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]""")
 _PLACEHOLDER = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
+# A counted sentence is written once per plural category the language has, so `foo` lives in
+# the files as `foo_one` and `foo_other` and never as `foo`. These are the six CLDR category
+# names; which of them a given language declares is `check-locale-parity.mjs`'s business.
+_PLURAL_SUFFIXES = ("_zero", "_one", "_two", "_few", "_many", "_other")
+
+
+def _logical(key: str) -> str:
+    """The name the UI asks for: `certificates.meta_one` and `_other` are both that sentence."""
+    for suffix in _PLURAL_SUFFIXES:
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return key
+
 
 def _load(lang: str) -> dict:
     return json.loads((_LOCALES / f"{lang}.json").read_text(encoding="utf-8"))
@@ -34,13 +48,40 @@ def _languages() -> list[str]:
 
 
 class LocaleFilesTests(unittest.TestCase):
-    def test_they_all_carry_the_same_keys(self):
-        reference = set(_load(_REFERENCE))
+    def test_they_all_carry_the_same_sentences(self):
+        """Compared by logical key: Japanese has one form where French has two, by design."""
+        reference = {_logical(k) for k in _load(_REFERENCE)}
         for lang in _languages():
             with self.subTest(lang=lang):
-                keys = set(_load(lang))
+                keys = {_logical(k) for k in _load(lang)}
                 self.assertEqual(sorted(reference - keys), [], f"{lang}: missing")
                 self.assertEqual(sorted(keys - reference), [], f"{lang}: unknown")
+
+    def test_every_counted_sentence_has_an_other_form(self):
+        """`other` is the one category every language declares, so it is the safe fallback.
+
+        `t()` answers with `_other` when the exact category is missing, when the caller
+        passed no count, and when it passed a string. A file without it would put a raw key
+        on the screen in those three cases.
+        """
+        counted = {
+            _logical(k) for k in _load(_REFERENCE) if k.endswith(_PLURAL_SUFFIXES)
+        }
+        self.assertGreater(len(counted), 20, "the suffix scan found almost nothing")
+        for lang in _languages():
+            keys = set(_load(lang))
+            for base in sorted(counted):
+                with self.subTest(lang=lang, key=base):
+                    self.assertIn(f"{base}_other", keys)
+
+    def test_no_bare_key_shadows_a_counted_one(self):
+        """`t(base)` and `t(base, {count})` reading different strings is a trap, not a feature."""
+        for lang in _languages():
+            keys = set(_load(lang))
+            for key in sorted(keys):
+                if key.endswith(_PLURAL_SUFFIXES):
+                    with self.subTest(lang=lang, key=key):
+                        self.assertNotIn(_logical(key), keys)
 
     def test_no_value_is_empty(self):
         for lang in _languages():
@@ -83,9 +124,17 @@ class EveryKeyTheUiAsksForExistsTests(unittest.TestCase):
         return used
 
     def test_the_ui_never_asks_for_a_key_no_locale_defines(self):
-        defined = set(_load(_REFERENCE))
+        # A counted sentence is asked for by its base name and stored under a suffix, so
+        # `certificates.meta` is defined by `certificates.meta_other` being there.
+        defined = {_logical(k) for k in _load(_REFERENCE)}
         missing = {k: where for k, where in self._used_keys().items() if k not in defined}
         self.assertEqual(missing, {})
+
+    def test_it_would_notice_a_key_that_is_defined_nowhere(self):
+        """The control: the lookup above accepts a plural family, not simply anything."""
+        defined = {_logical(k) for k in _load(_REFERENCE)}
+        self.assertIn("certificates.meta", defined)  # stored as _one / _other
+        self.assertNotIn("certificates.meta_nonexistent", defined)
 
     def test_the_scan_actually_found_the_calls(self):
         """A regex that matches nothing would make the test above pass for free."""

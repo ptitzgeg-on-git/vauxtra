@@ -9,6 +9,7 @@ from app.auth import require_auth, require_auth_or_setup
 from app.config import encrypt_secret
 from app.models import add_log, get_db, get_db_ctx
 from app.providers.factory import PROVIDER_TYPES, create_provider
+from app.text import plural, verb
 from app.validators import is_valid_url
 
 router = APIRouter()
@@ -456,15 +457,20 @@ def _describe_provider_removal(name: str, dependents: list[dict[str, Any]]) -> s
     kept = [d for d in dependents if d.get("still_published")]
     orphaned = [d for d in dependents if not d.get("still_published")]
 
-    parts = [f'{len(dependents)} service(s) still use "{name}".']
+    parts = [
+        f'{plural(len(dependents), "service")} still {verb(len(dependents), "uses", "use")} "{name}".'
+    ]
     if orphaned:
         parts.append(
-            f"{len(orphaned)} of them have no other target: they keep their public hostname "
-            "and stop being published anywhere until another provider is chosen."
+            f"{len(orphaned)} of them {verb(len(orphaned), 'has', 'have')} no other target: "
+            f"{verb(len(orphaned), 'it keeps', 'they keep')} the public hostname and "
+            f"{verb(len(orphaned), 'stops', 'stop')} being published anywhere until another "
+            "provider is chosen."
         )
     if kept:
         parts.append(
-            f"{len(kept)} go on being published by their other targets."
+            f"{len(kept)} {verb(len(kept), 'goes', 'go')} on being published by "
+            f"{verb(len(kept), 'its', 'their')} other targets."
         )
     parts.append(
         f'Whatever "{name}" already serves for them stays live on it after the deletion, '
@@ -512,7 +518,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
         if withdrawal_errors:
             add_log(
                 "error",
-                f"Provider {row['name']}: {len(withdrawal_errors)} record(s) could not be "
+                f"Provider {row['name']}: {plural(len(withdrawal_errors), 'record')} could not be "
                 "withdrawn before deletion and are still live on it",
                 conn,
             )
@@ -530,7 +536,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
         what = "withdrawn from it and unlinked" if withdraw else "unlinked, still served by it"
         add_log(
             "warn",
-            f"Provider deleted: {row['name']} -- {len(dependents)} service(s) {what} ({names})",
+            f"Provider deleted: {row['name']} -- {plural(len(dependents), 'service')} {what} ({names})",
         )
     else:
         add_log("info", f"Provider deleted: {row['name']}")

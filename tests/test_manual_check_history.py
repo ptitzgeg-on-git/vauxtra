@@ -189,7 +189,7 @@ class ManualCheckHistoryTests(unittest.TestCase):
         logs = self._logs()
         self.assertEqual(len(logs), 1, logs)
         self.assertEqual(logs[0][0], "error")  # one service was down during the run
-        self.assertIn("2 service(s)", logs[0][1])
+        self.assertIn("2 services", logs[0][1])
         self.assertIn("1 ok", logs[0][1])
         self.assertIn("1 error", logs[0][1])
 

@@ -4,6 +4,7 @@ import requests
 
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import DNSProvider, TimeoutSession
+from app.text import plural
 
 
 class TechnitiumProvider(DNSProvider):
@@ -104,7 +105,7 @@ class TechnitiumProvider(DNSProvider):
         try:
             zones = self._list_zones()
             zones_ok = True
-            zones_detail = f"{len(zones)} zone(s) accessible" if zones else "No zones found"
+            zones_detail = f"{plural(len(zones), 'zone')} accessible" if zones else "No zones found"
             zones_code = "zones_found" if zones else "zones_none"
             if zones:
                 zones_params = {"count": len(zones)}

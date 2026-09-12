@@ -15,6 +15,7 @@ import requests
 
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import DNSProvider
+from app.text import plural
 
 try:
     import cloudflare as _cf
@@ -268,7 +269,7 @@ class CloudflareProvider(DNSProvider):
                 _add(
                     "zones_access",
                     True,
-                    f"Can access {zone_count} zone(s) via token - auto-detection will work",
+                    f"Can access {plural(zone_count, 'zone')} via token - auto-detection will work",
                     False,
                     code="zones_listed",
                     count=zone_count,

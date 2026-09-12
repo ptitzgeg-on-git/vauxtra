@@ -152,6 +152,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   connectors card has shown "{healthy}/{total} healthy" for some time. It would otherwise have
   become two dead keys instead of one.
 
+- **Fourteen sentences the server writes itself carried the same crutch, and one of them got
+  five words wrong in the dialog that asks before deleting a provider.** These never reach
+  `t()`: they are composed in Python, in English, and they surface in the activity log, in the
+  validation detail the provider wizard shows when the panel has no wording of its own, in a
+  cert-expiry alert, in a webhook body, and in the 409 that answers `DELETE /api/providers/{id}`
+  when services still point at it. That last one read `1 service(s) still use "AdGuard"`, and
+  because the parenthesis only ever marks the noun, the paragraph under it had been written for
+  the plural and left there: *"1 of them have no other target: they keep the public hostname and
+  stop being published anywhere"*, then *"1 go on being published by their other targets"*. Five
+  disagreements in the sentence an operator reads while deciding whether to remove a target, and
+  the crutch is why nobody saw them — `service(s)` looks deliberate, so the eye stops checking.
+
+  `app.text` now holds `plural()` and `verb()`. English only, and deliberately so: the panel
+  asks the browser, because eight languages disagree about where zero belongs and about whether
+  a plural is built by adding letters at all, while these sentences have one language and one
+  rule. `plural(0, "service")` gives "0 services" — English puts zero in the plural, which is
+  exactly the assumption the locale files are forbidden to make, French and Portuguese putting
+  it in the singular.
+
+  The guard is `tests/test_server_wording.py`, and it reads the AST rather than the lines, so a
+  sentence split across three source lines is judged as the one sentence it becomes: that is how
+  two of the fourteen had hidden, their `day(s)` sitting on a different line from the number
+  feeding it. It refuses an English plural ending glued to a word in a string that also counts
+  something, which leaves `http(s)`, `INSERT INTO domains (name)` and `REFERENCES services(id)`
+  alone — SQL lives in the same string literals as prose — and it skips docstrings, `app/text.py`
+  being a file that has to quote the crutch in order to explain it.
+
+- **Two of the three checkers that hold "every locale carries the English key set" had been
+  wrong since the files learned to inflect.** `check-locale-parity.mjs` was taught the plural
+  categories; `tests/test_frontend_i18n.py` and `tests/test_regressions_v2.py` were not, and a
+  Japanese file that correctly omits a singular it can never select failed both. They now
+  compare *logical* keys, `certificates.meta_one` and `certificates.meta_other` being one
+  sentence, require an `_other` form everywhere, and refuse a bare key that shadows a counted
+  base. The per-language rule stays in the `.mjs` alone, it being the only one of the three that
+  can ask `Intl.PluralRules` which categories a language actually has; restating it in Python
+  would mean two writers of a rule that neither can verify.
+
 - **The 24 h cell printed the same sentence twice, and printed it as a fact when the request
   behind it had failed.** `UptimeStrip` already writes "no check in the last 24 hours" inside
   its dashed box when there is nothing to draw, and the table wrote the same key again in a

@@ -20,6 +20,7 @@ from app.public_target import (
     resolve_public_target,
     suggest_public_targets,
 )
+from app.text import plural
 from app.validators import (
     is_valid_domain,
     is_valid_hostname,
@@ -1564,7 +1565,7 @@ def check_all(request: Request):
     # probe, and a fleet of fifty would otherwise bury everything else in "Recent activity".
     add_log(
         "info" if error_count == 0 else "error",
-        f"Manual check of {len(results)} service(s): {ok_count} ok, {error_count} error",
+        f"Manual check of {plural(len(results), 'service')}: {ok_count} ok, {error_count} error",
     )
     return {
         "checked": len(services),
@@ -1716,7 +1717,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
             body.ids,
         ).fetchone()[0]
         conn.commit()
-        add_log("info", f"Bulk {body.action}: {affected} service(s)")
+        add_log("info", f"Bulk {body.action}: {plural(affected, 'service')}")
 
     elif body.action == "delete":
         for sid in body.ids:
@@ -1745,7 +1746,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
             affected += 1
 
         conn.commit()
-        add_log("info", f"Bulk delete: {affected} service(s)")
+        add_log("info", f"Bulk delete: {plural(affected, 'service')}")
 
     conn.close()
     return {"ok": True, "affected": affected, "errors": errors}

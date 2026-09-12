@@ -195,9 +195,12 @@ class ApiKeyScopeTests(unittest.TestCase):
 
         def writes(node, helpers, depth=2):
             for child in ast.walk(node):
-                if isinstance(child, ast.Constant) and isinstance(child.value, str):
-                    if write_sql.search(child.value):
-                        return True
+                if (
+                    isinstance(child, ast.Constant)
+                    and isinstance(child.value, str)
+                    and write_sql.search(child.value)
+                ):
+                    return True
             if depth:
                 for child in ast.walk(node):
                     if (isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
