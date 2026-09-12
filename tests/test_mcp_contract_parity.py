@@ -45,15 +45,16 @@ from pydantic import ValidationError
 
 # What a tool raises when its own schema turns an argument away, before the body runs.
 #
-# `vauxtra_mcp/requirements.txt` asks for `fastmcp>=2.0` and pins nothing, so CI resolves
-# whatever is current on the day it runs. Current fastmcp lets pydantic's own
-# `ValidationError` out of `Tool.run()` rather than wrapping it in its own class, and these
-# two tests named the wrapper: they have been failing in CI since that release, on a
-# refusal that never stopped working. The guarantee under test is that the call is refused
+# `vauxtra_mcp/requirements.txt` asks for `fastmcp>=2.0` and pins nothing, and the versions
+# that satisfy it disagree about this: 3.2.4 lets pydantic's own `ValidationError` out of
+# `Tool.run()`, while 4.0.3 -- what CI resolves today -- wraps it in its own class. Naming
+# only the wrapper made these two tests pass or fail on which version the resolver picked,
+# over a refusal that works in both. The guarantee under test is that the call is refused
 # and nothing is sent, not which library gets to name the refusal.
 #
 # The neighbouring assertions in this file say `ValueError`, which keeps working either way
-# because pydantic's error is one. They are the reason only these two went red.
+# because pydantic's error is one. They are the reason only these two depended on which
+# version was installed.
 SchemaRefusal = (_FastMCPRefusal, ValidationError)
 
 from app.api.providers import ProviderIn
