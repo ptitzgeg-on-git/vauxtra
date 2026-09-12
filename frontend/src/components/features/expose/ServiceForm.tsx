@@ -4,6 +4,7 @@ import { ArrowRightLeft, Globe, RefreshCw, Server, Waypoints } from 'lucide-reac
 import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
+import { domainProblem, domainProblemKey, subdomainProblem, subdomainProblemKey } from '@/lib/hostname';
 import {
   Button,
   Checkbox,
@@ -247,6 +248,16 @@ export function ServiceForm({
 
   const fqdnPreview = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
 
+  // The same rules the server applies, so the field says which one is broken instead of
+  // letting "Continue" spend a round trip on a name that cannot be accepted. Only once
+  // something has been typed: an empty required field is already marked as such, and a form
+  // that opens shouting at every blank is a form nobody reads.
+  const subdomainError = formData.subdomain ? subdomainProblem(formData.subdomain, { allowWildcard: true }) : null;
+  const domainError = formData.domain ? domainProblem(formData.domain) : null;
+  // `subdomain.domain` is a claim about both halves, so one broken half makes the whole
+  // preview a promise the server will not keep. It comes back when the name is publishable.
+  const showFqdnPreview = !subdomainError && !domainError;
+
   // Auto-sync tunnel_hostname when subdomain/domain change in tunnel mode.
   // Only auto-fill when the user hasn't typed a custom hostname.
   const prevFqdn = `${formData.subdomain}.${formData.domain}`;
@@ -349,10 +360,13 @@ export function ServiceForm({
           <Field
             label={t('expose.field.subdomain')}
             required
+            error={subdomainError ? t(subdomainProblemKey(subdomainError)) : undefined}
             hint={
-              <>
-                {t('expose.field.final_route')} <span className="font-mono text-foreground">{fqdnPreview}</span>
-              </>
+              showFqdnPreview ? (
+                <>
+                  {t('expose.field.final_route')} <span className="font-mono text-foreground">{fqdnPreview}</span>
+                </>
+              ) : undefined
             }
           >
             <Input
@@ -379,6 +393,7 @@ export function ServiceForm({
           <Field
             label={t('expose.field.domain')}
             required
+            error={domainError ? t(domainProblemKey(domainError)) : undefined}
             hint={
               domains.length === 0 && domainsError ? (
                 // "You have no domains" and "we could not read your domains" are the same

@@ -22,11 +22,13 @@ from app.public_target import (
 )
 from app.text import plural
 from app.validators import (
-    is_valid_domain,
+    DOMAIN_REASONS,
+    SUBDOMAIN_REASONS,
+    domain_problem,
     is_valid_hostname,
     is_valid_port,
-    is_valid_subdomain,
     normalize_domain,
+    subdomain_problem,
 )
 
 router = APIRouter()
@@ -446,17 +448,22 @@ class ServiceIn(BaseModel):
     @field_validator("subdomain")
     @classmethod
     def val_subdomain(cls, v):
+        # The message names the rule that was broken, not just the field: eight different
+        # mistakes used to answer "Invalid subdomain", which tells an operator nothing about
+        # the one character to change.
         v = v.strip().lower()
-        if not is_valid_subdomain(v, allow_wildcard=True):
-            raise ValueError("Invalid subdomain")
+        problem = subdomain_problem(v, allow_wildcard=True)
+        if problem:
+            raise ValueError(f"Invalid subdomain: {SUBDOMAIN_REASONS[problem]}")
         return v
 
     @field_validator("domain")
     @classmethod
     def val_domain(cls, v):
         val = normalize_domain(v)
-        if not is_valid_domain(val):
-            raise ValueError("Invalid domain")
+        problem = domain_problem(val)
+        if problem:
+            raise ValueError(f"Invalid domain: {DOMAIN_REASONS[problem]}")
         return val
 
     @field_validator("target_ip")

@@ -87,6 +87,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A subdomain the API would refuse was offered to the operator as a finished hostname, and
+  the refusal, when it arrived, did not say what was wrong.** Typing `vaux_dev1` — an
+  underscore, which RFC 1123 does not allow in a hostname and which several DNS APIs
+  nonetheless accept in other record types — produced a hint reading *"Final route:
+  vaux_dev1.<domain>"*, a `Continue` that spent a round trip, and a 422 the wizard rendered
+  as *"the checks could not run"*. Four layers had to agree on the mistake for that to happen,
+  and all four are closed.
+
+  `app/validators.py` no longer answers with a boolean. `subdomain_problem()` and
+  `domain_problem()` return a stable code — `empty`, `too_long`, `dot_edge`, `wildcard`,
+  `charset`, `label_length`, `hyphen_edge`, plus `url`, `no_dot` and `ip_address` for a domain
+  — and `is_valid_subdomain`/`is_valid_domain` are now that code being `None`. `ServiceIn` and
+  `POST /api/settings/domains` turn it into an English sentence, so a client with no
+  translations reads *"a subdomain holds lowercase letters, digits, hyphens and dots only"*
+  where it used to read *"Invalid subdomain"*.
+
+  The panel carries the same rule in `frontend/src/lib/hostname.ts`, a field having no way to
+  ask the server on every keystroke. Both hostname fields now turn red with their own sentence
+  as they are typed, in all eight languages; `Continue` refuses before the round trip rather
+  than after it; and the `Final route` hint disappears while either half is invalid, since it
+  was a promise about a name the server had already decided not to accept. A 422 that does
+  arrive now says *"the route was refused before the checks ran"* and lands in the form's own
+  banner — scrolled into view, `Continue` sitting at the bottom of a body that scrolls and the
+  banner at the top of it — instead of only in a toast in the opposite corner.
+
+  Two copies of one rule is the arrangement where one of them quietly stops agreeing, so
+  neither file owns it. `frontend/src/lib/hostname.cases.json` holds 53 values and the verdict
+  each one earns; `tests/test_hostname_rules.py` runs that table through Python and
+  `src/lib/hostname.test.ts` runs it through TypeScript, in a different CI job, so a change to
+  one side alone turns the other red. The table must also reach every code the module declares
+  and accept at least five values, because a table that only ever refuses would pass a
+  function that refuses everything. Where the two sides are allowed to differ — Python asks
+  `ipaddress.ip_address`, the panel reads the shape, and they can disagree on whether
+  `abc:def` is a bad charset or a bad address — only the verdict is asserted, never the code.
+
+  The rewrite widened what is accepted, deliberately. The old expression demanded a single
+  label, which refused `vaux-dev.sous` and `*.vaux-dev`: both ordinary DNS, and all four
+  providers derive the zone by walking labels from the right, so none of them ever needed the
+  restriction.
+
 - **Every counted sentence in the panel used the English plural rule, in all eight languages.**
   There was no plural machinery: each call site that needed one wrote the test by hand, and
   each one wrote `count === 1 ? singular : plural`. That is the English rule. French and

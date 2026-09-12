@@ -1,0 +1,339 @@
+{
+  "//": "The rule two files carry: app/validators.py and frontend/src/lib/hostname.ts. Read by tests/test_hostname_rules.py and by src/lib/hostname.test.ts, so a change to one side without the other turns one of the two red. `problem` is null when the value is accepted; `domain_verdict_only` holds the values whose code the two sides are allowed to disagree on, never their verdict.",
+  "subdomain": [
+    {
+      "value": "vaux-dev-1",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "the shape the product standardises on: hyphens"
+    },
+    {
+      "value": "vaux_dev1",
+      "allow_wildcard": true,
+      "problem": "charset",
+      "why": "the underscore this whole fix started from"
+    },
+    {
+      "value": "vaux_dev_1",
+      "allow_wildcard": true,
+      "problem": "charset",
+      "why": "two underscores, still one rule broken"
+    },
+    {
+      "value": "VAUX-DEV-2",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "uppercase, folded before the rule is applied"
+    },
+    {
+      "value": "  vaux-dev-2  ",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "surrounding space is trimmed, not refused"
+    },
+    {
+      "value": "vaux--dev",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "a double hyphen inside a part is legal DNS"
+    },
+    {
+      "value": "xn--vauxdev",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "a punycode prefix is a legal name"
+    },
+    {
+      "value": "-vauxdev",
+      "allow_wildcard": true,
+      "problem": "hyphen_edge",
+      "why": "hyphen at the front"
+    },
+    {
+      "value": "vauxdev-",
+      "allow_wildcard": true,
+      "problem": "hyphen_edge",
+      "why": "hyphen at the back"
+    },
+    {
+      "value": "vaux-dev.sous",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "two levels: the zone is found by walking from the right"
+    },
+    {
+      "value": "vaux.dev.trois",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "three levels, same reason"
+    },
+    {
+      "value": "123",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "all digits is a legal label"
+    },
+    {
+      "value": "*",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "the bare wildcard the model allows"
+    },
+    {
+      "value": "*",
+      "allow_wildcard": false,
+      "problem": "wildcard",
+      "why": "the same value where the caller does not allow one"
+    },
+    {
+      "value": "*.vaux-dev",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "a wildcard over two levels, leftmost"
+    },
+    {
+      "value": "vaux-dev.*",
+      "allow_wildcard": true,
+      "problem": "wildcard",
+      "why": "a wildcard anywhere but leftmost means nothing in DNS"
+    },
+    {
+      "value": "*vaux",
+      "allow_wildcard": true,
+      "problem": "wildcard",
+      "why": "a wildcard glued to a label is not a wildcard"
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "allow_wildcard": true,
+      "problem": null,
+      "why": "63 characters, the exact limit of one part"
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "allow_wildcard": true,
+      "problem": "label_length",
+      "why": "64 characters, one too many"
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "allow_wildcard": true,
+      "problem": "too_long",
+      "why": "304 characters, every part legal, the whole too long"
+    },
+    {
+      "value": "vaux dev",
+      "allow_wildcard": true,
+      "problem": "charset",
+      "why": "a space"
+    },
+    {
+      "value": "vaux/dev",
+      "allow_wildcard": true,
+      "problem": "charset",
+      "why": "a slash"
+    },
+    {
+      "value": "vaux-devé",
+      "allow_wildcard": true,
+      "problem": "charset",
+      "why": "an accent"
+    },
+    {
+      "value": "",
+      "allow_wildcard": true,
+      "problem": "empty",
+      "why": "nothing typed"
+    },
+    {
+      "value": "   ",
+      "allow_wildcard": true,
+      "problem": "empty",
+      "why": "space only is nothing typed"
+    },
+    {
+      "value": ".vaux",
+      "allow_wildcard": true,
+      "problem": "dot_edge",
+      "why": "a leading dot"
+    },
+    {
+      "value": "vaux.",
+      "allow_wildcard": true,
+      "problem": "dot_edge",
+      "why": "a trailing dot"
+    },
+    {
+      "value": "vaux..dev",
+      "allow_wildcard": true,
+      "problem": "dot_edge",
+      "why": "two dots in a row"
+    }
+  ],
+  "domain": [
+    {
+      "value": "example.com",
+      "require_dot": false,
+      "problem": null,
+      "why": "the domain the whole lab publishes under"
+    },
+    {
+      "value": "EXAMPLE.COM",
+      "require_dot": false,
+      "problem": null,
+      "why": "uppercase, folded"
+    },
+    {
+      "value": "example.com.",
+      "require_dot": false,
+      "problem": null,
+      "why": "the trailing dot of an absolute name is normalised away"
+    },
+    {
+      "value": "  example.com  ",
+      "require_dot": false,
+      "problem": null,
+      "why": "surrounding space is trimmed"
+    },
+    {
+      "value": "example-site.test",
+      "require_dot": false,
+      "problem": null,
+      "why": "a hyphen inside a part"
+    },
+    {
+      "value": "xn--p1ai.test",
+      "require_dot": false,
+      "problem": null,
+      "why": "a punycode zone"
+    },
+    {
+      "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bbbbbbbbb",
+      "require_dot": false,
+      "problem": null,
+      "why": "253 characters, the exact limit"
+    },
+    {
+      "value": "example",
+      "require_dot": false,
+      "problem": null,
+      "why": "a single label is a domain where no dot is demanded"
+    },
+    {
+      "value": "example",
+      "require_dot": true,
+      "problem": "no_dot",
+      "why": "the same value where a dot is demanded"
+    },
+    {
+      "value": "",
+      "require_dot": false,
+      "problem": "empty",
+      "why": "nothing typed"
+    },
+    {
+      "value": "https://example.com",
+      "require_dot": false,
+      "problem": "url",
+      "why": "a scheme"
+    },
+    {
+      "value": "example.com/panneau",
+      "require_dot": false,
+      "problem": "url",
+      "why": "a path"
+    },
+    {
+      "value": "user@example.com",
+      "require_dot": false,
+      "problem": "url",
+      "why": "an address, not a name"
+    },
+    {
+      "value": "*.example.com",
+      "require_dot": false,
+      "problem": "wildcard",
+      "why": "the wildcard belongs in the subdomain"
+    },
+    {
+      "value": "192.168.1.50",
+      "require_dot": false,
+      "problem": "ip_address",
+      "why": "a dotted quad is an address"
+    },
+    {
+      "value": "2001:db8::1",
+      "require_dot": false,
+      "problem": "ip_address",
+      "why": "an IPv6 literal is an address"
+    },
+    {
+      "value": "01.2.3.4",
+      "require_dot": false,
+      "problem": null,
+      "why": "a padded octet is not an address, so it is a name"
+    },
+    {
+      "value": "256.1.1.1",
+      "require_dot": false,
+      "problem": null,
+      "why": "out of range is not an address either"
+    },
+    {
+      "value": "example_site.test",
+      "require_dot": false,
+      "problem": "charset",
+      "why": "an underscore, this time in the domain"
+    },
+    {
+      "value": "-example.com",
+      "require_dot": false,
+      "problem": "hyphen_edge",
+      "why": "hyphen at the front"
+    },
+    {
+      "value": "example-.com",
+      "require_dot": false,
+      "problem": "hyphen_edge",
+      "why": "hyphen at the back of a part"
+    },
+    {
+      "value": ".example.com",
+      "require_dot": false,
+      "problem": "dot_edge",
+      "why": "a leading dot"
+    },
+    {
+      "value": "example..com",
+      "require_dot": false,
+      "problem": "dot_edge",
+      "why": "two dots in a row"
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.test",
+      "require_dot": false,
+      "problem": "label_length",
+      "why": "a 64-character part"
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "require_dot": false,
+      "problem": "too_long",
+      "why": "304 characters"
+    }
+  ],
+  "domain_verdict_only": [
+    {
+      "value": "abc:def",
+      "require_dot": false,
+      "valid": false,
+      "why": "hex and a colon: an address to the panel, a bad charset to Python, refused by both"
+    },
+    {
+      "value": "::1",
+      "require_dot": false,
+      "valid": false,
+      "why": "the IPv6 loopback, which Python names an address and the panel does too"
+    }
+  ]
+}

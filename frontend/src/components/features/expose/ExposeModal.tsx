@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useId, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
@@ -17,6 +17,7 @@ import { useT } from '@/i18n';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { cn } from '@/lib/cn';
 import { translateApiError, isHttpStatus } from '@/lib/errors';
+import { domainProblem, domainProblemKey, subdomainProblem, subdomainProblemKey } from '@/lib/hostname';
 import {
   Badge,
   Button,
@@ -133,6 +134,13 @@ export function ExposeModal({
   const [formData, setFormData] = useState<FormState>(seedForm);
   const [step, setStep] = useState<Step>('configure');
   const [formError, setFormError] = useState<string | null>(null);
+  const formErrorRef = useRef<HTMLDivElement | null>(null);
+
+  // The banner sits at the top of a body that scrolls, and "Continue" sits at the bottom of
+  // it, so the answer to a click could land entirely off screen. Bring it back into view.
+  useEffect(() => {
+    if (formError) formErrorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [formError]);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [dryRun, setDryRun] = useState<DryRunPlan | null>(null);
   const [saveOutcome, setSaveOutcome] = useState<{ host: string; errors: string[] } | null>(null);
@@ -278,6 +286,12 @@ export function ExposeModal({
     if (!formData.domain || !formData.subdomain || !formData.target_ip) {
       return t('expose.validation.required_fields');
     }
+    // The same rules as `app/validators.py`. Without them "Continue" sent the name anyway and
+    // came back with a 422 the panel could only describe as "the checks could not run".
+    const badSubdomain = subdomainProblem(formData.subdomain, { allowWildcard: true });
+    if (badSubdomain) return t(subdomainProblemKey(badSubdomain));
+    const badDomain = domainProblem(formData.domain);
+    if (badDomain) return t(domainProblemKey(badDomain));
     if (formData.expose_mode === 'tunnel' && !formData.tunnel_provider_id) {
       return t('expose.validation.tunnel_provider_required');
     }
@@ -326,7 +340,14 @@ export function ExposeModal({
       setStep('review');
     },
     onError: (err: unknown) => {
-      toast.error(translateApiError(err, t, t('expose.preflight.failed')), { duration: 5000 });
+      // A 422 is the body being refused, not the checks failing to run, and saying the second
+      // about the first sends an operator looking at their providers over a typed character.
+      const fallback = isHttpStatus(err, 422) ? t('expose.preflight.rejected') : t('expose.preflight.failed');
+      const message = translateApiError(err, t, fallback);
+      // Also in the form's own banner: a toast lasts five seconds in the opposite corner, and
+      // the wizard stays on this step with nothing else to say why.
+      setFormError(message);
+      toast.error(message, { duration: 5000 });
     },
   });
 
@@ -592,9 +613,11 @@ export function ExposeModal({
       {step === 'configure' && (
         <form id={formId} onSubmit={handleContinue} className="space-y-8 animate-in fade-in animate-duration-200">
           {formError && (
-            <InlineAlert tone="danger" onDismiss={() => setFormError(null)}>
-              {formError}
-            </InlineAlert>
+            <div ref={formErrorRef}>
+              <InlineAlert tone="danger" onDismiss={() => setFormError(null)}>
+                {formError}
+              </InlineAlert>
+            </div>
           )}
 
           <ServiceForm

@@ -171,7 +171,8 @@ class NoWordLostItsAccentsTests(unittest.TestCase):
     HOMOGRAPHS = {
         # `connexions actives` (adjective) and `services activés` (participle).
         # `Zero Trust` is Cloudflare's product name, `zéro` the number.
-        "fr": {"actives", "zero"},
+        # `des chiffres` (digits, in a charset rule) is not `chiffrés` (encrypted).
+        "fr": {"actives", "chiffres", "zero"},
         # The Spanish interrogatives carry an accent the relative pronouns do not,
         # and `publica` (he publishes) is not `pública` (public).
         "es": {"como", "cual", "cuando", "cuanto", "donde", "quien", "publica"},
