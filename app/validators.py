@@ -18,6 +18,16 @@ import ipaddress
 import re
 
 # One DNS label: what may sit between two dots. Case is folded before this is applied.
+#
+# The underscore is left out on purpose, and that is stricter than DNS itself. Measured on
+# 2026-09-12 against a real Cloudflare zone: a label carrying an underscore was accepted by
+# the API, served by the zone's own nameservers, and resolved by 1.1.1.1 and 8.8.8.8 alike
+# in under five seconds. The name works. The certificate does not: Let's Encrypt refuses
+# the order with `Domain name contains an invalid character`,
+# where the same request for a hyphenated name succeeds. Vauxtra publishes services over
+# HTTPS, so allowing the underscore would trade a refusal now for a route that resolves,
+# answers, and can never hold a certificate. Widen this pattern only for a character that
+# passes both halves of that test.
 _LABEL_RE = re.compile(r"^[a-z0-9-]+$")
 _HOSTNAME_RE  = re.compile(r'^[a-z0-9][a-z0-9\-\.]{0,253}[a-z0-9]$')
 _COLOR_VALID  = {

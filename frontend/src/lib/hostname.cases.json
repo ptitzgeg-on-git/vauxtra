@@ -11,7 +11,7 @@
       "value": "vaux_dev1",
       "allow_wildcard": true,
       "problem": "charset",
-      "why": "the underscore this whole fix started from"
+      "why": "Cloudflare accepts and resolves this; Let's Encrypt will not certify it"
     },
     {
       "value": "vaux_dev_1",
