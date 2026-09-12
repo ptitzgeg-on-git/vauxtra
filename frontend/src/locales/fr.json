@@ -815,7 +815,7 @@
   "provider_modal.footer.validating": "Validation…",
   "provider_modal.guided.back": "Retour",
   "provider_modal.guided.collected": "Tout est renseigné. Validez la connexion pour continuer.",
-  "provider_modal.guided.finish": "Terminer",
+  "provider_modal.guided.finish": "Nommer l'intégration",
   "provider_modal.guided.go_to": "Aller à l'étape {step}",
   "provider_modal.guided.next": "Suivant",
   "provider_modal.guided.optional": "Facultatif",

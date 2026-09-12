@@ -815,7 +815,7 @@
   "provider_modal.footer.validating": "検証中…",
   "provider_modal.guided.back": "戻る",
   "provider_modal.guided.collected": "入力はすべて完了しました。接続を検証して次へ進んでください。",
-  "provider_modal.guided.finish": "完了",
+  "provider_modal.guided.finish": "統合に名前を付ける",
   "provider_modal.guided.go_to": "ステップ{step}へ移動",
   "provider_modal.guided.next": "次へ",
   "provider_modal.guided.optional": "任意",

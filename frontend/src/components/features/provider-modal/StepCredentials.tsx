@@ -208,24 +208,27 @@ export function StepCredentials({
 
       {effectiveMode === 'guided' && !guidedDone && currentStep && (
         <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-primary">
-              {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
-            </span>
-            <div className="flex gap-1.5" role="list" aria-label={t('provider_modal.mode.guided')}>
-              {guidedSteps.map((_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  role="listitem"
-                  aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
-                  aria-current={i === guidedStepIndex ? 'step' : undefined}
-                  onClick={() => onGuidedStepChange(i)}
-                  className={cn('h-2 w-2 rounded-full transition-colors', i === guidedStepIndex ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60')}
-                />
-              ))}
+          {/* A single step is not a journey: no "1 of 1", no lone dot to click. */}
+          {guidedSteps.length > 1 && (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold uppercase tracking-wider text-primary">
+                {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
+              </span>
+              <div className="flex gap-1.5" role="list" aria-label={t('provider_modal.mode.guided')}>
+                {guidedSteps.map((_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    role="listitem"
+                    aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
+                    aria-current={i === guidedStepIndex ? 'step' : undefined}
+                    onClick={() => onGuidedStepChange(i)}
+                    className={cn('h-2 w-2 rounded-full transition-colors', i === guidedStepIndex ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60')}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
           <p className="text-sm font-semibold text-foreground">{currentStep.title}</p>
           <p className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">{currentStep.body}</p>
 
@@ -244,7 +247,7 @@ export function StepCredentials({
                 {t('provider_modal.guided.next')}
               </Button>
             ) : (
-              <Button type="button" size="sm" rightIcon={<Check />} onClick={() => onGuidedStepChange(guidedSteps.length)}>
+              <Button type="button" size="sm" variant="outline" rightIcon={<Check />} onClick={() => onGuidedStepChange(guidedSteps.length)}>
                 {t('provider_modal.guided.finish')}
               </Button>
             )}

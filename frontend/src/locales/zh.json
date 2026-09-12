@@ -815,7 +815,7 @@
   "provider_modal.footer.validating": "验证中…",
   "provider_modal.guided.back": "上一步",
   "provider_modal.guided.collected": "所有信息已填写完毕。请验证连接以继续。",
-  "provider_modal.guided.finish": "完成",
+  "provider_modal.guided.finish": "为集成命名",
   "provider_modal.guided.go_to": "转到第 {step} 步",
   "provider_modal.guided.next": "下一步",
   "provider_modal.guided.optional": "可选",

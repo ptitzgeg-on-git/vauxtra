@@ -815,7 +815,7 @@
   "provider_modal.footer.validating": "Wird geprüft…",
   "provider_modal.guided.back": "Zurück",
   "provider_modal.guided.collected": "Alles ist ausgefüllt. Prüfen Sie die Verbindung, um fortzufahren.",
-  "provider_modal.guided.finish": "Fertigstellen",
+  "provider_modal.guided.finish": "Integration benennen",
   "provider_modal.guided.go_to": "Zu Schritt {step} springen",
   "provider_modal.guided.next": "Weiter",
   "provider_modal.guided.optional": "Optional",

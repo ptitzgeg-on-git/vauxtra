@@ -66,6 +66,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The guided panel counted "Step 1 of 1" and armed a second primary button that finished
+  nothing.** Two of the ten types the API serves ship a single guided step (adguard, traefik),
+  and the panel still printed a step counter over one pagination dot whose only destination was
+  the step already on screen. Below it sat "Finish", `variant="primary"` — the same blue as the
+  footer's "Validate" 161 pixels down, and the one of the two that creates nothing: it moves the
+  panel past its last step, where the field that names the integration is waiting. The counter
+  and the dots now appear only from two steps up; the button is demoted to `outline`, so one
+  blue button is left on the screen and it is the one in the footer; and
+  `provider_modal.guided.finish` was renamed in all eight languages after where it actually
+  goes, using the word each file already uses for `provider_modal.field.name`. The button
+  itself was kept: nothing else reaches the naming step.
+
 - **Confirmation dialogs opened with the destructive button armed on exactly the dangerous
   ones.** The opening focus was chosen from `variant === 'danger'`, read as a severity dial.
   It is not one: `danger` is what the harmless confirmations use, and `warning` is what the

@@ -815,7 +815,7 @@
   "provider_modal.footer.validating": "Validating…",
   "provider_modal.guided.back": "Back",
   "provider_modal.guided.collected": "Everything is filled in. Validate the connection to continue.",
-  "provider_modal.guided.finish": "Finish",
+  "provider_modal.guided.finish": "Name the integration",
   "provider_modal.guided.go_to": "Go to step {step}",
   "provider_modal.guided.next": "Next",
   "provider_modal.guided.optional": "Optional",

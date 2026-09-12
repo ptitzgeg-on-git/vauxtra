@@ -815,7 +815,7 @@
   "provider_modal.footer.validating": "Bezig met valideren…",
   "provider_modal.guided.back": "Terug",
   "provider_modal.guided.collected": "Alles is ingevuld. Valideer de verbinding om door te gaan.",
-  "provider_modal.guided.finish": "Voltooien",
+  "provider_modal.guided.finish": "Integratie een naam geven",
   "provider_modal.guided.go_to": "Ga naar stap {step}",
   "provider_modal.guided.next": "Volgende",
   "provider_modal.guided.optional": "Optioneel",
