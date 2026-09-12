@@ -77,8 +77,10 @@ describe('t(), plural forms', () => {
   });
 
   it('leaves a key with no plural siblings exactly as it was', async () => {
-    const line = await say('fr', 'monitoring.uptime.summary', { percent: '99 %', count: 12 });
-    expect(line).toBe('99 % sur 12 contrôle(s)');
+    // A badge, not a sentence: "{label} ({count})" has nothing to inflect anywhere.
+    expect(await say('fr', 'layout.nav.item_with_badge', { label: 'Services', count: 12 })).toBe(
+      'Services (12)',
+    );
   });
 });
 
@@ -96,5 +98,66 @@ describe('t(), the count it prints', () => {
     // unable to select a plural — the `_other` form. Wrong at seven only in languages where
     // seven is not `other`; still a sentence, which the raw key would not be.
     expect(await say('fr', 'providers.meta.count', { count: '7' })).toBe('7 intégrations');
+  });
+});
+
+describe('t(), the sentences that carried a (s)', () => {
+  it('inflects a sentence that used to print its own parenthesis', async () => {
+    // Before: "99 % sur 12 contrôle(s)", in all eight files, at every count.
+    expect(await say('fr', 'monitoring.uptime.summary', { percent: '99 %', count: 1 })).toBe(
+      '99 % sur 1 contrôle',
+    );
+    expect(await say('fr', 'monitoring.uptime.summary', { percent: '99 %', count: 12 })).toBe(
+      '99 % sur 12 contrôles',
+    );
+  });
+
+  it('agrees the verb too, not only the noun', async () => {
+    // The crutch only marked the noun. "{count} service(s) utilise(nt)" was never written,
+    // so the singular had to be rewritten by hand for every sentence with a verb in it.
+    expect(await say('fr', 'settings.migration.quick_import_skipped', { count: 1 })).toBe(
+      '1 service déjà suivi sera ignoré.',
+    );
+    expect(await say('fr', 'settings.migration.quick_import_skipped', { count: 3 })).toBe(
+      '3 services déjà suivis seront ignorés.',
+    );
+  });
+
+  it('selects on {count} while the other numbers ride along', async () => {
+    // `monitoring.check_summary` carries three numbers. Only the first one chooses a form.
+    expect(
+      await say('fr', 'monitoring.check_summary', { count: 1, ok: 1, error: 0 }),
+    ).toBe('1 service vérifié : 1 en ligne, 0 hors ligne');
+    expect(
+      await say('fr', 'monitoring.check_summary', { count: 7, ok: 6, error: 1 }),
+    ).toBe('7 services vérifiés : 6 en ligne, 1 hors ligne');
+  });
+});
+
+describe('t(), a sentence that counts two different things', () => {
+  /**
+   * `monitoring.tunnels.connections` used to read "{connections} connexion(s), {clients}
+   * client(s)". One `count` cannot choose two forms, so the line is now two counted keys
+   * and a joiner -- and the joiner owns the separator, which is not a comma everywhere.
+   */
+  async function tunnelLine(lang: Lang, connections: number, clients: number) {
+    const conn = await say(lang, 'monitoring.tunnels.connection_count', { count: connections });
+    const cli = await say(lang, 'monitoring.tunnels.client_count', { count: clients });
+    return say(lang, 'monitoring.tunnels.connections', { connections: conn, clients: cli });
+  }
+
+  it('inflects each half on its own count', async () => {
+    expect(await tunnelLine('fr', 1, 4)).toBe('1 connexion, 4 clients');
+    expect(await tunnelLine('fr', 4, 1)).toBe('4 connexions, 1 client');
+  });
+
+  it('puts zero in the singular in French, on both halves', async () => {
+    expect(await tunnelLine('fr', 0, 0)).toBe('0 connexion, 0 client');
+  });
+
+  it('lets the joiner choose the separator, which Japanese does not write as a comma', async () => {
+    const line = await tunnelLine('ja', 2, 3);
+    expect(line).toContain('\u3001');
+    expect(line).not.toContain(',');
   });
 });

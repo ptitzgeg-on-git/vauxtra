@@ -355,7 +355,7 @@ export function Monitoring() {
         <InlineAlert
           tone={summary.error > 0 ? 'warning' : 'success'}
           title={t('monitoring.check_summary', {
-            checked: summary.checked,
+            count: summary.checked,
             ok: summary.ok,
             error: summary.error,
           })}

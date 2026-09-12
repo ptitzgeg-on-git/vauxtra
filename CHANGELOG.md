@@ -118,6 +118,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   Also renamed `monitoring.check_one` to `monitoring.check_row`: it was never a plural. It
   means "check this one host now", and it sat next to real plural keys wearing their suffix.
 
+- **Thirty-three sentences wrote their own plural inside a parenthesis, and no language reads
+  it.** "1 certificat(s)", "1 service(s) utilise(nt)", "99 % sur 1 contrôle(s)": the crutch is a
+  note to a reader who is supposed to pick a form themselves, and it shipped in all eight
+  files. It also hid that four of these languages do not build a plural by adding letters to
+  the end. Spanish drops the written accent once the plural adds a syllable (`conexión` →
+  `conexiones`), Portuguese replaces the ending outright (`verificação` → `verificações`,
+  `túnel` → `túneis`), Dutch doubles a vowel in the singular and not in the plural
+  (`certificaat` / `certificaten`), and German fronts the stem vowel (`Eintrag` / `Einträge`).
+  A parenthesis cannot express any of those, so the crutch was not merely lazy, it was
+  unwritable in half the catalogue. Each of the thirty-three is now a `_one` / `_other` pair.
+
+  The crutch also only ever marked the noun, never the verb. "{count} service(s) still point
+  at {name}" has a second word that agrees, and every sentence with one had its singular
+  rewritten by hand rather than mechanically: eighteen keys across French, German, Spanish,
+  Portuguese and Dutch, plus three machine translations that had put the number in the wrong
+  place to begin with ("Los servicios {count} utilizan" for "{count} servicios usan").
+
+  `monitoring.tunnels.connections` was not a plural at all but two of them in one sentence,
+  "{connections} connexion(s), {clients} client(s)", and one count cannot choose two forms. It
+  is now two counted keys and a joiner that owns the separator, which was the real defect
+  underneath: Japanese separates a list with `、` and Chinese with `，`, and the old key had a
+  comma hard-coded in all eight files. `monitoring.check_summary` carries three numbers of
+  which only the first inflects, so its selector is renamed `{checked}` → `{count}` and the
+  Spanish wording moved to an invariable tail ("{ok} en línea, {error} fuera de línea").
+
+  `check-locale-quality.mjs` now refuses a short parenthesised ending next to a `{count}`,
+  which is what should have caught these in the first place: the parity check counts keys, and
+  the quality check held only a table of known-bad translations. `http(s)` and the `(days)` of
+  a field label are not touched, having no count beside them and nothing to inflect.
+
+  Also deleted `monitoring.tunnels_down`, written in all eight files and read by nothing: the
+  connectors card has shown "{healthy}/{total} healthy" for some time. It would otherwise have
+  become two dead keys instead of one.
+
 - **The 24 h cell printed the same sentence twice, and printed it as a fact when the request
   behind it had failed.** `UptimeStrip` already writes "no check in the last 24 hours" inside
   its dashed box when there is nothing to draw, and the table wrote the same key again in a

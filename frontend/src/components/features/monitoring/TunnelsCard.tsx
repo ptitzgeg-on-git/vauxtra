@@ -1,7 +1,6 @@
 import { Link } from 'react-router-dom';
 import { CloudOff, RefreshCw, Waypoints } from 'lucide-react';
 import { useT } from '@/i18n';
-import { useFormat } from '@/hooks/useFormat';
 import {
   Badge,
   Card,
@@ -63,7 +62,6 @@ export interface TunnelsCardProps {
 
 export function TunnelsCard({ data, loading, isError, refreshing, onRefresh }: TunnelsCardProps) {
   const t = useT();
-  const { formatNumber } = useFormat();
 
   const items = Array.isArray(data?.items) ? data.items : [];
   const down = items.filter((item) => !item.health?.ok);
@@ -132,8 +130,10 @@ export function TunnelsCard({ data, loading, isError, refreshing, onRefresh }: T
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
                         {connections !== undefined || clients !== undefined
                           ? t('monitoring.tunnels.connections', {
-                              connections: formatNumber(connections ?? 0),
-                              clients: formatNumber(clients ?? 0),
+                              connections: t('monitoring.tunnels.connection_count', {
+                                count: connections ?? 0,
+                              }),
+                              clients: t('monitoring.tunnels.client_count', { count: clients ?? 0 }),
                             })
                           : item.tunnel_id
                             ? t('monitoring.tunnels.tunnel_id', { id: item.tunnel_id })
