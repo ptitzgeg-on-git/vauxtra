@@ -11,7 +11,12 @@ ARG APP_VERSION=dev
 WORKDIR /app
 ENV TZ=UTC
 ENV APP_VERSION=${APP_VERSION}
-RUN apt-get update && apt-get install -y --no-install-recommends curl gosu tzdata && rm -rf /var/lib/apt/lists/* && groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+# `upgrade` runs before `install`: the base image is rebuilt on its own schedule, so between
+# two of its rebuilds Debian publishes security updates for packages already baked into it.
+# Without this line they are never applied, and the image ships CVEs that are fixable today.
+# perl-base, libsqlite3-0, libpcre2-8-0 and gzip were all in exactly that state -- fourteen
+# fixable CRITICAL/HIGH findings, every one of them already patched in the Debian archive.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends curl gosu tzdata && rm -rf /var/lib/apt/lists/* && groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
 COPY requirements.txt .
 # pip is a build tool, and this is a runtime image.
 #
@@ -28,10 +33,18 @@ COPY requirements.txt .
 # container at the same time. Nothing here imports pip, pkg_resources or setuptools, and
 # the entrypoint does not call them; the ensurepip wheel goes too, since it is a complete
 # copy of what we just deleted.
+#
+# The two directories are asked of `sysconfig` instead of being spelled out. They used to
+# read /usr/local/lib/python3.13/..., and when the base image moved to 3.14 both `rm -rf`
+# calls began deleting a path that no longer existed. That succeeds, silently, so the
+# removal stopped happening while the build stayed green and the image kept shipping the
+# 1.8 MB ensurepip wheel this comment says it deletes. The last line exists for the same
+# reason: if ensurepip ever survives again, the build fails instead of going unnoticed.
 RUN pip install --no-cache-dir -r requirements.txt \
     && python -m pip uninstall -y pip \
-    && rm -rf /usr/local/lib/python3.13/ensurepip \
-    && rm -rf /usr/local/lib/python3.13/site-packages/pip*
+    && rm -rf "$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')/ensurepip" \
+    && rm -rf "$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"/pip* \
+    && if python -c 'import ensurepip' 2>/dev/null; then echo 'ensurepip survived its own removal'; exit 1; fi
 COPY app/ ./app/
 COPY --from=frontend-builder /build/dist ./frontend/dist/
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
