@@ -211,6 +211,7 @@ export function ServiceDrawer({
 
         <UptimeStrip
           summary={summary}
+          emptyLabel={historyError ? t('monitoring.uptime.history_failed') : undefined}
           heightClass="h-7"
           label={
             availability

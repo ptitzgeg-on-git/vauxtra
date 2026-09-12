@@ -87,6 +87,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The 24 h cell printed the same sentence twice, and printed it as a fact when the request
+  behind it had failed.** `UptimeStrip` already writes "no check in the last 24 hours" inside
+  its dashed box when there is nothing to draw, and the table wrote the same key again in a
+  `<p>` underneath, so the cell read the sentence, a gap, then the sentence. The second copy
+  hid the real defect. When `GET /api/services/history` had *failed*, the `<p>` correctly said
+  so, but the box above it still stated "no check in the last 24 hours" — a claim about the
+  infrastructure made from a request that never came back, sitting one line above the sentence
+  saying the opposite. An operator reading the box alone would have concluded their scheduler
+  was down when all that was down was one fetch. The strip now takes the sentence it should
+  print for an empty state, the table hands it the failure wording when the fetch failed, the
+  drawer says the same thing as the table, and the `<p>` only appears when there is a
+  percentage to state in it.
+
+- **The check button of every row was cut in half, at every window width.** The monitoring
+  grid gave the routes card eight of its twelve columns, which sounds like a ratio and is not
+  one: the page container caps the grid at 1280px, so the card was 798px on a 1440px screen
+  and 798px on a 2560px one. The table's min-content width is 820px. The missing 22px became a
+  horizontal scrollbar that parked itself over the last column, and the last column is
+  ACTIONS — the per-row "check this service" button. Widening the window did nothing, because
+  the cap meant there was nothing to widen. Nor would lowering the table's `min-w`: 820px
+  *is* the content minimum, not a floor somebody chose. The split is now 9/3, which gives the
+  scroller 906px against those same 820px and leaves the tunnels card 308px for a
+  min-content of 237px.
+
 - **The 24 h column read "no check in the last 24 hours" directly above a status cell reading
   "OK, checked just now".** Only the scheduler ever inserted into `uptime_events`. The two
   manual endpoints wrote `services.status` and `services.last_checked` and nothing else, so

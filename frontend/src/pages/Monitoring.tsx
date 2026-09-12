@@ -451,9 +451,15 @@ export function Monitoring() {
       {/* `min-w-0` on both children: a grid item defaults to `min-width: auto`, so the table's
           `min-w-[820px]` climbed back up and sized the card at 820px on a phone. The card then
           overflowed `main`, whose `overflow-x: hidden` cut 476px off with no scrollbar, while
-          the table's own `overflow-x-auto` had nothing left to scroll. */}
+          the table's own `overflow-x-auto` had nothing left to scroll.
+
+          9/3 and not 8/4: the page container caps the grid at 1280px, so the split is the
+          same at 1440px and at 2560px. Eight columns left the table scroller 798px against
+          a table whose min-content width is 820px, and that missing 22px was a permanent
+          horizontal scrollbar that hid most of the ACTIONS column. The tunnels card's own
+          min-content is 237px, so it still has room at three columns. */}
       <div className="grid gap-4 xl:grid-cols-12">
-        <Card className="min-w-0 xl:col-span-8">
+        <Card className="min-w-0 xl:col-span-9">
           <CardHeader className="gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle>{t('monitoring.route_health')}</CardTitle>
@@ -515,7 +521,7 @@ export function Monitoring() {
           </CardContent>
         </Card>
 
-        <div className="min-w-0 xl:col-span-4">
+        <div className="min-w-0 xl:col-span-3">
           <TunnelsCard
             data={tunnelsQuery.data}
             loading={tunnelsQuery.isPending}

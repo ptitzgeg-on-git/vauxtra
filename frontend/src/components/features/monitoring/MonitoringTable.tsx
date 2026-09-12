@@ -190,19 +190,21 @@ export function MonitoringTable({
                     <div className="space-y-1">
                       <UptimeStrip
                         summary={summary}
+                        emptyLabel={historyError ? t('monitoring.uptime.history_failed') : undefined}
                         label={
                           availability
                             ? t('monitoring.uptime.aria', { host, percent: availability })
                             : t('monitoring.uptime.aria_empty', { host })
                         }
                       />
-                      <p className="text-[11px] tabular-nums text-muted-foreground">
-                        {availability
-                          ? t('monitoring.uptime.summary', { percent: availability, count: summary.total })
-                          : historyError
-                            ? t('monitoring.uptime.history_failed')
-                            : t('monitoring.uptime.no_history')}
-                      </p>
+                      {/* Only when there is a percentage to state. With no history the strip
+                          already carries the sentence, and printing it again underneath put
+                          it twice in the same cell. */}
+                      {availability && (
+                        <p className="text-[11px] tabular-nums text-muted-foreground">
+                          {t('monitoring.uptime.summary', { percent: availability, count: summary.total })}
+                        </p>
+                      )}
                     </div>
                   )}
                 </td>
