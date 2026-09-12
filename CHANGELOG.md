@@ -191,6 +191,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   agree at one as well as at many; `{count}` selects the form even where the text does not
   repeat the number.
 
+- **A runtime parity gate**, `scripts/check_runtime_parity.py`, run in the backend job beside
+  the API-MCP parity and repo hygiene gates. It takes the two `FROM` lines as the single source
+  of truth and holds every other declaration of the runtime to them: the `setup-python` and
+  `setup-node` pins across the workflows, and every sentence that tells a reader what the
+  Dockerfile contains, the comments inside the workflows included. That last reading is not
+  thoroughness for its own sake. The stale sentence in `security.yml` had wrapped across two
+  comment lines mid-token, so a grep for `python:3.13-slim` could not see it and neither could
+  the first version of this gate; a claim about the runtime now has to be written on one line
+  to survive review, which is the price of being checkable. A pin written as an expression is
+  reported rather than passed over, because passing quietly is the silence the gate exists to
+  end. It deliberately does not read `ruff.toml`'s `target-version` or the README's "Requires
+  Python 3.13+": those state the source floor, which is a separate policy from what the image
+  runs and is allowed to sit below it. `tests/test_runtime_parity_gate.py` builds a throwaway
+  repository for each of the gate's readings and moves exactly one declaration in each, so the
+  checks can be told apart; it rebuilds the shape 834dfc3 left behind and confirms the gate
+  calls all seven of its disagreements; and one test runs the gate against this repository, so
+  `python -m pytest tests/` catches the next such bump even with the CI step removed.
+
 ### Fixed
 
 - **Three rows that could never become a service were reported as "all services already
@@ -1133,6 +1151,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   neighbours are (`summary_providers`, `summary_webhooks`, `summary_docker`). What `skipPassword`
   actually changes on that row — the value beside the label, the lock icon and the tone — was
   already correct and is unchanged.
+
+- **Every check on this repository attested to a runtime the published image does not have.**
+  `build(deps): bump the docker group` (834dfc3) moved the Dockerfile from `node:22-slim` and
+  `python:3.13-slim` to `node:26-slim` and `python:3.14-slim`, and it touched that one file —
+  one file changed, two insertions, two deletions. `tests.yml` went on installing Python 3.13
+  and Node 22, and so did both jobs in `security.yml`. From that commit the suite, the lint,
+  the dependency audit and the vulnerability scans all ran on a runtime the image does not
+  ship, and the image is built, signed with cosign and given a SLSA provenance attestation on
+  the strength of exactly those checks. Gating the publish is what makes that signature worth
+  what people read into it; gating it with a different interpreter quietly gave the words back.
+  All five pins now follow the Dockerfile.
+
+- **The SBOM that ships beside the image was resolved on a different interpreter than the
+  image.** `security.yml` installs the dependency set before running Syft, because Syft's
+  `requirements.txt` parser drops every line whose constraint is not an exact pin and all
+  thirteen lines here use `>=` — without that step the SBOM carried zero Python packages. That
+  resolution ran on Python 3.13. Wheel availability and environment markers are decided per
+  interpreter, so the published SBOM, and the Grype scan that is the only step in this pipeline
+  allowed to break the build, were both computed against a dependency set that need not be the
+  one inside the image. The step now resolves on the interpreter the image ships.
+
+- **Three sentences described a Dockerfile that had changed underneath them.** `README.md` told
+  a reader the build uses "Node 22 for the frontend, Python 3.13-slim for the final image". The
+  comment introducing the `docker` entry in `dependabot.yml` said the Dockerfile pins
+  `node:22-slim` and `python:3.13-slim`. And the comment in `security.yml` that justifies
+  scanning the built image did so by naming the userland it scans, `python:3.13-slim`. That
+  last one was the hardest to see: the tag was split across two comment lines mid-token, so a
+  grep for it found nothing and the first version of the gate below could not reach it either.
+  All three were true the day they were written and false the moment the bump landed, and all
+  three now name the images the Dockerfile actually uses.
 
 ### Changed
 

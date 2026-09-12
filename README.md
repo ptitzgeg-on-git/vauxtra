@@ -332,7 +332,7 @@ The frontend dev server (`npm run dev`) proxies `/api/*` to the FastAPI backend 
 docker compose up --build
 ```
 
-The Dockerfile uses a multi-stage build: Node 22 for the frontend, Python 3.13-slim for the final image.
+The Dockerfile uses a multi-stage build: Node 26 for the frontend, Python 3.14-slim for the final image.
 
 ---
 
