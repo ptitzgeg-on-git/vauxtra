@@ -625,6 +625,7 @@
   "expose.validation.domain.too_long": "Eine Domain hat höchstens 253 Zeichen.",
   "expose.validation.domain.url": "Eine Domain ist ein Name, keine Adresse: kein Schema, kein Pfad, kein @.",
   "expose.validation.domain.wildcard": "Ein Platzhalter gehört in die Subdomain, nicht in die Domain.",
+  "expose.validation.fqdn.too_long": "Subdomain und Domain haben zusammen höchstens 253 Zeichen.",
   "expose.validation.no_auto_target": "Dieser Proxy kann sein öffentliches Ziel nicht erkennen; geben Sie es manuell ein.",
   "expose.validation.provider_required": "Wählen Sie mindestens einen Proxy- oder DNS-Anbieter.",
   "expose.validation.required_fields": "Subdomain, Domain und Ziel sind erforderlich.",

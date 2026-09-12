@@ -23,8 +23,10 @@ from app.public_target import (
 from app.text import plural
 from app.validators import (
     DOMAIN_REASONS,
+    FQDN_REASONS,
     SUBDOMAIN_REASONS,
     domain_problem,
+    fqdn_problem,
     is_valid_hostname,
     is_valid_port,
     normalize_domain,
@@ -524,6 +526,17 @@ class ServiceIn(BaseModel):
     def validate_mode_dependencies(self):
         if self.expose_mode == "tunnel" and not self.tunnel_provider_id:
             raise ValueError("Tunnel provider is required in tunnel mode")
+        return self
+
+    @model_validator(mode="after")
+    def validate_hostname_length(self):
+        # A rule about the pair, so it cannot live on either field: a 250-character
+        # subdomain and a 10-character domain are each acceptable on their own and the name
+        # they make is not. Raised here it is a 422 with a sentence; left out it was a saved
+        # route every provider refused separately, later, each in its own words.
+        problem = fqdn_problem(self.subdomain, self.domain)
+        if problem:
+            raise ValueError(f"Invalid hostname: {FQDN_REASONS[problem]}")
         return self
 
 

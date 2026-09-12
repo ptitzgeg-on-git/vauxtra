@@ -10,6 +10,10 @@ the table through Python, `frontend/src/lib/hostname.test.ts` runs the same tabl
 TypeScript, and each is in a different CI job, so a change on one side alone turns the
 other red.
 
+The `fqdn` block is the rule neither field can hold: each half may sit inside its own
+253-character limit while the name they make sits outside it. Both halves of every pair
+there are valid on their own, so nothing but that rule can refuse them.
+
 Two things the table cannot check are checked here instead: that both files list the same
 codes in the same order, and that every code has a sentence in all eight locale files --
 because a code with no key reaches the operator as `expose.validation.domain.charset`.
@@ -28,10 +32,14 @@ from pathlib import Path
 from app.validators import (
     DOMAIN_PROBLEMS,
     DOMAIN_REASONS,
+    FQDN_PROBLEMS,
+    FQDN_REASONS,
     SUBDOMAIN_PROBLEMS,
     SUBDOMAIN_REASONS,
     domain_problem,
+    fqdn_problem,
     is_valid_domain,
+    is_valid_fqdn,
     is_valid_subdomain,
     subdomain_problem,
 )
@@ -45,7 +53,7 @@ _TABLE = json.loads(_CASES.read_text(encoding="utf-8"))
 
 
 def _mirror_list(name: str) -> tuple[str, ...]:
-    """The `SUBDOMAIN_PROBLEMS`/`DOMAIN_PROBLEMS` array as the TypeScript file declares it."""
+    """A `..._PROBLEMS` array as the TypeScript file declares it."""
     source = _MIRROR.read_text(encoding="utf-8")
     block = re.search(rf"export const {name} = \[(.*?)\] as const;", source, re.S)
     if not block:
@@ -119,6 +127,43 @@ class DomainRuleTests(unittest.TestCase):
         self.assertGreaterEqual(len(accepted), 5)
 
 
+class FqdnRuleTests(unittest.TestCase):
+    """The rule about the pair, which neither field validator can reach on its own."""
+
+    def test_each_pair_breaks_the_rule_it_says_it_breaks(self):
+        for case in _TABLE["fqdn"]:
+            with self.subTest(why=case["why"]):
+                self.assertEqual(fqdn_problem(case["subdomain"], case["domain"]), case["problem"])
+
+    def test_both_halves_are_valid_on_their_own(self):
+        """Otherwise a field rule fires first and this table measures nothing."""
+        for case in _TABLE["fqdn"]:
+            with self.subTest(why=case["why"]):
+                self.assertIsNone(subdomain_problem(case["subdomain"], allow_wildcard=True))
+                self.assertIsNone(domain_problem(case["domain"]))
+
+    def test_the_boolean_says_the_same_thing_as_the_code(self):
+        for case in _TABLE["fqdn"]:
+            with self.subTest(why=case["why"]):
+                self.assertEqual(
+                    is_valid_fqdn(case["subdomain"], case["domain"]),
+                    case["problem"] is None,
+                )
+
+    def test_the_table_exercises_every_code(self):
+        reached = {case["problem"] for case in _TABLE["fqdn"]} - {None}
+        self.assertEqual(reached, set(FQDN_PROBLEMS))
+
+    def test_it_accepts_something(self):
+        accepted = [c for c in _TABLE["fqdn"] if c["problem"] is None]
+        self.assertGreaterEqual(len(accepted), 5)
+
+    def test_the_limit_is_where_it_says_it_is(self):
+        """253 passes and 254 does not, measured on the name, not on either half."""
+        self.assertIsNone(fqdn_problem("a" * 241, "example.com"))
+        self.assertEqual(fqdn_problem("a" * 242, "example.com"), "too_long")
+
+
 class MirrorTests(unittest.TestCase):
     """The panel's copy declares the same codes, in the same order, as the server's."""
 
@@ -127,6 +172,9 @@ class MirrorTests(unittest.TestCase):
 
     def test_the_domain_codes_match(self):
         self.assertEqual(_mirror_list("DOMAIN_PROBLEMS"), DOMAIN_PROBLEMS)
+
+    def test_the_fqdn_codes_match(self):
+        self.assertEqual(_mirror_list("FQDN_PROBLEMS"), FQDN_PROBLEMS)
 
     def test_it_would_notice_a_code_that_is_only_on_one_side(self):
         """The positive control: the reader above must be reading, not returning the input."""
@@ -139,10 +187,12 @@ class ReasonTests(unittest.TestCase):
     def test_every_code_has_an_english_sentence(self):
         self.assertEqual(tuple(sorted(SUBDOMAIN_REASONS)), tuple(sorted(SUBDOMAIN_PROBLEMS)))
         self.assertEqual(tuple(sorted(DOMAIN_REASONS)), tuple(sorted(DOMAIN_PROBLEMS)))
+        self.assertEqual(tuple(sorted(FQDN_REASONS)), tuple(sorted(FQDN_PROBLEMS)))
 
     def test_every_code_has_a_key_in_every_locale(self):
         expected = {f"expose.validation.subdomain.{code}" for code in SUBDOMAIN_PROBLEMS}
         expected |= {f"expose.validation.domain.{code}" for code in DOMAIN_PROBLEMS}
+        expected |= {f"expose.validation.fqdn.{code}" for code in FQDN_PROBLEMS}
         for path in sorted(_LOCALES.glob("*.json")):
             entries = json.loads(path.read_text(encoding="utf-8"))
             with self.subTest(locale=path.stem):

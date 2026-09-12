@@ -608,6 +608,7 @@
   "expose.validation.domain.too_long": "ドメインは最大 253 文字です。",
   "expose.validation.domain.url": "ドメインは名前であり、アドレスではありません。スキーム、パス、@ は使えません。",
   "expose.validation.domain.wildcard": "ワイルドカードはサブドメイン側に置きます。ドメインには使えません。",
+  "expose.validation.fqdn.too_long": "サブドメインとドメインを合わせて最大 253 文字です。",
   "expose.validation.no_auto_target": "このプロキシは公開ターゲットを自動検出できません。手動で入力してください。",
   "expose.validation.provider_required": "プロキシまたはDNSプロバイダーを少なくとも1つ選択してください。",
   "expose.validation.required_fields": "サブドメイン、ドメイン、ターゲットは必須です。",

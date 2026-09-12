@@ -625,6 +625,7 @@
   "expose.validation.domain.too_long": "Un dominio tiene 253 caracteres como máximo.",
   "expose.validation.domain.url": "Un dominio es un nombre, no una dirección: sin esquema, sin ruta, sin @.",
   "expose.validation.domain.wildcard": "El comodín va en el subdominio, no en el dominio.",
+  "expose.validation.fqdn.too_long": "Juntos, un subdominio y un dominio tienen 253 caracteres como máximo.",
   "expose.validation.no_auto_target": "Este proxy no puede detectar su destino público; introdúcelo manualmente.",
   "expose.validation.provider_required": "Elige al menos un proxy o un proveedor DNS.",
   "expose.validation.required_fields": "El subdominio, el dominio y el destino son obligatorios.",

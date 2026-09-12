@@ -1,5 +1,5 @@
 {
-  "//": "The rule two files carry: app/validators.py and frontend/src/lib/hostname.ts. Read by tests/test_hostname_rules.py and by src/lib/hostname.test.ts, so a change to one side without the other turns one of the two red. `problem` is null when the value is accepted; `domain_verdict_only` holds the values whose code the two sides are allowed to disagree on, never their verdict.",
+  "//": "The rule two files carry: app/validators.py and frontend/src/lib/hostname.ts. Read by tests/test_hostname_rules.py and by src/lib/hostname.test.ts, so a change to one side without the other turns one of the two red. `fqdn` holds pairs, for the one rule neither half can answer alone, and both halves of every pair are valid on their own so that rule is the only one that can fire. `problem` is null when the value is accepted; `domain_verdict_only` holds the values whose code the two sides are allowed to disagree on, never their verdict.",
   "subdomain": [
     {
       "value": "vaux-dev-1",
@@ -334,6 +334,56 @@
       "require_dot": false,
       "valid": false,
       "why": "the IPv6 loopback, which Python names an address and the panel does too"
+    }
+  ],
+  "fqdn": [
+    {
+      "subdomain": "vaux-dev",
+      "domain": "example.com",
+      "problem": null,
+      "why": "the ordinary case: nineteen characters in all"
+    },
+    {
+      "subdomain": "grafana.metrics",
+      "domain": "example.com",
+      "problem": null,
+      "why": "a dotted subdomain is still one name, and a short one"
+    },
+    {
+      "subdomain": "*",
+      "domain": "example.com",
+      "problem": null,
+      "why": "a wildcard is a character like any other once the halves are joined"
+    },
+    {
+      "subdomain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "domain": "example.com",
+      "problem": null,
+      "why": "251, with room to spare"
+    },
+    {
+      "subdomain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "domain": "example.com",
+      "problem": null,
+      "why": "253 exactly, the longest name DNS will carry"
+    },
+    {
+      "subdomain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "domain": "example.com",
+      "problem": "too_long",
+      "why": "254: one past the limit, every label and every half still legal on its own"
+    },
+    {
+      "subdomain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "domain": "example.com",
+      "problem": "too_long",
+      "why": "261, the name the API accepted and no provider could ever publish"
+    },
+    {
+      "subdomain": "vaux-dev",
+      "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.test",
+      "problem": "too_long",
+      "why": "257, the long half being the domain this time"
     }
   ]
 }

@@ -625,6 +625,7 @@
   "expose.validation.domain.too_long": "A domain is 253 characters at most.",
   "expose.validation.domain.url": "A domain is a name, not an address: no scheme, no path, no @.",
   "expose.validation.domain.wildcard": "A wildcard belongs in the subdomain, not in the domain.",
+  "expose.validation.fqdn.too_long": "A subdomain and a domain make a name of 253 characters at most.",
   "expose.validation.no_auto_target": "This proxy cannot detect its public target; enter it manually.",
   "expose.validation.provider_required": "Choose at least a proxy or a DNS provider.",
   "expose.validation.required_fields": "Subdomain, domain and target are required.",

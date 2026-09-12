@@ -4,7 +4,14 @@ import { ArrowRightLeft, Globe, RefreshCw, Server, Waypoints } from 'lucide-reac
 import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
-import { domainProblem, domainProblemKey, subdomainProblem, subdomainProblemKey } from '@/lib/hostname';
+import {
+  domainProblem,
+  domainProblemKey,
+  fqdnProblem,
+  fqdnProblemKey,
+  subdomainProblem,
+  subdomainProblemKey,
+} from '@/lib/hostname';
 import {
   Button,
   Checkbox,
@@ -254,9 +261,17 @@ export function ServiceForm({
   // that opens shouting at every blank is a form nobody reads.
   const subdomainError = formData.subdomain ? subdomainProblem(formData.subdomain, { allowWildcard: true }) : null;
   const domainError = formData.domain ? domainProblem(formData.domain) : null;
+  // The rule about the name the two halves make, which neither field can ask on its own.
+  // It shows under the subdomain: that is where the composite preview lives, and the half
+  // an operator would shorten. Only once both halves are otherwise sound, so a name that is
+  // both malformed and too long says the first thing to fix rather than the second.
+  const fqdnError =
+    !subdomainError && !domainError && formData.subdomain && formData.domain
+      ? fqdnProblem(formData.subdomain, formData.domain)
+      : null;
   // `subdomain.domain` is a claim about both halves, so one broken half makes the whole
   // preview a promise the server will not keep. It comes back when the name is publishable.
-  const showFqdnPreview = !subdomainError && !domainError;
+  const showFqdnPreview = !subdomainError && !domainError && !fqdnError;
 
   // Auto-sync tunnel_hostname when subdomain/domain change in tunnel mode.
   // Only auto-fill when the user hasn't typed a custom hostname.
@@ -360,7 +375,13 @@ export function ServiceForm({
           <Field
             label={t('expose.field.subdomain')}
             required
-            error={subdomainError ? t(subdomainProblemKey(subdomainError)) : undefined}
+            error={
+              subdomainError
+                ? t(subdomainProblemKey(subdomainError))
+                : fqdnError
+                  ? t(fqdnProblemKey(fqdnError))
+                  : undefined
+            }
             hint={
               showFqdnPreview ? (
                 <>

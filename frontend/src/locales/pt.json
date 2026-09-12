@@ -625,6 +625,7 @@
   "expose.validation.domain.too_long": "Um domínio tem no máximo 253 caracteres.",
   "expose.validation.domain.url": "Um domínio é um nome, não um endereço: sem esquema, sem caminho, sem @.",
   "expose.validation.domain.wildcard": "O curinga fica no subdomínio, não no domínio.",
+  "expose.validation.fqdn.too_long": "Juntos, um subdomínio e um domínio formam no máximo 253 caracteres.",
   "expose.validation.no_auto_target": "Este proxy não consegue detectar seu destino público; informe-o manualmente.",
   "expose.validation.provider_required": "Escolha ao menos um proxy ou um provedor de DNS.",
   "expose.validation.required_fields": "Subdomínio, domínio e destino são obrigatórios.",

@@ -608,6 +608,7 @@
   "expose.validation.domain.too_long": "域名最多 253 个字符。",
   "expose.validation.domain.url": "域名是名称而不是地址：不能包含协议、路径或 @。",
   "expose.validation.domain.wildcard": "通配符应写在子域名中，而不是域名中。",
+  "expose.validation.fqdn.too_long": "子域名和域名合起来最多 253 个字符。",
   "expose.validation.no_auto_target": "该代理无法自动检测其公网目标，请手动输入。",
   "expose.validation.provider_required": "请至少选择一个代理或 DNS 提供商。",
   "expose.validation.required_fields": "子域名、域名和目标地址为必填项。",

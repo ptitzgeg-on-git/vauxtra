@@ -87,6 +87,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Two hostname halves that each fit could be saved as a name no DNS zone will ever carry.**
+  A 250-character subdomain and `example.com` were each inside their own 253-character limit,
+  so `POST /api/services` answered `201` and stored a 261-character FQDN. Nothing downstream
+  caught it: the route was live in the panel, and each provider refused the record separately
+  at push time, later, phrased as a provider failure rather than as a name that was never
+  publishable.
+
+  `app/validators.py` gains `fqdn_problem(subdomain, domain)`, alongside `FQDN_PROBLEMS` and
+  `FQDN_REASONS`, measuring the joined name exactly as `_service_fqdn` builds it so the value
+  checked is the value published. `ServiceIn` applies it in a second `@model_validator`, since
+  a rule about the pair cannot live on either field — and `ServicePreflightIn` inherits it, so
+  the wizard's dry run refuses the same name the save would.
+
+  The panel carries the mirror as `fqdnProblem` in `frontend/src/lib/hostname.ts`. It shows in
+  the subdomain field's error slot: that is where the `Final route` preview already lives, and
+  the subdomain is the half an operator can shorten, the domain coming from a configured list.
+  It is evaluated only once both halves are individually sound, so a name that is malformed
+  *and* too long reports the first thing to fix rather than the second. `Continue` refuses it
+  before the round trip, and the composite preview disappears while it stands.
+
+  `hostname.cases.json` gains an `fqdn` block of eight pairs run through Python and TypeScript
+  in two different CI jobs, like the other two blocks. Both halves of every pair are asserted
+  valid on their own, because a pair whose subdomain breaks `label_length` would be refused by
+  a field rule first and would leave the composite rule untested. The boundary is pinned at
+  both ends: 253 characters is accepted, 254 is not.
+
 - **A subdomain the API would refuse was offered to the operator as a finished hostname, and
   the refusal, when it arrived, did not say what was wrong.** Typing `vaux_dev1` — an
   underscore, which RFC 1123 does not allow in a hostname and which several DNS APIs

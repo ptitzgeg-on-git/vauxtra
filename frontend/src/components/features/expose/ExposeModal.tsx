@@ -17,7 +17,14 @@ import { useT } from '@/i18n';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { cn } from '@/lib/cn';
 import { translateApiError, isHttpStatus } from '@/lib/errors';
-import { domainProblem, domainProblemKey, subdomainProblem, subdomainProblemKey } from '@/lib/hostname';
+import {
+  domainProblem,
+  domainProblemKey,
+  fqdnProblem,
+  fqdnProblemKey,
+  subdomainProblem,
+  subdomainProblemKey,
+} from '@/lib/hostname';
 import {
   Badge,
   Button,
@@ -292,6 +299,10 @@ export function ExposeModal({
     if (badSubdomain) return t(subdomainProblemKey(badSubdomain));
     const badDomain = domainProblem(formData.domain);
     if (badDomain) return t(domainProblemKey(badDomain));
+    // Last of the three, because it is the only one that needs both halves to be sound
+    // first: two legal halves can still make a name no zone will carry.
+    const badFqdn = fqdnProblem(formData.subdomain, formData.domain);
+    if (badFqdn) return t(fqdnProblemKey(badFqdn));
     if (formData.expose_mode === 'tunnel' && !formData.tunnel_provider_id) {
       return t('expose.validation.tunnel_provider_required');
     }

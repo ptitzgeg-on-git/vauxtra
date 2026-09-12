@@ -5,6 +5,9 @@
 implementation -- the boolean is `..._problem(...) is None` -- because a rule written twice
 is a rule neither copy can be trusted to hold.
 
+`fqdn_problem` answers the question neither of the other two can: each half may sit inside
+its own limit while the name they make sits outside it, and only the pair knows that.
+
 Those codes are a contract with the panel, which turns each into a sentence of its own
 (`expose.validation.subdomain.<code>`). `frontend/src/lib/hostname.ts` carries the same
 rules so the field can refuse before a round trip, and `tests/test_hostname_rules.py` runs
@@ -49,6 +52,10 @@ DOMAIN_PROBLEMS = (
     "hyphen_edge",
 )
 
+# Same, for `fqdn_problem`. One code today; the tuple exists so the panel, the locale files
+# and the parity test check themselves against a list rather than against a literal.
+FQDN_PROBLEMS = ("too_long",)
+
 
 # The sentence each code becomes for a client that carries none of its own. The API answers
 # in English on every route, and curl and `vauxtra_mcp` are clients too; the panel never
@@ -74,6 +81,10 @@ DOMAIN_REASONS = {
     "charset": "a domain holds lowercase letters, digits, hyphens and dots only",
     "label_length": "each part of a domain is 63 characters at most",
     "hyphen_edge": "no part of a domain may start or end with a hyphen",
+}
+
+FQDN_REASONS = {
+    "too_long": "a subdomain and a domain make a name of 253 characters at most",
 }
 
 
@@ -162,6 +173,27 @@ def domain_problem(value: str, *, require_dot: bool = False) -> str | None:
 
 def is_valid_domain(value: str, *, require_dot: bool = False) -> bool:
     return domain_problem(value, require_dot=require_dot) is None
+
+
+def normalize_subdomain(value: str) -> str:
+    """What `ServiceIn` stores, so the rule below measures the name that gets published."""
+    return (value or "").strip().lower()
+
+
+def fqdn_problem(subdomain: str, domain: str) -> str | None:
+    """The rule the name the two halves make breaks, or None when it breaks none.
+
+    Neither field can see the other, and each can sit inside its own 253-character limit
+    while the name they make sits outside it. Nothing downstream caught that: the route was
+    saved, and every provider then refused the record on its own, one push at a time, with
+    the failure arriving as a provider error rather than as a name that was never publishable.
+    """
+    joined = f"{normalize_subdomain(subdomain)}.{normalize_domain(domain)}".strip(".")
+    return "too_long" if len(joined) > 253 else None
+
+
+def is_valid_fqdn(subdomain: str, domain: str) -> bool:
+    return fqdn_problem(subdomain, domain) is None
 
 
 def is_valid_port(value) -> bool:

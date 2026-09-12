@@ -625,6 +625,7 @@
   "expose.validation.domain.too_long": "Un domaine fait 253 caractères au maximum.",
   "expose.validation.domain.url": "Un domaine est un nom, pas une adresse : ni protocole, ni chemin, ni @.",
   "expose.validation.domain.wildcard": "Un joker se met dans le sous-domaine, pas dans le domaine.",
+  "expose.validation.fqdn.too_long": "Ensemble, un sous-domaine et un domaine font 253 caractères au maximum.",
   "expose.validation.no_auto_target": "Ce proxy ne peut pas détecter sa cible publique ; saisissez-la manuellement.",
   "expose.validation.provider_required": "Choisissez au moins un fournisseur proxy ou DNS.",
   "expose.validation.required_fields": "Le sous-domaine, le domaine et la cible sont obligatoires.",

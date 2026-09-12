@@ -7,6 +7,9 @@
  * of it: a 422 fell through `translateApiError` to the caller's fallback, so an underscore
  * produced "the preflight checks could not run" in the opposite corner of the screen.
  *
+ * `fqdnProblem` answers the question neither field can ask alone: each half may sit inside its
+ * own limit while the name they make sits outside it.
+ *
  * Two copies of one rule is the thing to be afraid of here, so `tests/test_hostname_rules.py`
  * reads this file's table and runs the shared cases through both sides.
  */
@@ -36,8 +39,12 @@ export const DOMAIN_PROBLEMS = [
   'hyphen_edge',
 ] as const;
 
+/** Every rule the pair can break, which is not the same question as either half. */
+export const FQDN_PROBLEMS = ['too_long'] as const;
+
 export type SubdomainProblem = (typeof SUBDOMAIN_PROBLEMS)[number];
 export type DomainProblem = (typeof DOMAIN_PROBLEMS)[number];
+export type FqdnProblem = (typeof FQDN_PROBLEMS)[number];
 
 /** One DNS label: what may sit between two dots. Case is folded before this is applied. */
 const LABEL_RE = /^[a-z0-9-]+$/;
@@ -117,6 +124,23 @@ export function domainProblem(value: string, options: { requireDot?: boolean } =
   return null;
 }
 
+/** A subdomain in the form the API stores, so the rule below measures the published name. */
+export function normalizeSubdomain(value: string): string {
+  return (value || '').trim().toLowerCase();
+}
+
+/**
+ * The rule the name the two halves make breaks, or null when it breaks none.
+ *
+ * Neither field can answer this: a 250-character subdomain and a 10-character domain are
+ * each acceptable on their own, and the name they make is not. Without it the route was
+ * saved and every provider refused the record separately, later, in its own words.
+ */
+export function fqdnProblem(subdomain: string, domain: string): FqdnProblem | null {
+  const joined = `${normalizeSubdomain(subdomain)}.${normalizeDomain(domain)}`.replace(/^\.+|\.+$/g, '');
+  return joined.length > 253 ? 'too_long' : null;
+}
+
 /** The locale key that explains a subdomain code, e.g. `expose.validation.subdomain.charset`. */
 export function subdomainProblemKey(problem: SubdomainProblem): string {
   return `expose.validation.subdomain.${problem}`;
@@ -125,4 +149,9 @@ export function subdomainProblemKey(problem: SubdomainProblem): string {
 /** The locale key that explains a domain code. */
 export function domainProblemKey(problem: DomainProblem): string {
   return `expose.validation.domain.${problem}`;
+}
+
+/** The locale key that explains a composite code. */
+export function fqdnProblemKey(problem: FqdnProblem): string {
+  return `expose.validation.fqdn.${problem}`;
 }

@@ -625,6 +625,7 @@
   "expose.validation.domain.too_long": "Een domein telt maximaal 253 tekens.",
   "expose.validation.domain.url": "Een domein is een naam, geen adres: geen schema, geen pad, geen @.",
   "expose.validation.domain.wildcard": "Een jokerteken hoort in het subdomein, niet in het domein.",
+  "expose.validation.fqdn.too_long": "Samen tellen een subdomein en een domein maximaal 253 tekens.",
   "expose.validation.no_auto_target": "Deze proxy kan zijn publieke doel niet detecteren; voer het handmatig in.",
   "expose.validation.provider_required": "Kies minstens een proxy- of een DNS-provider.",
   "expose.validation.required_fields": "Subdomein, domein en doel zijn verplicht.",
