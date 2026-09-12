@@ -9,6 +9,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **A read-only API key could rewrite the state of any route, and a link preview could do it
+  with nobody clicking anything.** `GET /api/services/{sid}/check` sat behind
+  `require_auth(request)` with no scope, and unscoped means "any authenticated caller": a key
+  minted with the default `["read"]` — for a dashboard, for a status page — could rewrite
+  `services.status` and `services.last_checked` on any id and append a line to the log. Being a
+  GET made it more than a scope mistake. A browser prefetch, a crawler, a link preview or an
+  uptime probe that merely follows the URL performs the write; there is no form and no click to
+  point at afterwards. The canonical route is now `POST /api/services/{sid}/check` with
+  `scope="write"`, and the GET stays one version as a deprecated alias carrying the same scope,
+  so the hole is shut on both verbs instead of staying open for the length of a deprecation
+  window.
+
+  The guard meant to catch exactly this could not see it: `test_no_write_route_is_left_without_a_scope`
+  scans for `@router.post|put|delete|patch`, and this was a GET. A second guard now walks the
+  AST of `app/api/*.py`, follows one level into module-level helpers — a route's body is as
+  likely to live in a `_helper()` as inline — and fails on any GET route that reaches an
+  `INSERT`, `UPDATE` or `DELETE` without a scope.
+
+  **Upgrading:** a script calling the `GET` keeps working this version; move it to `POST`. The
+  MCP bridge and the panel already call the POST.
+
 - **The port was published on every interface of the host, and what answers it holds the
   credentials of every provider.** `docker-compose.yml` mapped `"8888:8888"`, which means
   `0.0.0.0:8888`: every machine on the LAN, and whatever a router in front of it forwards.

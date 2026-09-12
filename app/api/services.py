@@ -1445,9 +1445,11 @@ def delete_service(sid: int, request: Request):
     return {"ok": True, "errors": errors}
 
 
-@router.get("/api/services/{sid}/check")
-def check_service(sid: int, request: Request):
-    require_auth(request)
+def _check_one(sid: int) -> dict:
+    """Probe one service, record the result, and return what the caller measured.
+
+    Shared by the two verbs below, which differ only in that one of them is deprecated.
+    """
     conn = get_db()
     svc  = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not svc:
@@ -1486,6 +1488,27 @@ def check_service(sid: int, request: Request):
     conn.close()
     add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
     return {"id": sid, "status": status, "latency_ms": latency_ms, "dns_resolved": dns_resolved}
+
+
+@router.post("/api/services/{sid}/check")
+def check_service(sid: int, request: Request):
+    # `write`: this rewrites `status` and `last_checked` and writes a log line. It read as
+    # a GET until 1.5.0 and answered any authenticated key, scope or not, which let a
+    # read-only key rewrite the state of any route.
+    require_auth(request, scope="write")
+    return _check_one(sid)
+
+
+@router.get("/api/services/{sid}/check", deprecated=True)
+def check_service_get(sid: int, request: Request):
+    """Deprecated alias of `POST /api/services/{sid}/check`, kept one version for scripts.
+
+    It carries the same `write` scope as the POST. A GET that writes is also a GET a
+    browser prefetch, a crawler or an uptime probe can fire just by following the link,
+    which is the other half of why the POST is the one to call.
+    """
+    require_auth(request, scope="write")
+    return _check_one(sid)
 
 
 @router.post("/api/services/check-all")

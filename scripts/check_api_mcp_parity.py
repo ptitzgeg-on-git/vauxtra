@@ -23,6 +23,10 @@ ALLOWED_API_ONLY = {
     # A continuous SSE stream has no place in a request/response tool; `stream_logs_snapshot`
     # reads a bounded slice of it with its own client.
     ("GET", "/api/logs/stream"),
+    # The deprecated GET alias of `POST /api/services/{sid}/check`, kept one version for
+    # existing scripts. `check_service_health` calls the POST; offering an agent the alias
+    # would be handing it a route we are in the middle of removing.
+    ("GET", "/api/services/{}/check"),
     # Raw per-provider record editing. A service is the bridge's unit of work: it pushes a
     # service and the provider rows follow, so reaching underneath is a way to create drift.
     ("GET", "/api/providers/{}/dns-records"),

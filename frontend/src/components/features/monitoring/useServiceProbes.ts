@@ -1,10 +1,11 @@
 /**
- * On-demand checks — `GET /api/services/{sid}/check`.
+ * On-demand checks — `POST /api/services/{sid}/check`.
  *
  * This is the only route that measures latency, and it measures exactly one service, so
  * the probes are collected as the operator asks for them and kept in memory for the life
  * of the page. The route also writes `status` and `last_checked` on the service, hence the
- * invalidation of `['services']` and `['logs']` after every probe.
+ * invalidation of `['services']` and `['logs']` after every probe. It is a POST since
+ * 1.5.0 for that reason: a route that writes is not a GET.
  */
 
 import { useCallback, useMemo, useState } from 'react';
@@ -33,7 +34,7 @@ export function useServiceProbes(): ServiceProbes {
   const [checkingId, setCheckingId] = useState<number | null>(null);
 
   const mutation = useMutation({
-    mutationFn: (serviceId: number) => api.get<ServiceCheckResult>(`/services/${serviceId}/check`),
+    mutationFn: (serviceId: number) => api.post<ServiceCheckResult>(`/services/${serviceId}/check`),
     onMutate: (serviceId: number) => {
       setCheckingId(serviceId);
     },

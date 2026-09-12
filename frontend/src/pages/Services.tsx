@@ -455,7 +455,7 @@ export function Services() {
   });
 
   const checkService = useMutation({
-    mutationFn: (service: Service) => api.get<ServiceCheckResult>(`/services/${service.id}/check`),
+    mutationFn: (service: Service) => api.post<ServiceCheckResult>(`/services/${service.id}/check`),
     onMutate: (service) => startAction(service.id),
     onSuccess: (result, service) => {
       setCheckById((prev) => ({ ...prev, [service.id]: result }));
@@ -549,7 +549,7 @@ export function Services() {
       for (const service of targets) {
         startAction(service.id);
         try {
-          const result = await api.get<ServiceCheckResult>(`/services/${service.id}/check`);
+          const result = await api.post<ServiceCheckResult>(`/services/${service.id}/check`);
           setCheckById((prev) => ({ ...prev, [service.id]: result }));
           if (result.status === 'ok') ok += 1;
           else failed += 1;
