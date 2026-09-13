@@ -233,6 +233,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Five confirmation dialogs kept their plural under a title that had counted to one.**
+  `services.confirm.bulk_delete_title` inflects — "Delete 1 route?" — and the body beneath it
+  read "Their proxy hosts and DNS records are removed from the providers." The same mismatch
+  sat under the enable, disable and check dialogs, and on the expose wizard's preflight, where
+  "1 blocking failure" was followed by "Fix them in the previous step." The bodies were plain
+  keys, so `t()` had one sentence to give whatever the number was, and four of the five call
+  sites were already handing it a `{ count }` it had nowhere to put.
+
+  Each body is now a counted sentence carrying the forms its own language declares, and
+  `ExposeModal.tsx` passes the count it was already using for the title just above. Japanese
+  and Chinese declare a single plural category, so their one form has to hold at every number:
+  two Chinese strings said "them" outright and are reworded, and "probed one after the other"
+  is dropped in both, since at one route there is no sequence to describe.
+
+  Portuguese carried a second fault of its own in the same place. `expose.preflight.blocked_body`
+  answered "Corrija-os" to a title counting "falhas bloqueantes", which is feminine, so the
+  plural is corrected alongside the singular it never had.
+
 - **The API tells "a provider refused" apart from "Vauxtra broke", and the panel threw that
   distinction away.** `app/api/providers.py`, `app/api/docker.py` and `app/api/webhooks.py`
   raise `502` in eleven places between them, and each argues the choice in its own comment:
