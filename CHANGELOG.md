@@ -233,6 +233,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Clearing a provider from a service left its route live, and unreachable.** An operator who
+  moves a service to DNS only, or to proxy only, empties one of the two provider fields in the
+  editor. Both blocks that reconfigure a provider on save open with `if body.<...>_provider_id`,
+  so emptying that field skipped them entirely: the proxy went on serving the hostname, or the
+  rewrite went on resolving it, for a service that no longer named the provider anywhere.
+
+  The same save blanked `npm_host_id`, and `_all_route_holders` reads those very columns to
+  decide who still holds a route — so deleting the service afterwards could not reach the
+  orphan either, and neither could a disable, a push or a drift check. Nothing in Vauxtra knew
+  it existed. A cleared column is now withdrawn from the way a target dropped from the
+  multi-sync list already was, which is also how the switch to tunnel mode has always treated
+  the two columns it empties. A provider moved from the column into the extras list is not a
+  cleared one: it keeps serving the route, and is left alone.
+
+- **The editor's own toggle and a bulk disable still deleted a host that had only refused.**
+  The fix below reserved the deletion for providers that genuinely cannot suspend, in the
+  withdrawal the push path calls. The two write routes kept the old reading: `PUT` on a service
+  with `enabled` turned off, and selecting rows in the table and pressing Disable, both fell
+  through from a refused `toggle_host` to `delete_host` — the custom locations, the advanced
+  configuration and the certificate binding gone, `npm_host_id` blanked so nothing could put
+  them back, and an info line in the journal saying the route had been removed on purpose. The
+  batch multiplied it by however many rows were selected. Both now tell the two cases apart the
+  way the enable half three lines above them already did, and report the refusal instead.
+
 - **A route the provider spelled back differently was reported missing, and pushed twice.**
   Zoraxy keeps a rule under the spelling it was typed with and AdGuard echoes the name it was
   given, so a route created as `Vault.Example.com` is the route the service spells

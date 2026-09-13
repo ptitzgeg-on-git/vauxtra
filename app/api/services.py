@@ -1504,6 +1504,27 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     primaries = {pid for pid in (primary_proxy_provider_id, stored_dns_provider_id) if pid}
     renamed = old_public_host != new_public_host
     stale_targets = (previous_extras if renamed else previous_extras - still_targeted) - primaries
+
+    # A primary cleared from its column is the same orphan as a target dropped from the
+    # list, and it was the one holder nobody withdrew from. The proxy and DNS blocks above
+    # both open with `if body.<...>_provider_id`, so emptying that field skipped them
+    # entirely, and the UPDATE had just blanked `npm_host_id` in the same breath. Measured
+    # on a published service edited down to DNS only: NPM went on serving the hostname, the
+    # host id was gone, and deleting the service afterwards could not reach it either --
+    # `_all_route_holders` reads the very columns that were emptied. The mirror edit leaves
+    # an AdGuard rewrite resolving a name Vauxtra no longer claims to publish.
+    #
+    # A primary that moved into the extras list is not dropped: it goes on serving the
+    # route under `service_push_targets`. Tunnel mode is out because its own branch above
+    # withdraws the previous proxy host and DNS record itself, and withdrawing them twice
+    # would write a second journal line about a route already gone.
+    if new_mode == "proxy_dns":
+        kept = still_targeted | primaries
+        stale_targets |= {
+            pid
+            for pid in (old["proxy_provider_id"], old["dns_provider_id"])
+            if pid and pid not in kept
+        }
     if stale_targets:
         for message in withdraw_service_routes(conn, old, sid, only_provider_ids=stale_targets):
             add_log("warn", f"Could not withdraw {old_public_host} from a former target: {message}", conn)
@@ -1567,14 +1588,30 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                             else:
                                 errors.append("Failed to re-deploy proxy host on enable")
                     else:
-                        # Disable: try to suspend; if not supported, delete from provider
+                        # Disable: suspend where the provider can, delete only where it cannot
                         if next_npm_host_id:
                             if proxy.toggle_host(next_npm_host_id, False):
                                 add_log("info", f"Proxy suspended: {new_public_host}", conn)
+                            elif not supports_suspension(proxy):
+                                # No suspension on this provider, so the route has to go --
+                                # and the column with it, or the re-enable toggles an id
+                                # that is not there any more.
+                                if proxy.delete_host(next_npm_host_id):
+                                    conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
+                                    add_log("info", f"Proxy removed (suspend not supported, config kept in Vauxtra): {new_public_host}", conn)
+                                else:
+                                    errors.append("Failed to remove the proxy host on disable")
                             else:
-                                proxy.delete_host(next_npm_host_id)
-                                conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
-                                add_log("info", f"Proxy removed (suspend not supported, config kept in Vauxtra): {new_public_host}", conn)
+                                # NPM and Zoraxy answer the same `False` whether the call
+                                # failed or the host is unknown, and reading it as
+                                # "unsupported" turned a provider that hiccupped into a
+                                # deletion of the host -- with the custom locations, the
+                                # advanced configuration and the certificate binding this
+                                # suspension exists to keep, `npm_host_id` blanked so
+                                # nothing could put it back, and an info line claiming it
+                                # went well.
+                                errors.append("Failed to suspend the proxy host on disable")
+                                add_log("error", f"Proxy still serving: {new_public_host}", conn)
             except Exception as e:
                 add_log("warn", f"Could not manage proxy enabled state: {e}", conn)
 
@@ -1993,10 +2030,21 @@ def bulk_action(body: _BulkActionBody, request: Request):
                             if svc["npm_host_id"]:
                                 if proxy.toggle_host(svc["npm_host_id"], False):
                                     add_log("info", f"Proxy suspended: {pub}", conn)
+                                elif not supports_suspension(proxy):
+                                    if proxy.delete_host(svc["npm_host_id"]):
+                                        conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid_b,))
+                                        add_log("info", f"Proxy removed (suspend not supported): {pub}", conn)
+                                    else:
+                                        errors.append(f"Service {sid_b}: failed to remove the proxy host")
                                 else:
-                                    proxy.delete_host(svc["npm_host_id"])
-                                    conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid_b,))
-                                    add_log("info", f"Proxy removed (suspend not supported): {pub}", conn)
+                                    # The enable half three lines up already tells a refused
+                                    # toggle from an unsupported one. This one did not, so
+                                    # selecting fifty rows and pressing Disable deleted the
+                                    # host of every provider that hiccupped -- fifty times
+                                    # the damage of the single-service route, and reported
+                                    # as fifty successes.
+                                    errors.append(f"Service {sid_b}: failed to suspend the proxy host")
+                                    add_log("error", f"Proxy still serving: {pub}", conn)
                 except Exception as e:
                     errors.append(f"Service {sid_b}: proxy state error — {e}")
 
