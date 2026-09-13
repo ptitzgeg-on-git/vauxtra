@@ -233,6 +233,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A route the provider spelled back differently was reported missing, and pushed twice.**
+  Zoraxy keeps a rule under the spelling it was typed with and AdGuard echoes the name it was
+  given, so a route created as `Vault.Example.com` is the route the service spells
+  `vault.example.com`. Four readers in the sync layer compared those hostnames and only two
+  of them lowercased first. The drift check was one of the two that did not: it reported
+  `missing_proxy_route` with a Reconcile button beside it, the push that button fires found
+  the host and updated it, and the error was still there afterwards. The DNS reader inside
+  the push was the other: it read "no record", added a second one beside the one that was
+  already correct, and AdGuard and Pi-hole both hold two rewrites for one name happily. The
+  withdrawal fell back to the address Vauxtra last stored rather than the one on the server,
+  and deleting a DNS record through the provider page answered 404 on a spelling difference.
+
+  All four now go through the same two comparisons, so they cannot drift apart again.
+
 - **A proxy route that was suspended read as perfectly in sync, and no push could turn it back
   on.** Disabling a service suspends its primary proxy host rather than deleting it — that is
   what keeps the custom locations, the advanced configuration and the certificate binding that

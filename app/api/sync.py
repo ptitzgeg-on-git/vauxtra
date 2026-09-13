@@ -82,6 +82,34 @@ def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
     return expose_mode, public_host, proxy_targets, dns_targets
 
 
+def _host_serves(host: dict, wanted: str) -> bool:
+    """Whether a provider's host record answers for `wanted`, already lowercased.
+
+    Shared rather than written out at each site, because it was written out at each site and
+    they did not agree: the push compared case-insensitively and the drift check did not, so
+    a rule Zoraxy kept under the spelling it was typed with came back as a missing route with
+    a Reconcile button beside it -- and the push that button fires found the host, updated it,
+    and left the same error on screen afterwards.
+    """
+    domains = host.get("domains") or host.get("domain_names") or []
+    return any(str(d).strip().lower() == wanted for d in domains)
+
+
+def _rewrite_for(rewrites, public_host: str) -> dict | None:
+    """The record a DNS provider holds for `public_host`, compared the same way.
+
+    AdGuard and Technitium echo the name as it was written, and a rewrite is the same rewrite
+    whatever case it is spelled in. Reading past one is not harmless here: the withdrawal then
+    falls back to the address Vauxtra last stored, and the push reads "no record" and adds a
+    second one beside the first.
+    """
+    wanted = (public_host or "").strip().lower()
+    return next(
+        (r for r in rewrites or [] if str(r.get("domain") or "").strip().lower() == wanted),
+        None,
+    )
+
+
 def _find_host(proxy, public_host: str) -> dict | None:
     """The provider's host record for `public_host`, or None.
 
@@ -96,8 +124,7 @@ def _find_host(proxy, public_host: str) -> dict | None:
     wanted = (public_host or "").strip().lower()
     try:
         for h in proxy.list_hosts() or []:
-            domains = h.get("domains") or h.get("domain_names") or []
-            if any(str(d).strip().lower() == wanted for d in domains):
+            if _host_serves(h, wanted):
                 return h
     except (AttributeError, TypeError, ValueError):
         return None
@@ -255,10 +282,7 @@ def withdraw_service_routes(
             dns = create_provider(row)
             actual_ip = ""
             try:
-                entry = next(
-                    (e for e in dns.list_rewrites() or [] if e.get("domain") == public_host),
-                    None,
-                )
+                entry = _rewrite_for(dns.list_rewrites(), public_host)
                 actual_ip = (entry or {}).get("ip") or (entry or {}).get("answer") or ""
             except Exception:
                 actual_ip = ""
@@ -603,12 +627,7 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
         try:
             provider = create_provider(row)
             hosts = provider.list_hosts() or []
-            hit = None
-            for host in hosts:
-                domains = host.get("domains") or host.get("domain_names") or []
-                if public_host in domains:
-                    hit = host
-                    break
+            hit = next((h for h in hosts if _host_serves(h, public_host)), None)
 
             if not service_enabled:
                 # NPM and Zoraxy suspend a host rather than delete it, so the route stays in
@@ -690,7 +709,7 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
             try:
                 provider = create_provider(row)
                 rewrites = provider.list_rewrites() or []
-                match = next((r for r in rewrites if str(r.get("domain", "")).strip().lower() == public_host), None)
+                match = _rewrite_for(rewrites, public_host)
                 if not service_enabled:
                     # No suspension exists in DNS: a rewrite that is there is a name resolving.
                     if match:
@@ -900,7 +919,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
                     dns = create_provider(row)
                     # Read the actual current value from the provider (not just DB) to fix drift
                     actual_rewrites = dns.list_rewrites()
-                    actual_entry = next((e for e in actual_rewrites if e.get("domain") == public_host), None)
+                    actual_entry = _rewrite_for(actual_rewrites, public_host)
                     actual_ip = (actual_entry or {}).get("ip") or (actual_entry or {}).get("answer", "")
                     failure = ""
                     if actual_ip and actual_ip != dns_target:
