@@ -14,36 +14,16 @@
 
 import type { Tone } from '@/components/ui';
 import { parseBackendTimestamp } from '@/lib/format';
+import type { Certificate, CertificateExpiryResponse, CertificateRow } from '@/types/api';
 
-export interface CertificateRow {
-  /** NPM uses an integer id, Zoraxy the certificate file name. */
-  id: number | string;
-  provider_id?: number;
-  provider_name?: string;
-  /** Legacy spelling from `GET /api/certificates` before providers were named. */
-  provider?: string;
-  nice_name?: string;
-  domains?: string[];
-  domain_names?: string[];
-  expires_on?: string | null;
-  expiry_date_raw?: string | null;
-  days_remaining?: number | null;
-  /** Zoraxy computes its own countdown. */
-  remaining_days?: number | null;
-  expiring_soon?: boolean;
-  expired?: boolean;
-  issuer?: string | null;
-  use_dns?: boolean;
-  is_fallback?: boolean;
-}
-
-export interface CertificateExpiryPayload {
-  certificates: CertificateRow[];
-  total: number;
-  expiring_soon_count: number;
-  /** `_EXPIRY_WARN_DAYS` in `app/api/certificates.py`; 30 at the time of writing. */
-  warn_threshold_days: number;
-}
+//: These three used to be declared here instead, each one wider than the route it reads:
+//: the row said every key was optional and added an `issuer` and a `provider` that no
+//: provider sends, and the payload was a second spelling of `CertificateExpiryResponse`
+//: that the Sidebar and the Dashboard already read this same route through. One
+//: declaration each now, in `types/api.ts`, re-exported here so nothing that imports them
+//: from this module has to move.
+export type { Certificate, CertificateRow };
+export type { CertificateExpiryResponse as CertificateExpiryPayload };
 
 /** Days below which a certificate stops being a reminder and becomes an incident. */
 export const CRITICAL_DAYS = 7;
@@ -78,11 +58,15 @@ export const BUCKET_LABEL_KEY: Record<CertBucket, string> = {
 
 /** Stable across providers: two providers can both hand back a certificate numbered 1. */
 export function certKey(cert: CertificateRow): string {
-  return `${cert.provider_id ?? cert.provider_name ?? 'p'}:${cert.id}`;
+  return `${cert.provider_id}:${cert.id}`;
 }
 
 export function certDomains(cert: CertificateRow): string[] {
-  const domains = cert.domain_names ?? cert.domains ?? [];
+  //: `domain_names` is back-filled from `domains` on every row, so the fallback is only
+  //: there for a provider added later that forgets one of the two spellings. The
+  //: `Array.isArray` guard is the same bet: the route hands these straight through from
+  //: whatever the appliance answered.
+  const domains = cert.domain_names ?? cert.domains;
   return Array.isArray(domains) ? domains.filter((d): d is string => typeof d === 'string' && d.length > 0) : [];
 }
 
@@ -155,7 +139,7 @@ export function sortCertificates(certs: CertificateRow[], now: number, warnDays 
 
 export function matchesSearch(cert: CertificateRow, needle: string): boolean {
   if (!needle) return true;
-  const haystack = [...certDomains(cert), cert.nice_name || '', cert.provider_name || cert.provider || ''];
+  const haystack = [...certDomains(cert), cert.nice_name || '', cert.provider_name || ''];
   return haystack.some((value) => value.toLowerCase().includes(needle));
 }
 

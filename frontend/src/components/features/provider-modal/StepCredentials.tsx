@@ -16,7 +16,7 @@ import { useT } from '@/i18n';
 import { checkDetailText, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import type { ProviderCapability } from '@/types/api';
 import {
-  type GuidedStep,
+  type WizardStep,
   type ProviderFormState,
   type ProviderTypeMeta,
   type ProviderValidationResult,
@@ -36,7 +36,7 @@ export interface StepCredentialsProps {
   formData: ProviderFormState;
   onChange: (key: keyof ProviderFormState, value: string) => void;
   meta?: ProviderTypeMeta;
-  guidedSteps: GuidedStep[];
+  guidedSteps: WizardStep[];
   mode: WizardMode;
   onModeChange: (mode: WizardMode) => void;
   guidedStepIndex: number;
@@ -120,7 +120,7 @@ export function StepCredentials({
   const guidedDone = guidedStepIndex >= guidedSteps.length;
   const currentStep = guidedSteps[guidedStepIndex];
 
-  const renderGuidedField = (field: NonNullable<GuidedStep['fields']>[number], index: number) => {
+  const renderGuidedField = (field: NonNullable<WizardStep['fields']>[number], index: number) => {
     const optional = field.optional || (field.key === 'url' && urlOptional);
     const value = String(formData[field.key] ?? '');
     return (

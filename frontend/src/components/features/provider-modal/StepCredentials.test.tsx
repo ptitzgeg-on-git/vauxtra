@@ -23,7 +23,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
 import { buttonVariants } from '@/components/ui';
-import { emptyForm, type GuidedStep } from '@/components/features/providers/providerConstants';
+import { emptyForm, type WizardStep } from '@/components/features/providers/providerConstants';
 import { StepCredentials } from './StepCredentials';
 
 const STEP_COUNTER = 'provider_modal.guided.step';
@@ -31,10 +31,10 @@ const DOTS = 'provider_modal.mode.guided';
 const FINISH = 'provider_modal.guided.finish';
 const NEXT = 'provider_modal.guided.next';
 
-const ONE_STEP: GuidedStep[] = [
+const ONE_STEP: WizardStep[] = [
   { title: 'Open Settings > General', body: 'Copy the address and the admin account.' },
 ];
-const THREE_STEPS: GuidedStep[] = [
+const THREE_STEPS: WizardStep[] = [
   { title: 'Open the admin panel', body: 'Sign in as an administrator.' },
   { title: 'Create a token', body: 'Advanced > API, then Generate.' },
   { title: 'Copy it here', body: 'The token is shown once.' },
@@ -53,7 +53,7 @@ const PRIMARY_ONLY = buttonVariants({ variant: 'primary', size: 'sm' })
 
 const isPrimary = (el: HTMLElement) => PRIMARY_ONLY.every((c) => el.classList.contains(c));
 
-function panel(guidedSteps: GuidedStep[], guidedStepIndex = 0) {
+function panel(guidedSteps: WizardStep[], guidedStepIndex = 0) {
   const onGuidedStepChange = vi.fn();
   renderWithProviders(
     <StepCredentials

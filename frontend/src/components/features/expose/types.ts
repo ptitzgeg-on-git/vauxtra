@@ -1,12 +1,9 @@
-import type { Service, TemplateApplyResult } from '@/types/api';
+import type { Provider, Service, TemplateApplyResult } from '@/types/api';
 
-export type Provider = {
-  id: number;
-  name: string;
-  type: string;
-  url: string;
-  enabled: boolean | number;
-};
+//: the modal reads whole `GET /api/providers` rows; this module used to declare a
+//: five-key `Provider` of its own, so the name meant two things in one panel.
+export type { Provider };
+
 
 export type UiExposeMode = 'dns_only' | 'dns_proxy' | 'tunnel';
 

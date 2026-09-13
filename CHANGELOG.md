@@ -112,6 +112,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **A read contract gate**, `scripts/check_read_contract.py`, run in the backend job beside
+  the panel contract gate. That one holds what the panel sends; this one holds what it
+  believes it gets back, which was held to nothing at either end. Not one route in `app/`
+  sets a `response_model=` — every `GET` returns a bare dict or list assembled in Python —
+  and `api.get<T>(url)` ends in `return _axios.get<T>(url, config) as unknown as
+  Promise<T>`, a cast with no validation behind it. A declared answer shape is therefore a
+  claim about bytes that nothing checks: `tsc` believes it by construction, FastAPI never
+  sees it, and a wrong one is not a type error anywhere. It is an `undefined` at runtime, in
+  a branch, on somebody's dashboard.
+
+  Checking every declaration against the real answer would mean running the backend, which
+  this job does not do. One thing is decidable by reading alone: when two places read the
+  *same* bytes — the same route, or the same react-query cache key — and each names its own
+  type, at most one of them can be right. Seventy-one `api.get<T>` calls and sixty-six
+  `useQuery<T>` blocks fall into thirty groups with more than one reader, and 247 pairs of
+  those readers are compared key by key, in type and in optionality both. Utility types are
+  expanded rather than refused, because two of them are load-bearing: `Template` is
+  `Omit<TemplateIn, 'websocket'>` with a `websocket` of its own put back, and `Layout.tsx`
+  reads `/auth/status` as `Pick<AuthStatus, 'auth_mode'>`.
+
+  Reading *fewer* keys than arrive is not a disagreement and does not fail the build.
+  `pages/Setup.tsx` reads `/providers` as `ProviderItem[]` where eleven other sites read
+  `Provider[]`; the eight keys it leaves out are counted, not refused, so a narrowing that
+  grows stays visible without a red build. Five pairs cannot be compared at all, and each of
+  the four groups holding them carries a written reason: the settings table is rows rather
+  than fields, so `Record<string, string>` is as true about it as `AppSettings`, and the
+  Dashboard reads `/providers/health` as `unknown` on purpose because it only counts the
+  entries that came back. A reason for a group that compares cleanly fails the build — the
+  same rule the panel gate applies to its own exemptions.
+
+  The second rule has no exemptions at all: no panel module may declare a type name
+  `frontend/src/types/api.ts` already declares. Two declarations of one answer is two things
+  to keep in step, and the one that drifts is the copy sitting where a reader looks first.
+  Five were deleted to reach zero, and every one of them was the stale half: the shadowed
+  `DockerContainer`, `AuthStatus`, `Provider`, `ProviderValidationResult` and `GuidedStep`.
+  `tests/test_read_contract_parity.py` reads four of those shapes back out by hand, builds
+  the disagreements the panel no longer contains so the comparison has something to fail on,
+  and pins the premise itself — no `response_model=` anywhere in `app/`, and a client that
+  casts rather than checks. If either half of that stops being true, this gate is the wrong
+  place to catch the problem and should go.
+
 - **A panel contract gate**, `scripts/check_panel_contract.py`, run in the backend job beside
   the API-MCP parity, repo hygiene and runtime parity gates. `check_api_mcp_parity.py` holds
   the MCP bridge to the Pydantic model of the route it posts to; the panel posts to those same
@@ -130,12 +171,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   directly, destructured out of an annotated object, or typed by the third generic argument of
   its `useMutation`; an identifier bound by a `const` in a block that contains the call; or a
   call resolved through its callee's declared return type. Names are looked up the way a module
-  looks them up — this file, else the file this file imports the name from, else a single
-  unambiguous declaration in the panel. That last part carries weight: `buildPayload` is
-  declared twice, in `ExposeModal.tsx` and in `providerConstants.ts`, with no key in common,
-  and eleven type names are declared in two files each, `Provider` among them. A flat repo-wide
-  table would quietly union two unrelated `Provider`s and answer with keys that exist in
-  neither call.
+  looks them up — this file, else the file this file imports the name from, following a
+  re-export through to whichever file finally declares it, else a single unambiguous
+  declaration in the panel. That last part carries weight: `buildPayload` is declared twice,
+  in `ExposeModal.tsx` and in `providerConstants.ts`, with no key in common, and six type
+  names are declared in two files each. `StatusFilter` is the sharpest: `monitoring/uptime.ts`
+  calls it `MonitoringStatus | 'all'` and `services/helpers.ts` calls it `'ok' | 'error'`,
+  and `pages/Monitoring.tsx` and `pages/Services.tsx` each import the one they mean. A flat
+  repo-wide table would union the two and answer with a filter neither page accepts.
 
   A resolver that guesses is worse than one that refuses. An earlier draft took "the last
   `name:` above the call", read `data` off an `onSuccess` twenty lines up, and reported a
@@ -275,6 +318,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `python -m pytest tests/` catches the next such bump even with the CI step removed.
 
 ### Fixed
+
+- **Three files read `GET /api/certificates/expiry` and declared three different answers, and
+  the certificates table drew an "issued by" chip from a field no provider has ever sent.**
+  The chip was the visible half. `CertificateTable.tsx` guarded it with `cert.issuer && …`,
+  and `issuer` is written nowhere in `app/` — not by the NPM provider, not by Zoraxy, not by
+  the route that assembles the payload — so the guard has always been false and the chip has
+  never rendered once. Its string sat in all eight locales as `certificates.issuer`, and the
+  login page advertised the feature in `login.hero.certs_body`: "Expiry dates and issuers, so
+  a renewal never surprises you again." The key is gone and the login line now promises days
+  remaining, which is what the payload actually carries.
+
+  Behind the chip was the reason nobody noticed. `CertificateRow`, declared privately in
+  `certificates.ts`, was wider than the route on every axis: fifteen of its sixteen keys
+  optional, plus `issuer` and a legacy `provider` that no route sends. `Certificate` in
+  `types/api.ts` said `id: number`, right for NPM and wrong for Zoraxy, which keys its
+  certificates by file name and has the string passed straight through. And the sidebar had a
+  third spelling, `CertExpiryResponse`, naming the one key it reads. Three declarations of one
+  payload, two of them disagreeing about six keys — `expires_on`, `days_remaining`, `expired`,
+  `expiring_soon`, `provider_id`, `provider_name` — required in `types/api.ts` and optional in
+  `certificates.ts`. There is one declaration now, in `types/api.ts`, re-exported from
+  `certificates.ts` so that nothing importing it had to move.
+
+  `DockerContainer` had drifted the same way in the other direction. The shared copy claimed a
+  `ports` array of `{private_port, public_port?, type}` that no handler has ever assembled, and
+  left out eight keys `GET /api/docker/containers` puts on every row: `target_ip`,
+  `target_port`, `suggested_subdomain`, `suggested_scheme`, `websocket`, `endpoint_id`,
+  `endpoint_name` and `existing_service`. It also made `suggestion` nullable, though
+  `analyze_container` ends in a port heuristic that always succeeds and the handler attaches
+  the result unconditionally. `useDockerDiscovery.ts` carried a second, correct copy — which is
+  exactly why the discovery panel worked while the shared type was wrong, and why the wrong one
+  was the copy sitting in the file a reader opens first. `ContainerSuggestion` beside it said
+  `target_port: number` where the heuristic returns null, offered a `'none'` source against the
+  analyzer's three, and was missing `websocket`, `middlewares` and `tls_resolver`.
+
+  Four more private declarations shadowed a shared name while disagreeing with it. The
+  sidebar's own `AuthStatus` made `setup_required` optional; `app/api/auth.py` computes it as a
+  bool on every answer, so the optional spelling only ever bought a null check nothing needs.
+  `expose/types.ts` held a `Provider` with five keys of eleven. `providerConstants.ts` held a
+  `ProviderValidationResult` carrying neither `detail_code` nor `detail_params` — the two
+  fields the route has sent since validation diagnostics were translated — and a `GuidedStep`
+  colliding with the shared name while meaning something narrower; the panel's wizard types are
+  `WizardStep` and `WizardField` now. `Layout.tsx` read `/auth/status` through an inline
+  `{ auth_mode?: string }` and reads `Pick<AuthStatus, 'auth_mode'>` instead, and
+  `ProviderItem.type` in `setup/types.ts` was `string` where `ProviderType` is the enumeration
+  it has always held.
+
+  All of it was found by `scripts/check_read_contract.py` on its first complete run: fourteen
+  divergences and five shadowed names on the commit before this one. Two of those fourteen were
+  the `AuthStatus` shadow arriving from the other side, once under its route and once under its
+  cache key, which is the argument for running both rules — a name collision and a disagreement
+  about bytes are one defect described twice.
 
 - **A webhook asked for disabled was created enabled, and answered `201` saying so.** The panel
   has sent `enabled` since that form existed and `WebhookIn` never declared it, so pydantic

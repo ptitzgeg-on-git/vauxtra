@@ -36,19 +36,15 @@ import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, toneClasses, type Tone } from '@/components/ui';
 import { isMacPlatform } from '@/components/ui/_internal';
-import type { HealthResponse, Provider, Service } from '@/types/api';
+import type {
+  AuthStatus,
+  CertificateExpiryResponse,
+  HealthResponse,
+  Provider,
+  Service,
+} from '@/types/api';
 import { BrandMark } from './BrandMark';
 
-interface AuthStatus {
-  authenticated: boolean;
-  auth_required: boolean;
-  auth_mode?: 'password' | 'open';
-  setup_required?: boolean;
-}
-
-interface CertExpiryResponse {
-  expiring_soon_count: number;
-}
 
 export interface SidebarProps {
   /** Rendered inside the mobile drawer: full width, close button, no collapse. */
@@ -145,9 +141,9 @@ export function Sidebar({
   // cache entry held a fabricated zero, the warning badge vanished on a backend hiccup, and
   // whichever of the three observers happened to fetch first decided what the other two
   // read. A failed check now leaves the badge off because the count is unknown, not zero.
-  const { data: certExpiry, isSuccess: certExpiryKnown } = useQuery<CertExpiryResponse>({
+  const { data: certExpiry, isSuccess: certExpiryKnown } = useQuery<CertificateExpiryResponse>({
     queryKey: ['certificates-expiry'],
-    queryFn: () => api.get<CertExpiryResponse>('/certificates/expiry'),
+    queryFn: () => api.get<CertificateExpiryResponse>('/certificates/expiry'),
     staleTime: 5 * 60_000,
   });
 

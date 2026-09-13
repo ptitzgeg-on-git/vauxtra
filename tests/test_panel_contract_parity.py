@@ -155,7 +155,7 @@ class TheResolverAnswersWithWhatTheFileSays(_PanelCase):
 
 
 class NamesBindTheWayModulesBindThem(_PanelCase):
-    """Seventeen function names and eleven type names are declared in more than one file."""
+    """Seventeen function names and six type names are declared in more than one file."""
 
     def test_a_function_declared_twice_resolves_to_the_one_this_file_imports(self) -> None:
         homes = {s.rel for s in self.index.fns_by_name["buildPayload"]}
@@ -188,15 +188,76 @@ class NamesBindTheWayModulesBindThem(_PanelCase):
         self.assertEqual(theirs & ours, set())
 
     def test_a_type_declared_twice_resolves_to_the_one_in_scope(self) -> None:
-        homes = {s.rel for s in self.index.types_by_name["Provider"]}
+        """`StatusFilter` means two disjoint things, and two pages import one each.
+
+        `monitoring/uptime.ts` declares it `MonitoringStatus | 'all'`; `services/helpers.ts`
+        declares it `'ok' | 'error'`. No string is in both. `pages/Monitoring.tsx` and
+        `pages/Services.tsx` each import the name from the file they mean, so the resolver has
+        to answer differently for the two of them from the same identifier -- which is the
+        half a flat repo-wide table gets wrong.
+        """
+        homes = {s.rel for s in self.index.types_by_name["StatusFilter"]}
         self.assertEqual(
-            homes, {"components/features/expose/types.ts", "types/api.ts"},
-            "the two Providers this test is about have moved",
+            homes,
+            {
+                "components/features/monitoring/uptime.ts",
+                "components/features/services/helpers.ts",
+            },
+            "the two StatusFilters this test is about have moved",
         )
-        expose = self.index.by_stem["components/features/expose/types"]
-        found = self.index.lookup_type(expose, "Provider")
-        self.assertIsNotNone(found)
-        self.assertEqual(found[0].rel, "components/features/expose/types.ts")
+        for stem, home in (
+            #: the declaring file itself: its own declaration wins over the other one
+            ("components/features/monitoring/uptime", "components/features/monitoring/uptime.ts"),
+            ("components/features/services/helpers", "components/features/services/helpers.ts"),
+            #: a consumer that declares neither: the import picks which of the two it gets
+            ("pages/Monitoring", "components/features/monitoring/uptime.ts"),
+            ("pages/Services", "components/features/services/helpers.ts"),
+        ):
+            with self.subTest(module=stem):
+                found = self.index.lookup_type(self.index.by_stem[stem], "StatusFilter")
+                self.assertIsNotNone(found)
+                self.assertEqual(found[0].rel, home)
+
+    def test_a_name_re_exported_rather_than_declared_is_followed_to_its_home(self) -> None:
+        """A module can bind a name without declaring it, and two in the panel do.
+
+        `hooks/useDockerDiscovery.ts` imports `DockerContainer` from `types/api.ts` and
+        re-exports it, so `DockerSection.tsx` can keep importing the type from the hook it
+        already imports the query from. `components/features/provider-modal/index.ts` is the
+        other form: a barrel that names `WizardMode` in an `export { ... } from './...'` it
+        does not declare either. A resolver that stops at the first hop reads both of those
+        modules as declaring nothing and refuses a name the panel resolves fine -- and it is
+        deleting a panel's private copy of a shared type, the fix, that creates them.
+        """
+        for stem, name, home in (
+            ("components/features/settings/data/DockerSection", "DockerContainer",
+             "types/api.ts"),
+            ("components/features/settings/data/DockerSection", "DockerEndpoint",
+             "types/api.ts"),
+            ("components/features/ProviderModal", "WizardMode",
+             "components/features/provider-modal/StepCredentials.tsx"),
+        ):
+            with self.subTest(module=stem, name=name):
+                hop = self.index.by_stem[stem]
+                self.assertNotIn(name, hop.types, f"{stem} declares {name} itself now")
+                found = self.index.lookup_type(hop, name)
+                self.assertIsNotNone(found)
+                self.assertEqual(found[0].rel, home)
+
+    def test_a_re_export_cycle_stops_instead_of_recursing_forever(self) -> None:
+        """Two modules each sending the name to the other is a hang, not a wrong answer.
+
+        Nothing in the panel does this today, so the witness is built here rather than found:
+        following a chain is only safe because the walk refuses to visit a module twice.
+        """
+        loop = {}
+        for rel, other in (("__a.ts", "@/__b"), ("__b.ts", "@/__a")):
+            src = self.gate.Source(rel=rel, raw="", code="")
+            src.imports["Ghost"] = other
+            loop[rel] = src
+            self.index.by_stem[src.stem] = src
+            self.addCleanup(self.index.by_stem.pop, src.stem, None)
+        self.assertIsNone(self.index.lookup_type(loop["__a.ts"], "Ghost"))
 
     def test_a_name_neither_declared_here_nor_imported_is_refused(self) -> None:
         """Three files declare `RouteModal` and none of them imports it from elsewhere."""
