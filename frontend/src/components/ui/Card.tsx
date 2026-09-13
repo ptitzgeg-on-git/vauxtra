@@ -41,6 +41,7 @@ export const CardTitle = forwardRef<HTMLHeadingElement, HTMLAttributes<HTMLHeadi
   { className, ...rest },
   ref,
 ) {
+  // eslint-disable-next-line jsx-a11y/heading-has-content -- a heading primitive; its content arrives as children at the call site
   return <h3 ref={ref} className={cn('text-base font-semibold leading-tight tracking-tight text-foreground', className)} {...rest} />;
 });
 

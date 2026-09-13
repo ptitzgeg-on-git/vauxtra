@@ -363,6 +363,7 @@ function TimezoneCard({ current, saving, onSave }: CardProps & { current: string
                     const selected = zone === value;
                     const active = index === activeIndex;
                     return (
+                      // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- combobox option; the keys live on the input, which names this one via aria-activedescendant
                       <li
                         key={zone || '__browser__'}
                         id={`${listId}-opt-${index}`}

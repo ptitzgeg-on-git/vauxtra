@@ -229,6 +229,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                 >
                   <Input
                     size="sm"
+                    // eslint-disable-next-line jsx-a11y/no-autofocus -- the inline edit form appears on click; focus follows it
                     autoFocus
                     autoComplete="off"
                     value={editing.name}

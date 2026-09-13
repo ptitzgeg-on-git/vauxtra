@@ -196,6 +196,7 @@ export function RestoreSection() {
                 value={passphrase}
                 placeholder={t('settings.backup.passphrase_enter')}
                 onChange={(e) => setPassphrase(e.target.value)}
+                // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
                 autoFocus
               />
             </Field>

@@ -74,6 +74,7 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
       {button}
       {/* Not a `<label>`: label activation is not specified for `<button>` the way it is for an
           input, so the click target is wired explicitly and the association carried by the ids. */}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- label text beside a real <button role="switch">; a second tab stop would be worse */}
       <div
         onClick={() => {
           if (!disabled) onCheckedChange(!checked);

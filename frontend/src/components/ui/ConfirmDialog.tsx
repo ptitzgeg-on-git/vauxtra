@@ -170,6 +170,7 @@ function ConfirmDialogPanel({
   const hasMessage = message !== undefined && message !== null && message !== '';
 
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- the backdrop; the keyboard path out of a dialog is Escape, handled by useModalDialog
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-xs animate-in fade-in animate-duration-150"
       onClick={handleBackdropClick}

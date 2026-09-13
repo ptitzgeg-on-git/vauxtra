@@ -233,6 +233,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The guided-setup step dots were buttons that told a screen reader they were list items.**
+  Each dot jumps to its step, and each carried `role="listitem"` inside a `role="list"` strip.
+  `listitem` is a structure role, so it replaces the button role rather than adding to it: the
+  set was announced as a three-item list, and nothing said the items could be activated. An
+  operator on a screen reader had no way to learn the dots were a shortcut. The dots keep their
+  button role, and the strip carries `role="group"`, which names the set without making a claim
+  about what its children are.
+
+  It surfaced because `eslint-plugin-jsx-a11y` was never in the ESLint config, so no ARIA rule
+  had ever run over the app. Its recommended set is now part of `npm run lint`, which the
+  Frontend (Node) job already runs, so this is a gate rather than a one-time sweep, and the 34
+  rules it turns on flag exactly this defect as an error. The other nineteen findings are
+  deliberate patterns the rules cannot recognise from a single element: a combobox whose options
+  are unfocusable because `aria-activedescendant` names them, a dialog backdrop whose keyboard
+  path is Escape, a switch label beside a real `<button role="switch">` that a second tab stop
+  would only make worse, and eight fields autofocused because the operator just opened the
+  surface they sit on. Each now carries an inline waiver stating its reason, which is
+  documentation those files did not have before.
+
 - **The same number was grouped on one screen and bare on the next.** `formatNumber` puts the
   locale's thousands separator on a count, and half the app called it. Eight of the sixteen
   `StatCard` tiles passed their value through a formatter and eight handed over a raw number,

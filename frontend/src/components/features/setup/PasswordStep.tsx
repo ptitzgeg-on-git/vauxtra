@@ -197,6 +197,7 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
                 placeholder={t('setup.password.password_placeholder')}
                 autoComplete="new-password"
                 size="lg"
+                // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
                 autoFocus
                 rightIcon={
                   <button

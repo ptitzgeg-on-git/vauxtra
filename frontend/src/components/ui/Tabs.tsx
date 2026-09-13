@@ -108,6 +108,7 @@ export function TabList({ className, onKeyDown, ...rest }: TabListProps) {
     tabs[next].click();
   };
 
+  // eslint-disable-next-line jsx-a11y/interactive-supports-focus -- roving focus lives on the tabs; the tablist itself is never a stop
   return <div role="tablist" className={cn(LIST_VARIANTS[variant], className)} onKeyDown={handleKeyDown} {...rest} />;
 }
 
