@@ -85,10 +85,7 @@
   "settings.dns.delete_failed": "No se pudo eliminar el dominio",
   "settings.dns.service_count_one": "{count} servicio",
   "settings.dns.service_count_other": "{count} servicios",
-  "settings.dns.confirm.has_services_title": "El dominio tiene servicios.",
   "settings.dns.confirm.delete_title": "Eliminar dominio",
-  "settings.dns.confirm.has_services_message_one": "{count} servicio usa \"{domain}\". Eliminarlo puede interrumpir las rutas existentes.\n\n¿Eliminar de todos modos?",
-  "settings.dns.confirm.has_services_message_other": "{count} servicios usan \"{domain}\". Eliminarlo puede interrumpir las rutas existentes.\n\n¿Eliminar de todos modos?",
   "settings.dns.confirm.delete_message": "¿Eliminar el dominio \"{domain}\"?",
   "settings.tags.title": "Etiquetas de servicio",
   "settings.tags.desc": "Crea etiquetas para organizar y filtrar tus servicios.",
@@ -2047,5 +2044,16 @@
   "providers.delete.hook_armed_other": "{count} de ellos siguen habilitados: se siguen mostrando como habilitados hasta que se cambie su ámbito.",
   "settings.webhooks.scope_provider_gone": "Proveedor eliminado",
   "settings.webhooks.scope_service_gone": "Servicio eliminado",
-  "settings.webhooks.scope_gone_badge": "No coincide con nada"
+  "settings.webhooks.scope_gone_badge": "No coincide con nada",
+  "settings.dns.template_count_one": "{count} plantilla",
+  "settings.dns.template_count_other": "{count} plantillas",
+  "settings.dns.confirm.in_use_title": "El dominio sigue en uso",
+  "settings.dns.confirm.in_use_services_one": "{count} servicio se apoya en \"{domain}\".",
+  "settings.dns.confirm.in_use_services_other": "{count} servicios se apoyan en \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_one": "{count} plantilla de servicio se apoya en \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_other": "{count} plantillas de servicio se apoyan en \"{domain}\".",
+  "settings.dns.confirm.in_use_more": "… y {count} más",
+  "settings.dns.confirm.in_use_effect": "Eliminar el dominio no cambia nada de eso: en ejecución nada lee la lista de dominios, cada fila anterior conserva su nombre de host y sigue publicándose igual.",
+  "settings.dns.confirm.in_use_pickers": "Lo que cambia son las listas de selección: \"{domain}\" deja de ofrecerse al crear un servicio o una plantilla.",
+  "settings.dns.confirm.in_use_returns": "Y \"{domain}\" puede volver por su cuenta: un análisis de Docker o una importación de proveedor vuelve a añadir el dominio raíz de cada servicio que incorpora."
 }

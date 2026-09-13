@@ -107,7 +107,7 @@ def add_domain(name: str) -> dict[str, Any]:
 
 @mcp.tool()
 def delete_domain(name: str) -> dict[str, Any]:
-    """Delete a root domain by exact name."""
+    """Delete a root domain. Case and a trailing dot do not matter; unknown names raise."""
     r = client.delete(f"/domains/{name}")
     client.check(r)
     return r.json()

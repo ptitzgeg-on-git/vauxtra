@@ -84,9 +84,7 @@
   "settings.dns.exists": "ドメイン「{domain}」はすでに存在します",
   "settings.dns.delete_failed": "ドメインの削除に失敗しました",
   "settings.dns.service_count_other": "{count} サービス",
-  "settings.dns.confirm.has_services_title": "ドメインにはサービスがあります",
   "settings.dns.confirm.delete_title": "ドメインの削除",
-  "settings.dns.confirm.has_services_message_other": "{count} 件のサービスが「{domain}」を使用しています。削除すると既存のルートが壊れる可能性があります。\n\nとにかく削除しますか？",
   "settings.dns.confirm.delete_message": "ドメイン「{domain}」を削除しますか?",
   "settings.tags.title": "サービスタグ",
   "settings.tags.desc": "タグを作成してサービスを整理およびフィルタリングします。",
@@ -1923,5 +1921,13 @@
   "providers.delete.hook_armed_other": "うち {count} 件はまだ有効です。対象範囲が変更されるまで、有効のまま表示され続けます。",
   "settings.webhooks.scope_provider_gone": "プロバイダーは削除済み",
   "settings.webhooks.scope_service_gone": "サービスは削除済み",
-  "settings.webhooks.scope_gone_badge": "一致する対象なし"
+  "settings.webhooks.scope_gone_badge": "一致する対象なし",
+  "settings.dns.template_count_other": "{count} 件のテンプレート",
+  "settings.dns.confirm.in_use_title": "ドメインは引き続き使用中です",
+  "settings.dns.confirm.in_use_services_other": "{count} 件のサービスが「{domain}」の上に構成されています。",
+  "settings.dns.confirm.in_use_templates_other": "{count} 件のサービステンプレートが「{domain}」の上に構成されています。",
+  "settings.dns.confirm.in_use_more": "…他{count}件",
+  "settings.dns.confirm.in_use_effect": "ドメインを削除してもその点は変わりません。実行時にドメイン一覧を読む処理はなく、上記の各行はホスト名を保ち、これまでどおり公開され続けます。",
+  "settings.dns.confirm.in_use_pickers": "変わるのは選択リストです。サービスやテンプレートの作成時に「{domain}」は提示されなくなります。",
+  "settings.dns.confirm.in_use_returns": "また「{domain}」は自動的に戻ることがあります。Docker のスキャンやプロバイダーの取り込みは、取り込んだ各サービスのルートドメインを再登録します。"
 }

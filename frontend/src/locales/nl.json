@@ -85,10 +85,7 @@
   "settings.dns.delete_failed": "Kan domein niet verwijderen",
   "settings.dns.service_count_one": "{count} dienst",
   "settings.dns.service_count_other": "{count} diensten",
-  "settings.dns.confirm.has_services_title": "Domein heeft services",
   "settings.dns.confirm.delete_title": "Domein verwijderen",
-  "settings.dns.confirm.has_services_message_one": "{count} dienst gebruikt \"{domain}\". Als u deze verwijdert, kunnen bestaande routes worden verbroken.\n\nToch verwijderen?",
-  "settings.dns.confirm.has_services_message_other": "{count} diensten gebruiken \"{domain}\". Als u deze verwijdert, kunnen bestaande routes worden verbroken.\n\nToch verwijderen?",
   "settings.dns.confirm.delete_message": "Domein \"{domain}\" verwijderen?",
   "settings.tags.title": "Servicetags",
   "settings.tags.desc": "Maak tags om uw services te organiseren en te filteren.",
@@ -2047,5 +2044,16 @@
   "providers.delete.hook_armed_other": "{count} daarvan staan nog aan: ze blijven als ingeschakeld weergegeven totdat hun bereik wordt gewijzigd.",
   "settings.webhooks.scope_provider_gone": "Provider verwijderd",
   "settings.webhooks.scope_service_gone": "Service verwijderd",
-  "settings.webhooks.scope_gone_badge": "Komt nergens mee overeen"
+  "settings.webhooks.scope_gone_badge": "Komt nergens mee overeen",
+  "settings.dns.template_count_one": "{count} sjabloon",
+  "settings.dns.template_count_other": "{count} sjablonen",
+  "settings.dns.confirm.in_use_title": "Domein nog in gebruik",
+  "settings.dns.confirm.in_use_services_one": "{count} dienst steunt op \"{domain}\".",
+  "settings.dns.confirm.in_use_services_other": "{count} diensten steunen op \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_one": "{count} dienstsjabloon steunt op \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_other": "{count} dienstsjablonen steunen op \"{domain}\".",
+  "settings.dns.confirm.in_use_more": "… en nog {count}",
+  "settings.dns.confirm.in_use_effect": "Het domein verwijderen verandert daar niets aan: tijdens de uitvoering leest niets de domeinlijst, elke regel hierboven behoudt zijn hostnaam en blijft precies zo gepubliceerd.",
+  "settings.dns.confirm.in_use_pickers": "Wat verandert zijn de keuzelijsten — \"{domain}\" wordt niet meer aangeboden bij het aanmaken van een dienst of een sjabloon.",
+  "settings.dns.confirm.in_use_returns": "En \"{domain}\" kan vanzelf terugkomen: een Docker-scan of een providerimport voegt het hoofddomein van elke binnengehaalde dienst opnieuw toe."
 }

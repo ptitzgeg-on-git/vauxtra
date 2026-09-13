@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.auth import require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
+from app.text import plural, verb
 from app.validators import DOMAIN_REASONS, domain_problem, normalize_domain
 
 try:
@@ -496,14 +497,85 @@ def add_domain(request: Request, body: dict):
     return {"name": name}
 
 
+def _log_domain_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
+    """The only trace a domain deletion leaves, so it carries what still holds the name.
+
+    An operator who removes a root domain and comes back a week later has the Logs screen and
+    nothing else: the pickers no longer list the name, and the rows still built on it never
+    said where it came from. The name also returns on its own -- `INSERT OR IGNORE INTO
+    domains` runs in the Docker discovery (`app/api/docker.py`) and in both provider imports
+    (`app/api/sync.py`) -- so the list can disagree with itself between two visits with no
+    record of why.
+    """
+    total = len(services) + len(templates)
+    if not total:
+        add_log("info", f"Domain deleted: {name}", conn)
+        return
+    holders = []
+    if services:
+        holders.append(plural(len(services), "service"))
+    if templates:
+        holders.append(plural(len(templates), "service template"))
+    names = ", ".join((services + templates)[:5])
+    if total > 5:
+        names += f", and {total - 5} more"
+    add_log(
+        "warn",
+        f"Domain deleted: {name} -- {' and '.join(holders)} still "
+        f"{verb(total, 'uses', 'use')} the name and {verb(total, 'keeps', 'keep')} "
+        f"working ({names})",
+        conn,
+    )
+
+
 @router.delete("/api/domains/{name:path}")
 def delete_domain(name: str, request: Request):
+    """Delete a root domain by name. 404 when there is nothing by that name.
+
+    Two things were missing here and each hid the other. `add_domain` above stores
+    `normalize_domain(...)` -- trimmed, lower-cased, no trailing dot -- while this route put
+    the raw path segment into the DELETE, so `Example.test` matched nothing on an instance
+    holding `example.test`. And with no lookup and no read of the row count, matching nothing
+    was indistinguishable from deleting something: the answer was `{"ok": true}` either way.
+    The MCP bridge (`vauxtra_mcp/tools/admin.py::delete_domain`) hands that `ok` straight back
+    to its caller, so an assistant reports a domain removed that is still in the list. It is
+    the receipt-for-nothing `delete_webhook` closed in `app/api/webhooks.py`, and this was the
+    last DELETE route in the API still without the lookup the other ten do.
+    """
     require_auth(request, scope="write")
+    wanted = normalize_domain(name)
     conn = get_db()
-    conn.execute("DELETE FROM domains WHERE name=?", (name,))
-    conn.commit()
-    conn.close()
-    return {"ok": True}
+    try:
+        if not conn.execute("SELECT name FROM domains WHERE name=?", (wanted,)).fetchone():
+            raise HTTPException(404, "Domain not found")
+        # Nothing is refused and nothing else is touched. `services.domain` and
+        # `service_templates.domain` hold the name as text with no reference declared, and no
+        # runtime path reads this table: the scheduler, the DNS push and the proxy push all
+        # work off `services.domain`, and the only readers of `domains` are the list route
+        # above, the three pickers it feeds and the backup. A service on a deleted domain goes
+        # on routing exactly as it did -- which is why these two lists are collected for the
+        # journal rather than for a refusal.
+        services = [
+            # `.strip(".")` the way every other fqdn in the API is built: an apex route
+            # stores an empty subdomain, and the naive join names it `.example.test`.
+            f"{r['subdomain']}.{r['domain']}".strip(".")
+            for r in conn.execute(
+                "SELECT subdomain, domain FROM services WHERE domain=? ORDER BY subdomain",
+                (wanted,),
+            )
+        ]
+        templates = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM service_templates WHERE domain=? ORDER BY name", (wanted,)
+            )
+        ]
+        conn.execute("DELETE FROM domains WHERE name=?", (wanted,))
+        _log_domain_removal(conn, wanted, services, templates)
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 @router.get("/api/logs/stream")
