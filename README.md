@@ -270,7 +270,7 @@ Add an equivalent server block to your MCP client configuration:
 
 ### Available MCP tools
 
-See [docs/HOWTO.md](docs/HOWTO.md#10-mcp-integration) for the full list. Summary:
+See [docs/HOWTO.md](docs/HOWTO.md#11-mcp-integration) for the full list. Summary:
 
 **Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
 

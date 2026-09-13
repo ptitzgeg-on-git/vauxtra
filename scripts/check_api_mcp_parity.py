@@ -11,6 +11,12 @@ It also checks the bridge's README against the tools that exist. That list had d
 bridge could not manage templates, settings, webhooks or API keys at all. A tool nobody
 knows about is as unreachable as one that was never written, so the drift fails the build.
 
+The same question is asked of `docs/HOWTO.md`, because the bridge's README is not the only
+reference and an operator with curl is not an agent. Eight routes had fallen out of that one:
+`GET /api/services/{sid}`, the plainest read in the API; `POST /api/services/bulk`; and all
+six of the direct per-provider record routes, a whole capability that appeared nowhere in any
+document. They were not new, and nothing failed while they were invisible.
+
 Reaching a route is not the same as calling it correctly, and that was the third gap. A
 tool declares its parameters by hand -- FastMCP reads the signature, and a normal install
 publishes no schema to derive them from (`DEBUG` is false, so `openapi_url` is None) -- so
@@ -72,6 +78,17 @@ ALLOWED_API_ONLY = {
     ("GET", "/api/providers/{}/proxy-hosts"),
     ("POST", "/api/providers/{}/proxy-hosts"),
     ("DELETE", "/api/providers/{}/proxy-hosts/{}"),
+}
+
+# Routes the operator reference is allowed not to give a row of its own.
+#
+# Held to the same rule as ALLOWED_API_ONLY: an entry for a route that no longer exists fails
+# the build, so an exemption cannot outlive what it was written for.
+ALLOWED_UNDOCUMENTED = {
+    # Documented inside the row for `POST /api/services/{sid}/check`, which is where a reader
+    # meets it: the sentence exists to say the GET is the deprecated one and to stop them
+    # reaching for it. A row of its own would advertise it instead.
+    ("GET", "/api/services/{}/check"),
 }
 
 # (tool, field or parameter, finding kind) -> why the divergence is the right call.
@@ -161,6 +178,38 @@ def collect_documented_tools(repo_root: Path) -> set[str]:
             continue
         first_cell = line.split("|")[1]
         documented.update(re.findall(r"`([a-z_][a-z0-9_]*)`", first_cell))
+    return documented
+
+
+def collect_documented_routes(repo_root: Path) -> set[tuple[str, str]]:
+    """(method, path) out of the `| Method | Endpoint | ... |` rows of the API Reference.
+
+    Only rows whose endpoint is an API path, so the section stays free to document `/metrics`
+    without it being read as a route that does not exist.
+
+    The section is found by its name and not by the number in front of it. That number moves
+    whenever a section is inserted above it, which is the same drift that left `README.md`
+    pointing at `docs/HOWTO.md#10-mcp-integration` after MCP Integration became section 11.
+    """
+    text = (repo_root / "docs" / "HOWTO.md").read_text(encoding="utf-8")
+    heading = re.search(r"^##\s+(?:\d+\)\s*)?API Reference\s*$", text, re.M)
+    if heading is None:
+        raise SystemExit(
+            "docs/HOWTO.md has no `## API Reference` heading. Either it was renamed -- in "
+            "which case rename it here too -- or the operator's route reference is gone."
+        )
+    end = text.find("\n## ", heading.start() + 1)
+    section = text[heading.start():end if end != -1 else len(text)]
+
+    documented: set[tuple[str, str]] = set()
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) < 4:
+            continue
+        method = re.fullmatch(r"`(GET|POST|PUT|PATCH|DELETE)`", cells[1])
+        endpoint = re.fullmatch(r"`(/[^`]*)`", cells[2])
+        if method and endpoint and endpoint.group(1).startswith("/api"):
+            documented.add((method.group(1), normalize(endpoint.group(1))))
     return documented
 
 
@@ -1077,6 +1126,32 @@ def main(argv: list[str] | None = None) -> int:
         print("Tools documented in vauxtra_mcp/README.md that do not exist:")
         for name in phantom:
             print(name)
+        return 1
+
+    documented_routes = collect_documented_routes(repo_root)
+    print(f"DOCUMENTED_ROUTE_COUNT {len(documented_routes & api_routes)}")
+
+    undocumented_routes = sorted(api_routes - documented_routes - ALLOWED_UNDOCUMENTED)
+    if undocumented_routes:
+        print("Routes missing from the API Reference in docs/HOWTO.md:")
+        for method, path in undocumented_routes:
+            print(f"{method} {path}")
+        return 1
+
+    phantom_routes = sorted(documented_routes - api_routes)
+    if phantom_routes:
+        # Same asymmetry as the tool tables: an omission is found by reading the code, a
+        # promise by calling something that is not there.
+        print("Routes documented in docs/HOWTO.md that do not exist:")
+        for method, path in phantom_routes:
+            print(f"{method} {path}")
+        return 1
+
+    stale_undocumented = sorted(ALLOWED_UNDOCUMENTED - api_routes)
+    if stale_undocumented:
+        print("Documentation exemptions for routes that no longer exist (remove them):")
+        for method, path in stale_undocumented:
+            print(f"{method} {path}")
         return 1
 
     findings, stats = contract_findings(repo_root)
