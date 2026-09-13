@@ -654,6 +654,36 @@ def push_extra_targets(conn, sid: int) -> list[str]:
     return _push_service_row(conn, svc, sid, only_provider_ids=extra_ids)["errors"]
 
 
+def withdraw_extra_targets(conn, sid: int) -> list[str]:
+    """Take a disabled service off the multi-sync targets its write route never touches.
+
+    The mirror of `push_extra_targets`, and it was missing. `update_service` and the bulk
+    enable/disable walked `proxy_provider_id`, `dns_provider_id` and `tunnel_provider_id`
+    when the flag changed, so disabling a service suspended the primary proxy and deleted
+    the primary DNS record while the second proxy went on forwarding the same hostname and
+    the second DNS server went on resolving it. The interface showed the service as off,
+    which is the one state an operator reads as "this is not reachable any more", and the
+    only thing that had changed was who Vauxtra was still talking to.
+
+    Returns one message per failure, in the shape both routes already put in `errors`.
+    """
+    svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not svc or svc["enabled"]:
+        # An enabled service publishes on its extras; `push_extra_targets` is that half.
+        return []
+
+    extra_ids = {
+        r["provider_id"]
+        for r in conn.execute(
+            "SELECT provider_id FROM service_push_targets WHERE service_id=?", (sid,)
+        )
+    }
+    if not extra_ids:
+        return []
+
+    return withdraw_service_routes(conn, svc, sid, only_provider_ids=extra_ids)
+
+
 @router.post("/api/services/{sid}/push/dry-run")
 def dry_run_push_service(sid: int, request: Request):
     # Explicitly `read`: no scope at all also lets through a key granted nothing.

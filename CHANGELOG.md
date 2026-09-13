@@ -233,6 +233,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Disabling a service took it off the primary proxy and left the second one forwarding it.**
+  The write routes learned to publish a service on every multi-sync target and to withdraw it
+  from one dropped off the list or renamed away, but the `enabled` flag was never part of that
+  walk: `update_service` and the bulk enable/disable addressed `proxy_provider_id`,
+  `dns_provider_id` and `tunnel_provider_id` and nothing else. Disabling a service suspended
+  the primary proxy host and deleted the primary DNS record while the second proxy went on
+  forwarding the same hostname and the second DNS server went on resolving it. The table
+  showed the service as off, which is the one state an operator reads as "this is not
+  reachable any more", and the only thing that had actually changed was who Vauxtra was still
+  talking to. Nothing corrected it later either: the scheduler's push skips a disabled
+  service rather than withdrawing it.
+
+  `withdraw_extra_targets` is the mirror of `push_extra_targets` and runs beside it on every
+  edit and in the bulk loop, one of the two doing nothing on any given call because a service
+  is either published everywhere or nowhere. In the bulk loop it sits above the mode
+  branching, where the `continue` for tunnel and unknown modes cannot skip it, and the enable
+  half now republishes on the extras it withdrew from -- which the bulk path had never done,
+  and only got away with because it had never withdrawn anything.
+  `tests/test_multi_sync_targets.py` covers both directions, the edit of a service
+  that was already off (the defect the primary DNS block carries a comment about),
+  and a service with no extra target, which must not make Vauxtra call anyone.
+
 - **Nothing about signing in ever reached the activity log, so a run of wrong passwords left
   no trace at all.** `app/api/auth.py` and `app/auth.py` held no `add_log` call between them:
   the journal that *Recent activity* and **Settings → Logs** read recorded every provider
