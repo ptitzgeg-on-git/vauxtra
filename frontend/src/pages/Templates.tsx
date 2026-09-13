@@ -35,6 +35,7 @@ import {
   useConfirmDialog,
 } from '@/components/ui';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { translateApiError } from '@/lib/errors';
 import type { OkResponse, Provider, Tag, Template } from '@/types/api';
 
@@ -49,6 +50,7 @@ const isEditable = (target: EventTarget | null): boolean => {
 
 export function Templates() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
@@ -245,7 +247,7 @@ export function Templates() {
             <>
               <span className="tabular-nums">{countLabel}</span>
               {isFiltering && (
-                <span className="tabular-nums">{t('templates.count_filtered', { count: visible.length, total })}</span>
+                <span className="tabular-nums">{t('templates.count_filtered', { count: visible.length, total: formatNumber(total) })}</span>
               )}
             </>
           ) : undefined

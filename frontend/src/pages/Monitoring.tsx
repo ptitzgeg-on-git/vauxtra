@@ -113,7 +113,7 @@ interface CheckSummary extends CheckAllResult {
 
 export function Monitoring() {
   const t = useT();
-  const { formatPercent, formatLatency } = useFormat();
+  const { formatNumber, formatPercent, formatLatency } = useFormat();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -356,8 +356,8 @@ export function Monitoring() {
           tone={summary.error > 0 ? 'warning' : 'success'}
           title={t('monitoring.check_summary', {
             count: summary.checked,
-            ok: summary.ok,
-            error: summary.error,
+            ok: formatNumber(summary.ok),
+            error: formatNumber(summary.error),
           })}
           onDismiss={() => setSummary(null)}
         >
@@ -396,7 +396,7 @@ export function Monitoring() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label={t('monitoring.stat.up')}
-          value={counts.ok}
+          value={formatNumber(counts.ok)}
           hint={t('monitoring.stat.up_hint')}
           icon={<ShieldCheck />}
           tone="success"
@@ -405,7 +405,7 @@ export function Monitoring() {
         />
         <StatCard
           label={t('monitoring.stat.down')}
-          value={counts.error}
+          value={formatNumber(counts.error)}
           hint={t('monitoring.stat.down_hint')}
           icon={<ArrowDownCircle />}
           tone={counts.error > 0 ? 'danger' : 'neutral'}
@@ -414,7 +414,7 @@ export function Monitoring() {
         />
         <StatCard
           label={t('monitoring.stat.unknown')}
-          value={counts.unknown}
+          value={formatNumber(counts.unknown)}
           hint={t('monitoring.stat.unknown_hint')}
           icon={<CircleHelp />}
           tone={counts.unknown > 0 ? 'warning' : 'neutral'}

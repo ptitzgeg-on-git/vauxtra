@@ -233,6 +233,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The same number was grouped on one screen and bare on the next.** `formatNumber` puts the
+  locale's thousands separator on a count, and half the app called it. Eight of the sixteen
+  `StatCard` tiles passed their value through a formatter and eight handed over a raw number,
+  so `certificates.expiring` read "12,480" on the dashboard and "12480" on the certificates
+  page, and Monitoring's up/down/unknown tiles sat bare beside an availability that had gone
+  through `formatPercent`. Six sentences had the same split inside one line: `t()` formats
+  `{count}` and prints every other placeholder as it arrives, so the check summary read
+  "45,000 services checked: 44987 up" and the services header read "50 routes shown of 1234".
+
+  Every one of those numbers now goes through `formatNumber`, and the `{days}` on the
+  certificates page joins the two dashboard call sites that already formatted it. The repair is
+  per call site deliberately. Inside `t()` it would reach `{id}`, which carries a route id, and
+  `{value}`, which carries a version string, and neither may ever take a separator. Inside
+  `StatCard` it would put a `/settings` query in `components/ui/`, where no primitive fetches
+  anything today.
+
+  Only visible above 999, and above 9999 in Spanish, which does not group four digits.
+
 - **Five confirmation dialogs kept their plural under a title that had counted to one.**
   `services.confirm.bulk_delete_title` inflects — "Delete 1 route?" — and the body beneath it
   read "Their proxy hosts and DNS records are removed from the providers." The same mismatch

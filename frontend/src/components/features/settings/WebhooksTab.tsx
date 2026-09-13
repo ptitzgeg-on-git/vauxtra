@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { Bell, ChevronDown, ExternalLink, Plus, Send, Trash2 } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import { useWebhookActions } from '@/hooks/useWebhookActions';
@@ -51,6 +52,7 @@ interface TestAllResult {
 /** Notification webhooks: add, test, scope and alert rules, enable, delete. */
 export function WebhooksTab() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const hook = useWebhookActions(true);
@@ -384,7 +386,7 @@ export function WebhooksTab() {
           <>
             {webhooks.length > 0 && (
               <Badge tone={enabledCount > 0 ? 'success' : 'neutral'} dot>
-                {t('settings.webhooks.enabled_count', { count: enabledCount, total: webhooks.length })}
+                {t('settings.webhooks.enabled_count', { count: enabledCount, total: formatNumber(webhooks.length) })}
               </Badge>
             )}
             <Button

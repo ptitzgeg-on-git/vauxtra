@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CircleHelp, Clock, Lock, RefreshCw, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -57,6 +58,7 @@ import type { Provider } from '@/types/api';
 
 export function Certificates() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const statusFilter = toCertFilter(searchParams.get('status'));
@@ -239,7 +241,7 @@ export function Certificates() {
         icon={<Lock />}
         meta={
           <span className="text-xs text-muted-foreground">
-            {t('certificates.meta', { count: certificates.length, days: warnDays })}
+            {t('certificates.meta', { count: certificates.length, days: formatNumber(warnDays) })}
           </span>
         }
         actions={
@@ -272,8 +274,8 @@ export function Certificates() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label={t('certificates.stat.valid')}
-          value={counts.valid}
-          hint={t('certificates.stat.valid_hint', { days: warnDays })}
+          value={formatNumber(counts.valid)}
+          hint={t('certificates.stat.valid_hint', { days: formatNumber(warnDays) })}
           icon={<ShieldCheck />}
           tone="success"
           loading={loading}
@@ -281,8 +283,8 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.expiring')}
-          value={counts.expiring}
-          hint={t('certificates.stat.expiring_hint', { days: warnDays })}
+          value={formatNumber(counts.expiring)}
+          hint={t('certificates.stat.expiring_hint', { days: formatNumber(warnDays) })}
           icon={<Clock />}
           tone={counts.expiring > 0 ? 'warning' : 'neutral'}
           loading={loading}
@@ -290,7 +292,7 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.critical')}
-          value={counts.critical}
+          value={formatNumber(counts.critical)}
           hint={t('certificates.stat.critical_hint')}
           icon={<ShieldAlert />}
           tone={counts.critical > 0 ? 'danger' : 'neutral'}
@@ -299,7 +301,7 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.expired')}
-          value={counts.expired}
+          value={formatNumber(counts.expired)}
           hint={t('certificates.stat.expired_hint')}
           icon={<ShieldX />}
           tone={counts.expired > 0 ? 'danger' : 'neutral'}
@@ -308,7 +310,7 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.unknown')}
-          value={counts.unknown}
+          value={formatNumber(counts.unknown)}
           hint={t('certificates.stat.unknown_hint')}
           icon={<CircleHelp />}
           tone={counts.unknown > 0 ? 'warning' : 'neutral'}
