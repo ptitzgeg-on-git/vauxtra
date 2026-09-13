@@ -43,6 +43,11 @@ class WebhookIn(BaseModel):
 
     name: str
     url: str
+    #: The panel has always sent this and `add_webhook` always wrote `1`, so a webhook asked
+    #: for disabled was created enabled and answered `201` saying so. Nothing renders that
+    #: contradiction -- the list reads the row back and shows the toggle on -- so the only way
+    #: to notice was to send `false` and watch it not take.
+    enabled: bool = True
     scope_type: Any = "all"
     scope_ref_id: Any = None
     repeat_interval_minutes: int | None = 0
@@ -254,6 +259,7 @@ def add_webhook(request: Request, body: WebhookIn):
     alert_on_integration_up  = int(bool(body.alert_on_integration_up))
     min_down_minutes         = max(0, body.min_down_minutes or 0)
     repeat_interval_minutes  = max(0, body.repeat_interval_minutes or 0)
+    enabled                  = int(bool(body.enabled))
     conn = get_db()
     try:
         # After the connection is open: a scope target is checked against the table its word
@@ -265,10 +271,11 @@ def add_webhook(request: Request, body: WebhookIn):
                (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
                 alert_on_any_down, alert_on_any_up, alert_on_integration_down,
                 alert_on_integration_up, min_down_minutes)
-               VALUES (?,?,1,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 name,
                 url,
+                enabled,
                 scope_type,
                 scope_ref_id,
                 repeat_interval_minutes,
@@ -281,7 +288,7 @@ def add_webhook(request: Request, body: WebhookIn):
         )
         wid = cur.lastrowid
         conn.commit()
-        return {"id": wid, "name": name, "url_masked": mask_secret_url(url), "enabled": 1,
+        return {"id": wid, "name": name, "url_masked": mask_secret_url(url), "enabled": enabled,
                 "scope_type": scope_type, "scope_ref_id": scope_ref_id,
                 "repeat_interval_minutes": repeat_interval_minutes,
                 "alert_on_any_down": alert_on_any_down, "alert_on_any_up": alert_on_any_up,

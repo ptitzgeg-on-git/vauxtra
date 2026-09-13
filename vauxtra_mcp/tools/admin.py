@@ -230,9 +230,14 @@ def list_webhooks() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def create_webhook(name: str, url: str) -> dict[str, Any]:
-    """Create a webhook notification target."""
-    r = client.post("/webhooks", json={"name": name, "url": url})
+def create_webhook(name: str, url: str, enabled: bool = True) -> dict[str, Any]:
+    """Create a webhook notification target.
+
+    Pass `enabled=False` to create one that is configured but silent -- a target prepared
+    ahead of the migration that will need it, without it firing in the meantime. It can be
+    turned on later with `update_webhook`, which is the same flag.
+    """
+    r = client.post("/webhooks", json={"name": name, "url": url, "enabled": enabled})
     client.check(r)
     return r.json()
 

@@ -112,6 +112,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **A panel contract gate**, `scripts/check_panel_contract.py`, run in the backend job beside
+  the API-MCP parity, repo hygiene and runtime parity gates. `check_api_mcp_parity.py` holds
+  the MCP bridge to the Pydantic model of the route it posts to; the panel posts to those same
+  routes and was held to nothing. Pydantic drops a key it does not declare, so a field the form
+  filled in is discarded in silence and the save answers `200`: the column never moves, and the
+  next `GET` hands back the old value with nothing to say why. TypeScript does not close this —
+  `api.post<T>(url, payload)` types the *answer*, never the body, and the body's own type is
+  declared in the panel, so the panel can promise a field the server has never heard of and
+  `tsc` agrees, because both halves are internally consistent and neither has read the other.
+  Eighteen of the twenty models the panel posts to accept unknown keys; only `ServiceIn` and
+  `ServicePreflightIn` refuse, and the other eighteen are what make this worth a build.
+
+  It reads every `api.post` and `api.put` body under `frontend/src` and resolves the key set by
+  binding names the way the language binds them: an inline object literal with its spreads
+  resolved recursively; an identifier bound by the enclosing function's parameters, annotated
+  directly, destructured out of an annotated object, or typed by the third generic argument of
+  its `useMutation`; an identifier bound by a `const` in a block that contains the call; or a
+  call resolved through its callee's declared return type. Names are looked up the way a module
+  looks them up — this file, else the file this file imports the name from, else a single
+  unambiguous declaration in the panel. That last part carries weight: `buildPayload` is
+  declared twice, in `ExposeModal.tsx` and in `providerConstants.ts`, with no key in common,
+  and eleven type names are declared in two files each, `Provider` among them. A flat repo-wide
+  table would quietly union two unrelated `Provider`s and answer with keys that exist in
+  neither call.
+
+  A resolver that guesses is worse than one that refuses. An earlier draft took "the last
+  `name:` above the call", read `data` off an `onSuccess` twenty lines up, and reported a
+  provider update as sending `ok, health, validation`; a wrong key set both misses real
+  divergence and invents fake divergence, and the fake one teaches everybody to ignore the
+  gate. So thirty of the thirty-six bodies are compared, two go to routes that read a free-form
+  dict where there is no field list on either side, and the remaining four are each listed with
+  their reason: two whose body is a bag of whatever keys it was handed, a settings form and a
+  restored backup file, and two that drive `/api/tags` and `/api/environments` from the same
+  config field, where the body is legible and the route is not. A call that stops being listed
+  fails the build, the same rule the parity gate applies to its own exemptions: an allowance
+  nobody is watching is one the next call site inherits without ever having argued for it. Only
+  the direction that loses data is a failure — a field the model declares and the panel omits
+  is a default doing its job.
+  `tests/test_panel_contract_parity.py` reads eight call sites by hand, one per resolution
+  path, and holds the gate to them; it pins the two-declaration cases by name; and it proves
+  over real HTTP that an unknown key is dropped with a `200` rather than refused, so the
+  premise the gate rests on is measured rather than asserted.
+
 - **A gate for the one locale question neither existing gate could ask: does the code name a
   key that exists?** `check-locale-parity.mjs` and `check-locale-quality.mjs` read
   `src/locales/*.json` and never open a component, so between them they check that the eight
@@ -232,6 +275,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `python -m pytest tests/` catches the next such bump even with the CI step removed.
 
 ### Fixed
+
+- **A webhook asked for disabled was created enabled, and answered `201` saying so.** The panel
+  has sent `enabled` since that form existed and `WebhookIn` never declared it, so pydantic
+  dropped the field before the handler saw it and the `INSERT` wrote a hardcoded `1`. The reply
+  was hardcoded to match the row rather than the request, which is the shape that hides
+  longest: the answer agrees with the row, the list reads the row back and draws the toggle on,
+  and the only way to notice was to send `false` and watch it not take. No caller sends `false`
+  today — the panel's own form omits the key and the wizard passes `undefined` — so nothing was
+  mis-created in the field; what was broken was the contract. `WebhookIn` declares the field
+  now, defaulting to `True`, so every caller that omits it keeps exactly the behaviour it had,
+  and `create_webhook` in the MCP bridge gained the flag as well, for a target configured
+  ahead of the migration that will need it without firing in the meantime.
+
+  The TypeScript `ProviderUpdate` advertised `type`, which `PUT /api/providers/{pid}` neither
+  declares nor writes — a provider stays whatever kind it was created as, and the route reads
+  the stored `type` only to normalise the URL. Nothing sent it, so nothing was lost; what
+  existed was a trap with `tsc` holding the door open for whoever wrote the next editor. It is
+  now `Omit<Partial<ProviderIn>, 'type'>`, which refuses the field at the keyboard.
+
+  Both were found by `scripts/check_panel_contract.py` on its first complete run.
 
 - **A provider could be renamed to nothing, and switched to a value that is neither on nor
   off — leaving it drawn as connected and used by nothing.** `PUT /api/providers/{pid}` is

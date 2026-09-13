@@ -211,7 +211,7 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 | Tool | Description |
 |---|---|
 | `list_webhooks` | List targets; URLs come back masked (`discord://***`) and cannot be written back |
-| `create_webhook` | Create a notification target |
+| `create_webhook` | Create a notification target; `enabled=False` creates one that is configured but silent |
 | `update_webhook` | Update a target; omitted fields keep their stored value |
 | `delete_webhook` | Delete a target |
 | `test_webhook_url` | Test an Apprise URL without creating anything |
