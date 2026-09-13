@@ -233,6 +233,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Nothing about signing in ever reached the activity log, so a run of wrong passwords left
+  no trace at all.** `app/api/auth.py` and `app/auth.py` held no `add_log` call between them:
+  the journal that *Recent activity* and **Settings → Logs** read recorded every provider
+  sync and every certificate renewal, and said nothing about who had tried to get in. A
+  refused sign-in now writes a `warning` line; a successful one, the setup wizard's first
+  password, and a password change that ends every other session each write an `info` line.
+  `docs/HOWTO.md` lists the four under § 2.
+
+  No client address is written beside them, deliberately. Behind a reverse proxy
+  `request.client.host` is the proxy for every caller alike unless `FORWARDED_ALLOW_IPS` names
+  the hop allowed to set `X-Forwarded-For` (`app/limiter.py` says why), so an address in those
+  lines would be a false lead in exactly the investigation they exist for. Only attempts that
+  reach the route are recorded, and that is what bounds the journal: past five a minute the
+  limiter answers 429 before the route runs, whereas a line per refused request would let an
+  unauthenticated caller fill the table at its own rate. `tests/test_auth_journal.py` covers
+  the four lines, that each failure gets one of its own, that a refused password change writes
+  nothing, and that no line carries an address.
+
 - **German printed the plural adjective at one wherever a truncated list said how many
   holders it had hidden.** Both delete-confirmation dialogs cut their list of dependants at
   five and finish with a counted phrase, and both wrote that phrase as a single form:
