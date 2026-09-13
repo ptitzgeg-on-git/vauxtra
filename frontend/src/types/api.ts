@@ -1132,8 +1132,6 @@ export interface AuthStatus {
   password_source?: 'environment' | 'database';
 }
 
-export type AuthMe = AuthStatus;
-
 /** Body of `POST /api/auth/login`; answers `{ok}`. */
 export interface LoginRequest {
   password: string;

@@ -16,7 +16,7 @@ certificates table render a chip no provider has ever filled. `Template` is `Omi
 'websocket'>` with a `websocket` of its own put back, which is the only construct in the
 panel where expanding a utility type and then applying the interface's own members can give
 a different answer from doing either alone. `Pick<AuthStatus, 'auth_mode'>` is the narrowing
-the gate has to allow rather than fail. And `ProvidersHealthMap` is the shape it has to
+the gate has to allow rather than fail, kept here now that no panel module writes one. And `ProvidersHealthMap` is the shape it has to
 refuse: an alias for an index signature, which declares no key and can contradict nothing.
 """
 
@@ -45,6 +45,7 @@ def _load(name: str):
     return sys.modules[name]
 
 
+
 class _ReadCase(unittest.TestCase):
     """The gate loaded once, with the panel indexed once behind it."""
 
@@ -67,6 +68,7 @@ class _ReadCase(unittest.TestCase):
             sorted(k for k, (opt, _) in got[1].items() if not opt),
             sorted(k for k, (opt, _) in got[1].items() if opt),
         )
+
 
 
 class TheResolverAnswersWithWhatTheFileSays(_ReadCase):
@@ -139,10 +141,12 @@ class TheResolverAnswersWithWhatTheFileSays(_ReadCase):
         self.assertEqual(parent[1]["websocket"][1], ("prim", "boolean"))
 
     def test_a_pick_resolves_to_the_one_key_it_names(self) -> None:
-        """`Layout.tsx` reads `/auth/status` for one field out of five, and says so.
+        """A narrowing reads fewer fields than arrive, which is not a disagreement.
 
-        Refusing to read a `Pick` would have meant writing an exemption for the four places
-        that read this route, three of which state the whole thing and agree about it.
+        `Layout.tsx` used to read `/auth/me` through this `Pick` for the one field its
+        banner draws. It goes through the shared hook now, so no panel module spells a
+        `Pick` over a GET answer today; the resolver still reads one, because refusing to
+        would turn the next narrowing somebody writes into an exemption.
         """
         self.assertEqual(
             self.keys_of("Pick<AuthStatus, 'auth_mode'>", "components/layout/Layout"),
@@ -165,6 +169,7 @@ class TheResolverAnswersWithWhatTheFileSays(_ReadCase):
         self.assertEqual(self.shape_of("Record<string, string>"), ("opaque", "Record<string, string>"))
         self.assertEqual(self.shape_of("unknown"), ("opaque", "unknown"))
         self.assertEqual(self.shape_of("string[]"), ("array", ("prim", "string")))
+
 
 
 class ReadersAreGroupedByTheBytesTheyRead(_ReadCase):
@@ -202,17 +207,22 @@ class ReadersAreGroupedByTheBytesTheyRead(_ReadCase):
         self.assertIn("key:['provider-health', *]", self.groups)
 
     def test_the_two_groupings_catch_different_things(self) -> None:
-        """Four readers of `/auth/status`, and four of `['auth-status']` -- not the same four.
+        """Neither grouping contains the other, and each holds a reader the other cannot see.
 
-        `App.tsx` and `Sidebar.tsx` read the route inside a query on that key, so they land
-        in both. `pages/Login.tsx` reads the route with no query behind it at all, and
-        `Layout.tsx` reads the cache entry without a `queryFn` of its own. Either grouping
-        alone would miss one of the two.
+        `hooks/useFormat.ts` reads `/settings` with no query behind it at all, so only the
+        route grouping holds it. `hooks/useDockerEndpoints.ts` runs a `useQuery` on
+        `['docker-endpoints']` whose `queryFn` calls `api.get` with no type argument, so the
+        route grouping never learns which URL it was, and only the key grouping holds it.
+        Dropping either grouping would drop one of those two out of every comparison.
         """
-        route = {o.src.rel for o in self.groups["route:/auth/me"]}
-        key = {o.src.rel for o in self.groups["key:['auth-status']"]}
-        self.assertTrue(route - key, "every reader of the route is also on the key")
-        self.assertTrue(key - route, "every reader of the key also names the route")
+        by_route = {o.src.rel for o in self.groups["route:/settings"]}
+        by_key = {o.src.rel for o in self.groups["key:['settings']"]}
+        self.assertEqual(by_route - by_key, {"hooks/useFormat.ts"})
+
+        by_key = {o.src.rel for o in self.groups["key:['docker-endpoints']"]}
+        by_route = {o.src.rel for o in self.groups["route:/docker/endpoints"]}
+        self.assertEqual(by_key - by_route, {"hooks/useDockerEndpoints.ts"})
+
 
 
 class TwoAnswersAboutOneByteStreamAreCaught(_ReadCase):
@@ -280,6 +290,7 @@ class TwoAnswersAboutOneByteStreamAreCaught(_ReadCase):
         )
 
 
+
 class OneDeclarationPerShape(_ReadCase):
     """`types/api.ts` owns the shapes more than one panel reads, and owns them alone."""
 
@@ -287,18 +298,143 @@ class OneDeclarationPerShape(_ReadCase):
         self.assertEqual(self.gate.shadowed(self.index), [])
 
     def test_the_rule_would_notice_if_one_did(self) -> None:
-        """Seven declarations were deleted to get this to zero; it has to stay a real check.
+        """Five declarations were deleted to get this to zero; it has to stay a real check.
 
         Every one of them was the stale copy -- a `DockerContainer` with a `ports` array no
-        handler sends, a `ContainerSuggestion` for a route that no longer exists, a
-        `Certificate` saying `id: number` where Zoraxy answers a file name -- and each sat
-        in the module a reader opens first.
+        handler sends, an `AuthStatus` making `setup_required` optional where the route has
+        always sent a bool, a `Provider` holding five keys of eleven -- and each sat in the
+        module a reader opens first.
         """
         ghost = self.panel.Source(rel="__ghost.ts", raw="", code="")
         ghost.types["Certificate"] = self.panel.TsType(name="Certificate")
         self.index.sources.append(ghost)
         self.addCleanup(self.index.sources.remove, ghost)
         self.assertEqual(self.gate.shadowed(self.index), [("__ghost.ts", "Certificate")])
+
+
+
+class OneAnswerHasOneCacheEntry(_ReadCase):
+    """A react-query key is a lifetime, and one answer is entitled to exactly one."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.paired, cls.split = cls.gate.split_cache(cls.index)
+
+    def test_no_url_is_read_under_two_keys(self) -> None:
+        self.assertEqual(self.split, [])
+
+    def test_enough_queries_are_paired_with_a_url_for_that_to_mean_something(self) -> None:
+        """A rule that pairs nothing passes as green as one that pairs everything.
+
+        The floor says the panel is still mostly read. The ratio says the walk is not
+        quietly dropping most of what it walks, which is how a matcher regresses: the two
+        it does drop today are a taxonomy tab taking both halves as props and a log query
+        whose `queryFn` is a named function.
+        """
+        walked = sum(
+            1
+            for src in self.index.sources
+            for m in self.gate.QUERY_BLOCK.finditer(src.code)
+            if self.gate.options_at(src, m) is not None
+        )
+        self.assertGreaterEqual(self.paired, 50)
+        self.assertGreaterEqual(self.paired, walked - 5)
+
+    def test_the_rule_would_notice_if_one_were(self) -> None:
+        """`/auth/me` was, until the commit that added this rule.
+
+        Six components asked the server who the caller is: four under `['auth-status']`, the
+        two settings tabs under `['auth-me']`. Five of the eight places that invalidate named
+        the first key alone, so which entry got refreshed depended on which of two spellings
+        the writer happened to remember.
+        """
+        ghost = self.ghost(
+            "const a = useQuery<Thing>({queryKey: ['one'], queryFn: () => api.get<Thing>('/t')});",
+            "const b = useQuery<Thing>({queryKey: ['two'], queryFn: () => api.get<Thing>('/t')});",
+        )
+        _, split = self.gate.split_cache(self.index)
+        self.assertEqual(len(split), 1, split)
+        self.assertIn("'/t'", split[0])
+        self.assertIn("['one'] at " + ghost.rel, split[0])
+        self.assertIn("['two'] at " + ghost.rel, split[0])
+
+    def test_the_three_log_keys_are_three_questions_and_not_a_finding(self) -> None:
+        """`/logs` is read under three keys on purpose, which is what a key is for.
+
+        The dashboard wants the last eight lines, the same page wants today's count off a
+        larger sample, and the logs tab wants one page of a filtered list. Grouping on the
+        route would have called those one answer and demanded they share an entry; grouping
+        on the URL as written keeps them three.
+        """
+        urls = {u for u, _ in self.pairs() if self.gate.route_of(u) == "/logs"}
+        self.assertEqual(len(urls), 3, urls)
+        self.assertEqual({self.gate.route_of(u) for u in urls}, {"/logs"})
+
+    def test_the_rule_holds_its_own_fix(self) -> None:
+        """A gate that cannot see its own remedy protects it for exactly one commit.
+
+        The fix moved `/auth/me` into `useAuthStatus`, which spells the URL once inside
+        `queryOptions` and hoists the key into `AUTH_STATUS_KEY`. A rule that only read
+        `useQuery<T>({queryKey: [...]})` would see neither half, so a settings tab going
+        back to its own key would show one key for that URL and pass.
+        """
+        self.ghost(
+            "const x = useQuery<AuthStatus>({queryKey: ['auth-me'], "
+            "queryFn: () => api.get<AuthStatus>('/auth/me')});"
+        )
+        _, split = self.gate.split_cache(self.index)
+        self.assertEqual(len(split), 1, split)
+        self.assertIn("'/auth/me'", split[0])
+        self.assertIn("['auth-status'] at hooks/useAuthStatus.ts", split[0])
+
+    def test_a_key_hoisted_into_a_constant_is_still_that_key(self) -> None:
+        """Naming a key does not give it a second lifetime, so it must not read as one."""
+        ghost = self.ghost(
+            "const K = ['auth-me'] as const;",
+            "export const q = queryOptions({queryKey: K, "
+            "queryFn: () => api.get<AuthStatus>('/auth/me')});",
+        )
+        _, split = self.gate.split_cache(self.index)
+        self.assertEqual(len(split), 1, split)
+        self.assertIn("['auth-me'] at " + ghost.rel, split[0])
+        self.assertIn("['auth-status'] at hooks/useAuthStatus.ts", split[0])
+
+    def test_both_hooks_that_hoist_their_key_are_read(self) -> None:
+        """The two shared hooks are exactly the sites a literal-only reader would skip.
+
+        Each is one cache entry the whole panel goes through, which is the arrangement this
+        rule asks for, and skipping them would have made the rule green by seeing nothing.
+        """
+        pairs = self.pairs()
+        self.assertEqual({k for u, k in pairs if u == "'/auth/me'"}, {"['auth-status']"})
+        self.assertEqual(
+            {k for u, k in pairs if u == "'/providers/types'"}, {"['provider-types']"}
+        )
+
+    def pairs(self) -> set[tuple[str, str]]:
+        """Every (url, key) the rule reads, by the same walk `split_cache` does."""
+        out = set()
+        for src in self.index.sources:
+            for m in self.gate.QUERY_BLOCK.finditer(src.code):
+                open_at = self.gate.options_at(src, m)
+                if open_at is None:
+                    continue
+                key = self.gate.key_of(src, open_at)
+                url = self.gate.url_of(src, open_at)
+                if key is not None and url is not None:
+                    out.add((url, key))
+        return out
+
+    def ghost(self, *lines: str):
+        """A source file that exists only for the length of one test."""
+        code = "\n".join(lines)
+        src = self.panel.Source(
+            rel="__ghost.ts", raw=code, code=code, brackets=self.panel.bracket_map(code)
+        )
+        self.index.sources.append(src)
+        self.addCleanup(self.index.sources.remove, src)
+        return src
 
 
 class TheGateComparesEnoughToBeWorthFailingABuild(_ReadCase):
@@ -326,6 +462,7 @@ class TheGateComparesEnoughToBeWorthFailingABuild(_ReadCase):
         self.assertGreaterEqual(self.stats["groups"], 25)
         self.assertGreaterEqual(self.stats["compared"], 200)
         self.assertLessEqual(self.stats["skipped"], self.stats["compared"] // 20)
+
 
 
 class NothingElseEverChecksAGetAnswer(unittest.TestCase):

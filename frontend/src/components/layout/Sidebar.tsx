@@ -36,8 +36,8 @@ import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, toneClasses, type Tone } from '@/components/ui';
 import { isMacPlatform } from '@/components/ui/_internal';
+import { AUTH_STATUS_KEY, useAuthStatus } from '@/hooks/useAuthStatus';
 import type {
-  AuthStatus,
   CertificateExpiryResponse,
   HealthResponse,
   Provider,
@@ -112,11 +112,7 @@ export function Sidebar({
 
   const isCollapsed = !isMobile && collapsed;
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 120_000,
-  });
+  const { data: authStatus } = useAuthStatus();
 
   const { data: services } = useQuery<Service[]>({
     queryKey: ['services'],
@@ -226,7 +222,7 @@ export function Sidebar({
   // machine had every reason to believe they had signed out.
   const signOut = useMutation({
     mutationFn: () => api.post('/auth/logout'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['auth-status'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY }),
     onError: (err) => toast.error(translateApiError(err, t, t('nav.signout_failed'))),
   });
 

@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { Menu, Search, ShieldAlert } from 'lucide-react';
-import { api } from '@/api/client';
-import type { AuthStatus } from '@/types/api';
+import { useAuthStatus } from '@/hooks/useAuthStatus';
 import { anyDialogOpen } from '@/hooks/useModalDialog';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
@@ -42,12 +40,7 @@ function isTypingTarget(el: EventTarget | null): boolean {
 function OpenAccessBanner() {
   const t = useT();
   const navigate = useNavigate();
-  const { data } = useQuery<Pick<AuthStatus, 'auth_mode'>>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get('/auth/me'),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { data } = useAuthStatus();
 
   if (data?.auth_mode !== 'open') return null;
 

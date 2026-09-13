@@ -35,6 +35,7 @@ import {
   useProviderMutations,
 } from '@/hooks/useProviderMutations';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { AUTH_STATUS_KEY, authStatusQuery } from '@/hooks/useAuthStatus';
 import {
   DockerStep,
   DoneStep,
@@ -161,7 +162,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const handleSetPassword = async (password: string) => {
     try {
       await api.post('/auth/setup-password', { password });
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
       toast.success(t('setup.toast.password_set'));
       goToProviders();
     } catch (err: unknown) {
@@ -275,7 +276,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   const handleRestoreFinish = async (summary: { secretsIncluded: boolean }) => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] }),
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY }),
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
       queryClient.invalidateQueries({ queryKey: ['services'] }),
       queryClient.invalidateQueries({ queryKey: ['domains'] }),
@@ -293,7 +294,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     // spinner, nothing more.
     try {
       await Promise.all([
-        queryClient.fetchQuery({ queryKey: ['auth-status'], queryFn: () => api.get('/auth/me') }),
+        queryClient.fetchQuery(authStatusQuery),
         queryClient.fetchQuery({ queryKey: ['providers'], queryFn: () => api.get('/providers') }),
         queryClient.fetchQuery({ queryKey: ['services'], queryFn: () => api.get('/services'), staleTime: 0 }),
         queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),

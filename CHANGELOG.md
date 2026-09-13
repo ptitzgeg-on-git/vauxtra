@@ -125,12 +125,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   Checking every declaration against the real answer would mean running the backend, which
   this job does not do. One thing is decidable by reading alone: when two places read the
   *same* bytes — the same route, or the same react-query cache key — and each names its own
-  type, at most one of them can be right. Seventy-one `api.get<T>` calls and sixty-six
-  `useQuery<T>` blocks fall into thirty groups with more than one reader, and 247 pairs of
-  those readers are compared key by key, in type and in optionality both. Utility types are
-  expanded rather than refused, because two of them are load-bearing: `Template` is
-  `Omit<TemplateIn, 'websocket'>` with a `websocket` of its own put back, and `Layout.tsx`
-  reads `/auth/status` as `Pick<AuthStatus, 'auth_mode'>`.
+  type, at most one of them can be right. Sixty-seven `api.get<T>` calls and sixty
+  `useQuery<T>` blocks fall into twenty-seven groups with more than one reader, and 230 pairs
+  of those readers are compared key by key, in type and in optionality both. Utility types are
+  expanded rather than refused, because one of them is load-bearing: `Template` is
+  `Omit<TemplateIn, 'websocket'>` with a `websocket` of its own put back. `Pick` and `Partial`
+  resolve the same way; no panel module spells one over an answer today.
 
   Reading *fewer* keys than arrive is not a disagreement and does not fail the build.
   `pages/Setup.tsx` reads `/providers` as `ProviderItem[]` where eleven other sites read
@@ -147,6 +147,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   to keep in step, and the one that drifts is the copy sitting where a reader looks first.
   Five were deleted to reach zero, and every one of them was the stale half: the shadowed
   `DockerContainer`, `AuthStatus`, `Provider`, `ProviderValidationResult` and `GuidedStep`.
+
+  The third rule pairs a `useQuery` with the URL its `queryFn` reads and fails when one URL is
+  read under more than one cache key. A key is a lifetime: two keys over one answer means every
+  place that invalidates after the answer changed has to name both, which is a thing the
+  compiler cannot check and people do not do. The pairing is verbatim rather than by route, so
+  `/logs?per_page=8` and `/logs?page=${page}` stay two questions and the rule needs no exemption
+  table at all — `/logs` is read under three keys and is right to be. It caught one: `/auth/me`,
+  read under `['auth-status']` by the shell and under `['auth-me']` by Settings, fixed below.
+
+  The rule reads `queryOptions` as well as `useQuery`, and resolves a key hoisted into a `const`
+  to the array it was declared with, because that is the shape of the fix it asks for: a shared
+  hook naming the key once and describing the query in one object. Reading only a literal
+  `queryKey` on a `useQuery<T>` would have made the rule blind to `useAuthStatus` and to the
+  older `useProviderTypes`, so re-splitting either entry would have gone green. Sixty-two of the
+  sixty-four blocks that carry their options inline pair a key with a URL. The two that do not
+  are the generic taxonomy tab, whose key and endpoint both arrive as props, and the monitoring
+  page's log query, whose `queryFn` is a named function rather than a call.
+
   `tests/test_read_contract_parity.py` reads four of those shapes back out by hand, builds
   the disagreements the panel no longer contains so the comparison has something to fail on,
   and pins the premise itself — no `response_model=` anywhere in `app/`, and a client that
@@ -319,6 +337,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **One route answered under two cache keys with four different sets of options, and the
+  events that change the answer refreshed only one of the keys.** `GET /api/auth/me` says who
+  the caller is and whether the instance has a password at all. Six components read it: the
+  boot gate, the layout banner, the sidebar and the dashboard under `['auth-status']`, the two
+  settings tabs under `['auth-me']`. Of the eight places that invalidate once that answer could
+  have changed, five named `['auth-status']` alone — signing out, signing in, finishing the
+  setup wizard and tripping the 401 interceptor each left the other key's entry where it was.
+
+  What kept that from being visible is the other half of it. The settings copies declared no
+  `staleTime`, which means zero, so both tabs refetched on every mount: opening Settings drew a
+  skeleton and spent a round trip on an answer the shell was already holding fresh, and that
+  round trip is what hid the stale entry behind it. The four declarations disagreed among
+  themselves as well — 60 s and `retry: false` in the boot gate and the banner, 120 s in the
+  sidebar, 120 s and `retry: false` in the dashboard, and the two settings copies inheriting
+  the client's `retry: 1`. A `staleTime` is per observer while the entry is shared, so the
+  shortest one decides when everybody refetches, and a `retry` is resolved by whichever
+  observer happens to be the one fetching.
+
+  There is one hook now, `frontend/src/hooks/useAuthStatus.ts`, holding the key, the query
+  function, a one-minute window and `retry: false` — one entry behind one hook, the arrangement
+  `hooks/useProviderTypes.ts` already had. It writes them into an exported `queryOptions()` so
+  that the setup wizard's pre-paint `fetchQuery` can be handed that same object and can no
+  longer seed the entry under different terms than the hook reads it under. Outside the tests
+  that stub the client, `'auth-status'` and `'/auth/me'` are each now written once in
+  `frontend/src`. `AuthMe`, a dead alias of `AuthStatus` with no usages anywhere, went with it.
+
 - **Three files read `GET /api/certificates/expiry` and declared three different answers, and
   the certificates table drew an "issued by" chip from a field no provider has ever sent.**
   The chip was the visible half. `CertificateTable.tsx` guarded it with `cert.issuer && …`,
@@ -359,8 +403,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `ProviderValidationResult` carrying neither `detail_code` nor `detail_params` — the two
   fields the route has sent since validation diagnostics were translated — and a `GuidedStep`
   colliding with the shared name while meaning something narrower; the panel's wizard types are
-  `WizardStep` and `WizardField` now. `Layout.tsx` read `/auth/status` through an inline
-  `{ auth_mode?: string }` and reads `Pick<AuthStatus, 'auth_mode'>` instead, and
+  `WizardStep` and `WizardField` now. `Layout.tsx` read `/auth/me` through an inline
+  `{ auth_mode?: string }` and takes the shared `useAuthStatus()` hook instead, and
   `ProviderItem.type` in `setup/types.ts` was `string` where `ProviderType` is the enumeration
   it has always held.
 
@@ -1853,12 +1897,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 - **A failed background refresh of the security status threw away a password somebody was
   halfway through typing.** The security tab reads `/auth/me` through React Query, which
-  refetches on window focus like every query in the panel. The error branch came first in
-  the render, so a refetch that failed swapped the card — set a password, change it, or the
-  environment-managed notice — for a full-width alert, and the retry then mounted a fresh,
-  empty one. React Query keeps the last good data through a failed background refetch, so
-  nothing was ever actually unknown: the form was discarded over an answer the panel already
-  had. A blip behind a reverse proxy was enough, and the operator did nothing to cause it.
+  refetches it in the background on every remount while it is stale and whenever anything
+  invalidates it. The error branch came first in the render, so a refetch that failed swapped
+  the card — set a password, change it, or the environment-managed notice — for a full-width
+  alert, and the next fetch that succeeded mounted a fresh, empty one. React Query keeps the
+  last good data through a failed background refetch, so nothing was ever actually unknown:
+  the form was discarded over an answer the panel already had. A blip behind a reverse proxy
+  was enough, and the operator did nothing to cause it.
 
   A failure that still has data behind it is now reported *above* the form rather than in
   place of it, as a warning that says what survived: "Could not refresh the security status
