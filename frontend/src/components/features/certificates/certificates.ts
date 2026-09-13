@@ -91,12 +91,20 @@ export function certExpiry(cert: CertificateRow): string | null {
  * Days until expiry, negative once past. The backend already did the arithmetic on
  * `/expiry`; the fallback route has not, so the date is parsed here with the same floor
  * Python's `timedelta.days` applies.
+ *
+ * `days_remaining` is the backend's own count and is null exactly when it had no date to
+ * count from, so it can be read on sight. `remaining_days` is the provider's, and cannot:
+ * Zoraxy states `-1` for a certificate whose expiry it could not read and the same -1 for
+ * one that expired yesterday. The date is the tiebreaker -- `expires_on` is empty exactly
+ * when it would not parse -- so no date means no count, whatever number came with it. That
+ * row used to be drawn in red as expired one day ago beside a column saying it had no
+ * expiry date at all; it now reads unknown, which is what is known about it.
  */
 export function certDays(cert: CertificateRow, now: number): number | null {
   if (typeof cert.days_remaining === 'number' && Number.isFinite(cert.days_remaining)) return cert.days_remaining;
-  if (typeof cert.remaining_days === 'number' && Number.isFinite(cert.remaining_days)) return cert.remaining_days;
   const raw = certExpiry(cert);
   if (!raw) return null;
+  if (typeof cert.remaining_days === 'number' && Number.isFinite(cert.remaining_days)) return cert.remaining_days;
   // The fallback route serves a naive UTC timestamp (`YYYY-MM-DD HH:MM:SS`, no `Z`), which
   // `new Date()` reads as *local* time -- so a cert expiring at 01:00 UTC could be counted a
   // day late east of Greenwich and a day early west of it. `parseBackendTimestamp` pins UTC.

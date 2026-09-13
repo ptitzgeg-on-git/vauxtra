@@ -849,7 +849,7 @@ class TestZoraxyCertificates(unittest.TestCase):
              "expires_on": "2027-01-01T12:30:00Z", "remaining_days": 120,
              "use_dns": True, "is_fallback": False},
             {"id": "app.example.com", "nice_name": "app.example.com", "domains": ["app.example.com"],
-             "expires_on": "", "remaining_days": -1, "use_dns": False, "is_fallback": True},
+             "expires_on": "", "remaining_days": None, "use_dns": False, "is_fallback": True},
         ])
         call = self.z.session.get.call_args
         self.assertEqual(call.args[0], "http://zoraxy:8000/api/cert/list")
@@ -860,6 +860,28 @@ class TestZoraxyCertificates(unittest.TestCase):
         self.z.session.get = MagicMock(return_value=_response(200, self._CERTS))
         raw = self.z.get_certificates()[0]["expires_on"]
         self.assertEqual(certificates_api._parse_expiry(raw), datetime.datetime(2027, 1, 1, 12, 30))
+
+    def test_get_certificates_drops_a_countdown_with_no_date_behind_it(self):
+        """`RemainingDays` with no `ExpireDate` behind it is a sentinel, not a count.
+
+        Zoraxy states -1 both for a certificate whose date it could not read and for one
+        that expired yesterday, so the number alone cannot tell those apart. The panel
+        counts down from whatever number arrives, and drew the unreadable one -- usually
+        the fallback certificate -- in red as "expired 1 day ago", in the same row that
+        said it had no expiry date at all. The guard is the date, not the value: a -1 that
+        does come with a date is still a -1.
+        """
+        self.z.session.get = MagicMock(return_value=_response(200, [
+            {"Domain": "app.example.com", "Filename": "app.example.com",
+             "ExpireDate": "Unknown", "RemainingDays": -1},
+            {"Domain": "ok.example.com", "Filename": "ok.example.com",
+             "ExpireDate": "2027-01-01 12:30:00", "RemainingDays": -1},
+        ]))
+        certs = self.z.get_certificates()
+        self.assertEqual(certs[0]["expires_on"], "")
+        self.assertIsNone(certs[0]["remaining_days"])
+        self.assertEqual(certs[1]["expires_on"], "2027-01-01T12:30:00Z")
+        self.assertEqual(certs[1]["remaining_days"], -1)
 
     def test_get_certificates_adds_hostname_filename_as_domain(self):
         self.z.session.get = MagicMock(return_value=_response(200, [

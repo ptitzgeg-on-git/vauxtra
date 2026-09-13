@@ -337,6 +337,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A certificate whose expiry date the provider could not read was drawn in red as expired.**
+  Zoraxy answers `RemainingDays: -1` for a certificate it could not date — its own fallback
+  certificate, typically — and the same `-1` for one that expired yesterday. The number alone
+  cannot tell those apart, and the panel believed it. `/api/certificates/expiry` already
+  answered honestly for that row: no date to count from, so `days_remaining: null` and
+  `expired: false`. The table read past that null to the provider's own countdown, reached
+  `-1`, and filed the row under expired — a red "expired 1 day ago" badge beside a column
+  reading "no expiry date", counted in the expired tile, sorted to the top of the list. The
+  dashboard card and the sidebar badge, which read the backend's count, said nothing was
+  wrong. Two screens, two verdicts, and the loud one was made from a sentinel.
+
+  Both halves are fixed, because either one alone leaves the other free to invent the number
+  again: `app/providers/zoraxy.py` no longer forwards a countdown with no date behind it, and
+  `certDays` no longer trusts a provider-stated count unless the row also carries a date it
+  could parse. The rule is not that `-1` means unknown — it is that a count with no date
+  behind it is not a measurement, whatever its value. A `-1` that does arrive with a date is
+  still a `-1`, and still expired. The row now reads unknown, which is what is known about
+  it. The module's arithmetic gets its own tests with this, pinning which of the three
+  numbers a row can carry may be believed, and in which order.
+
 - **Saving an exposure as a template kept the tags and dropped the environments.** The expose
   wizard offers one label control with two halves: the tags a service carries, and the
   environments it is set to. "Save as template" read the first half and not the second. The body
