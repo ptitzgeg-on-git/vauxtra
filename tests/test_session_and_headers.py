@@ -214,6 +214,91 @@ class AChangedPasswordEndsEveryOtherSessionTests(_WithServer):
         self.assertEqual(self.client.get("/api/settings").status_code, 200)
 
 
+class AnApiKeySurvivesThePasswordChangeTests(_WithServer):
+    """The half of the blast radius the operator was never told about.
+
+    Changing the password bumps the session epoch, and everything that authenticates *by
+    cookie* dies with it. An API key does not: `_get_auth_context` resolves a bearer token
+    against its own stored hash, which the password change never touches. That is correct --
+    a key is a separate credential with its own lifetime, and expiring the monitoring
+    dashboard's token because a human rotated their password would be a surprise of the other
+    kind -- but it is only correct if it is said. The one situation that makes somebody press
+    this button is "I think my password leaked", and a password that leaked from a place
+    where keys also live has ended nothing until the keys go too.
+
+    These tests pin the behaviour so the sentence the screen now prints stays true, and pin
+    revocation as the thing that does end a key.
+    """
+
+    def _mint_admin_key(self, browser: TestClient) -> tuple[str, int]:
+        resp = browser.post(
+            "/api/settings/api-keys", json={"name": "monitoring", "scopes": ["admin"]}
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        body = resp.json()
+        return body["key"], body["id"]
+
+    def _change_password(self, browser: TestClient) -> None:
+        resp = browser.post(
+            "/api/auth/change-password",
+            json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_a_key_minted_before_the_change_still_authenticates(self) -> None:
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        key, _ = self._mint_admin_key(owner)
+
+        script = self._browser()
+        headers = {"Authorization": f"Bearer {key}"}
+        self.assertEqual(script.get("/api/settings", headers=headers).status_code, 200)
+
+        self._change_password(owner)
+
+        # The cookie half of the same instance is now closed; this half is not.
+        self.assertEqual(script.get("/api/settings", headers=headers).status_code, 200)
+
+    def test_the_cookie_beside_it_does_die_so_the_two_are_told_apart(self) -> None:
+        """The positive control: without it, a suite where nothing was ever invalidated
+        would pass the test above for the wrong reason."""
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        key, _ = self._mint_admin_key(owner)
+
+        other = self._browser()
+        self._login(other)
+
+        self._change_password(owner)
+
+        self.assertEqual(other.get("/api/settings").status_code, 401)
+        self.assertEqual(
+            self._browser()
+            .get("/api/settings", headers={"Authorization": f"Bearer {key}"})
+            .status_code,
+            200,
+        )
+
+    def test_revoking_the_key_is_what_ends_it(self) -> None:
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        key, key_id = self._mint_admin_key(owner)
+        self._change_password(owner)
+
+        resp = owner.delete(f"/api/settings/api-keys/{key_id}")
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+        self.assertEqual(
+            self._browser()
+            .get("/api/settings", headers={"Authorization": f"Bearer {key}"})
+            .status_code,
+            401,
+        )
+
+
 class ACookieIsCheckedAgainstTheStoredEpochTests(_IsolatedDB):
     def setUp(self) -> None:
         super().setUp()

@@ -54,7 +54,7 @@ Vauxtra uses a password to protect access to the panel.
   scope with no credential at all — anyone who can reach the port can add providers, read
   the decrypted credentials of the ones already there, and delete your services. Vauxtra
   logs a warning at each boot and shows a permanent banner in the interface while this is
-  the case; setting a password later is one form in **Settings → API keys**.
+  the case; setting a password later is one form in **Settings → Security**.
 
 Generate the hash with the same function the wizard uses:
 
@@ -610,7 +610,7 @@ restores it.
 
 ### Using templates from the UI
 
-1. Go to **Settings → Templates → New Template**
+1. Go to **Templates → New Template**
 2. Fill in the defaults you want
 3. Save the template
 4. When creating a service, click **Apply Template** and choose a template — the form pre-fills with the stored defaults

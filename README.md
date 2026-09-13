@@ -142,7 +142,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 
 > **⚠️ Important**: Do not change `SECRET_KEY` after adding providers. All stored credentials are encrypted with this key.
 
-> **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
+> **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Security → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
 >
 > ```bash
 > sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"

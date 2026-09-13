@@ -233,6 +233,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Changing the admin password revoked every API key on the instance in nobody's mind but
+  the operator's.** Measured against a running instance rather than read off the SQL: after a
+  change, the browser that made it keeps its session, every other one is refused and has its
+  cookie cleared, the old password opens nothing — and an admin-scoped API key minted before
+  the change still answers 200 on every route. All four are deliberate. A key is a separate
+  credential with its own lifetime, and expiring the monitoring dashboard's token because a
+  human rotated their password would be a surprise of the other kind.
+
+  The screen said "Update the admin password used to access Vauxtra." and nothing else, so
+  the only way to learn any of it was to discover it. That matters in exactly one direction.
+  Nobody changes an admin password idly; they change it because the old one may have leaked,
+  and a password that leaked from a place where API keys also live has ended nothing at all
+  while the keys are still valid. The form now says what the change ends — every other
+  browser — and what it does not, naming how many keys are on this instance and linking to
+  the tab that revokes them. The sentence about keys is counted and conditional: an install
+  with none carries no warning about an empty list, which is how a warning stays worth
+  reading. Pinned by tests on both ends, the backend one with a positive control so a suite
+  where nothing was ever invalidated cannot pass it by accident.
+
+- **Four sentences sent the operator to a screen that could not do what they promised.** The
+  boot warning for a passwordless instance, and the same sentence in `docs/HOWTO.md`, both
+  said to set a password in **Settings → API keys**; the password lives on **Settings →
+  Security**, and the API keys tab has no field for it. `docs/HOWTO.md` also opened the
+  templates walkthrough with **Settings → Templates**, a tab that has never existed —
+  templates are a page of their own — and `README.md` named the form (**Change Password**)
+  rather than the screen it sits on. Counted across the repository: eleven such paths
+  describe Vauxtra's own interface, and four of them were wrong. No gate came with this. The
+  two ends are prose and a React route, and the failure here is semantic rather than
+  structural — "API keys" *is* a real tab, it simply cannot set a password — so a
+  string-matching check would have passed the two that mattered most while tripping over
+  every **Settings → API** that belongs to Pi-hole.
+
 - **A provider that only a service template named was deleted with no question asked at all.**
   The schema declares seven references to `providers.id`. The delete path read four of them —
   the three on `services` and the one on `service_push_targets` — and the confirmation dialog
