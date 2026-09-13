@@ -233,6 +233,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **An edit that dropped a provider answered "saved" when the provider refused to let
+  go.** Removing a second DNS server from a service's target list, or emptying the proxy
+  field in the editor, withdraws that provider's route as it saves. When the withdrawal was
+  refused — an expired token, a revoked scope, a server that answered 401 — the failure went
+  to the journal and nowhere else: the route answered `200` with `errors: []`, and the panel
+  showed the same green *Service updated* it shows for a save that worked.
+
+  It is the one place that did that. `withdraw_service_routes` returns one message per
+  failure and its five other callers all pass those messages on — the delete route, the bulk
+  bar, the provider deletion, and both halves of the disable withdrawal. This one wrote a
+  journal line and stopped. What made the silence permanent rather than merely quiet is the
+  next line: the target row is unlinked either way, and `_all_route_holders` reads the rows
+  it deletes, so no later push and no later deletion of the service could reach that provider
+  again. A hostname went on resolving on a server nothing in Vauxtra addressed. The save now
+  names the refusal — `Former target: Failed to delete DNS rewrite on <name>` — in the field
+  the editor, the row switch and the bulk bar already read, and a guard reads the source so
+  the next call site added cannot journal and stop either.
+
 - **A notification webhook could be armed at a target that was not there.** A rule is stored
   as a word and a number — `scope_type` `service` plus `scope_ref_id` 12 — and the number had
   nothing checking it. `webhooks.scope_ref_id` carries no foreign key, so any positive integer

@@ -1592,3 +1592,152 @@ class DisablingAServiceDoesNotDeleteARefusedHostTests(_MultiSyncTestCase):
         self.assertFalse(self.providers[1].holds(self.HOST))
         self.assertIsNone(self._stored_host_id(sid))
         self.assertEqual(result["errors"], [])
+
+
+class ARefusedWithdrawalIsNotACleanSaveTests(_MultiSyncTestCase):
+    """A target dropped from the list is reported when its provider refuses to let go.
+
+    `withdraw_service_routes` returns one message per failure, and five of its six callers
+    put those messages into the `errors` their route answers with: the delete route, the
+    bulk route, the provider deletion, and both halves of the disable withdrawal. The stale
+    target block in `update_service` was the sixth. It wrote a journal line and stopped
+    there, so an edit that dropped a second DNS server the provider then refused to release
+    came back a plain 200 with `errors: []` -- and the panel showed the same green
+    "Service updated" it shows for a save that worked.
+
+    The row is unlinked either way, on the line after the withdrawal, and that is what makes
+    the silence permanent rather than merely quiet: `_all_route_holders` reads the rows the
+    unlink deletes, so no later push and no later deletion of the service can reach that
+    provider again. What is left is a hostname still resolving on a server nothing in
+    Vauxtra addresses, and one journal line to find it by.
+    """
+
+    HOST = "vault.example.com"
+
+    def _published_with_extra(self) -> tuple[int, _FakeProvider]:
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        third = self._add_provider(3, "Technitium", "technitium")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        sid = body["id"]
+        services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3]),
+        )
+        self.assertTrue(third.holds(self.HOST), "the extra target never received the record")
+        return sid, third
+
+    def test_a_dropped_target_that_refuses_is_named_in_the_answer(self):
+        sid, third = self._published_with_extra()
+        third.ok = False
+
+        result = services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=1, dns_provider_id=2)
+        )
+
+        self.assertTrue(third.holds(self.HOST), "the case needs the record to survive")
+        self.assertEqual(self._push_targets(sid), set(), "the row is unlinked regardless")
+        self.assertTrue(
+            any("Technitium" in e for e in result["errors"]),
+            f"the save answered errors={result['errors']} while Technitium went on "
+            "resolving a hostname Vauxtra had just stopped addressing",
+        )
+
+    def test_a_cleared_primary_that_refuses_is_named_in_the_answer(self):
+        """The other way into the same block: a provider column emptied in the editor."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        sid = body["id"]
+        self.providers[1].ok = False
+
+        result = services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=None, dns_provider_id=2)
+        )
+
+        self.assertTrue(self.providers[1].holds(self.HOST))
+        self.assertTrue(
+            any("NPM" in e for e in result["errors"]),
+            f"moving the service to DNS only answered errors={result['errors']} with the "
+            "proxy still serving the hostname",
+        )
+
+    def test_the_journal_keeps_its_line_too(self):
+        """Both, not one in place of the other: a toast is read once, the journal is kept."""
+        sid, third = self._published_with_extra()
+        third.ok = False
+
+        services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=1, dns_provider_id=2)
+        )
+
+        self.assertTrue(
+            any("former target" in m for m in self._messages()),
+            self._messages(),
+        )
+
+    def test_a_withdrawal_that_goes_through_reports_nothing(self):
+        """The control: the same edit against a provider that accepts it stays clean."""
+        sid, third = self._published_with_extra()
+
+        result = services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=1, dns_provider_id=2)
+        )
+
+        self.assertFalse(third.holds(self.HOST))
+        self.assertEqual(result["errors"], [])
+
+    def test_every_caller_of_the_withdrawal_hands_its_messages_on(self):
+        """The generalising guard: the next call site must not journal and stop either.
+
+        `withdraw_service_routes` says in its own docstring that it returns one message per
+        failure, and a message returned and then dropped is the whole bug this class is
+        about. Reading the source is the only way to put the question to every call site at
+        once: four of the six are in routes these tests do not exercise, and the one that
+        was wrong had a `for` loop over the result, so nothing about it looked discarded.
+
+        Two shapes fail here. A bare call, whose messages go nowhere at all. And a `for`
+        loop over the call whose body never appends to something named for errors -- which
+        is exactly what `update_service` did, writing `add_log` and nothing else.
+        """
+        import ast
+        import pathlib
+
+        def feeds_an_error_list(body) -> bool:
+            for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr not in ("append", "extend"):
+                    continue
+                target = node.func.value
+                if isinstance(target, ast.Name) and "error" in target.id.lower():
+                    return True
+            return False
+
+        root = pathlib.Path(services_api.__file__).resolve().parent
+        offenders = []
+        for path in sorted(root.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                call = None
+                if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                    call = node.value
+                elif isinstance(node, ast.For) and isinstance(node.iter, ast.Call):
+                    call = node.iter
+                if call is None:
+                    continue
+                func = call.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name != "withdraw_service_routes":
+                    continue
+                if isinstance(node, ast.For) and feeds_an_error_list(node.body):
+                    continue
+                offenders.append(f"{path.name}:{node.lineno}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "a caller of withdraw_service_routes kept the provider failures to itself, so "
+            f"the route it serves answers as if the withdrawal had worked: {offenders}",
+        )
