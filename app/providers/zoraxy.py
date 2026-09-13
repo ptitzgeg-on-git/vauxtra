@@ -591,12 +591,18 @@ class ZoraxyProvider(ProxyProvider):
             if _HOSTNAME.match(as_hostname) and as_hostname.lower() != common_name.lower():
                 domains.append(as_hostname)
             remaining = c.get("RemainingDays")
+            expires_on = _iso_expiry(c.get("ExpireDate"))
             result.append({
                 "id":             filename,
                 "nice_name":      filename,
                 "domains":        domains,
-                "expires_on":     _iso_expiry(c.get("ExpireDate")),
-                "remaining_days": remaining if isinstance(remaining, int) else None,
+                "expires_on":     expires_on,
+                # The countdown only travels with the date it was counted from. Zoraxy
+                # states `RemainingDays: -1` for a certificate whose `ExpireDate` it could
+                # not read, and states the same -1 for one that expired yesterday: the
+                # number alone cannot tell those apart, and the panel believed the second.
+                # No date, no count -- the row then reads as unknown, which it is.
+                "remaining_days": remaining if expires_on and isinstance(remaining, int) else None,
                 "use_dns":        bool(c.get("UseDNS")),
                 "is_fallback":    bool(c.get("IsFallback")),
             })
