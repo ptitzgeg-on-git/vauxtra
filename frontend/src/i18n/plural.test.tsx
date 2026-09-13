@@ -279,9 +279,9 @@ describe('t(), a sentence assembled from counted halves', () => {
     );
   });
 
-  it('counts six nouns in one sentence, each on its own number', async () => {
-    // The restore dialog, where one `{count}` would have had to serve six different words.
-    const counts = { services: 1, providers: 2, domains: 1, tags: 0, environments: 1, webhooks: 4 };
+  it('counts seven nouns in one sentence, each on its own number', async () => {
+    // The restore dialog, where one `{count}` would have had to serve seven different words.
+    const counts = { services: 1, providers: 2, domains: 1, tags: 0, environments: 1, webhooks: 4, templates: 1 };
     const parts: Record<string, string> = {};
     for (const [key, count] of Object.entries(counts)) {
       parts[key] = await say('fr', `settings.backup.restore_count.${key}`, { count });
@@ -289,7 +289,7 @@ describe('t(), a sentence assembled from counted halves', () => {
     const message = await say('fr', 'settings.backup.restore_confirm_message', parts);
     // Zero is singular in French, and four is not: both in the same sentence.
     expect(message).toContain(
-      '1 service, 2 intégrations, 1 domaine, 0 étiquette, 1 environnement, 4 webhooks',
+      '1 service, 2 intégrations, 1 domaine, 0 étiquette, 1 environnement, 4 webhooks, 1 modèle',
     );
     expect(message).not.toContain('{');
   });

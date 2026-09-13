@@ -269,7 +269,7 @@ class TheJournalGetsOneLinePerCategoryTests(_RestoreBench):
 
 class TheAnswerKeepsTheShapeThePanelReadsTests(_RestoreBench):
     def test_the_fields_the_panel_already_reads_are_untouched(self) -> None:
-        """`RestoreSection.tsx` reads these four. Adding two must not move any of them."""
+        """`RestoreSection.tsx` reads these four. A field added later must not move them."""
         result = self._restore(
             _file(
                 domains=[{"name": "vxlab.test"}],
@@ -291,7 +291,12 @@ class TheAnswerKeepsTheShapeThePanelReadsTests(_RestoreBench):
         self.assertEqual(result["providers"], 0, result)
         self.assertEqual(result["webhooks_needing_url"], 0, result)
 
-    def test_the_answer_carries_exactly_six_fields(self) -> None:
+    def test_the_answer_carries_exactly_seven_fields(self) -> None:
+        """`RestoreResult` in `frontend/src/types/api.ts` declares these seven and no more.
+
+        A field added on this side and not there is one the panel cannot read; a field
+        dropped here is one the panel reads as `undefined` and renders as a blank.
+        """
         result = self._restore(_file(domains=[{"name": "vxlab.test"}]))
 
         self.assertEqual(
@@ -302,6 +307,7 @@ class TheAnswerKeepsTheShapeThePanelReadsTests(_RestoreBench):
                 "providers",
                 "services",
                 "settings_not_restored",
+                "templates",
                 "webhooks_needing_url",
             ],
             result,

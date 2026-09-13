@@ -233,6 +233,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A backup carried every service and not one of the templates they were built from.** The
+  restore empties sixteen tables and refills them from the archive; `service_templates` was in
+  the wipe list and in neither export. An operator who reinstalled from a backup got their
+  services, their providers, their domains and their tags back, an empty Templates page, and
+  `ok: true` — the one table they fill in by hand was the one table no file carried. Both
+  exports now include it, and the restore re-inserts it by explicit id like everything else, so
+  `proxy_provider_id`, `dns_provider_id` and `tag_ids_json` still name the rows they named. The
+  answer carries a `templates` count, which the panel shows beside the other six.
+
+  The gap outlived a whole version because the guard held the wipe list against the *schema* and
+  nothing held it against the *export*. `test_every_wiped_table_is_exported` now calls the
+  export and compares its keys to the wipe list, so a table added to one has to be added to the
+  other or named in `_NOT_EXPORTED_ON_PURPOSE` — which is where the four deliberate absences
+  (the journal, the uptime stream, the webhook send queue, the scheduler's alert cursor) are now
+  written down, with the reason they belong to the instance that produced the file rather than
+  to the file.
+
+  Restoring an archive written before this release still gives back no templates, because it
+  holds none. That case now counts the rows before the wipe and writes a warning saying the
+  table was emptied and the file carried none to put back, so it reads as the age of the file
+  rather than as a bug. An instance that had no templates reads nothing.
+
+  The Templates page also kept showing whatever it had cached before the restore:
+  `RestoreSection.tsx` enumerates the caches a restore invalidates and `['templates']` was not
+  among them.
+
 - **The guided-setup step dots were buttons that told a screen reader they were list items.**
   Each dot jumps to its step, and each carried `role="listitem"` inside a `role="list"` strip.
   `listitem` is a structure role, so it replaces the button role rather than adding to it: the

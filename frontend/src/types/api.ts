@@ -1077,6 +1077,7 @@ export interface RestoreResult {
   ok: boolean;
   services: number;
   providers: number;
+  templates: number;
   webhooks_needing_url: number;
   settings_not_restored: string[];
   domains_without_name: number;
