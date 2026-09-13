@@ -255,6 +255,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   that was already off (the defect the primary DNS block carries a comment about),
   and a service with no extra target, which must not make Vauxtra call anyone.
 
+  The withdrawal has to reach the journal, and twice it did not. `withdraw_service_routes`
+  writes nothing but log lines, and it writes them on the caller's connection; the last
+  commit in `update_service` sits above `push_extra_targets`, which commits its own, so every
+  "record removed on <server>" line the withdrawal wrote was rolled back on close. The record
+  really was deleted on the second DNS server and the journal said nothing about it. The line
+  also carried `[Delete]`, the prefix its four other callers earn, beside a service that still
+  sits in the table -- the primary path says `DNS record withheld (service disabled)` for the
+  same reason, and the withdrawal now says `[Disable]`.
+
+  The extras are deleted where the primary proxy is only suspended, and that asymmetry is
+  deliberate. NPM's enable and disable live on their own endpoints, so the PUT behind
+  `update_host` never clears a suspension; the re-enable path here is `push_extra_targets`,
+  which finds the host by hostname and updates it. Suspending an extra would leave it dark
+  after every re-enable, and silently, since the PUT answers 200 and the journal reads "Proxy
+  synced". Deleting it means the next push finds nothing and creates the host again.
+
 - **Nothing about signing in ever reached the activity log, so a run of wrong passwords left
   no trace at all.** `app/api/auth.py` and `app/auth.py` held no `add_log` call between them:
   the journal that *Recent activity* and **Settings → Logs** read recorded every provider

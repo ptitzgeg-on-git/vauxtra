@@ -747,6 +747,41 @@ class DisablingWithdrawsFromEveryTargetTests(_MultiSyncTestCase):
         self.assertEqual(sid, body["id"])
         self.assertEqual([c for c in self.calls if c[0] not in ("NPM", "AdGuard")], [])
 
+    def test_the_journal_says_disabled_and_not_deleted(self):
+        """`withdraw_service_routes` is shared with the delete routes, and it labelled the line.
+
+        A service that is merely off still exists, and the journal is the one place an
+        operator reconstructs which of the two happened to it. `[Delete] DNS record removed`
+        beside a service still sitting in the table reads as the deletion that never was.
+        """
+        sid = self._service_with_a_second_dns_server()
+
+        services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(
+                proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3], enabled=False
+            ),
+        )
+
+        withdrawals = [m for m in self._messages() if "Technitium" in m and "removed" in m]
+        self.assertTrue(withdrawals, self._messages())
+        self.assertTrue(
+            all(m.startswith("[Disable]") for m in withdrawals),
+            withdrawals,
+        )
+        self.assertEqual([m for m in withdrawals if m.startswith("[Delete]")], [])
+
+    def test_deleting_the_service_still_says_deleted(self):
+        """The witness for the line above: the prefix follows the reason, it is not gone."""
+        sid = self._service_with_a_second_dns_server()
+
+        services_api.delete_service(sid, _request("DELETE"))
+
+        withdrawals = [m for m in self._messages() if "Technitium" in m and "removed" in m]
+        self.assertTrue(withdrawals, self._messages())
+        self.assertTrue(all(m.startswith("[Delete]") for m in withdrawals), withdrawals)
+
 
 if __name__ == "__main__":
     unittest.main()
