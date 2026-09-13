@@ -760,6 +760,8 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
 | `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
+| `POST` | `/api/services/bulk` | Enable, disable or delete several ids at once — `{ids: [1, 2], action: "enable"}`. Enabling and disabling are not a flag flip: each service also has its proxy host re-deployed or suspended and its DNS record added or removed, so a provider that refuses is named in `errors[]` while the rest still apply. |
+| `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
@@ -783,6 +785,23 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |
+
+#### Direct provider access
+
+These six reach past the service table into the provider itself, which is what makes them
+useful for looking and a poor way to work. A record written here is one Vauxtra does not know
+it owns, so the next drift check reports it. Create the service instead and let the push write
+the provider rows. Each answers 404 for an unknown provider id, 400 when that provider type has
+no such capability, and 502 when the provider itself refuses.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/providers/{pid}/dns-records` | The records the provider holds, as it reports them |
+| `POST` | `/api/providers/{pid}/dns-records` | Write one record straight into the provider |
+| `DELETE` | `/api/providers/{pid}/dns-records/{domain}` | Delete one record. Add `?answer=` to pick between records sharing the domain; without it the first match is deleted |
+| `GET` | `/api/providers/{pid}/proxy-hosts` | The proxy hosts the provider holds |
+| `POST` | `/api/providers/{pid}/proxy-hosts` | Create a proxy host. Only `domain_names[0]` is used |
+| `DELETE` | `/api/providers/{pid}/proxy-hosts/{host_id}` | Delete a proxy host. `host_id` is whatever that provider calls its own — NPM numbers them, Cloudflare Tunnel addresses ingress rules by hostname, Traefik by router name — and is passed through unchanged |
 
 ### Docker
 

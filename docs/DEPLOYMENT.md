@@ -166,6 +166,6 @@ Recovery rule:
 
 ## 10. Related Docs
 
-- User operations: [docs/HOWTO.md](docs/HOWTO.md)
-- Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- Security policy: [SECURITY.md](SECURITY.md)
+- User operations: [docs/HOWTO.md](HOWTO.md)
+- Troubleshooting: [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+- Security policy: [SECURITY.md](../SECURITY.md)

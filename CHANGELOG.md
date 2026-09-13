@@ -211,6 +211,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Eight API routes appeared in no document at all.** The reference in `docs/HOWTO.md`
+  listed 82 of the 90 routes the application serves. Missing were `GET /api/services/{sid}` —
+  the plainest read in the API, and the one an operator writing a script reaches for first —
+  `POST /api/services/bulk`, and all six direct per-provider record routes
+  (`/api/providers/{pid}/dns-records` and `/api/providers/{pid}/proxy-hosts`, GET, POST and
+  DELETE each). That last group is a whole capability: not an omitted row but an omitted
+  section, and a search of every tracked document for `dns-records` or `proxy-hosts` returned
+  nothing. They are all authenticated, none is deprecated, and nothing failed while they were
+  invisible.
+
+  All eight now have rows, and the six provider routes have the paragraph they need more than
+  the rows: they reach past the service table into the provider itself, so a record written
+  through them is one Vauxtra does not know it owns and the next drift check reports it.
+
+  `scripts/check_api_mcp_parity.py` now asks of `docs/HOWTO.md` the question it already asked
+  of the bridge's README — every route documented, and every documented route real. The
+  bridge's own reference was gated and the operator's was not, which is the whole reason these
+  eight had time to disappear. One exemption is allowed, `GET /api/services/{sid}/check`,
+  documented inside the row for the `POST` because the sentence exists to say the GET is
+  deprecated; like the route allowlist above it, an exemption that stops matching fails the
+  build.
+
+- **Four documentation links pointed nowhere.** `README.md` sent readers to
+  `docs/HOWTO.md#10-mcp-integration`, but that section is now `## 11) MCP Integration`, so the
+  anchor had been silently scrolling nowhere since the section above it was added. The three
+  links in `docs/DEPLOYMENT.md` were written root-relative (`docs/HOWTO.md`, `SECURITY.md`)
+  inside a file that already lives in `docs/`, so GitHub resolved them to `docs/docs/HOWTO.md`
+  and 404ed. A dead relative link and a dead anchor both render as a perfectly ordinary link,
+  which is why neither gets reported.
+
 - **The MCP bridge announced itself as version 3.2.4, which is fastmcp's.** `FastMCP(...)`
   takes a `version` keyword and `vauxtra_mcp/app.py` passed none, so the handshake answered
   `serverInfo: {"name": "Vauxtra", "version": "3.2.4"}` — a release of Vauxtra that has never
