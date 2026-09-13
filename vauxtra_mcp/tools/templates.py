@@ -39,6 +39,7 @@ def create_template(
     domain: str = "",
     dns_ip: str = "",
     tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
     icon_url: str = "",
 ) -> dict[str, Any]:
     """
@@ -51,8 +52,10 @@ def create_template(
     `expose_mode` is proxy_dns or tunnel, `public_target_mode` is manual or auto,
     `target_port` is 1-65535. `domain` and `dns_ip` may be left empty -- that is what makes
     a template a template -- but a value that is present must be a valid one. Every
-    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id` and `tag_ids` entry has to
-    name a row that exists; the route refuses the whole call with 400 and names the id.
+    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
+    `environment_ids` entry has to name a row that exists; the route refuses the whole call
+    with 400 and names the id. A key the model does not declare is refused with 422 rather
+    than dropped, so a misspelt field never stores a template quietly missing it.
 
     The first three are declared as `Literal` and the port as a bounded `int`, so the schema
     carries what the prose above says and a wrong value is refused here rather than after a
@@ -74,6 +77,7 @@ def create_template(
         "domain": domain,
         "dns_ip": dns_ip,
         "tag_ids": tag_ids or [],
+        "environment_ids": environment_ids or [],
         "icon_url": icon_url,
     }
     r = client.post("/templates", json=payload)
@@ -97,6 +101,7 @@ def update_template(
     domain: str = "",
     dns_ip: str = "",
     tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
     icon_url: str = "",
 ) -> dict[str, Any]:
     """Replace a service template's settings.
@@ -110,8 +115,10 @@ def update_template(
     `expose_mode` is proxy_dns or tunnel, `public_target_mode` is manual or auto,
     `target_port` is 1-65535. `domain` and `dns_ip` may be left empty -- that is what makes
     a template a template -- but a value that is present must be a valid one. Every
-    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id` and `tag_ids` entry has to
-    name a row that exists; the route refuses the whole call with 400 and names the id.
+    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
+    `environment_ids` entry has to name a row that exists; the route refuses the whole call
+    with 400 and names the id. A key the model does not declare is refused with 422 rather
+    than dropped, so a misspelt field never stores a template quietly missing it.
 
     The first three are declared as `Literal` and the port as a bounded `int`, so the schema
     carries what the prose above says and a wrong value is refused here rather than after a
@@ -133,6 +140,7 @@ def update_template(
         "domain": domain,
         "dns_ip": dns_ip,
         "tag_ids": tag_ids or [],
+        "environment_ids": environment_ids or [],
         "icon_url": icon_url,
     }
     r = client.put(f"/templates/{template_id}", json=payload)
@@ -203,6 +211,7 @@ def apply_template(
         "public_target_mode": defaults.get("public_target_mode", "manual"),
         "dns_ip": defaults.get("dns_ip", ""),
         "tag_ids": defaults.get("tag_ids", []),
+        "environment_ids": defaults.get("environment_ids", []),
         "icon_url": defaults.get("icon_url", ""),
         "enabled": True,
     }

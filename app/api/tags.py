@@ -1,9 +1,9 @@
-import json
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
+from app.api.templates import templates_naming_label
 from app.auth import require_auth
 from app.models import add_log, get_db
 from app.text import name_list, plural, verb
@@ -106,8 +106,8 @@ def holders_of_tag(conn, tid: int) -> tuple[list[str], list[str]]:
     `ON DELETE CASCADE` (`app/models.py`), so a deleted tag unlinks its services and the
     rows themselves are untouched. `service_templates.tag_ids_json` is TEXT holding a JSON
     array, which no constraint reaches: the id survives the delete and is dropped on the
-    next read by `_drop_dead_tags` (`app/api/templates.py`). Same disappearance, arrived at
-    two different ways, and neither leaves anything to read afterwards.
+    next read by `_drop_dead_labels` (`app/api/templates.py`). Same disappearance, arrived
+    at two different ways, and neither leaves anything to read afterwards.
     """
     services = [
         # `.strip(".")` the way every other fqdn in the API is built: an apex route stores
@@ -120,19 +120,7 @@ def holders_of_tag(conn, tid: int) -> tuple[list[str], list[str]]:
             (tid,),
         )
     ]
-    templates = []
-    for r in conn.execute(
-        "SELECT name, tag_ids_json FROM service_templates ORDER BY name"
-    ):
-        try:
-            ids = json.loads(r["tag_ids_json"] or "[]")
-        except (TypeError, ValueError):
-            # `_row_to_dict` answers the same column with the same shrug. It is TEXT, so it
-            # holds whatever was written, and a template nobody can parse is a template this
-            # tag is not provably in -- not a 500 on the way out of a delete.
-            continue
-        if isinstance(ids, list) and tid in ids:
-            templates.append(r["name"])
+    templates = templates_naming_label(conn, "tag_ids", tid)
     return services, templates
 
 

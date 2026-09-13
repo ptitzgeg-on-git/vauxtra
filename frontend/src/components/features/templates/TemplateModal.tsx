@@ -23,7 +23,8 @@ import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard';
 import { useT } from '@/i18n';
 import { translateApiError, isHttpStatus } from '@/lib/errors';
-import type { Provider, Tag, Template, TemplateIn } from '@/types/api';
+import { labelDotClass, labelDotStyle, labelTone, type LabelHalf } from '@/lib/labels';
+import type { Environment, Provider, Tag, Template, TemplateIn } from '@/types/api';
 import { TemplateIcon } from './TemplateIcon';
 import {
   DOMAIN_CUSTOM,
@@ -31,7 +32,6 @@ import {
   UNSET,
   emptyTemplateForm,
   splitProviders,
-  tagTone,
   toTemplateForm,
   toTemplateIn,
   validateTemplateForm,
@@ -61,15 +61,77 @@ function providerOptions(list: Provider[], current: string, missingLabel: string
   return options;
 }
 
+/**
+ * One half of the label control, as a titled section of toggle chips. Written once and used
+ * twice, because the two halves are one control: a template stores a tag list and an
+ * environment list, the form offers both, and a section that existed for one half and not
+ * the other is how the environments came to be dropped on the way to the server.
+ */
+function LabelSection({
+  half,
+  title,
+  description,
+  items,
+  selected,
+  onToggle,
+  listError,
+  empty,
+}: {
+  half: LabelHalf;
+  title: string;
+  description: string;
+  items: Array<Tag | Environment>;
+  selected: number[];
+  onToggle: (id: number) => void;
+  listError: boolean;
+  empty: ReactNode;
+}) {
+  const t = useT();
+  return (
+    <section className="space-y-3">
+      <SectionHeading as="h3" size="sm" title={title} description={description} />
+      {items.length === 0 && listError ? (
+        // Not an invitation to go and create one: there may well be plenty, and this
+        // list simply did not load.
+        <InlineAlert tone="danger">{t('ui.error.list_unavailable')}</InlineAlert>
+      ) : items.length === 0 ? (
+        <InlineAlert tone="info" icon={<Plug />}>
+          <div className="flex flex-wrap items-center gap-2">{empty}</div>
+        </InlineAlert>
+      ) : (
+        <ChipGroup label={title}>
+          {items.map((item) => (
+            <Chip
+              key={item.id}
+              size="sm"
+              tone={labelTone(half)}
+              icon={<span className={labelDotClass(half)} style={labelDotStyle(item.color)} />}
+              selected={selected.includes(item.id)}
+              onClick={() => onToggle(item.id)}
+            >
+              {item.name}
+            </Chip>
+          ))}
+        </ChipGroup>
+      )}
+    </section>
+  );
+}
+
 const NO_ERRORS: TemplateFormErrors = {};
 
 /**
- * The form reduced to what it *says*, for comparing against what it was opened on. Tags are
- * sorted first: their order in the array is the order they were clicked in, and a tag turned
- * off and back on would otherwise read as a change nobody made.
+ * The form reduced to what it *says*, for comparing against what it was opened on. Both
+ * halves of the label control are sorted first: their order in the array is the order they
+ * were clicked in, and a label turned off and back on would otherwise read as a change
+ * nobody made.
  */
 const formFingerprint = (state: TemplateFormState): string =>
-  JSON.stringify({ ...state, tag_ids: [...state.tag_ids].sort((a, b) => a - b) });
+  JSON.stringify({
+    ...state,
+    tag_ids: [...state.tag_ids].sort((a, b) => a - b),
+    environment_ids: [...state.environment_ids].sort((a, b) => a - b),
+  });
 
 /**
  * The dialog only exists while it is open, and its identity changes with the template it
@@ -95,6 +157,20 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
   /** The server's 409 on `name`, which no client-side rule can predict. */
   const [nameConflict, setNameConflict] = useState<string | null>(null);
 
+  /**
+   * One label toggled, in whichever half of the control it belongs to. It reads the
+   * previous state rather than the rendered `form`, so two quick clicks cannot lose the
+   * first one.
+   */
+  const toggleLabel = useCallback(
+    (key: 'tag_ids' | 'environment_ids', id: number) =>
+      setForm((prev) => ({
+        ...prev,
+        [key]: prev[key].includes(id) ? prev[key].filter((x) => x !== id) : [...prev[key], id],
+      })),
+    [],
+  );
+
   const patch = useCallback((changes: Partial<TemplateFormState>) => {
     // Typing a new name is what clears "already taken" -- nothing else can.
     if (changes.name !== undefined) setNameConflict(null);
@@ -104,8 +180,8 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
   /**
    * Escape closes the dialog even while `persistent` blocks the backdrop, and the body is
    * unmounted on the way out, which takes the form with it. A template is a dozen decisions --
-   * name, scheme, port, mode, three providers, domain, tags -- and one stray key threw the lot
-   * away with no undo. Cancel asks the same question, so the two ways out behave alike; a
+   * name, scheme, port, mode, three providers, domain, both halves of the label control --
+   * and one stray key threw the lot away with no undo. Cancel asks the same question, so the two ways out behave alike; a
    * successful save still closes straight through, because the server already has the form.
    */
   const seeded = useMemo(() => (template ? toTemplateForm(template) : emptyTemplateForm), [template]);
@@ -127,6 +203,10 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
   const { data: tags = [], isError: tagsError } = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
+  });
+  const { data: environments = [], isError: environmentsError } = useQuery<Environment[]>({
+    queryKey: ['environments'],
+    queryFn: () => api.get<Environment[]>('/environments'),
   });
 
   const choices = useMemo(() => splitProviders(providers, providerTypes), [providers, providerTypes]);
@@ -440,54 +520,50 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
 
         <Separator />
 
-        {/* --- tags -------------------------------------------------------- */}
-        <section className="space-y-3">
-          <SectionHeading
-            as="h3"
-            size="sm"
-            title={t('templates.form.tags')}
-            description={t('templates.form.tags_hint')}
-          />
-          {tags.length === 0 && tagsError ? (
-            // Not an invitation to go and create one: there may well be plenty, and this
-            // list simply did not load.
-            <InlineAlert tone="danger">{t('ui.error.list_unavailable')}</InlineAlert>
-          ) : tags.length === 0 ? (
-            <InlineAlert tone="info" icon={<Plug />}>
-              <div className="flex flex-wrap items-center gap-2">
-                <span>{t('templates.form.no_tags')}</span>
-                <Link
-                  to="/settings?tab=taxonomy"
-                  className={buttonVariants({ variant: 'link', size: 'sm' })}
-                  onClick={onClose}
-                >
-                  {t('templates.form.manage_tags')}
-                </Link>
-              </div>
-            </InlineAlert>
-          ) : (
-            <ChipGroup label={t('templates.form.tags')}>
-              {tags.map((tag) => {
-                const selected = form.tag_ids.includes(tag.id);
-                return (
-                  <Chip
-                    key={tag.id}
-                    size="sm"
-                    tone={tagTone(tag.color)}
-                    selected={selected}
-                    onClick={() =>
-                      patch({
-                        tag_ids: selected ? form.tag_ids.filter((id) => id !== tag.id) : [...form.tag_ids, tag.id],
-                      })
-                    }
-                  >
-                    {tag.name}
-                  </Chip>
-                );
-              })}
-            </ChipGroup>
-          )}
-        </section>
+        {/* --- labels ------------------------------------------------------ */}
+        <LabelSection
+          half="tag"
+          title={t('templates.form.tags')}
+          description={t('templates.form.tags_hint')}
+          items={tags}
+          selected={form.tag_ids}
+          onToggle={(id) => toggleLabel('tag_ids', id)}
+          listError={tagsError}
+          empty={
+            <>
+              <span>{t('templates.form.no_tags')}</span>
+              <Link
+                to="/settings?tab=tags"
+                className={buttonVariants({ variant: 'link', size: 'sm' })}
+                onClick={onClose}
+              >
+                {t('templates.form.manage_tags')}
+              </Link>
+            </>
+          }
+        />
+
+        <LabelSection
+          half="environment"
+          title={t('templates.form.environments')}
+          description={t('templates.form.environments_hint')}
+          items={environments}
+          selected={form.environment_ids}
+          onToggle={(id) => toggleLabel('environment_ids', id)}
+          listError={environmentsError}
+          empty={
+            <>
+              <span>{t('templates.form.no_environments')}</span>
+              <Link
+                to="/settings?tab=environments"
+                className={buttonVariants({ variant: 'link', size: 'sm' })}
+                onClick={onClose}
+              >
+                {t('templates.form.manage_environments')}
+              </Link>
+            </>
+          }
+        />
 
         {submitted && errorCount > 0 && <InlineAlert tone="danger">{t('templates.form.fix_errors')}</InlineAlert>}
       </form>

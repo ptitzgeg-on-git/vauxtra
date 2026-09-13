@@ -1065,7 +1065,9 @@ export interface ImportResult {
 
 /**
  * Body of `POST /api/templates` and `PUT /api/templates/{tid}` (`TemplateIn`). Every field
- * but `name` has a server default; `name` ≤ 64 chars, unique (409 on a duplicate).
+ * but `name` has a server default; `name` ≤ 64 chars, unique (409 on a duplicate). Unknown
+ * keys are refused with 422 rather than ignored, so a misspelt field is a failed save and
+ * not a template quietly missing it.
  */
 export interface TemplateIn {
   name: string;
@@ -1082,6 +1084,7 @@ export interface TemplateIn {
   domain: string;
   dns_ip: string;
   tag_ids: number[];
+  environment_ids: number[];
   icon_url: string;
 }
 
@@ -1112,6 +1115,7 @@ export interface TemplateApplyResult {
   domain: string;
   dns_ip: string;
   tag_ids: number[];
+  environment_ids: number[];
   icon_url: string;
   _template_id: number;
   _template_name: string;

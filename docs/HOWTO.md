@@ -621,6 +621,7 @@ Service Templates are pre-configured blueprints that pre-fill the service creati
 | `domain` | Default base domain |
 | `dns_ip` | Default DNS record target |
 | `tag_ids` | Default tags to attach |
+| `environment_ids` | Default environments to attach |
 | `icon_url` | Service icon URL |
 
 ### What a template refuses
@@ -640,18 +641,18 @@ service form — once, when you type it, instead of every time you apply it.
 Anything else answers `422`. `domain` and `dns_ip` may be left empty on purpose — that is
 what makes a template a template — but a value that is there has to be a usable one.
 
-Every `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id` and `tag_ids` entry has
-to name a row that exists. If one does not, the call is refused with `400`, the id is named,
-and nothing is written:
+Every `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
+`environment_ids` entry has to name a row that exists. If one does not, the call is refused
+with `400`, the id is named, and nothing is written:
 
 ```json
-{ "detail": "Nothing was created -- unknown tag 12, provider 4" }
+{ "detail": "Nothing was created -- unknown tag 12, environment 3, provider 4" }
 ```
 
-A provider or a tag deleted *after* the template was saved is not an error and is never
+A provider or a label deleted *after* the template was saved is not an error and is never
 reported as one: the provider field empties itself, which the database does on its own, and
-the tag stops being listed. The stored template is not rewritten, so putting the tag back
-restores it.
+the label stops being listed, whichever half it belonged to. The stored template is not
+rewritten, so putting the label back restores it.
 
 ### Using templates from the UI
 
@@ -683,8 +684,8 @@ POST /api/templates
 GET /api/templates/{id}/apply
 # Returns: forward_scheme, target_port, websocket, expose_mode,
 #          proxy_provider_id, dns_provider_id, tunnel_provider_id,
-#          public_target_mode, domain, dns_ip, tag_ids, icon_url,
-#          _template_id, _template_name
+#          public_target_mode, domain, dns_ip, tag_ids, environment_ids,
+#          icon_url, _template_id, _template_name
 ```
 
 Apply returns the template fields merged as service-creation defaults. You can POST those directly to `/api/services` (add `name`, `subdomain`, and `internal_target` to complete the service).
@@ -920,14 +921,15 @@ no such capability, and 502 when the provider itself refuses.
 | `DELETE` | `/api/environments/{eid}` | Delete an environment |
 
 **Note on deleting a label:** nothing refuses it, and two kinds of row change with it. Every
-service carrying the tag is unlinked on the spot (`service_tags` declares `ON DELETE CASCADE`):
-it keeps its hostname, stays published, and loses only the label you were filtering and
-grouping by. Every service template naming the tag keeps the dead id in its `tag_ids` until the
-next read and drops it then, so a service created from that template afterwards starts without
-the tag. An environment has only the first of those — no template names an environment. Call
-`GET /api/services` and `GET /api/templates` first if you need to know what that is before
-doing it; afterwards the id is gone, and the line the deletion writes to **Settings → Logs** is
-the only place the two counts are kept.
+service carrying the label is unlinked on the spot (`service_tags` and `service_environments`
+both declare `ON DELETE CASCADE`): it keeps its hostname, stays published, and loses only the
+label you were filtering and grouping by. Every service template naming the label keeps the
+dead id in its `tag_ids` or `environment_ids` until the next read and drops it then, so a
+service created from that template afterwards starts without it. Both halves read the same
+way — a template stores an environment list beside its tag list, so an environment is dropped
+from a template exactly as a tag is. Call `GET /api/services` and `GET /api/templates` first
+if you need to know what that is before doing it; afterwards the id is gone, and the line the
+deletion writes to **Settings → Logs** is the only place the two counts are kept.
 
 **Note on label names:** a name is stripped of its surrounding spaces, refused empty and
 stopped at 32 characters, and that is the whole rule. Commas, colons and any other

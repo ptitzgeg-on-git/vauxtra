@@ -7,14 +7,14 @@
  * forty asked the same one-line question, over the two lists that are the easiest thing here
  * to delete by accident.
  *
- * The other half was not said at all. A tag is held in two places that behave nothing alike:
- * `service_tags` cascades, so the services are unlinked on the spot and go on being
- * published; `service_templates.tag_ids_json` is TEXT that no constraint reaches, so the id
- * survives the delete and is dropped on the next read, and the next service built from that
- * template starts without the tag. An environment has only the first of those, because no
- * template names an environment -- which is why the template sentence must never appear over
- * one, even though `tags` and `environments` are separate AUTOINCREMENT tables whose first
- * rows are both id 1.
+ * The other half was not said at all. A label is held in two places that behave nothing
+ * alike: `service_tags` and `service_environments` cascade, so the services are unlinked on
+ * the spot and go on being published; `tag_ids_json` and `environment_ids_json` are TEXT
+ * that no constraint reaches, so the id survives the delete and is dropped on the next
+ * read, and the next service built from that template starts without the label. Both halves
+ * have both holders now, and each must be counted over its own: `tags` and `environments`
+ * are separate AUTOINCREMENT tables whose first rows are both id 1, so a template naming
+ * tag 1 must never be named over the deletion of environment 1.
  *
  * `t()` gives back the key here -- `renderWithProviders` leaves out `I18nProvider` on purpose
  * -- so these assertions survive any rewording in the eight locale files. What they pin is
@@ -100,6 +100,7 @@ function template(over: Partial<Template> = {}): Template {
     domain: 'example.test',
     dns_ip: '',
     tag_ids: [],
+    environment_ids: [],
     icon_url: '',
     created_at: '2026-01-01T00:00:00Z',
     ...over,
@@ -237,15 +238,31 @@ describe('TaxonomyTab, which question deleting a label asks', () => {
     // next read, drops it silently then, and the next service built from it starts without.
     expect(within(dialog).getByText('settings.taxonomy.in_use_carried')).toBeInTheDocument();
     expect(within(dialog).getByText('settings.taxonomy.in_use_templates')).toBeInTheDocument();
-    expect(within(dialog).getByText('settings.taxonomy.in_use_templates_effect')).toBeInTheDocument();
+    expect(within(dialog).getByText('settings.taxonomy.in_use_templates_drop_tag')).toBeInTheDocument();
     expect(within(dialog).getByText('Reverse proxy')).toBeInTheDocument();
   });
 
-  it('never names a template over an environment', async () => {
+  it('names the templates that come back one environment shorter', async () => {
+    // The same two paragraphs over the other half. A template stored tags and only tags, so
+    // this dialog had one holder to report for an environment where it had two for a tag;
+    // `environment_ids_json` (`app/models.py`) is what makes the second one real.
+    serviceRows = holders('env', 'git.example.test');
+    templateRows = [template({ id: 4, name: 'Reverse proxy', environment_ids: [ENV.id] })];
+    const dialog = await askToDelete('env');
+
+    expect(within(dialog).getByText('settings.taxonomy.in_use_set')).toBeInTheDocument();
+    expect(within(dialog).getByText('settings.taxonomy.in_use_templates')).toBeInTheDocument();
+    // Which half is named decides the sentence: the tag wording would say the wrong noun.
+    expect(within(dialog).getByText('settings.taxonomy.in_use_templates_drop_env')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.taxonomy.in_use_templates_drop_tag')).toBeNull();
+    expect(within(dialog).getByText('Reverse proxy')).toBeInTheDocument();
+  });
+
+  it('never names a template over the other half of the label control', async () => {
     // The adversarial case, and it is a real one: the two tables number their rows
     // independently, so this template names tag 1 while the environment being deleted is
-    // also id 1. No template names an environment, and a dialog saying one did would be
-    // telling the operator something untrue about a row the deletion does not touch.
+    // also id 1. The template does not name that environment, and a dialog saying it did
+    // would be telling the operator something untrue about a row the deletion leaves alone.
     serviceRows = holders('env', 'git.example.test');
     templateRows = [template({ id: 4, name: 'Reverse proxy', tag_ids: [ENV.id] })];
     const dialog = await askToDelete('env');

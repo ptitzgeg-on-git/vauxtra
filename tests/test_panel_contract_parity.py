@@ -96,9 +96,9 @@ GROUND_TRUTH = {
     (
         "components/features/templates/TemplateModal.tsx", "POST", "'/templates'",
     ): (
-        "description", "dns_ip", "dns_provider_id", "domain", "expose_mode", "forward_scheme",
-        "icon_url", "name", "proxy_provider_id", "public_target_mode", "tag_ids",
-        "target_port", "tunnel_provider_id", "websocket",
+        "description", "dns_ip", "dns_provider_id", "domain", "environment_ids",
+        "expose_mode", "forward_scheme", "icon_url", "name", "proxy_provider_id",
+        "public_target_mode", "tag_ids", "target_port", "tunnel_provider_id", "websocket",
     ),
 
     # A call whose result is read from its declared return type rather than its body.

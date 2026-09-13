@@ -2,22 +2,24 @@
  * Shapes and pure helpers for the Templates page.
  *
  * A template is a *service preset*: everything the service form repeats (scheme, port,
- * providers, domain, tags) minus the two things that are always per-service (subdomain and
- * target IP). The backend model lives in `app/api/templates.py`; `TemplateIn` there is the
- * exact body `POST /api/templates` and `PUT /api/templates/{tid}` accept.
+ * providers, domain, both halves of the label control) minus the two things that are always
+ * per-service (subdomain and target IP). The backend model lives in `app/api/templates.py`;
+ * `TemplateIn` there is the exact body `POST /api/templates` and `PUT /api/templates/{tid}`
+ * accept.
  *
  * Everything here is deliberately free of React so the modal, the card and the page agree on
  * one conversion and one validation instead of three.
  */
 
-import type { Tone } from '@/components/ui';
 import { providerHasCapability } from '@/lib/providers';
 import type {
+  Environment,
   ExposeMode,
   ForwardScheme,
   Provider,
   ProviderTypesResponse,
   PublicTargetMode,
+  Tag,
   Template,
   TemplateIn,
 } from '@/types/api';
@@ -53,6 +55,7 @@ export interface TemplateFormState {
   domain: string;
   dns_ip: string;
   tag_ids: number[];
+  environment_ids: number[];
 }
 
 export type TemplateFormField = 'name' | 'target_port' | 'icon_url' | 'domain' | 'dns_ip';
@@ -73,7 +76,16 @@ export const emptyTemplateForm: TemplateFormState = {
   domain: '',
   dns_ip: '',
   tag_ids: [],
+  environment_ids: [],
 };
+
+/**
+ * A stored label list, as the form wants it. Both halves are read through it: a template
+ * written before environments were storable has no `environment_ids` key at all, and
+ * `.filter` on `undefined` throws where this returns the empty list the template meant.
+ */
+const idList = (value: unknown): number[] =>
+  Array.isArray(value) ? value.filter((id): id is number => Number.isFinite(id)) : [];
 
 const idToField = (value: number | null | undefined): string =>
   value === null || value === undefined ? UNSET : String(value);
@@ -102,7 +114,8 @@ export function toTemplateForm(template: Template): TemplateFormState {
     public_target_mode: template.public_target_mode === 'auto' ? 'auto' : 'manual',
     domain: template.domain ?? '',
     dns_ip: template.dns_ip ?? '',
-    tag_ids: Array.isArray(template.tag_ids) ? template.tag_ids.filter((id) => Number.isFinite(id)) : [],
+    tag_ids: idList(template.tag_ids),
+    environment_ids: idList(template.environment_ids),
   };
 }
 
@@ -128,6 +141,7 @@ export function toTemplateIn(form: TemplateFormState): TemplateIn {
     domain: form.domain.trim(),
     dns_ip: isTunnel ? '' : form.dns_ip.trim(),
     tag_ids: [...form.tag_ids],
+    environment_ids: [...form.environment_ids],
     icon_url: form.icon_url.trim(),
   };
 }
@@ -201,30 +215,6 @@ export function splitProviders(providers: Provider[], providerTypes: ProviderTyp
 // Card & list helpers
 // ---------------------------------------------------------------------------
 
-// Tag colours are free text on the server (`app/validators.py` falls back to `blue`), while
-// the primitives only speak the six semantic tones — this is the bridge.
-const TAG_TONES: Record<string, Tone> = {
-  red: 'danger',
-  pink: 'danger',
-  orange: 'warning',
-  yellow: 'warning',
-  lime: 'success',
-  green: 'success',
-  teal: 'success',
-  blue: 'info',
-  azure: 'info',
-  cyan: 'info',
-  indigo: 'primary',
-  purple: 'primary',
-  dark: 'neutral',
-  secondary: 'neutral',
-};
-
-/** The semantic tone a tag's stored colour maps to. */
-export function tagTone(color: string | undefined): Tone {
-  return TAG_TONES[String(color || '').toLowerCase()] ?? 'neutral';
-}
-
 /** `http://…:8096`, or `https://…` when the template leaves the port to the service. */
 export function endpointLabel(template: Pick<Template, 'forward_scheme' | 'target_port'>): string {
   const scheme = template.forward_scheme === 'https' ? 'https' : 'http';
@@ -249,8 +239,42 @@ export function duplicateName(base: string, taken: Iterable<string>, suffix: str
   return fit(`${base} ${suffix} ${Date.now()}`);
 }
 
-/** Lowercased haystack a template is searched on: name, description, domain, port, tag names. */
-export function searchHaystack(template: Template, tagNames: string[]): string {
+/** One label of one half, with how many of the listed templates name it. */
+export interface LabelFacet {
+  id: number;
+  count: number;
+  label: Tag | Environment;
+}
+
+/**
+ * Every label of one half these templates actually name, each with how many name it, sorted
+ * by name. Written once and called for both halves: the two rows of filter chips are the
+ * same row, and a label the templates never name is not a filter worth offering.
+ *
+ * A label id whose row is gone is dropped rather than shown nameless -- `_drop_dead_labels`
+ * (`app/api/templates.py`) removes it from the template on the next read anyway, so it is a
+ * filter that would match nothing and disappear on its own.
+ */
+export function labelFacets(
+  templates: Template[],
+  key: 'tag_ids' | 'environment_ids',
+  byId: ReadonlyMap<number, Tag | Environment>,
+): LabelFacet[] {
+  const counts = new Map<number, number>();
+  for (const template of templates) {
+    for (const id of template[key] ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([id, count]) => ({ id, count, label: byId.get(id) }))
+    .filter((facet): facet is LabelFacet => Boolean(facet.label))
+    .sort((a, b) => a.label.name.localeCompare(b.label.name));
+}
+
+/**
+ * Lowercased haystack a template is searched on: name, description, domain, port, and the
+ * names of the labels it carries -- both halves, since both are shown on the card.
+ */
+export function searchHaystack(template: Template, labelNames: string[]): string {
   return [
     template.name,
     template.description,
@@ -258,7 +282,7 @@ export function searchHaystack(template: Template, tagNames: string[]): string {
     template.dns_ip,
     template.forward_scheme,
     template.target_port ? String(template.target_port) : '',
-    ...tagNames,
+    ...labelNames,
   ]
     .filter(Boolean)
     .join(' ')

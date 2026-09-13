@@ -158,10 +158,10 @@ def _hold(
 ) -> None:
     """Give the label its holders: one service per hostname, one template per name.
 
-    A service template names tags and never names an environment (`TemplateIn`,
-    `app/api/templates.py`), so `templates` stays empty for that half of the panel. That
-    asymmetry is the reason the two journal lines are not one helper, and
-    `test_an_environment_never_names_a_template` is what keeps it honest.
+    The template is written into the column belonging to the half being tested. Both
+    halves have one (`app/models.py`); writing the tag column for an environment would
+    make this a fixture unable to express the thing the test is about, which is what it
+    was for as long as only the tag half was storable.
     """
     conn = models.get_db()
     try:
@@ -183,9 +183,10 @@ def _hold(
                     "VALUES (?, ?)",
                     (sid, label_id),
                 )
+        column = "tag_ids_json" if kind == "tags" else "environment_ids_json"
         for name in templates:
             conn.execute(
-                "INSERT INTO service_templates (name, tag_ids_json) VALUES (?, ?)",
+                f"INSERT INTO service_templates (name, {column}) VALUES (?, ?)",
                 (name, json.dumps([label_id])),
             )
         conn.commit()
@@ -391,7 +392,7 @@ class DeletionJournalTests(_IsolatedDB):
         """Two different disappearances, so two sentences rather than one count over both.
 
         The services are unlinked by the cascade and go on routing. The templates keep the
-        dead id until the next read and `_drop_dead_tags` removes it then, so what changes
+        dead id until the next read and `_drop_dead_labels` removes it then, so what changes
         there is the next service built from one. Joined into a single list the rarer half is
         also the half "and 3 more" hides, and it is the half nothing else in the product says.
         """
@@ -415,24 +416,52 @@ class DeletionJournalTests(_IsolatedDB):
         self.assertIn("1 service template named it", message)
         self.assertNotIn("carried it", message)
 
-    def test_an_environment_never_names_a_template(self) -> None:
-        """The asymmetry, stated adversarially: the same id exists on both sides here.
+    def test_an_environment_gives_its_templates_a_sentence_of_their_own(self) -> None:
+        """The test above over the other half, now that the other half has templates.
+
+        A template stores an environment list beside its tag list, so an environment
+        deletion has the same two disappearances to report: the services are unlinked by the
+        cascade and go on routing, and the templates drop the dead id on the next read, so
+        the next service built from one starts without the environment.
+        """
+        created = _create("environments", "environments-both")
+        _hold(
+            "environments", created["id"], ("api.env.test",), ("Reverse proxy", "Static site")
+        )
+        _delete("environments", created["id"])
+        message = _logs()[-1][1]
+        self.assertIn("1 service was set to it", message)
+        self.assertIn("2 service templates named it", message)
+        self.assertIn("Reverse proxy", message)
+        self.assertIn("Static site", message)
+        self.assertIn("starts without the environment", message)
+
+    def test_a_deletion_reads_its_own_half_and_never_the_other(self) -> None:
+        """The asymmetry is gone; the id collision it guarded against is not.
 
         `tags` and `environments` are separate AUTOINCREMENT tables, so in a fresh base the
-        first row of each is id 1, and a template naming tag 1 would be named by an
-        environment deletion that scanned `tag_ids_json` the way the tag route has to. It
-        does not scan it, because no template names an environment, and a line that said
-        otherwise would be telling the operator something untrue about a row that is fine.
+        first row of each is id 1. A deletion that scanned both JSON columns would name a
+        template holding tag 1 while deleting environment 1 -- telling the operator
+        something untrue about a template that is fine and stays fine. Each half is given a
+        template of its own here, under the same id, and only one of the two may be named.
         """
         tag = _create("tags", "shared-id-tag")
         env = _create("environments", "shared-id-env")
         self.assertEqual(tag["id"], env["id"])
-        _hold("environments", env["id"], ("only.env.test",), ("Reverse proxy",))
+        _hold("tags", tag["id"], (), ("Tag template",))
+        _hold("environments", env["id"], ("only.env.test",), ("Environment template",))
+
         _delete("environments", env["id"])
         message = _logs()[-1][1]
         self.assertIn("only.env.test", message)
-        self.assertNotIn("template", message)
-        self.assertNotIn("Reverse proxy", message)
+        self.assertIn("Environment template", message)
+        self.assertNotIn("Tag template", message)
+
+        _delete("tags", tag["id"])
+        message = _logs()[-1][1]
+        self.assertIn("Tag template", message)
+        self.assertNotIn("Environment template", message)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,19 +97,20 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
 
   // What holds each label. Nothing in the API counts this, so it is counted here from the
   // rows themselves: `GET /api/services` already carries every service's `tags` and
-  // `environments` in full, and `GET /api/templates` carries `tag_ids`. Both keys are the
-  // ones `DnsTab` reads for the same purpose, so the two tabs share one cache entry each.
+  // `environments` in full, and `GET /api/templates` carries `tag_ids` and
+  // `environment_ids`. Both keys are the ones `DnsTab` reads for the same purpose, so the
+  // two tabs share one cache entry each.
   const { data: services = [] } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
-  // Only tags. A service template names tags and never names an environment (`TemplateIn`,
-  // `frontend/src/types/api.ts`), so the environments editor would be paying for an answer
-  // with nothing in it for the question it asks.
+  // Both halves. A template names tags and environments alike (`TemplateIn`,
+  // `frontend/src/types/api.ts`), so both editors have the same question to ask. This used
+  // to be fetched for tags only, and correctly: the environment half had nowhere to be
+  // stored, so there was nothing to count.
   const { data: templates = [] } = useQuery<Template[]>({
     queryKey: ['templates'],
     queryFn: () => api.get<Template[]>('/templates'),
-    enabled: kind === 'tags',
   });
 
   const dependents = useMemo(() => {
@@ -124,11 +125,9 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
         slot(label.id).services.push({ id: service.id, label: fqdnOf(service) });
       }
     }
-    if (kind === 'tags') {
-      for (const template of templates) {
-        for (const tagId of template.tag_ids) {
-          slot(tagId).templates.push({ id: template.id, label: template.name });
-        }
+    for (const template of templates) {
+      for (const id of kind === 'tags' ? template.tag_ids : template.environment_ids) {
+        slot(id).templates.push({ id: template.id, label: template.name });
       }
     }
     for (const entry of byId.values()) {

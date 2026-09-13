@@ -89,6 +89,7 @@ function template(over: Partial<Template> = {}): Template {
     domain: 'example.test',
     dns_ip: '',
     tag_ids: [],
+    environment_ids: [],
     icon_url: '',
     created_at: '2026-01-01T00:00:00Z',
     ...over,
