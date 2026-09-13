@@ -1195,7 +1195,7 @@
   "settings.color.teal": "蓝绿色",
   "settings.color.yellow": "黄色",
   "settings.data.danger_zone": "危险区域",
-  "settings.data.reset_confirm_message": "所有服务、提供商、域名、标签、环境、Webhook 和日志记录都将被删除。请输入 RESET 以确认。",
+  "settings.data.reset_confirm_message": "此实例的所有内容都将被删除：服务、提供商、域名、标签、环境、Webhook、模板、Docker 端点、设置、日志，以及任何备份都不包含的可用率历史。\n\n密码和 API 密钥会保留。",
   "settings.data.reset_confirm_title": "重置 Vauxtra？",
   "settings.data.reset_cta": "重置全部数据",
   "settings.data.reset_desc": "清空数据库，从一个全新实例重新开始。",

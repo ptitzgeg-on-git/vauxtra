@@ -1283,7 +1283,7 @@
   "settings.color.teal": "Teal",
   "settings.color.yellow": "Yellow",
   "settings.data.danger_zone": "Danger zone",
-  "settings.data.reset_confirm_message": "Every service, provider, domain, tag, environment, webhook and log entry is deleted. Type RESET to confirm.",
+  "settings.data.reset_confirm_message": "Everything this instance holds is deleted: services, providers, domains, tags, environments, webhooks, templates, Docker endpoints, settings, the log, and the uptime history that no backup carries.\n\nYour password and your API keys are kept.",
   "settings.data.reset_confirm_title": "Reset Vauxtra?",
   "settings.data.reset_cta": "Reset everything",
   "settings.data.reset_desc": "Empty the database and start again from a blank instance.",

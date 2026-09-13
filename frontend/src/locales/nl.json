@@ -1283,7 +1283,7 @@
   "settings.color.teal": "Turkoois",
   "settings.color.yellow": "Geel",
   "settings.data.danger_zone": "Gevarenzone",
-  "settings.data.reset_confirm_message": "Elke service, provider, elk domein, elke tag, omgeving, webhook en logregel wordt verwijderd. Typ RESET om te bevestigen.",
+  "settings.data.reset_confirm_message": "Alles wat deze instantie bevat wordt verwijderd: services, providers, domeinen, tags, omgevingen, webhooks, sjablonen, Docker-endpoints, instellingen, het logboek en de beschikbaarheidsgeschiedenis, die in geen enkele back-up zit.\n\nJe wachtwoord en je API-sleutels blijven behouden.",
   "settings.data.reset_confirm_title": "Vauxtra resetten?",
   "settings.data.reset_cta": "Alles resetten",
   "settings.data.reset_desc": "Maak de database leeg en begin opnieuw met een lege instantie.",

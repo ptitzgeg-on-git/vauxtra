@@ -1195,7 +1195,7 @@
   "settings.color.teal": "ティール",
   "settings.color.yellow": "イエロー",
   "settings.data.danger_zone": "危険な操作",
-  "settings.data.reset_confirm_message": "すべてのサービス、プロバイダー、ドメイン、タグ、環境、Webhook、ログが削除されます。確認のため RESET と入力してください。",
+  "settings.data.reset_confirm_message": "このインスタンスの内容はすべて削除されます：サービス、プロバイダー、ドメイン、タグ、環境、Webhook、テンプレート、Docker エンドポイント、設定、ログ、そしてどのバックアップにも含まれない稼働履歴。\n\nパスワードと API キーは保持されます。",
   "settings.data.reset_confirm_title": "Vauxtra をリセットしますか？",
   "settings.data.reset_cta": "すべてリセット",
   "settings.data.reset_desc": "データベースを空にして、まっさらな状態からやり直します。",

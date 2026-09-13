@@ -17,12 +17,15 @@ So the intent lives here instead, where it is executed. The rule this file holds
   * a call site that empties the database asks the operator to type a word;
   * a call site that deletes one named object does NOT -- a word asked for everything is a
     word typed without reading, and the dialog already names the thing;
-  * the set of call sites that ask is closed, so neither half can drift alone.
+  * the set of call sites that ask is closed, so neither half can drift alone;
+  * and a dialog that empties the database names every hand-entered thing it empties, and
+    says what it keeps -- see `TheResetDialogNamesWhatItDestroysTests`.
 
 The setup wizard's restore is the one exception, and it is pinned rather than waived: see
 `TheWizardRestoreIsTheOneExceptionTests`.
 """
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -268,6 +271,128 @@ class TheTwoRoutesReallyWipeTheSameThingTests(unittest.TestCase):
             f"a restore empties {sorted(missing)} and a reset does not; the two dialogs no "
             "longer guard the same amount of data",
         )
+
+
+# Every table `reset_all` empties, and the English word the dialog uses for it -- or `None`
+# and the reason no word is owed.
+#
+# A join table goes with the rows on both of its ends, and both ends are named. Bookkeeping
+# nobody typed has nothing to give back. What is left is what an operator entered by hand and
+# would have to enter again, and the dialog owes a word for all of it: the decision to press
+# the button is made from this sentence and from nothing else.
+_RESET_NOUNS = {
+    "docker_endpoints": "Docker endpoints",
+    "domains": "domains",
+    "environments": "environments",
+    "logs": "the log",
+    "providers": "providers",
+    "service_templates": "templates",
+    "services": "services",
+    "settings": "settings",
+    "tags": "tags",
+    "uptime_events": "uptime history",
+    "webhooks": "webhooks",
+    # Joins. Both ends are named above, and a link to a deleted service is not a loss the
+    # operator can feel separately from the service.
+    "service_alerts": None,
+    "service_environments": None,
+    "service_push_targets": None,
+    "service_tags": None,
+    # Bookkeeping nobody typed: the scheduler's alert cursor, and the webhook send queue.
+    "scheduler_state": None,
+    "webhook_delivery_log": None,
+}
+
+# What a reset deliberately leaves behind. The dialog says so, so this has to stay true.
+_RESET_SURVIVORS = ("api_keys",)
+
+
+def _tables_the_reset_empties() -> set:
+    """Parsed out of `reset_all` itself, so the list cannot drift from what executes."""
+    settings = (_ROOT / "app" / "api" / "settings.py").read_text(encoding="utf-8")
+    reset = settings[settings.index("def reset_all") :]
+    reset = reset[: reset.index("\ndef ") if "\ndef " in reset[1:] else len(reset)]
+    return {chunk.split()[0].rstrip(";") for chunk in reset.split("DELETE FROM ")[1:]}
+
+
+def _en() -> dict:
+    return json.loads(
+        (_ROOT / "frontend" / "src" / "locales" / "en.json").read_text(encoding="utf-8")
+    )
+
+
+class TheResetDialogNamesWhatItDestroysTests(unittest.TestCase):
+    """The dialog named seven of the eleven things the button deletes, and none of what it keeps.
+
+    `reset_all` empties eighteen tables. The sentence listed services, providers, domains,
+    tags, environments, webhooks and log entries -- and said nothing about the templates the
+    operator built by hand, the Docker endpoints they configured, every setting outside the
+    five protected keys, or the uptime history, which is the one thing no backup carries and
+    so the one thing the "export a backup first" hint above the button cannot protect. It also
+    said nothing about the API keys, which survive: an operator resetting an instance to hand
+    it on would have had no way to learn that the keys minted on it still work.
+
+    The reasons are written against `en.json`, which is the reference every other locale is
+    translated from, exactly as `check-locale-quality.mjs` does.
+    """
+
+    def test_every_table_the_reset_empties_is_accounted_for(self):
+        """A table added to `reset_all` is a decision about the dialog, not only about SQL."""
+        self.assertEqual(
+            _tables_the_reset_empties(),
+            set(_RESET_NOUNS),
+            "the reset empties a different set of tables than this file accounts for; for each "
+            "new one, either give the dialog a word for it or write down why it owes none",
+        )
+
+    def test_the_dialog_names_every_table_that_owes_a_word(self):
+        message = _en()["settings.data.reset_confirm_message"]
+        for table, noun in sorted(_RESET_NOUNS.items()):
+            if noun is None:
+                continue
+            with self.subTest(table=table):
+                self.assertIn(
+                    noun,
+                    message,
+                    f"the reset empties {table} and the dialog does not say so; an operator "
+                    f"finds out on the page that used to hold it",
+                )
+
+    def test_the_dialog_says_what_it_keeps(self):
+        """Half of "everything is deleted" is what is not. Both halves change the decision."""
+        message = _en()["settings.data.reset_confirm_message"]
+        self.assertIn("password", message)
+        self.assertIn("API key", message)
+
+    def test_what_the_dialog_promises_to_keep_really_survives(self):
+        emptied = _tables_the_reset_empties()
+        for table in _RESET_SURVIVORS:
+            with self.subTest(table=table):
+                self.assertNotIn(
+                    table,
+                    emptied,
+                    f"the dialog tells the operator {table} survives a reset, and it no longer does",
+                )
+
+    def test_no_locale_repeats_the_instruction_the_field_already_carries(self):
+        """`ui.confirm.type_to_confirm` labels the input. The message said it a second time.
+
+        Two imperatives for one action read as two actions, and the second one is the only
+        one with a text field under it. The restore dialog, which asks for a word the same
+        way, never said it twice.
+        """
+        locales = sorted((_ROOT / "frontend" / "src" / "locales").glob("*.json"))
+        self.assertEqual(len(locales), 8, "the locale set moved; this test walks all of them")
+        for path in locales:
+            with self.subTest(locale=path.name):
+                message = json.loads(path.read_text(encoding="utf-8"))[
+                    "settings.data.reset_confirm_message"
+                ]
+                self.assertNotIn(
+                    "RESET",
+                    message,
+                    f"{path.name} repeats the typed word the confirm field already asks for",
+                )
 
 
 if __name__ == "__main__":
