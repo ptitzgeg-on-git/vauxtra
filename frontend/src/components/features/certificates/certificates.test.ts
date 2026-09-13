@@ -28,6 +28,7 @@ import {
   isWildcard,
   matchesSearch,
   providerConsoleUrl,
+  resolveProviderFilter,
   sortCertificates,
   toCertFilter,
 } from './certificates';
@@ -205,6 +206,13 @@ describe('the search box, the filter in the address bar, and the console link', 
     expect(matchesSearch(cert, 'zoraxy')).toBe(false);
   });
 
+  it('lowers and trims the needle itself, the way its namesake does for services', () => {
+    const cert = row({ nice_name: 'npm-14', provider_name: 'Nginx Proxy Manager' });
+    expect(matchesSearch(cert, 'APP.EXAMPLE')).toBe(true);
+    expect(matchesSearch(cert, '  Nginx  ')).toBe(true);
+    expect(matchesSearch(cert, '   ')).toBe(true);
+  });
+
   it('keeps only a status the page can actually draw, so a stale link lands on all', () => {
     for (const filter of ['all', 'expired', 'critical', 'expiring', 'valid', 'unknown']) {
       expect(toCertFilter(filter)).toBe(filter);
@@ -247,5 +255,21 @@ describe('the date on the row and the bucket it is drawn in agree at the thresho
     expect(certDays(row({ expires_on: at(0.5) }), NOW)).toBe(0);
     expect(certBucket(certDays(row({ expires_on: at(0.5) }), NOW))).toBe('critical');
     expect(certDays(row({ expires_on: at(-0.5) }), NOW)).toBe(-1);
+  });
+});
+
+describe('a filter that stops being one of the choices stops filtering', () => {
+  it('keeps the integration the operator chose while it is still offered', () => {
+    expect(resolveProviderFilter('2', ['1', '2', '3'])).toBe('2');
+  });
+
+  it('falls back to all once the integration it names has stopped answering', () => {
+    expect(resolveProviderFilter('2', ['1', '3'])).toBe('all');
+    expect(resolveProviderFilter('2', [])).toBe('all');
+  });
+
+  it('leaves all alone, including on a page where nothing is offered yet', () => {
+    expect(resolveProviderFilter('all', [])).toBe('all');
+    expect(resolveProviderFilter('all', ['1'])).toBe('all');
   });
 });

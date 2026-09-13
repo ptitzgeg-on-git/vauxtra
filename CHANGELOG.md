@@ -337,6 +337,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Two filters on the certificates page could hide every row without showing they were on.**
+  The integration filter is component state holding a provider id, and the list it chooses
+  from is rebuilt from whichever integrations answered. When the one it names stops
+  answering — removed, disabled, or simply unreachable — the id stays in state and keeps
+  dropping every row, while the control that set it either renders blank, because no
+  `<option>` matches its value, or is not rendered at all, because it is only drawn above two
+  integrations. `resolveProviderFilter` now reconciles the id against the integrations
+  actually offered, exactly as `toCertFilter` already reconciles the status in the address
+  bar, and the page filters, labels and clears itself from the reconciled value.
+
+  `matchesSearch` in the same module expected its needle already lowered; the function of the
+  same name in `features/services/helpers.ts` lowers its own. The single caller happened to
+  lower it, so nothing was wrong on screen — but one name under two conventions is a search
+  that silently matches nothing the day a second caller passes the box contents straight
+  through, which is what the other spelling accepts. It now trims and lowers its own needle,
+  which is what every other search on the panel already does at the point of use.
+
 - **A certificate whose expiry date the provider could not read was drawn in red as expired.**
   Zoraxy answers `RemainingDays: -1` for a certificate it could not date — its own fallback
   certificate, typically — and the same `-1` for one that expired yesterday. The number alone
