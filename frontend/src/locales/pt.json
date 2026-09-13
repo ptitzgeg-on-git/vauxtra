@@ -1283,7 +1283,7 @@
   "settings.color.teal": "Verde-azulado",
   "settings.color.yellow": "Amarelo",
   "settings.data.danger_zone": "Zona de perigo",
-  "settings.data.reset_confirm_message": "Todos os serviços, provedores, domínios, tags, ambientes, webhooks e entradas de log serão excluídos. Digite RESET para confirmar.",
+  "settings.data.reset_confirm_message": "Tudo o que esta instância contém será excluído: serviços, provedores, domínios, tags, ambientes, webhooks, modelos, endpoints Docker, configurações, o log e o histórico de disponibilidade, que nenhum backup guarda.\n\nSua senha e suas chaves de API são mantidas.",
   "settings.data.reset_confirm_title": "Redefinir o Vauxtra?",
   "settings.data.reset_cta": "Redefinir tudo",
   "settings.data.reset_desc": "Esvazie o banco de dados e recomece com uma instância em branco.",

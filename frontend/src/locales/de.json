@@ -1283,7 +1283,7 @@
   "settings.color.teal": "Türkis",
   "settings.color.yellow": "Gelb",
   "settings.data.danger_zone": "Gefahrenbereich",
-  "settings.data.reset_confirm_message": "Alle Dienste, Anbieter, Domains, Tags, Umgebungen, Webhooks und Protokolleinträge werden gelöscht. Geben Sie RESET ein, um zu bestätigen.",
+  "settings.data.reset_confirm_message": "Alles, was diese Instanz enthält, wird gelöscht: Dienste, Anbieter, Domains, Tags, Umgebungen, Webhooks, Vorlagen, Docker-Endpunkte, Einstellungen, das Protokoll und der Verfügbarkeitsverlauf, den kein Backup enthält.\n\nIhr Passwort und Ihre API-Schlüssel bleiben erhalten.",
   "settings.data.reset_confirm_title": "Vauxtra zurücksetzen?",
   "settings.data.reset_cta": "Alles zurücksetzen",
   "settings.data.reset_desc": "Die Datenbank leeren und mit einer leeren Instanz neu beginnen.",

@@ -1283,7 +1283,7 @@
   "settings.color.teal": "Turquoise",
   "settings.color.yellow": "Jaune",
   "settings.data.danger_zone": "Zone sensible",
-  "settings.data.reset_confirm_message": "Tous les services, fournisseurs, domaines, étiquettes, environnements, webhooks et entrées de journal seront supprimés. Saisissez RESET pour confirmer.",
+  "settings.data.reset_confirm_message": "Tout ce que contient cette instance est supprimé : services, fournisseurs, domaines, étiquettes, environnements, webhooks, modèles, points d'accès Docker, paramètres, journal, ainsi que l'historique de disponibilité qu'aucune sauvegarde ne contient.\n\nVotre mot de passe et vos clés API sont conservés.",
   "settings.data.reset_confirm_title": "Réinitialiser Vauxtra ?",
   "settings.data.reset_cta": "Tout réinitialiser",
   "settings.data.reset_desc": "Videz la base de données et repartez d'une instance vierge.",

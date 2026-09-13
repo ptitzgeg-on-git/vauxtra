@@ -233,6 +233,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The dialog that empties the database named seven of the eleven things it empties.** It
+  listed services, providers, domains, tags, environments, webhooks and the log, and stopped.
+  It did not name the templates the operator wrote by hand, the Docker endpoints they pointed
+  at their hosts, the settings outside the five a reset protects, or the uptime history. That
+  last one is the only casualty no backup carries, so the "export a backup first" line above
+  the button could not have covered it, and the sentence beside it never said so. The message
+  now names all eleven, and calls the uptime history out as the part no archive holds.
+
+  It also never said what a reset keeps. The API keys minted on the instance are not in the
+  wipe list and go on working afterwards, which is exactly what an operator resetting a box
+  before handing it to somebody else needs to be told. The message now says the password and
+  the API keys are kept.
+
+  The room for those four nouns came from a sentence the field already carried:
+  `ConfirmDialog` renders `ui.confirm.type_to_confirm` as the label of the input itself, so
+  "Type RESET to confirm" inside the message was the second time the operator read it. The
+  restore dialog, which asks for a word the same way, never repeated itself.
+
+  `TheResetDialogNamesWhatItDestroysTests` reads `reset_all`'s own `DELETE` statements and
+  holds every table it finds either to a word in the dialog or to a written reason it owes
+  none — a join whose two ends are already named, or bookkeeping nobody typed. It also checks
+  the survivors the message promises are really absent from the wipe list, and walks all eight
+  locales for the repeated instruction. A table added to the reset from now on fails the suite
+  until the sentence grows to cover it.
+
 - **A backup carried every service and not one of the templates they were built from.** The
   restore empties sixteen tables and refills them from the archive; `service_templates` was in
   the wipe list and in neither export. An operator who reinstalled from a backup got their

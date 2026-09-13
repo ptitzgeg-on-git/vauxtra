@@ -1283,7 +1283,7 @@
   "settings.color.teal": "Verde azulado",
   "settings.color.yellow": "Amarillo",
   "settings.data.danger_zone": "Zona de peligro",
-  "settings.data.reset_confirm_message": "Se eliminan todos los servicios, proveedores, dominios, etiquetas, entornos, webhooks y entradas de registro. Escribe RESET para confirmar.",
+  "settings.data.reset_confirm_message": "Se elimina todo lo que contiene esta instancia: servicios, proveedores, dominios, etiquetas, entornos, webhooks, plantillas, endpoints Docker, ajustes, el registro y el historial de disponibilidad, que ninguna copia de seguridad conserva.\n\nTu contraseña y tus claves API se conservan.",
   "settings.data.reset_confirm_title": "¿Restablecer Vauxtra?",
   "settings.data.reset_cta": "Restablecerlo todo",
   "settings.data.reset_desc": "Vacía la base de datos y empieza de nuevo con una instancia en blanco.",
