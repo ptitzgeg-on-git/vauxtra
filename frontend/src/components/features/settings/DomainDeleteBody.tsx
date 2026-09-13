@@ -26,12 +26,9 @@
  * gone the moment it is answered.
  */
 import { useT } from '@/i18n';
+import { DependentList, type Dependent } from './DependentList';
 
-export interface DomainDependent {
-  id: number;
-  /** The FQDN of a service, or the name of a service template. */
-  label: string;
-}
+export type DomainDependent = Dependent;
 
 interface Props {
   /** The root domain about to be deleted. */
@@ -42,27 +39,6 @@ interface Props {
   templates: DomainDependent[];
 }
 
-/** Past this many rows the list stops naming and starts counting. */
-const MAX_ROWS = 5;
-
-function DependentList({ rows, mono }: { rows: DomainDependent[]; mono?: boolean }) {
-  const t = useT();
-  const rest = rows.length - MAX_ROWS;
-  return (
-    <ul className="space-y-1">
-      {rows.slice(0, MAX_ROWS).map((row) => (
-        <li
-          key={row.id}
-          className={mono ? 'truncate font-mono text-xs text-foreground' : 'truncate text-xs font-medium text-foreground'}
-        >
-          {row.label}
-        </li>
-      ))}
-      {rest > 0 && <li className="text-xs">{t('settings.dns.confirm.in_use_more', { count: rest })}</li>}
-    </ul>
-  );
-}
-
 export function DomainDeleteBody({ domain, services, templates }: Props) {
   const t = useT();
   return (
@@ -70,14 +46,21 @@ export function DomainDeleteBody({ domain, services, templates }: Props) {
       {services.length > 0 && (
         <>
           <p>{t('settings.dns.confirm.in_use_services', { count: services.length, domain })}</p>
-          <DependentList rows={services} mono />
+          <DependentList
+            rows={services}
+            mono
+            more={(count) => t('settings.dns.confirm.in_use_more', { count })}
+          />
         </>
       )}
 
       {templates.length > 0 && (
         <>
           <p>{t('settings.dns.confirm.in_use_templates', { count: templates.length, domain })}</p>
-          <DependentList rows={templates} />
+          <DependentList
+            rows={templates}
+            more={(count) => t('settings.dns.confirm.in_use_more', { count })}
+          />
         </>
       )}
 

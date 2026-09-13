@@ -1,10 +1,12 @@
+import json
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.auth import require_auth
-from app.models import get_db
+from app.models import add_log, get_db
+from app.text import name_list, plural, verb
 from app.validators import is_valid_tag_color
 
 router = APIRouter()
@@ -97,16 +99,91 @@ def update_tag(tid: int, request: Request, body: TagIn):
         conn.close()
 
 
+def holders_of_tag(conn, tid: int) -> tuple[list[str], list[str]]:
+    """The services carrying the tag and the templates naming it, both already sorted.
+
+    The two hold it in tables that behave nothing alike. `service_tags` declares
+    `ON DELETE CASCADE` (`app/models.py`), so a deleted tag unlinks its services and the
+    rows themselves are untouched. `service_templates.tag_ids_json` is TEXT holding a JSON
+    array, which no constraint reaches: the id survives the delete and is dropped on the
+    next read by `_drop_dead_tags` (`app/api/templates.py`). Same disappearance, arrived at
+    two different ways, and neither leaves anything to read afterwards.
+    """
+    services = [
+        # `.strip(".")` the way every other fqdn in the API is built: an apex route stores
+        # an empty subdomain, and the naive join names it `.example.test`.
+        f"{r['subdomain']}.{r['domain']}".strip(".")
+        for r in conn.execute(
+            "SELECT s.subdomain, s.domain FROM services s "
+            "JOIN service_tags st ON st.service_id = s.id "
+            "WHERE st.tag_id=? ORDER BY s.domain, s.subdomain",
+            (tid,),
+        )
+    ]
+    templates = []
+    for r in conn.execute(
+        "SELECT name, tag_ids_json FROM service_templates ORDER BY name"
+    ):
+        try:
+            ids = json.loads(r["tag_ids_json"] or "[]")
+        except (TypeError, ValueError):
+            # `_row_to_dict` answers the same column with the same shrug. It is TEXT, so it
+            # holds whatever was written, and a template nobody can parse is a template this
+            # tag is not provably in -- not a 500 on the way out of a delete.
+            continue
+        if isinstance(ids, list) and tid in ids:
+            templates.append(r["name"])
+    return services, templates
+
+
+def _log_tag_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
+    """The only trace a tag deletion leaves, so it carries what was holding the tag.
+
+    There was none at all before this. Every other destructive route in the API writes to the
+    journal -- services, providers, domains, Docker endpoints, API keys -- and the two label
+    routes wrote nothing, which is the wrong way round: a tag is the one thing here whose
+    deletion changes rows the operator was not looking at. The services keep working and lose
+    a label they were filtered by; the templates come back one tag shorter and the next
+    service built from one starts without it. Neither says anything at the time, and after
+    the delete the tag id is not in the database to ask about.
+    """
+    if not services and not templates:
+        add_log("info", f"Tag deleted: {name}", conn)
+        return
+    # A sentence each, rather than one count over both. They are not the same event: the
+    # services lose a label and go on routing, the templates change what they will build
+    # next. Joined into one list the rarer half is also the one "and 3 more" hides, and it
+    # is the half nothing else in the product reports.
+    said = []
+    if services:
+        said.append(
+            f"{plural(len(services), 'service')} carried it and "
+            f"{verb(len(services), 'keeps', 'keep')} working without it "
+            f"({name_list(services)})"
+        )
+    if templates:
+        said.append(
+            f"{plural(len(templates), 'service template')} named it and "
+            f"{verb(len(templates), 'drops', 'drop')} it on the next read, so a service "
+            f"built from one starts without the tag ({name_list(templates)})"
+        )
+    add_log("warn", f"Tag deleted: {name} -- {'. '.join(said)}", conn)
+
+
 @router.delete("/api/tags/{tid}")
 def delete_tag(tid: int, request: Request):
     """Delete a tag by ID. Associated services are unlinked, not deleted."""
     require_auth(request, scope="write")
     conn = get_db()
     try:
-        row = conn.execute("SELECT id FROM tags WHERE id=?", (tid,)).fetchone()
+        row = conn.execute("SELECT name FROM tags WHERE id=?", (tid,)).fetchone()
         if not row:
             raise HTTPException(404, "Tag not found")
+        # Read before the DELETE: the cascade takes `service_tags` with it, so after the
+        # commit there is nothing left that knows which services carried this tag.
+        services, templates = holders_of_tag(conn, tid)
         conn.execute("DELETE FROM tags WHERE id=?", (tid,))
+        _log_tag_removal(conn, row["name"], services, templates)
         conn.commit()
         return {"ok": True}
     finally:

@@ -29,3 +29,16 @@ def verb(n: int, singular: str, plural_form: str) -> str:
     own the word order, which differs per sentence.
     """
     return singular if n == 1 else plural_form
+
+
+def name_list(names: list[str], limit: int = 5) -> str:
+    """`web, api, db`, and past `limit` entries `web, api, db, mail, vpn, and 7 more`.
+
+    A journal line names what it counted. A count on its own -- "4 services" -- is a number
+    the operator has to go and resolve somewhere else, and by the time they read the line the
+    row it counted is gone, so there is nowhere left to resolve it. It stops naming at `limit`
+    for the reason the dialogs do: a line printing forty hostnames is not read.
+    """
+    rest = len(names) - limit
+    shown = ", ".join(names[:limit])
+    return f"{shown}, and {rest} more" if rest > 0 else shown

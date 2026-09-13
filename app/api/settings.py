@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from app.auth import require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
-from app.text import plural, verb
+from app.text import name_list, plural, verb
 from app.validators import DOMAIN_REASONS, domain_problem, normalize_domain
 
 try:
@@ -528,9 +528,7 @@ def _log_domain_removal(conn, name: str, services: list[str], templates: list[st
         holders.append(plural(len(services), "service"))
     if templates:
         holders.append(plural(len(templates), "service template"))
-    names = ", ".join((services + templates)[:5])
-    if total > 5:
-        names += f", and {total - 5} more"
+    names = name_list(services + templates)
     add_log(
         "warn",
         f"Domain deleted: {name} -- {' and '.join(holders)} still "

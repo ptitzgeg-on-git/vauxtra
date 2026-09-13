@@ -183,7 +183,18 @@ def update_tag(tag_id: int, name: str, color: Literal[
 
 @mcp.tool()
 def delete_tag(tag_id: int) -> dict[str, Any]:
-    """Delete a tag by id."""
+    """Delete a tag by id. Nothing refuses it, and two kinds of row change with it.
+
+    Every service carrying the tag is unlinked on the spot, because `service_tags` declares
+    `ON DELETE CASCADE`: those services keep their hostname and stay published, and lose only
+    the label they were grouped and filtered by. Every service template naming the tag keeps
+    the dead id in its `tag_ids` until the next read and drops it then, so a service created
+    from that template afterwards starts without the tag.
+
+    Call `list_services` and `list_templates` first if you need to know what that is before
+    doing it: the tag id is gone from the database once this returns, and the journal line
+    written here is the only place the two counts are kept.
+    """
     r = client.delete(f"/tags/{tag_id}")
     client.check(r)
     return r.json()
@@ -215,7 +226,13 @@ def update_environment(environment_id: int, name: str, color: str = "blue") -> d
 
 @mcp.tool()
 def delete_environment(environment_id: int) -> dict[str, Any]:
-    """Delete an environment by id."""
+    """Delete an environment by id. Nothing refuses it; the services set to it are unlinked.
+
+    `service_environments` declares `ON DELETE CASCADE`, so every service set to this
+    environment keeps its hostname and stays published, and loses only the label it was
+    grouped and filtered by. Unlike a tag, no service template names an environment, so
+    nothing else changes. The journal line written here names the services it counted.
+    """
     r = client.delete(f"/environments/{environment_id}")
     client.check(r)
     return r.json()

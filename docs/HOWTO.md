@@ -919,6 +919,16 @@ no such capability, and 502 when the provider itself refuses.
 | `PUT` | `/api/environments/{eid}` | Update an environment |
 | `DELETE` | `/api/environments/{eid}` | Delete an environment |
 
+**Note on deleting a label:** nothing refuses it, and two kinds of row change with it. Every
+service carrying the tag is unlinked on the spot (`service_tags` declares `ON DELETE CASCADE`):
+it keeps its hostname, stays published, and loses only the label you were filtering and
+grouping by. Every service template naming the tag keeps the dead id in its `tag_ids` until the
+next read and drops it then, so a service created from that template afterwards starts without
+the tag. An environment has only the first of those — no template names an environment. Call
+`GET /api/services` and `GET /api/templates` first if you need to know what that is before
+doing it; afterwards the id is gone, and the line the deletion writes to **Settings → Logs** is
+the only place the two counts are kept.
+
 ### Domains
 
 | Method | Endpoint | Description |
