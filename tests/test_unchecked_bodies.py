@@ -428,5 +428,119 @@ class DomainBodyTests(_OverHttp):
         self.assertIn("example.com", self.client.get("/api/domains").json())
 
 
+class ProviderUpdateTests(_OverHttp):
+    """`PUT /api/providers/{pid}` took two values the create route refuses in so many words."""
+
+    def _provider(self, name: str = "NPM maison") -> int:
+        resp = self.client.post(
+            "/api/providers",
+            json={
+                "name": name,
+                "type": "npm",
+                "url": "http://10.0.0.5:81",
+                "username": "ops@example.com",
+                "password": "secret",
+            },
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        return resp.json()["id"]
+
+    def _row(self, pid: int):
+        conn = models.get_db()
+        try:
+            return conn.execute(
+                "SELECT name, url, username, password, enabled FROM providers WHERE id=?", (pid,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def test_the_update_refuses_a_blank_name_in_the_words_the_create_uses(self) -> None:
+        """Two spellings of the same empty answer: one was kept, the other erased the name."""
+        pid = self._provider()
+
+        created = self.client.post(
+            "/api/providers", json={"name": "   ", "type": "npm", "url": "http://10.0.0.5:81"}
+        )
+        self.assertEqual(created.status_code, 422)
+        self.assertIn("Name is required", created.text)
+
+        for value in ("   ", "", "\t"):
+            with self.subTest(value=value):
+                resp = self.client.put(f"/api/providers/{pid}", json={"name": value})
+                self.assertEqual(resp.status_code, 422, resp.text)
+                self.assertIn("Name is required", resp.text)
+                self.assertEqual(self._row(pid)["name"], "NPM maison")
+
+    def test_a_flag_that_is_not_one_is_refused_instead_of_stored(self) -> None:
+        """Ten queries read `WHERE enabled=1`, so anything else is a provider used by nothing."""
+        pid = self._provider()
+
+        resp = self.client.put(f"/api/providers/{pid}", json={"enabled": 7})
+        self.assertEqual(resp.status_code, 422, resp.text)
+        self.assertEqual(self._row(pid)["enabled"], 1)
+
+        conn = models.get_db()
+        try:
+            matched = conn.execute(
+                "SELECT COUNT(*) FROM providers WHERE enabled=1"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(matched, 1)
+
+    def test_a_row_left_out_of_range_is_put_back_by_the_next_save(self) -> None:
+        """A provider stored as `7` before this version, saved again without the flag."""
+        pid = self._provider()
+        conn = models.get_db()
+        try:
+            conn.execute("UPDATE providers SET enabled=7 WHERE id=?", (pid,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        resp = self.client.put(f"/api/providers/{pid}", json={"username": "sre@example.com"})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self._row(pid)["enabled"], 1)
+
+    def test_the_toggle_the_panel_sends_still_works_both_ways(self) -> None:
+        """The witness: `Providers.tsx` sends `enabled ? 1 : 0`, which is what a bool means."""
+        pid = self._provider()
+
+        off = self.client.put(f"/api/providers/{pid}", json={"enabled": 0})
+        self.assertEqual(off.status_code, 200, off.text)
+        self.assertEqual(self._row(pid)["enabled"], 0)
+
+        on = self.client.put(f"/api/providers/{pid}", json={"enabled": 1})
+        self.assertEqual(on.status_code, 200, on.text)
+        self.assertEqual(self._row(pid)["enabled"], 1)
+
+        for value in (True, False):
+            with self.subTest(value=value):
+                resp = self.client.put(f"/api/providers/{pid}", json={"enabled": value})
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertEqual(self._row(pid)["enabled"], int(value))
+
+    def test_a_partial_update_still_keeps_the_name_and_the_stored_password(self) -> None:
+        """The witness: the toggle sends only `enabled`, and must not cost the credentials."""
+        pid = self._provider()
+        before = self._row(pid)
+
+        resp = self.client.put(f"/api/providers/{pid}", json={"enabled": 0})
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+        after = self._row(pid)
+        self.assertEqual(after["name"], before["name"])
+        self.assertEqual(after["url"], before["url"])
+        self.assertEqual(after["username"], before["username"])
+        self.assertEqual(after["password"], before["password"])
+
+    def test_a_real_rename_is_still_a_rename(self) -> None:
+        """The witness: refusing the blank one refuses nothing an operator would mean."""
+        pid = self._provider()
+        resp = self.client.put(f"/api/providers/{pid}", json={"name": "  NPM Bruz  "})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self._row(pid)["name"], "NPM Bruz")
+
+
 if __name__ == "__main__":
     unittest.main()

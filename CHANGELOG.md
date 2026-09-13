@@ -233,6 +233,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A provider could be renamed to nothing, and switched to a value that is neither on nor
+  off — leaving it drawn as connected and used by nothing.** `PUT /api/providers/{pid}` is
+  the only route that writes these two columns after creation, and it guarded neither.
+  `ProviderIn` refuses a name that is only spaces, in those words; the update read
+  `body.name or row["name"]`, so `""` fell through to the stored name while `"   "` was
+  truthy, reached `.strip()`, and renamed the provider to the empty string. Two spellings of
+  the same empty answer, one kept and one destroyed.
+
+  `enabled` was declared `int`, and it is not a number — ten queries across the API and the
+  scheduler read `WHERE enabled=1`. A provider saved with any other integer matched none of
+  them: no sync, no certificate lookup, no Docker discovery, absent from the multi-sync target
+  list. `GET /api/providers` still listed it and the panel, which reads the field through
+  `Boolean()`, still drew it as on. Nothing in the panel or the MCP bridge can produce either
+  value — the editor trims the name and disables Save when the trim is empty, the toggle sends
+  `1` or `0`, and the `update_provider` tool has always declared a boolean — but the route is
+  reachable directly, and the column it wrote is read by everything downstream.
+
+  The name is now refused in the sentence the create already writes, and `enabled` is declared
+  the boolean it is, as `WebhookUpdateIn` next door always has been. A row left holding an
+  out-of-range value by an earlier version is put back in range by its next save rather than
+  carried forward. An absent field still means "keep what is stored", which is what this route
+  is for: the toggle sending `{"enabled": 0}` alone still leaves the name, URL, username and
+  stored password exactly as they were.
+
+  This divergence was written down. `ALLOWED_CONTRACT_DIVERGENCES` in
+  `scripts/check_api_mcp_parity.py` carried an exemption for it whose own note said an `int`
+  in the schema "would invite an agent to send 2 -- which the route would store" — and then
+  exempted it. The note was also wrong in the safe direction: it ended "nothing would ever
+  read as anything but truthy", when the ten `WHERE enabled=1` readers read it as false. The
+  exemption is gone, and the gate refuses to keep one that no longer matches anything, which
+  is how removing it was noticed at all.
+
 - **A body value of the wrong type answered `500`, and a body missing its one key deleted
   every alert rule of a service and answered `ok`.** Seven write routes read their body as a
   plain `dict` and reached straight for what they wanted. `.strip()` on a number, `int()` on a

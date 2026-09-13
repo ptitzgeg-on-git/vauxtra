@@ -70,12 +70,14 @@ Restart container after change.
 Symptoms:
 
 - Integrations card shows failed test/validation
+- A provider is drawn as enabled and nothing publishes through it
 
 Checks:
 
-1. Reachability from Vauxtra runtime to provider URL.
-2. Correct credentials/token.
-3. Correct URL format for provider type.
+1. The provider is enabled the way the rest of the code asks. Everything downstream reads `WHERE enabled=1`, while the panel draws the switch from whether the value is truthy, so a row saved by a version before this fix holding any other number looks connected and is used by nothing -- no sync, no certificate lookup, no Docker discovery, and absent from the multi-sync target list. `SELECT id, name, enabled FROM providers WHERE enabled NOT IN (0, 1);` lists them, and saving each one again from the editor puts it back in range. The same versions could rename a provider to the empty string; those are `SELECT id, type FROM providers WHERE trim(name) = '';` and need a name typed back in.
+2. Reachability from Vauxtra runtime to provider URL.
+3. Correct credentials/token.
+4. Correct URL format for provider type.
 
 Provider URL notes:
 

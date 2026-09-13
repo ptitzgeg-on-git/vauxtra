@@ -107,12 +107,6 @@ ALLOWED_CONTRACT_DIVERGENCES = {
         "merged from the template, and refused outright when neither side carries one",
     ("apply_template", "domain", "required-from-expression"):
         "merged from the template, and refused outright when neither side carries one",
-    # `ProviderUpdate.enabled` is `int | None` because the column is an INTEGER, and pydantic
-    # turns the tool's `True` into the 1 the column wants. The tool keeps `bool`: the column
-    # holds a flag, not a number, and an `int` in the schema would invite an agent to send 2
-    # -- which the route would store, and nothing would ever read as anything but truthy.
-    ("update_provider", "enabled", "type-mismatch"):
-        "the column is a 0/1 flag; bool is the honest type and pydantic coerces it to int",
 }
 
 _CONTAINER_TYPES = {"list", "dict", "set", "tuple", "frozenset"}

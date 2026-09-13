@@ -147,12 +147,38 @@ class ProviderIn(BaseModel):
 
 
 class ProviderUpdate(BaseModel):
+    """The body of `PUT /api/providers/{pid}`, where absent means "keep what is stored".
+
+    `ProviderIn` above refuses a name that is only spaces, and this accepted one: the route
+    reads `body.name or row["name"]`, so `""` fell through to the stored name while `"   "`
+    was truthy, reached `.strip()`, and renamed the provider to nothing. Two spellings of the
+    same empty answer, one kept and one destroyed. `name` is refused here now in the sentence
+    the create already writes, and stripped for the same reason it is stripped there.
+
+    `enabled` is a flag, and it is asked as one: ten queries across the API and the scheduler
+    read `WHERE enabled=1`. Declared `int`, it took any integer, and a provider stored as `7`
+    matched none of those ten while `GET /api/providers` still listed it and the panel, which
+    reads it through `Boolean()`, still drew it as on -- a provider that looks connected and
+    is used by nothing. `WebhookUpdateIn` has always declared this field `bool`; so does the
+    `update_provider` tool in `vauxtra_mcp`. This is the API saying the same thing, and the
+    panel's own `enabled ? 1 : 0` is still read as the boolean it means.
+    """
+
     name:     str | None = None
     url:      str | None = None
     username: str | None = None
     password: str | None = None
-    enabled:  int | None = None
+    enabled:  bool | None = None
     extra:    dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_not_empty(cls, v):
+        # Only when it was sent. `None` is the caller saying nothing about the name, which is
+        # the whole point of this model; a blank string is the caller saying to erase it.
+        if v is not None and not v.strip():
+            raise ValueError("Name is required")
+        return v.strip() if v is not None else v
 
 
 class ProviderValidationOptions(BaseModel):
@@ -351,7 +377,9 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
         conn.close()
         raise HTTPException(404, "Provider not found")
 
-    name     = (body.name or row["name"]).strip()
+    # `.strip()` still runs on the stored name: a row renamed to spaces by this route
+    # before the model refused it is still in the table.
+    name     = (body.name if body.name is not None else row["name"]).strip()
     url_src  = body.url if body.url is not None else row["url"]
     try:
         url_val = _normalize_provider_url(row["type"], url_src)
@@ -359,7 +387,10 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
         conn.close()
         raise HTTPException(400, str(e)) from e
     username = body.username if body.username is not None else row["username"]
-    enabled  = body.enabled if body.enabled is not None else row["enabled"]
+    # The stored value is read through `bool` as well, so a row left holding a number
+    # that is neither 0 nor 1 by an earlier version is put back in range by the next
+    # save rather than being carried forward untouched.
+    enabled  = int(body.enabled) if body.enabled is not None else int(bool(row["enabled"]))
     if body.extra is not None:
         extra = body.extra
     else:
