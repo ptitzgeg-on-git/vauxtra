@@ -1,4 +1,5 @@
 import socket
+import sqlite3
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -940,6 +941,27 @@ def _conflicting_service(conn, public_host: str, exclude_id: int | None = None):
     return None
 
 
+def _hostname_taken(conn, public_host: str, exclude_id: int | None = None) -> str:
+    """The refusal for a hostname another service already answers for.
+
+    Written once because each write route now raises it from two places: before a provider is
+    touched, where the conflicting row is read directly, and again at the write, where the
+    unique index is what reports it. Both are the same collision, one noticed later, so both
+    say the same sentence.
+
+    `_conflicting_service` can come back empty where the index did not: it compares published
+    hostnames, and the index compares `(subdomain, domain)`. A tunnel row whose columns match
+    ours while it publishes something else trips one and not the other. The owner is named
+    when it can be named, and the refusal still stands when it cannot.
+    """
+    clash = _conflicting_service(conn, public_host, exclude_id=exclude_id)
+    owner = f"service #{clash['id']}" if clash else "another service"
+    return (
+        f"{public_host} is already served by {owner}. Two services on one hostname push over "
+        "each other -- edit that one, or choose another hostname."
+    )
+
+
 def _unknown_references(conn, body: ServiceIn) -> list[str]:
     """Name every id in the payload that points at nothing.
 
@@ -995,14 +1017,10 @@ def add_service(request: Request, body: ServiceIn):
         conn.close()
         raise HTTPException(400, f"Nothing was created -- unknown {', '.join(unknown)}")
 
-    clash = _conflicting_service(conn, public_host)
-    if clash:
+    if _conflicting_service(conn, public_host):
+        refusal = _hostname_taken(conn, public_host)
         conn.close()
-        raise HTTPException(
-            409,
-            f"{public_host} is already served by service #{clash['id']}. Two services on one "
-            "hostname push over each other -- edit that one, or choose another hostname.",
-        )
+        raise HTTPException(409, refusal)
 
     # Resolved before a single provider is touched. This refusal used to live past the
     # proxy creation, so a target nobody could resolve first created a host on the remote
@@ -1024,6 +1042,11 @@ def add_service(request: Request, body: ServiceIn):
             raise HTTPException(400, refusal)
 
     errors = []
+
+    # Named as each push succeeds, and read only if the write below is refused. What was
+    # published is the one thing the operator cannot recover from Vauxtra in that case:
+    # there is no row, so there is nothing to list and nothing to delete from.
+    published_on: list[str] = []
 
     npm_host_id = None
 
@@ -1048,6 +1071,7 @@ def add_service(request: Request, body: ServiceIn):
                     None,
                 )
                 if result:
+                    published_on.append(row["name"])
                     add_log("info", f"Tunnel route created: {public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
                 else:
                     errors.append("Failed to create tunnel route")
@@ -1075,6 +1099,7 @@ def add_service(request: Request, body: ServiceIn):
                     )
                     if result:
                         npm_host_id = result.get("id")
+                        published_on.append(row["name"])
                         add_log("info", f"Proxy created: {public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
                     else:
                         errors.append("Failed to create proxy host")
@@ -1092,6 +1117,7 @@ def add_service(request: Request, body: ServiceIn):
                 try:
                     dns = create_provider(row)
                     if dns.add_rewrite(public_host, dns_target):
+                        published_on.append(row["name"])
                         add_log("info", f"DNS added: {public_host} → {dns_target} ({dns_target_source})")
                     else:
                         errors.append("Failed to create DNS rewrite")
@@ -1109,20 +1135,53 @@ def add_service(request: Request, body: ServiceIn):
     stored_tunnel_hostname = public_host if body.expose_mode == "tunnel" else ""
     stored_dns_target = dns_target if body.expose_mode == "proxy_dns" else ""
 
-    cur = conn.execute(
-        """INSERT INTO services
-           (subdomain, domain, target_ip, target_port, forward_scheme,
-                websocket, enabled, dns_provider_id, proxy_provider_id, tunnel_provider_id,
-                expose_mode, public_target_mode, auto_update_dns, tunnel_hostname,
-                dns_ip, npm_host_id, icon_url)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (body.subdomain, body.domain, body.target_ip, body.target_port,
-            body.forward_scheme, int(body.websocket), int(body.enabled),
-         stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
-         body.expose_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
-         stored_dns_target, npm_host_id,
-         body.icon_url),
-    )
+    # The hostname was asked about up at the top, and that answer is only as fresh as the
+    # moment it was read: the lookup and this INSERT are two statements, and every call this
+    # route makes to a proxy and to a DNS server sits between them. A second operator saving
+    # the same hostname inside that window passes the same check, and the unique index in
+    # `app/models.py` is then the only thing that still knows.
+    #
+    # `_unknown_references` above describes what came of that, and describes it exactly: an
+    # `IntegrityError` raised well after the public hostname had been published, the
+    # transaction rolled back, the route left up, and nothing in the database describing it.
+    # That fix closes the foreign keys by asking first, which works because an id that points
+    # at nothing is knowable in advance. A name another writer takes a second later is not,
+    # so the same shape cannot close this one: only the index can report it, and only here.
+    #
+    # So it is answered as the clash it is, with the status the check above already uses, and
+    # the journal is told what went out. Deliberately not withdrawn: the service that won the
+    # race holds that hostname now and has published it on these same providers, so a delete
+    # keyed on the name would take its record rather than ours.
+    try:
+        cur = conn.execute(
+            """INSERT INTO services
+               (subdomain, domain, target_ip, target_port, forward_scheme,
+                    websocket, enabled, dns_provider_id, proxy_provider_id, tunnel_provider_id,
+                    expose_mode, public_target_mode, auto_update_dns, tunnel_hostname,
+                    dns_ip, npm_host_id, icon_url)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (body.subdomain, body.domain, body.target_ip, body.target_port,
+                body.forward_scheme, int(body.websocket), int(body.enabled),
+             stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
+             body.expose_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
+             stored_dns_target, npm_host_id,
+             body.icon_url),
+        )
+    except sqlite3.IntegrityError:
+        refusal = _hostname_taken(conn, public_host)
+        conn.close()
+        # Journalled on its own connection, and only once ours is shut. `add_log` leaves the
+        # commit to the caller when it is handed one, and this path has no commit to give it:
+        # writing the line through `conn` and closing wrote nothing at all, which is the one
+        # outcome this whole branch exists to prevent.
+        if published_on:
+            add_log(
+                "warn",
+                f"{public_host} was published on {', '.join(published_on)} and then refused: "
+                "another service claimed that hostname first. No service row describes those "
+                "records, so Vauxtra cannot list or remove them -- check those providers.",
+            )
+        raise HTTPException(409, refusal)
     sid = cur.lastrowid
 
     # Same call the preflight makes, so the two agree on which ids are extras.
@@ -1189,18 +1248,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         conn.close()
         raise HTTPException(400, f"Nothing was changed -- unknown {', '.join(unknown)}")
 
-    clash = _conflicting_service(
-        conn,
-        _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain),
-        exclude_id=sid,
-    )
-    if clash:
+    wanted_host = _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain)
+    if _conflicting_service(conn, wanted_host, exclude_id=sid):
+        refusal = _hostname_taken(conn, wanted_host, exclude_id=sid)
         conn.close()
-        raise HTTPException(
-            409,
-            f"That hostname is already served by service #{clash['id']}. Two services on one "
-            "hostname push over each other -- edit that one, or choose another hostname.",
-        )
+        raise HTTPException(409, refusal)
 
     old_mode = (old["expose_mode"] or "proxy_dns").strip().lower()
     new_mode = body.expose_mode
@@ -1459,20 +1511,43 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     stored_tunnel_hostname = new_public_host if new_mode == "tunnel" else ""
     stored_dns_ip = dns_ip if new_mode == "proxy_dns" else ""
 
-    conn.execute(
-        """UPDATE services SET
-               subdomain=?, domain=?, target_ip=?, target_port=?,
-               forward_scheme=?, websocket=?, enabled=?,
-               dns_provider_id=?, proxy_provider_id=?, tunnel_provider_id=?,
-               expose_mode=?, public_target_mode=?, auto_update_dns=?, tunnel_hostname=?,
-               dns_ip=?, npm_host_id=?, icon_url=?
-           WHERE id=?""",
-        (body.subdomain, body.domain, body.target_ip, body.target_port,
-         body.forward_scheme, int(body.websocket), int(body.enabled),
-         stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
-         new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
-         stored_dns_ip, next_npm_host_id, body.icon_url, sid),
-    )
+    # Same window as `add_service`, and it closes on a service that already exists. The
+    # hostname check above ran before any provider was reconfigured; by the time this UPDATE
+    # runs the rename has been carried out for real -- the old name withdrawn, the new one
+    # published. Measured with a second writer taking the name in between: the provider served
+    # `vault.example.com`, the row still spelled `old.example.com`, and the route raised.
+    #
+    # That is worse than the refused creation, because the row survives the rollback saying
+    # something the providers no longer do. The drift check then reports this service and the
+    # one that won the race as wrong, indefinitely. It is refused here instead, and the journal
+    # names the hostname the providers now answer for, so the divergence is written down rather
+    # than only inferable from a drift report.
+    try:
+        conn.execute(
+            """UPDATE services SET
+                   subdomain=?, domain=?, target_ip=?, target_port=?,
+                   forward_scheme=?, websocket=?, enabled=?,
+                   dns_provider_id=?, proxy_provider_id=?, tunnel_provider_id=?,
+                   expose_mode=?, public_target_mode=?, auto_update_dns=?, tunnel_hostname=?,
+                   dns_ip=?, npm_host_id=?, icon_url=?
+               WHERE id=?""",
+            (body.subdomain, body.domain, body.target_ip, body.target_port,
+             body.forward_scheme, int(body.websocket), int(body.enabled),
+             stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
+             new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
+             stored_dns_ip, next_npm_host_id, body.icon_url, sid),
+        )
+    except sqlite3.IntegrityError:
+        refusal = _hostname_taken(conn, new_public_host, exclude_id=sid)
+        conn.close()
+        # Its own connection, for the reason `add_service` gives at the same place.
+        add_log(
+            "warn",
+            f"Service #{sid} was reconfigured for {new_public_host} on its providers and then "
+            f"refused: another service claimed that hostname first. The service still records "
+            f"{old_public_host}, which its providers no longer serve -- run a drift check.",
+        )
+        raise HTTPException(409, refusal)
 
     # Same call the preflight makes, so the two agree on which ids are extras.
     primary_proxy_provider_id, primary_dns_provider_id = _primary_push_targets(body)
