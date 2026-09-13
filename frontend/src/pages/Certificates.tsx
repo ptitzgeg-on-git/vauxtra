@@ -31,6 +31,7 @@ import {
   certDays,
   countBuckets,
   matchesSearch,
+  resolveProviderFilter,
   sortCertificates,
   toCertFilter,
   type CertFilter,
@@ -135,17 +136,26 @@ export function Certificates() {
     return [...seen.entries()].map(([value, label]) => ({ value, label }));
   }, [certificates, sources]);
 
+  /**
+   * The chosen integration, or `all` once it stops being one of the choices. An operator
+   * filters to one integration, that integration is removed or stops answering, and the id
+   * stays in state: every row is dropped by a filter the select is no longer drawing.
+   */
+  const activeProviderFilter = useMemo(
+    () => resolveProviderFilter(providerFilter, providerOptions.map((option) => option.value)),
+    [providerFilter, providerOptions],
+  );
+
   const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase();
     const rows = certificates.filter((cert) => {
       if (statusFilter !== 'all' && certBucket(certDays(cert, now), warnDays) !== statusFilter) return false;
-      if (providerFilter !== 'all') {
-        if (String(cert.provider_id) !== providerFilter) return false;
+      if (activeProviderFilter !== 'all') {
+        if (String(cert.provider_id) !== activeProviderFilter) return false;
       }
-      return matchesSearch(cert, needle);
+      return matchesSearch(cert, search);
     });
     return sortCertificates(rows, now, warnDays);
-  }, [certificates, statusFilter, providerFilter, search, now, warnDays]);
+  }, [certificates, statusFilter, activeProviderFilter, search, now, warnDays]);
 
   const setStatusFilter = (next: CertFilter) => {
     const params = new URLSearchParams(searchParams);
@@ -174,7 +184,8 @@ export function Certificates() {
   const refreshing = expiryQuery.isFetching || listQuery.isFetching;
   // Only a real dead end: the expiry route failed *and* the flat list could not stand in.
   const failed = expiryQuery.isError && listQuery.isError;
-  const filtersActive = statusFilter !== 'all' || providerFilter !== 'all' || search.trim().length > 0;
+  const filtersActive =
+    statusFilter !== 'all' || activeProviderFilter !== 'all' || search.trim().length > 0;
 
   const emptyState = (() => {
     if (failed) {
@@ -320,7 +331,7 @@ export function Certificates() {
                 <Select
                   size="sm"
                   aria-label={t('certificates.provider_filter')}
-                  value={providerFilter}
+                  value={activeProviderFilter}
                   onChange={(event) => setProviderFilter(event.target.value)}
                   wrapperClassName="w-auto"
                 >

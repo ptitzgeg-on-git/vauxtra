@@ -40,6 +40,17 @@ export function toCertFilter(raw: string | null | undefined): CertFilter {
   return (CERT_FILTERS as readonly string[]).includes(raw ?? '') ? (raw as CertFilter) : 'all';
 }
 
+/**
+ * The integration filter, reconciled against the integrations that actually answered. The
+ * same reconciliation `toCertFilter` does for the status in the address bar, for the same
+ * reason: an id naming nothing hides every row, and the control cannot say so -- with no
+ * matching `<option>` the select draws blank, and below two integrations it is not drawn
+ * at all. A filter nobody can see and nobody can clear is worse than no filter.
+ */
+export function resolveProviderFilter(raw: string, offered: readonly string[]): string {
+  return raw === 'all' || offered.includes(raw) ? raw : 'all';
+}
+
 export const BUCKET_TONE: Record<CertBucket, Tone> = {
   expired: 'danger',
   critical: 'danger',
@@ -145,7 +156,14 @@ export function sortCertificates(certs: CertificateRow[], now: number, warnDays 
   });
 }
 
-export function matchesSearch(cert: CertificateRow, needle: string): boolean {
+/**
+ * The search box, read against the hosts, the file name and the integration. The needle is
+ * lowered here rather than by the caller: the helper of the same name in
+ * `features/services/helpers.ts` lowers its own, and one name under two conventions is a
+ * search that silently matches nothing the first time somebody types a capital letter.
+ */
+export function matchesSearch(cert: CertificateRow, search: string): boolean {
+  const needle = search.trim().toLowerCase();
   if (!needle) return true;
   const haystack = [...certDomains(cert), cert.nice_name || '', cert.provider_name || ''];
   return haystack.some((value) => value.toLowerCase().includes(needle));
