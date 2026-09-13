@@ -110,3 +110,21 @@ class ProxyProvider(ABC):
     @abstractmethod
     def find_best_certificate(self, domain_suffix: str) -> int | None:
         """Find the most suitable wildcard certificate for the domain."""
+
+
+def supports_suspension(proxy) -> bool:
+    """Whether this proxy can switch a host off instead of deleting it.
+
+    `ProxyProvider.toggle_host` returns False, so a provider that never overrode it can only
+    fail the call: there is no suspension to apply, none to lift, and none to plan. Two
+    override it, NPM and Zoraxy. Comparing the class's method to the base's is what tells those
+    apart from a provider that merely refused one particular host -- which is the same
+    `False` on the wire and a completely different thing to tell the operator.
+
+    Read through `getattr`, because a provider is whatever `create_provider` returns and not
+    necessarily a subclass: one that does not carry the method at all has no suspension to
+    speak of either, and that is the answer to give rather than an `AttributeError` from the
+    middle of a push.
+    """
+    override = getattr(type(proxy), "toggle_host", None)
+    return override is not None and override is not ProxyProvider.toggle_host

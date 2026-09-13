@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from app.auth import require_auth, require_auth_or_setup
 from app.importing import refuse_import, set_aside
 from app.models import add_log, get_db
-from app.providers.base import ProxyProvider
+from app.providers.base import supports_suspension
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import describe_public_target_failure, resolve_public_target
 from app.text import plural
@@ -82,22 +82,43 @@ def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
     return expose_mode, public_host, proxy_targets, dns_targets
 
 
-def _find_host_id(proxy, public_host: str):
-    """The provider's id for the host serving `public_host`, or None.
+def _find_host(proxy, public_host: str) -> dict | None:
+    """The provider's host record for `public_host`, or None.
 
     Hostnames compare case-insensitively: Zoraxy keeps a rule under the spelling it was
     typed with, and a rule created as "App.Example.com" is the same host as the service
     Vauxtra spells "app.example.com".
+
+    The whole record rather than its id, because `enabled` lives nowhere else. A host that
+    is held and not served is the state a disabled service leaves behind, and the id alone
+    cannot tell it from a host that answers.
     """
     wanted = (public_host or "").strip().lower()
     try:
         for h in proxy.list_hosts() or []:
             domains = h.get("domains") or h.get("domain_names") or []
             if any(str(d).strip().lower() == wanted for d in domains):
-                return h.get("id")
+                return h
     except (AttributeError, TypeError, ValueError):
         return None
     return None
+
+
+def _host_is_served(host: dict | None) -> bool:
+    """Whether a host that exists is also answering.
+
+    NPM and Zoraxy suspend rather than delete, so the rule stays in the listing and this
+    flag is the only thing that says it stopped serving. Providers with no suspension do not
+    report it at all, and `True` is the right default for them: read the other way, every
+    route they hold would be called suspended.
+    """
+    return bool(host is None or host.get("enabled", True))
+
+
+def _find_host_id(proxy, public_host: str):
+    """The provider's id for the host serving `public_host`, or None."""
+    host = _find_host(proxy, public_host)
+    return host.get("id") if host else None
 
 
 def _stored_host_id(hostname_keyed: bool, svc, public_host: str):
@@ -274,9 +295,10 @@ def withhold_service_routes(
     difference is not cosmetic. NPM keeps the custom locations, the advanced configuration
     and the certificate binding that Vauxtra does not model, and `npm_host_id` stays valid so
     the re-enable can toggle the same host back on. Deleting it here would leave that column
-    pointing at a host that no longer exists, and the re-enable would call `toggle_host` on a
-    dead id, read the `False` it gets back as "toggle not supported, host already present",
-    and leave the service dark while telling the operator it was switched on.
+    pointing at a host that no longer exists, and the re-enable would then fail on a dead id.
+    That failure is reported now -- the enable paths tell a refused toggle from an unsupported
+    one -- but it would be reported about a service whose configuration is already gone, which
+    is why the deletion is reserved for providers that genuinely cannot suspend.
 
     Everything else is removed rather than suspended, for the reasons the two neighbours
     already carry: DNS has no suspension, and Vauxtra never stores the host ids of the extra
@@ -306,12 +328,21 @@ def withhold_service_routes(
             proxy = create_provider(primary_row)
             if proxy.toggle_host(stored_host_id, False):
                 add_log("info", f"[Disable] Proxy suspended on {primary_row['name']}: {public_host}", conn)
-            elif proxy.delete_host(stored_host_id):
+            elif not supports_suspension(proxy):
                 # No suspension on this provider, so the route has to go -- and the column has
                 # to go with it, or the re-enable toggles an id that is not there any more.
-                conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
-                add_log("info", f"[Disable] Proxy route removed on {primary_row['name']} (suspend unsupported): {public_host}", conn)
+                if proxy.delete_host(stored_host_id):
+                    conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
+                    add_log("info", f"[Disable] Proxy route removed on {primary_row['name']} (suspend unsupported): {public_host}", conn)
+                else:
+                    errors.append(f"Failed to remove the proxy host on {primary_row['name']}")
             else:
+                # The fallback is for a provider that has no suspension, never for one whose
+                # suspension refused the call. NPM and Zoraxy answer the same `False` either
+                # way, and reading it as "unsupported" turned a provider that hiccupped into
+                # a deletion of the host -- with the custom locations, the advanced
+                # configuration and the certificate binding this suspension exists to keep,
+                # and `npm_host_id` blanked so nothing could be put back.
                 errors.append(f"Failed to suspend the proxy host on {primary_row['name']}")
         except Exception as e:
             # Deliberately not falling through to the deletion: the provider just failed to
@@ -376,7 +407,7 @@ def _build_withhold_plan(conn, svc, sid: int) -> dict:
                 # The fallback in `withhold_service_routes` is not a guess: a provider that
                 # does not override `toggle_host` inherits the base's `return False`, so the
                 # suspension it would try can only fail, and the route has to be deleted.
-                if type(proxy).toggle_host is not ProxyProvider.toggle_host:
+                if supports_suspension(proxy):
                     action = "suspend"
             except Exception as e:
                 errors.append(f"Proxy ({row['name']}): {e}")
@@ -469,15 +500,32 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
             host_id = None
             if expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
                 host_id = _stored_host_id(host_id_is_hostname(proxy, row["type"]), svc, public_host)
+            # The listing is read even when the stored id already answers, because `enabled`
+            # lives nowhere else and the push now acts on it. It costs the primary proxy one
+            # call the plan did not make before, and it is the call that stops the plan from
+            # answering "update" about a provider it cannot reach -- which is how it already
+            # behaves for every other proxy in this loop.
+            live = _find_host(proxy, public_host)
             if not host_id:
-                host_id = _find_host_id(proxy, public_host)
+                host_id = live.get("id") if live else None
+
+            if not host_id:
+                action = "create"
+            elif not _host_is_served(live) and supports_suspension(proxy):
+                # The push updates this host and then lifts its suspension, and those are
+                # different answers to "what will happen". Naming the second one is the
+                # difference between a plan that explains the drift report beside it and one
+                # that leaves the operator to assume an update also turns a route back on.
+                action = "resume"
+            else:
+                action = "update"
 
             proxy_actions.append(
                 {
                     "provider_id": row["id"],
                     "provider_name": row["name"],
                     "provider_type": row["type"],
-                    "action": "update" if host_id else "create",
+                    "action": action,
                     "target_host": public_host,
                     "target_origin": f"{svc['forward_scheme']}://{svc['target_ip']}:{svc['target_port']}",
                 }
@@ -567,7 +615,7 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                 # the listing and `enabled` is the only thing that says whether it still
                 # answers. Providers with no suspension do not report the flag at all, and
                 # `True` is the right default for them: a rule that exists is a rule serving.
-                if hit and hit.get("enabled", True):
+                if hit and _host_is_served(hit):
                     issues.append(
                         {
                             "severity": "error",
@@ -592,6 +640,24 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                     }
                 )
                 continue
+
+            # Held and not served, which is how Vauxtra itself switches a service off. Only
+            # the hostname and the origin were ever compared, so the flag Vauxtra had written
+            # read back as perfectly in sync while the hostname answered nothing -- and
+            # `update_host` is a PUT that does not carry the flag, so the Reconcile button
+            # beside this line walked over the host without lifting anything. Both halves are
+            # fixed together: the push resumes, and this is what asks it to.
+            if not _host_is_served(hit):
+                issues.append(
+                    {
+                        "severity": "error",
+                        "type": "proxy_route_suspended",
+                        "provider": row["name"],
+                        "detail": f"Route {public_host} is suspended on the provider",
+                        "detail_key": "route_suspended",
+                        "detail_params": {"host": public_host},
+                    }
+                )
 
             current_origin = f"{hit.get('scheme', 'http')}://{hit.get('host', '')}:{hit.get('port', '')}"
             if current_origin != expected_origin:
@@ -772,6 +838,15 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
                     # The live lookup found the rule under a name the row did not hold:
                     # write it back so the next cycle does not have to look again.
                     conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (host_id, sid))
+                # A host can be held without serving -- that is how Vauxtra switches a service
+                # off -- and `update_host` is a PUT that does not carry the flag. So the push
+                # wrote the right origin onto a suspended rule and left it suspended, and
+                # Reconcile, which is this push, could not converge the one state Vauxtra
+                # itself produces. Resuming is idempotent: NPM answers 200 to an enable on a
+                # host already enabled, and a provider with no suspension is never asked.
+                if pushed and supports_suspension(proxy) and not proxy.toggle_host(host_id, True):
+                    pushed = False
+                    attempted = f"resume of host {host_id}"
             else:
                 result = proxy.create_host(
                     public_host,

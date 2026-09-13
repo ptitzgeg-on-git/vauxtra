@@ -170,6 +170,19 @@ class _ProviderWithoutSuspension(_FakeProvider):
     toggle_host = ProxyProvider.toggle_host
 
 
+class _ProviderRefusingTheToggle(_FakeProvider):
+    """A proxy that implements the suspension and refused this particular call.
+
+    NPM answers a non-200 to `/enable` on an expired token, Zoraxy a failure on its own
+    toggle endpoint, and both come back as the same `False` a provider with no suspension
+    at all returns. The difference between the two is the class, never the wire.
+    """
+
+    def toggle_host(self, host_id, enabled):
+        self.calls.append((self.name, "toggle_host", host_id, enabled))
+        return False
+
+
 class _MultiSyncTestCase(unittest.TestCase):
     IP = "198.51.100.7"
 
@@ -1067,6 +1080,48 @@ class PushingADisabledServiceTests(_MultiSyncTestCase):
             self._stored_host_id(sid), "npm_host_id outlived the host it names"
         )
 
+    def test_a_refused_suspension_does_not_turn_into_a_deletion(self):
+        """The fallback is for a provider with no suspension, not for one that hiccupped.
+
+        NPM and Zoraxy answer the same `False` whether they cannot suspend at all or merely
+        failed this call, and the withdrawal read every `False` as the first. So an expired
+        token, a 500 or a dropped connection during a disable deleted the host instead of
+        suspending it -- taking the custom locations, the advanced configuration and the
+        certificate binding the suspension exists to keep -- and blanked `npm_host_id`, so
+        nothing was left to put back. A provider that refuses is a provider to report.
+        """
+        sid = self._published_then_switched_off_behind_the_route()
+        stale = self.providers[1]
+        refusing = _ProviderRefusingTheToggle(stale.name, self.calls)
+        refusing.hosts, refusing.rewrites = stale.hosts, stale.rewrites
+        self.providers[1] = refusing
+        host_id_before = self._stored_host_id(sid)
+
+        result = sync_api.push_service(sid, _request("POST"))
+
+        self.assertTrue(
+            refusing.holds(self.HOST), "a refused suspension deleted the host it could not suspend"
+        )
+        self.assertEqual(
+            self._stored_host_id(sid), host_id_before, "npm_host_id was blanked on a host that is still there"
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("suspend" in e for e in result["errors"]), result["errors"]
+        )
+
+    def test_the_plan_says_suspend_for_a_provider_that_can_suspend(self):
+        """The positive control of the pair above: nothing about the wire changed the plan."""
+        sid = self._published_then_switched_off_behind_the_route()
+        stale = self.providers[1]
+        refusing = _ProviderRefusingTheToggle(stale.name, self.calls)
+        refusing.hosts, refusing.rewrites = stale.hosts, stale.rewrites
+        self.providers[1] = refusing
+
+        plan = sync_api.dry_run_push_service(sid, _request("POST"))
+
+        self.assertEqual(self._plan_actions(plan)["NPM"], "suspend")
+
     def test_the_dry_run_of_an_enabled_service_still_plans_the_publication(self):
         self._add_provider(1, "NPM", "npm")
         self._add_provider(2, "AdGuard", "adguard")
@@ -1076,3 +1131,194 @@ class PushingADisabledServiceTests(_MultiSyncTestCase):
 
         self.assertFalse(plan["withheld"])
         self.assertEqual(self._plan_actions(plan), {"NPM": "update", "AdGuard": "upsert"})
+
+
+class ASuspendedRouteUnderAnEnabledServiceTests(_MultiSyncTestCase):
+    """The mirror of the disabled service: the record says on, the proxy host is suspended.
+
+    Suspension is how Vauxtra switches a service off -- it keeps the custom locations, the
+    advanced configuration and the certificate that no column models, and it keeps
+    `npm_host_id` valid. That makes "held but not serving" a state Vauxtra itself produces,
+    and every way back out of it went through one `if` in `update_service`: the transition
+    branch, which runs only when `enabled` actually flips and only in `proxy_dns` mode, and
+    whose `except` writes a warning and lets the route answer 200.
+
+    Everything downstream was blind to the result. `_compute_service_drift` looked the host
+    up by hostname and then compared the origin, never the flag it had itself written, so a
+    suspended route read as perfectly in sync. `update_host` is a PUT that does not carry
+    `enabled`, so a push -- and Reconcile, which is a push -- walked over the host without
+    lifting anything. The hostname answered nothing and every screen in Vauxtra said the
+    service was published and in sync.
+    """
+
+    HOST = "vault.example.com"
+
+    def _published_then_suspended_behind_the_route(self) -> int:
+        """Published, then suspended on the proxy while the row still reads enabled.
+
+        The suspension is applied to the provider rather than through `PUT` for the same
+        reason the disabled-service fixture writes its flag straight to the row: the write
+        route converges both halves, and what is under test is the state reached when one
+        half did not happen. A failed re-enable is the ordinary way there -- the `except`
+        in `update_service` swallows it -- and an operator suspending the host in NPM's own
+        interface is the other.
+        """
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        sid = body["id"]
+        npm = self.providers[1]
+        self.assertTrue(npm.serves(self.HOST), "the fixture never published")
+        self.assertTrue(npm.toggle_host(npm.hosts[0]["id"], False))
+        self.assertTrue(npm.holds(self.HOST))
+        self.assertFalse(npm.serves(self.HOST))
+        return sid
+
+    def test_drift_reports_a_route_that_is_held_but_not_served(self):
+        sid = self._published_then_suspended_behind_the_route()
+
+        drift = sync_api.service_drift(sid, _request("GET"))
+
+        kinds = {i["type"] for i in drift["issues"]}
+        self.assertIn("proxy_route_suspended", kinds, drift["issues"])
+        self.assertFalse(drift["ok"], "a hostname that answers nothing is not in sync")
+
+    def test_a_push_lifts_the_suspension_instead_of_writing_past_it(self):
+        sid = self._published_then_suspended_behind_the_route()
+
+        result = sync_api.push_service(sid, _request("POST"))
+
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(
+            self.providers[1].serves(self.HOST),
+            "the push updated the host and left it suspended",
+        )
+
+    def test_reconcile_converges_a_suspended_route(self):
+        sid = self._published_then_suspended_behind_the_route()
+
+        result = sync_api.reconcile_service(sid, _request("POST"))
+
+        self.assertTrue(result["ok"], result["after"]["issues"])
+        self.assertTrue(self.providers[1].serves(self.HOST))
+
+    def test_the_dry_run_says_the_suspension_will_be_lifted(self):
+        sid = self._published_then_suspended_behind_the_route()
+
+        plan = sync_api.dry_run_push_service(sid, _request("POST"))
+
+        self.assertFalse(plan["withheld"])
+        actions = {a["provider_name"]: a["action"] for a in plan["proxy_actions"]}
+        self.assertEqual(actions["NPM"], "resume")
+
+    def test_a_route_that_serves_is_not_reported_as_suspended(self):
+        """The positive control: nothing about an ordinary published service changes."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+
+        drift = sync_api.service_drift(body["id"], _request("GET"))
+
+        self.assertTrue(drift["ok"], drift["issues"])
+        self.assertEqual(drift["issues"], [])
+
+    def test_a_provider_that_never_reports_the_flag_is_read_as_serving(self):
+        """Cloudflare Tunnel has no `enabled` key at all, and a rule that is there serves.
+
+        The default matters more than it looks: read the other way, every provider without
+        a suspension would report every route it holds as suspended, which is the same
+        false alarm as the one being fixed, pointed at more services.
+        """
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        for host in self.providers[1].hosts:
+            host.pop("enabled", None)
+
+        drift = sync_api.service_drift(body["id"], _request("GET"))
+
+        self.assertTrue(drift["ok"], drift["issues"])
+
+
+class ResumingAProxyHostOnEnableTests(_MultiSyncTestCase):
+    """Re-enabling a service is one call, and its failure was filed as a success.
+
+    `toggle_host` returns False for two unrelated reasons: the provider has no suspension,
+    or the provider has one and refused. The enable branch read every False as the first and
+    wrote `Proxy active (toggle not supported, host already present)` at info level -- which
+    is exactly wrong for NPM and Zoraxy, the only two that implement it. A failed resume left
+    the host suspended, the row reading enabled, the route answering nothing, and the journal
+    saying the proxy was active.
+    """
+
+    HOST = "vault.example.com"
+
+    def _switched_off_with_the_host_kept(self, replacement=None) -> int:
+        """Published, then switched off in the table with `npm_host_id` still naming the rule.
+
+        That is what a suspension leaves behind. The flag is written to the row rather than
+        sent through `PUT` so that the next `PUT` is the transition back to enabled, which is
+        the branch under test; going through the route twice would spend the transition on
+        the way down.
+        """
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        sid = body["id"]
+        npm = self.providers[1]
+        self.assertTrue(npm.toggle_host(npm.hosts[0]["id"], False))
+        if replacement is not None:
+            swap = replacement(npm.name, self.calls)
+            swap.hosts, swap.rewrites = npm.hosts, npm.rewrites
+            self.providers[1] = swap
+        conn = models.get_db()
+        conn.execute("UPDATE services SET enabled=0 WHERE id=?", (sid,))
+        conn.commit()
+        conn.close()
+        self.assertIsNotNone(self._stored_host_id(sid), "the fixture lost the host id")
+        return sid
+
+    def _stored_host_id(self, sid: int):
+        conn = models.get_db()
+        row = conn.execute("SELECT npm_host_id FROM services WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        return row["npm_host_id"]
+
+    def _enable(self, sid: int) -> dict:
+        return services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(proxy_provider_id=1, dns_provider_id=2, enabled=True),
+        )
+
+    def test_a_refused_resume_is_reported_instead_of_logged_as_active(self):
+        sid = self._switched_off_with_the_host_kept(_ProviderRefusingTheToggle)
+
+        result = self._enable(sid)
+
+        self.assertTrue(result["errors"], "the route answered clean about a host still off")
+        self.assertFalse(self.providers[1].serves(self.HOST))
+
+    def test_a_successful_resume_says_nothing_and_serves_again(self):
+        """The positive control: the ordinary re-enable is unchanged."""
+        sid = self._switched_off_with_the_host_kept()
+
+        result = self._enable(sid)
+
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(self.providers[1].serves(self.HOST))
+
+    def test_a_provider_with_no_suspension_is_not_called_a_failure(self):
+        """Its `False` is the base class answering, and the host was never suspended.
+
+        Reading that as a refusal would file an error on every provider that has no toggle,
+        which is most of them -- the same false alarm as the one being fixed, pointed the
+        other way.
+        """
+        sid = self._switched_off_with_the_host_kept(_ProviderWithoutSuspension)
+        for host in self.providers[1].hosts:
+            host["enabled"] = True
+
+        result = self._enable(sid)
+
+        self.assertEqual(result["errors"], [])

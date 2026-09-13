@@ -233,6 +233,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A proxy route that was suspended read as perfectly in sync, and no push could turn it back
+  on.** Disabling a service suspends its primary proxy host rather than deleting it — that is
+  what keeps the custom locations, the advanced configuration and the certificate binding that
+  no Vauxtra column models, and what keeps `npm_host_id` valid. So "held but not served" is a
+  state Vauxtra itself produces, and every way back out of it ran through one branch in
+  `update_service`: the one that fires only when `enabled` actually flips, only in `proxy_dns`
+  mode, and whose `except` writes a warning and lets the route answer 200.
+
+  Everything downstream was blind to the result. The drift check looked the host up by
+  hostname and then compared the origin, never the flag Vauxtra had itself written, so a
+  suspended route came back in sync. `update_host` is a PUT that does not carry `enabled`, so
+  a push — and Reconcile, which is a push — wrote the right origin onto a suspended rule and
+  left it suspended. The hostname answered nothing and every screen said the service was
+  published and converged.
+
+  Drift now reports it as `proxy_route_suspended`, a push lifts the suspension as it updates
+  the host, and the dry-run says `resume` instead of `update` so the plan explains the report
+  beside it. Reading the flag costs the plan one listing on the primary proxy that it did not
+  make before, which is also what stops it from answering "update" about a provider it cannot
+  reach — the way it already behaved for every other proxy in the loop.
+
+- **A failed re-enable was written to the journal as a success.** `toggle_host` returns False
+  for two unrelated reasons: the provider has no suspension, or the provider has one and
+  refused the call. Both enable paths read every False as the first and logged `Proxy active
+  (toggle not supported, host already present)` at info level — which is exactly wrong for NPM
+  and Zoraxy, the only two providers that implement it. The host stayed suspended, the row
+  read enabled, the route answered nothing, and the one place an operator looks to find out
+  what happened said the proxy was active. The two cases are now told apart by the provider's
+  class rather than by the wire, and a refusal is an error the route returns.
+
+- **A provider that hiccupped during a disable had its host deleted instead of suspended.**
+  The withdrawal suspends the primary proxy host and falls back to deleting it when the
+  provider has no suspension to offer — and it decided which case it was in from the `False`
+  the call returned. That is the same `False` NPM answers on an expired token and Zoraxy on a
+  failed toggle, so a transient provider error during a disable deleted the host along with
+  the custom locations, the advanced configuration and the certificate binding the suspension
+  exists to keep, and blanked `npm_host_id` so nothing was left to put back. The fallback is
+  now reserved for providers that genuinely cannot suspend; a refusal is reported. The
+  dry-run already read the class rather than the wire, so the plan and the push agree again.
+
+  Eleven tests cover the suspended route, the push, Reconcile, the dry-run, a refused resume,
+  a refused suspension and a provider with no suspension at all; six of them fail on the code
+  as it stood.
+
 - **Pushing a disabled service published it again, and the drift check called its absence an
   error.** A push converges the providers on what the record says, and the record is allowed
   to say "off" — but `_push_service_row` never read `services.enabled`. It read
