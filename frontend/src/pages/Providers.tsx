@@ -46,6 +46,7 @@ import {
   createWithdrawChoice,
   describeWithdrawal,
   isProviderDeleteConflict,
+  providerConflictTitleKey,
   providerDeleteQuery,
 } from '@/hooks/useProviderMutations';
 import { ProviderDeleteConflictBody } from '@/components/features/providers/ProviderDeleteConflictBody';
@@ -419,6 +420,11 @@ export function Providers() {
     onSuccess: (result: ProviderDeleteResult, vars: ProviderDeleteVars) => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       queryClient.invalidateQueries({ queryKey: ['services'] });
+      // The delete blanks the provider columns of every template that named it, so the
+      // Templates page is stale in exactly the way the Services page is.
+      if (result?.unlinked_templates?.length) {
+        queryClient.invalidateQueries({ queryKey: ['templates'] });
+      }
       // A withdrawal that only half worked leaves records live on a server Vauxtra can no
       // longer reach; announcing "deleted" and nothing else is how that stayed invisible.
       const partial = describeWithdrawal(result, vars.name ?? '', t);
@@ -449,7 +455,7 @@ export function Providers() {
         // dialog writes into this box and we read it back once the question is answered.
         const choiceRef = createWithdrawChoice();
         const force = await confirm({
-          title: t('providers.delete.deps_title'),
+          title: t(providerConflictTitleKey(detail)),
           message: <ProviderDeleteConflictBody name={name} detail={detail} choiceRef={choiceRef} />,
           confirmLabel: t('providers.delete.force_confirm'),
           variant: 'warning',
