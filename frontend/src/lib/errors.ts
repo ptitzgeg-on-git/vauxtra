@@ -166,16 +166,30 @@ export function getErrorMessage(err: unknown, fallback: string): string {
 /** `t` as the i18n provider hands it out; typed here so `lib/` does not import the provider. */
 export type Translate = (key: string, params?: Record<string, string | number>) => string;
 
+/** True when FastAPI wrote the body: axios parses its JSON, a proxy's error page stays text. */
+function hasApiBody(err: unknown): boolean {
+  const data = isApiError(err) ? err.response?.data : undefined;
+  return typeof data === 'object' && data !== null;
+}
+
 /**
  * The status codes whose meaning the caller's `fallback` cannot express: the request did not
  * fail *because of this action*, it failed because the session, the quota or the server did.
  * Everything else (400, 404, 409, 422, ...) is about the action itself, and the caller's own
  * sentence -- "Failed to add domain" -- says it better than a generic one.
+ *
+ * 502 is the one 5xx that is not about this server. `app/api/providers.py`, `docker.py` and
+ * `webhooks.py` raise it eleven times between them and argue the choice in their own
+ * comments: the request left, the far end refused, and nothing here broke. Folding it into
+ * "the server ran into a problem" sends an operator to read Vauxtra's logs when the answer
+ * is their provider token. Only when FastAPI wrote the body, though -- a 502 from a proxy in
+ * front of the API means the API never answered, and that one really is this server.
  */
-function statusMessageKey(status: number): string | undefined {
+function statusMessageKey(status: number, fromApi: boolean): string | undefined {
   if (status === 401) return 'common.error.unauthorized';
   if (status === 403) return 'common.error.forbidden';
   if (status === 429) return 'common.error.rate_limited';
+  if (status === 502 && fromApi) return 'common.error.upstream';
   if (status >= 500) return 'common.error.server';
   return undefined;
 }
@@ -194,7 +208,7 @@ export function translateApiError(err: unknown, t: Translate, fallback: string):
   if (isNetworkError(err)) return t('common.error.network');
   const status = getHttpStatus(err);
   if (status !== undefined) {
-    const key = statusMessageKey(status);
+    const key = statusMessageKey(status, hasApiBody(err));
     return key ? t(key) : fallback;
   }
   // Not an HTTP failure at all (a thrown Error, a rejected promise): its own message is the
