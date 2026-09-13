@@ -211,6 +211,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **`CONTRIBUTING.md` asked for a Node version the toolchain does not accept.** It said
+  "Requires **Node.js 22+**", and nothing in the repository backed that number. The Python
+  floor is declared twice — the README sentence and `ruff.toml`'s `target-version = "py313"` —
+  while `frontend/package.json` carried no `engines` field at all, so the Node floor was prose
+  and only prose.
+
+  The real requirement is `^22.22.2 || ^24.15.0 || >=26.0.0`: the intersection of all 62
+  distinct `engines.node` ranges in `frontend/package-lock.json`, and today `jsdom`'s own
+  range, the tightest in the tree. Node 22.0 through 22.22.1, all of 23.x, 24.0 through 24.14
+  and all of 25.x satisfy "22+" while packages in the tree — `jsdom` and `vitest` among them —
+  declare them unsupported, and `npm` reports `EBADENGINE` for each.
+
+  `frontend/package.json` now declares the range, so npm checks a contributor's interpreter at
+  install time instead of leaving a sentence to do it. It is deliberately not added to
+  `scripts/check_runtime_parity.py`: that gate reads what the published image runs, and says in
+  its own docstring that a source floor is a separate policy, allowed to sit below the image
+  and not read there. Nothing failed and nothing would have, because CI has only ever built on
+  Node 26 — the cost was paid by whoever installed what the document asked for.
+
 - **Eight API routes appeared in no document at all.** The reference in `docs/HOWTO.md`
   listed 82 of the 90 routes the application serves. Missing were `GET /api/services/{sid}` —
   the plainest read in the API, and the one an operator writing a script reaches for first —

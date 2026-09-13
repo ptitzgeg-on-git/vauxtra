@@ -24,7 +24,13 @@ The API is available at `http://localhost:8888`. Interactive docs at `http://loc
 
 ### Frontend (React + Vite)
 
-> Requires **Node.js 22+**
+> Requires **Node.js `^22.22.2 || ^24.15.0 || >=26.0.0`**
+
+`frontend/package.json` declares that range, so `npm` checks your interpreter against it at
+install time rather than leaving a sentence to do it. It is the intersection of every
+`engines.node` field in `frontend/package-lock.json` — today `jsdom`'s own range, the
+tightest in the tree. The gaps are not arbitrary: caret ranges over the even-numbered
+releases exclude all of 23.x and 25.x. CI builds on 26.
 
 ```bash
 cd frontend
