@@ -1528,6 +1528,19 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     if stale_targets:
         for message in withdraw_service_routes(conn, old, sid, only_provider_ids=stale_targets):
             add_log("warn", f"Could not withdraw {old_public_host} from a former target: {message}", conn)
+            # And in the answer, not only in the journal. Every other caller of
+            # `withdraw_service_routes` puts these messages into the `errors` its route
+            # returns -- the delete route, the bulk route, the provider deletion, both halves
+            # of the multi-sync withdrawal -- and this was the one that did not, so an edit
+            # dropping a target the provider then refused to release came back a plain 200
+            # with `errors: []` while that provider went on serving the hostname.
+            #
+            # The row is unlinked either way, by `set_push_targets` just below, and that is
+            # what makes the silence permanent: `_all_route_holders` reads the rows it
+            # deletes, so nothing afterwards -- not the next push, not deleting the service
+            # -- can reach that provider again. The panel has read this field on a save all
+            # along (`ExposeModal.tsx`), and the switch and the bulk bar read it too.
+            errors.append(f"Former target: {message}")
 
     set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
 
