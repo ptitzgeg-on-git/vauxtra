@@ -8,18 +8,40 @@ router = APIRouter()
 
 _WEBHOOK_SCOPE_TYPES = {"all", "provider", "service"}
 
+#: The table each scope word names. `scope_ref_id` is a bare INTEGER with no foreign key, so
+#: the word is the only thing that says which id space the number is in.
+_SCOPE_TARGET_TABLE = {"provider": "providers", "service": "services"}
 
-def _normalize_scope(body: dict, existing: dict | None = None) -> tuple[str, int | None]:
+
+def _normalize_scope(body: dict, existing: dict | None = None, *, conn) -> tuple[str, int | None]:
+    """The `(word, id)` a webhook is stored under, refused when it names nothing.
+
+    `webhooks.scope_ref_id` carries no foreign key, which `_provider_webhook_dependents`
+    (`app/api/providers.py`) and `_webhooks_scoped_to` (`app/api/services.py`) both explain
+    at length: nothing cascades through a reference the schema does not declare, so deleting
+    the target leaves the webhook behind still holding its id. Both of them warn in the
+    journal when that happens. This is the other end of the same problem -- an id that named
+    nothing on the way *in* -- and it had no warning at all. `_service_matches_scope`
+    (`app/scheduler.py`) answers False for every service from then on and Settings goes on
+    showing the webhook as enabled: dead, and it looks armed.
+
+    The two words share one id space and mean different things in it, so a scope that changes
+    word cannot keep the id it had. Service 4 and provider 4 are unrelated rows, and carrying
+    the number across turns an alert on a service into an alert on whichever provider happens
+    to hold that id -- not silence, which someone would eventually notice, but a wrong
+    subject reported with confidence. Changing the word therefore asks for the new target.
+    """
     current_scope_type = (existing or {}).get("scope_type", "all")
     current_scope_ref_id = (existing or {}).get("scope_ref_id")
 
     scope_type = str(body.get("scope_type", current_scope_type) or "all").strip().lower()
     if scope_type not in _WEBHOOK_SCOPE_TYPES:
         raise HTTPException(400, "Invalid scope type")
-
-    scope_ref_raw = body.get("scope_ref_id", current_scope_ref_id)
     if scope_type == "all":
         return "all", None
+
+    inherited = current_scope_ref_id if scope_type == current_scope_type else None
+    scope_ref_raw = body.get("scope_ref_id", inherited)
     if scope_ref_raw in (None, "", 0, "0"):
         raise HTTPException(400, "A provider or service target is required for this scope")
     try:
@@ -28,6 +50,14 @@ def _normalize_scope(body: dict, existing: dict | None = None) -> tuple[str, int
         raise HTTPException(400, "Invalid scope target")
     if scope_ref_id <= 0:
         raise HTTPException(400, "Invalid scope target")
+
+    table = _SCOPE_TARGET_TABLE[scope_type]
+    found = conn.execute(
+        f"SELECT 1 FROM {table} WHERE id=?",  # noqa: S608 -- `table` is picked by a word already
+        (scope_ref_id,),                      # checked against `_WEBHOOK_SCOPE_TYPES`; the id is bound
+    ).fetchone()
+    if not found:
+        raise HTTPException(400, f"Nothing to alert on -- unknown {scope_type} {scope_ref_id}")
     return scope_type, scope_ref_id
 
 
@@ -125,9 +155,11 @@ def add_webhook(request: Request, body: dict):
     alert_on_integration_up  = int(bool(body.get("alert_on_integration_up", False)))
     min_down_minutes         = max(0, int(body.get("min_down_minutes", 0) or 0))
     repeat_interval_minutes  = max(0, int(body.get("repeat_interval_minutes", 0) or 0))
-    scope_type, scope_ref_id = _normalize_scope(body)
     conn = get_db()
     try:
+        # After the connection is open: a scope target is checked against the table its word
+        # names, and an unknown one is a 400 before anything is written.
+        scope_type, scope_ref_id = _normalize_scope(body, conn=conn)
         cur = conn.execute(
             """INSERT INTO webhooks
                (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
@@ -174,7 +206,7 @@ def update_webhook(wid: int, request: Request, body: dict):
         name    = body.get("name", existing["name"])
         url     = body.get("url", existing["url"])
         enabled = int(bool(body.get("enabled", existing["enabled"])))
-        scope_type, scope_ref_id = _normalize_scope(body, dict(existing))
+        scope_type, scope_ref_id = _normalize_scope(body, dict(existing), conn=conn)
         alert_on_any_down         = int(bool(body.get("alert_on_any_down",        existing["alert_on_any_down"])))
         alert_on_any_up           = int(bool(body.get("alert_on_any_up",          existing["alert_on_any_up"])))
         alert_on_integration_down = int(bool(body.get("alert_on_integration_down", existing["alert_on_integration_down"])))

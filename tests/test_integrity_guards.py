@@ -26,6 +26,7 @@ from starlette.requests import Request
 from app import models
 from app.api import providers as providers_api
 from app.api import services as services_api
+from app.api import webhooks as webhooks_api
 
 
 def _request(method: str = "POST", path: str = "/") -> Request:
@@ -615,6 +616,141 @@ class WriteEndpointsValidateReferencesFirstTests(_IsolatedDB):
         conn.close()
         self.assertEqual(row["subdomain"], "app")
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# A webhook armed at an id nothing answers to
+# ─────────────────────────────────────────────────────────────────────────────────────
+class WebhookScopeNamesSomethingThatExistsTests(_IsolatedDB):
+    """`scope_ref_id` carries no foreign key, so nothing but the route itself said no.
+
+    The two delete paths above warn when a deletion leaves a webhook aimed at nothing: the
+    row outlives its target, `_service_matches_scope` answers False from then on, and
+    Settings goes on showing it as enabled. Reaching that same state through the write
+    endpoint took one wrong number, and produced no warning anywhere.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._patch = patch.object(webhooks_api, "require_auth", lambda _req, scope=None: None)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self._seed_providers()
+
+    def _create(self, **overrides) -> dict:
+        body = {"name": "on-call", "url": "json://hook.test/x"}
+        body.update(overrides)
+        return webhooks_api.add_webhook(_request(), body)
+
+    def _stored(self, wid: int) -> dict:
+        conn = models.get_db()
+        row = conn.execute(
+            "SELECT scope_type, scope_ref_id, enabled FROM webhooks WHERE id=?", (wid,)
+        ).fetchone()
+        conn.close()
+        return dict(row)
+
+    def test_a_service_scope_naming_no_service_is_refused(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            self._create(scope_type="service", scope_ref_id=99999)
+
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("service 99999", caught.exception.detail)
+        conn = models.get_db()
+        self.assertIsNone(conn.execute("SELECT 1 FROM webhooks").fetchone())
+        conn.close()
+
+    def test_a_provider_scope_naming_no_provider_is_refused(self) -> None:
+        """One id space, two meanings: a service id under `provider` names nothing at all."""
+        sid = self._seed_service()
+
+        with self.assertRaises(HTTPException) as caught:
+            self._create(scope_type="provider", scope_ref_id=sid)
+
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn(f"provider {sid}", caught.exception.detail)
+
+    def test_an_update_onto_a_target_that_is_not_there_keeps_the_old_one(self) -> None:
+        created = self._create(scope_type="provider", scope_ref_id=2)
+
+        with self.assertRaises(HTTPException) as caught:
+            webhooks_api.update_webhook(created["id"], _request("PUT"), {"scope_ref_id": 404})
+
+        self.assertIn("provider 404", caught.exception.detail)
+        self.assertEqual(self._stored(created["id"])["scope_ref_id"], 2)
+
+    def test_changing_the_word_alone_does_not_carry_the_id_across(self) -> None:
+        """Service 1 and provider 1 are unrelated rows, and the scope used to move between."""
+        sid = self._seed_service()
+        created = self._create(scope_type="service", scope_ref_id=sid)
+
+        with self.assertRaises(HTTPException) as caught:
+            webhooks_api.update_webhook(created["id"], _request("PUT"), {"scope_type": "provider"})
+
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(
+            self._stored(created["id"]),
+            {"scope_type": "service", "scope_ref_id": sid, "enabled": 1},
+        )
+
+    def test_changing_the_word_and_naming_the_new_target_goes_through(self) -> None:
+        sid = self._seed_service()
+        created = self._create(scope_type="service", scope_ref_id=sid)
+
+        webhooks_api.update_webhook(
+            created["id"], _request("PUT"), {"scope_type": "provider", "scope_ref_id": 3}
+        )
+
+        self.assertEqual(
+            self._stored(created["id"]),
+            {"scope_type": "provider", "scope_ref_id": 3, "enabled": 1},
+        )
+
+    def test_a_target_that_is_there_is_armed(self) -> None:
+        created = self._create(scope_type="provider", scope_ref_id=2)
+
+        self.assertEqual(
+            self._stored(created["id"]),
+            {"scope_type": "provider", "scope_ref_id": 2, "enabled": 1},
+        )
+
+    def test_a_scope_of_everything_names_nothing_and_is_asked_for_nothing(self) -> None:
+        created = self._create(scope_type="all")
+
+        self.assertEqual(
+            self._stored(created["id"]),
+            {"scope_type": "all", "scope_ref_id": None, "enabled": 1},
+        )
+
+    def test_a_partial_update_keeps_the_scope_it_had(self) -> None:
+        """The enable/disable toggle sends only `enabled`; it must not resend a scope to keep
+        the one already stored, and the check must not fire on a scope nobody touched."""
+        created = self._create(scope_type="provider", scope_ref_id=2)
+
+        webhooks_api.update_webhook(created["id"], _request("PUT"), {"enabled": 0})
+
+        self.assertEqual(
+            self._stored(created["id"]),
+            {"scope_type": "provider", "scope_ref_id": 2, "enabled": 0},
+        )
+
+    def test_every_scope_word_names_a_table_to_check_it_against(self) -> None:
+        """The gate that generalises, beside the one the delete paths already have.
+
+        A scope word added to `_WEBHOOK_SCOPE_TYPES` with no table behind it reaches
+        `_SCOPE_TARGET_TABLE[scope_type]` and raises `KeyError`, which is a 500 on a wrong
+        id instead of the 400 this check exists to give.
+        """
+        from app.api.webhooks import _SCOPE_TARGET_TABLE, _WEBHOOK_SCOPE_TYPES
+
+        self.assertEqual(
+            sorted(_SCOPE_TARGET_TABLE),
+            sorted(_WEBHOOK_SCOPE_TYPES - {"all"}),
+            "a scope word with no table behind it turns a wrong id into a 500",
+        )
+        conn = models.get_db()
+        for table in _SCOPE_TARGET_TABLE.values():
+            conn.execute(f"SELECT 1 FROM {table} LIMIT 1")  # noqa: S608 -- the table names above
+        conn.close()
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # One hostname, one service

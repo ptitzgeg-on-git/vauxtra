@@ -412,6 +412,29 @@ offers. Both also write a single journal line each. The keys a restore drops **o
 epoch, and the one-shot webhook log purge marker — are never reported, because a warning
 that fires on every restore is one you learn to skip.
 
+### Who each webhook watches
+
+Every rule has a scope, which is the question *what is this one allowed to tell me about*:
+
+- **Everything** — the whole install. No target to pick.
+- **A provider** — only the services published through that provider.
+- **A service** — only that one hostname.
+
+A scoped rule is stored as a word plus a number, and the number has to name a row that exists
+when you save: pick a provider or a service that is not there and the save is refused with
+`Nothing to alert on` rather than accepted and quietly stored. The two lists number their rows
+independently — provider 4 and service 4 are unrelated — so switching a rule from one kind of
+scope to the other asks you for the new target rather than reusing the number. The panel does
+that for you; a script calling the API directly has to send `scope_ref_id` alongside the new
+`scope_type`.
+
+What a scope does **not** do is disappear with its target. Deleting a provider or a service
+never deletes or disables a webhook pointed at it: the rule stays exactly as you wrote it, and
+a journal line names every rule left watching something that is gone. That is deliberate —
+silently switching off a notification target is a worse surprise than being told — but it does
+mean the Settings list can show a rule as enabled when nothing will ever match it again. The
+journal entry is where you find out; the fix is to repoint the rule or delete it.
+
 ### Events
 
 Notifications are sent for:
