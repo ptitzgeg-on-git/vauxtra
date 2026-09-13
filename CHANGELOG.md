@@ -233,6 +233,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **"This will replace all current data" — for the action log and the uptime history it is a
+  plain delete, and no backup file has ever carried either one.** A restore empties the same
+  sixteen tables a reset does, then refills them from the file. Four of the sixteen are carried
+  by no export on purpose, and two of those four are screens in the interface. So the instance
+  restored onto loses its journal and its uptime history, the restore answers `ok: true`, and
+  what is left on the Logs screen is one line about the restore itself — which reads like a
+  quiet instance rather than an emptied one. Measured end to end on a live database: forty
+  checks and twenty-five journal lines in, zero and one out.
+
+  The same half-truth ran through three sentences. The hint above the Reset button offered the
+  export as the undo — "Export a backup first: a reset cannot be undone." — and the export is
+  the undo for the configuration and nothing else. The reset dialog named both tables but hung
+  "that no backup carries" on the uptime history alone, so the log beside it read as covered.
+  The restore dialog, the one that costs something, said neither: a reset is pressed by somebody
+  who means to lose everything, a restore by somebody rolling back a bad change on an instance
+  they intend to keep.
+
+  All three now name the two tables and say that nothing brings them back, in all eight
+  languages, and the restore dialog still lists the seven counts of what is coming in — the
+  honesty is added, not bought by deleting the good news. Two gates hold it: the wording is
+  bound to `_NOT_EXPORTED_ON_PURPOSE` in `backup.py`, so a table that stops being exempt fails
+  the prose, and the deletion itself is measured against a running instance with a positive
+  control that fails if the restore simply wiped everything.
+
 - **Changing the admin password revoked every API key on the instance in nobody's mind but
   the operator's.** Measured against a running instance rather than read off the SQL: after a
   change, the browser that made it keeps its session, every other one is refused and has its

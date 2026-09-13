@@ -14,6 +14,7 @@ silence it replaced. `TheDropsMadeOnPurposeStaySilentTests` is what fails if tha
 calibration is ever lost.
 """
 
+import json
 import os
 import tempfile
 import unittest
@@ -326,6 +327,134 @@ class TheAnswerKeepsTheShapeThePanelReadsTests(_RestoreBench):
         self.assertTrue(all(isinstance(k, str) for k in result["settings_not_restored"]), result)
         self.assertIsInstance(result["domains_without_name"], int, result)
 
+
+class RestoreDeletesTheHistoryNoFileCarriesTests(_RestoreBench):
+    """A restore calls itself a replacement. For two tables it is a plain delete.
+
+    `POST /api/restore` empties the same sixteen tables `POST /api/reset` does, then refills
+    them from the file. Four of the sixteen are carried by no export on purpose
+    (`_NOT_EXPORTED_ON_PURPOSE` in `backup.py`), so for those four the second half never
+    happens. Two of the four are plumbing nobody looks at -- the webhook send queue and the
+    scheduler's alert cursor -- and two are screens in the interface: the action log and the
+    uptime history.
+
+    The dialog said "This will replace all current data with the backup contents", listed
+    seven counts of what was coming in, and said nothing about the two going out. Replace
+    implies conservation, and the operator reading it is usually not trying to lose anything:
+    a restore is how you roll back a bad change, or move an instance onto a new host.
+
+    So these tests measure it end to end on a live database instead of reading table lists,
+    and `test_the_configuration_beside_them_does_come_back` is the control that keeps the
+    other three honest -- without it, a restore that simply failed and left the instance
+    empty would pass all three.
+    """
+
+    def _export(self) -> dict:
+        """The file the operator is told to take before anything destructive."""
+        get = Request({"type": "http", "method": "GET", "path": "/api/backup", "headers": []})
+        return json.loads(backup_api.export_backup(get).body)
+
+    def _count(self, table: str) -> int:
+        conn = models.get_db()
+        try:
+            return conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]  # noqa: S608
+        finally:
+            conn.close()
+
+    def _seed_an_instance_that_has_been_running(self) -> None:
+        """Two domains, two services, a few weeks of checks, and a journal somebody can read."""
+        conn = models.get_db()
+        try:
+            for name in ("example.test", "other.test"):
+                conn.execute("INSERT INTO domains (name) VALUES (?)", (name,))
+            for sub in ("nas", "media"):
+                conn.execute(
+                    "INSERT INTO services (subdomain, domain, target_ip, target_port) "
+                    "VALUES (?, ?, ?, ?)",
+                    (sub, "example.test", "10.0.0.9", 443),
+                )
+            service_id = conn.execute("SELECT id FROM services ORDER BY id").fetchone()["id"]
+            for i in range(40):
+                conn.execute(
+                    "INSERT INTO uptime_events (service_id, status) VALUES (?, ?)",
+                    (service_id, "down" if i % 7 == 0 else "up"),
+                )
+            for i in range(25):
+                conn.execute(
+                    "INSERT INTO logs (level, message) VALUES ('info', ?)",
+                    (f"operator did thing {i}",),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_the_archive_carries_neither_the_journal_nor_the_uptime_history(self) -> None:
+        """The premise. The file the dialogs point at does not hold either one."""
+        self._seed_an_instance_that_has_been_running()
+
+        archive = self._export()
+
+        self.assertGreater(len(archive), 10, "the export came back with nothing to look at")
+        self.assertTrue(archive["services"], "the export skipped the services too; wrong subject")
+        for table in ("logs", "uptime_events"):
+            with self.subTest(table=table):
+                self.assertNotIn(table, sorted(archive))
+
+    def test_restoring_that_archive_deletes_both(self) -> None:
+        """Export an instance, restore that same file onto it, and its history is gone."""
+        self._seed_an_instance_that_has_been_running()
+        self.assertEqual(self._count("uptime_events"), 40)
+        archive = self._export()
+
+        self._restore(archive)
+
+        self.assertEqual(
+            self._count("uptime_events"),
+            0,
+            "the uptime history survived; the dialogs no longer need to warn about it",
+        )
+        self.assertEqual(
+            [m for _level, m in self._logs() if m.startswith("operator did thing")],
+            [],
+            "journal lines written before the restore survived it",
+        )
+
+    def test_what_is_left_of_the_journal_reads_like_a_quiet_instance(self) -> None:
+        """Emptied is not what the screen shows, and that is why the dialog had to say it.
+
+        The restore writes its own account of itself into the table it has just emptied, so
+        Settings > Action Logs afterwards is not blank: it holds a line or two, all of them
+        about the restore. An operator who never counted the rows beforehand cannot tell that
+        apart from an instance where nothing has happened lately.
+        """
+        self._seed_an_instance_that_has_been_running()
+        archive = self._export()
+
+        self._restore(archive)
+
+        remaining = self._logs()
+        self.assertLess(
+            len(remaining), 5, f"25 lines became {len(remaining)}; this test reads what is left"
+        )
+        self.assertTrue(
+            any("restor" in message.lower() for _level, message in remaining),
+            f"the journal says nothing about the restore that emptied it: {remaining}",
+        )
+
+    def test_the_configuration_beside_them_does_come_back(self) -> None:
+        """The control. The three tests above are worthless if the restore wiped everything.
+
+        The two services and the two domains travel in the same file, through the same wipe,
+        and they are back afterwards -- so the two tables that are not back are missing for
+        the reason this class is about, and not because the restore failed.
+        """
+        self._seed_an_instance_that_has_been_running()
+        archive = self._export()
+
+        self._restore(archive)
+
+        self.assertEqual(self._count("services"), 2)
+        self.assertEqual(self._domains(), ["example.test", "other.test"])
 
 if __name__ == "__main__":
     unittest.main()
