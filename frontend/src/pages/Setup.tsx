@@ -31,6 +31,7 @@ import { ProviderDeleteConflictBody } from '@/components/features/providers/Prov
 import {
   createWithdrawChoice,
   isProviderDeleteConflict,
+  providerConflictTitleKey,
   useProviderMutations,
 } from '@/hooks/useProviderMutations';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
@@ -341,7 +342,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
       // this box is how its state gets back out. Same flow as the Integrations page.
       const choiceRef = createWithdrawChoice();
       const force = await confirm({
-        title: t('providers.delete.deps_title'),
+        title: t(providerConflictTitleKey(detail)),
         message: <ProviderDeleteConflictBody name={name} detail={detail} choiceRef={choiceRef} />,
         confirmLabel: t('providers.delete.force_confirm'),
         variant: 'warning',

@@ -259,10 +259,27 @@ export interface ProviderDependent {
   still_published?: boolean;
 }
 
-/** The 409 `detail` of `DELETE /api/providers/{pid}` when services depend on it and `?force=` was not set. */
+/**
+ * A service template still naming a provider about to be deleted
+ * (`DELETE /api/providers/{pid}` -> 409 `detail.templates[]`).
+ *
+ * Not a `ProviderDependent`: a template publishes nothing, so it has no hostname, nothing
+ * goes dark when the provider leaves, and there is no record to withdraw. What it loses is
+ * the provider choice somebody typed into it.
+ */
+export interface ProviderTemplateDependent {
+  id: number;
+  name: string;
+  /** `proxy`, `dns` or `tunnel` -- which of the template's three slots named this provider. */
+  roles: string[];
+}
+
+/** The 409 `detail` of `DELETE /api/providers/{pid}` when anything depends on it and `?force=` was not set. */
 export interface ProviderDeleteConflict {
   message: string;
   services: ProviderDependent[];
+  /** Absent on an instance older than the release that added the template half of this check. */
+  templates?: ProviderTemplateDependent[];
 }
 
 /** `DELETE /api/providers/{pid}?force=true`. */
@@ -270,6 +287,8 @@ export interface ProviderDeleteResult {
   /** False when `withdraw=true` was asked for and at least one record could not be taken off. */
   ok: boolean;
   unlinked_services: number[];
+  /** Templates whose provider slot was blanked by the deletion; the Templates cache is stale. */
+  unlinked_templates?: number[];
   /** `withdraw=true` was honoured: the records were taken off the provider before it went. */
   withdrawn?: boolean;
   /** One `fqdn: reason` per record the withdrawal could not remove; it is still live there. */

@@ -444,7 +444,46 @@ def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
     return dependents
 
 
-def _describe_provider_removal(name: str, dependents: list[dict[str, Any]]) -> str:
+def _provider_template_dependents(conn, pid: int) -> list[dict[str, Any]]:
+    """Service templates that lose a provider choice the moment `pid` is deleted.
+
+    `app/models.py` declares the schema's seven references to `providers.id`. Four of them
+    live on `services` and `service_push_targets` and `_provider_dependents` reads them. The
+    other three are `service_templates.proxy_provider_id`, `.dns_provider_id` and
+    `.tunnel_provider_id`, and nothing asked about them: a provider only a template pointed
+    at was deleted with no question at all, and the template came back with an empty provider
+    field that nobody had emptied.
+
+    A template is not a service and does not belong in the same list. Nothing is published
+    from a template, so there is no record to withdraw and no hostname to go dark -- what is
+    lost is a choice the operator typed, and the only useful thing to do about it is say so
+    before the deletion rather than let them find it on the next service they create.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, name, proxy_provider_id, dns_provider_id, tunnel_provider_id
+          FROM service_templates
+         WHERE proxy_provider_id = ? OR dns_provider_id = ? OR tunnel_provider_id = ?
+         ORDER BY name
+        """,
+        (pid, pid, pid),
+    ).fetchall()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        roles = [
+            role
+            for role, col in (("proxy", "proxy_provider_id"), ("dns", "dns_provider_id"),
+                              ("tunnel", "tunnel_provider_id"))
+            if row[col] == pid
+        ]
+        out.append({"id": row["id"], "name": row["name"], "roles": roles})
+    return out
+
+
+def _describe_provider_removal(
+    name: str, dependents: list[dict[str, Any]], templates: list[dict[str, Any]]
+) -> str:
     """What the operator actually gets, told apart service by service.
 
     The single sentence this replaces said every dependent service "stops being pushed
@@ -457,9 +496,12 @@ def _describe_provider_removal(name: str, dependents: list[dict[str, Any]]) -> s
     kept = [d for d in dependents if d.get("still_published")]
     orphaned = [d for d in dependents if not d.get("still_published")]
 
-    parts = [
-        f'{plural(len(dependents), "service")} still {verb(len(dependents), "uses", "use")} "{name}".'
-    ]
+    parts: list[str] = []
+    if dependents:
+        parts.append(
+            f'{plural(len(dependents), "service")} still '
+            f'{verb(len(dependents), "uses", "use")} "{name}".'
+        )
     if orphaned:
         parts.append(
             f"{len(orphaned)} of them {verb(len(orphaned), 'has', 'have')} no other target: "
@@ -472,11 +514,29 @@ def _describe_provider_removal(name: str, dependents: list[dict[str, Any]]) -> s
             f"{len(kept)} {verb(len(kept), 'goes', 'go')} on being published by "
             f"{verb(len(kept), 'its', 'their')} other targets."
         )
-    parts.append(
-        f'Whatever "{name}" already serves for them stays live on it after the deletion, '
-        "and Vauxtra stops being able to see it. Re-send with ?force=true&withdraw=true to "
-        "take those records off it first, or ?force=true alone to leave them in place."
-    )
+    if dependents:
+        parts.append(
+            f'Whatever "{name}" already serves for them stays live on it after the deletion, '
+            "and Vauxtra stops being able to see it. Re-send with ?force=true&withdraw=true to "
+            "take those records off it first, or ?force=true alone to leave them in place."
+        )
+    if templates:
+        # Deliberately a separate sentence, not a second row in the service list. A template
+        # publishes nothing, so none of the language above applies to it: no hostname goes
+        # dark, and there is no record left behind to withdraw.
+        names = ", ".join(f'"{d["name"]}"' for d in templates[:3])
+        if len(templates) > 3:
+            names += f", and {len(templates) - 3} more"
+        parts.append(
+            f'{plural(len(templates), "service template")} '
+            f'{verb(len(templates), "names", "name")} "{name}" and '
+            f'{verb(len(templates), "loses", "lose")} that choice when it goes ({names}). '
+            f"Nothing is published from a template, so there is nothing to take off "
+            f'"{name}"; the next service built from '
+            f"{verb(len(templates), 'it', 'them')} simply starts with no provider."
+        )
+    if not dependents:
+        parts.append("Re-send with ?force=true to delete it anyway.")
     return " ".join(parts)
 
 
@@ -490,17 +550,23 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
         raise HTTPException(404, "Provider not found")
 
     dependents = _provider_dependents(conn, pid)
-    if dependents and not force:
+    templates = _provider_template_dependents(conn, pid)
+    if (dependents or templates) and not force:
         # The frontend has been sending `?force=true` and reading a `detail.services` list
         # since it was written (`useProviderMutations.ts`, `Providers.tsx`); the API never
         # answered 409, so its "N service(s) depend on this provider" dialog was unreachable
         # and every deletion went through unannounced. This is that missing half.
+        #
+        # `templates` is the other half of the same question. A provider only a template
+        # named used to fall straight through this branch -- no services, no 409, no word to
+        # anybody -- and `ON DELETE SET NULL` blanked the template on the way out.
         conn.close()
         raise HTTPException(
             409,
             {
-                "message": _describe_provider_removal(row["name"], dependents),
+                "message": _describe_provider_removal(row["name"], dependents, templates),
                 "services": dependents,
+                "templates": templates,
             },
         )
 
@@ -538,11 +604,24 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
             "warn",
             f"Provider deleted: {row['name']} -- {plural(len(dependents), 'service')} {what} ({names})",
         )
-    else:
+    elif not templates:
         add_log("info", f"Provider deleted: {row['name']}")
+    if templates:
+        # Its own line rather than a clause on the one above, because a template loss is the
+        # whole story when no service was involved and the journal is where an operator goes
+        # to find out why a template came back empty.
+        tpl_names = ", ".join(d["name"] for d in templates[:5])
+        if len(templates) > 5:
+            tpl_names += f", and {len(templates) - 5} more"
+        add_log(
+            "warn",
+            f"Provider deleted: {row['name']} -- {plural(len(templates), 'service template')} "
+            f"lost the provider {verb(len(templates), 'it named', 'they named')} ({tpl_names})",
+        )
     return {
         "ok": not withdrawal_errors,
         "unlinked_services": [d["id"] for d in dependents],
+        "unlinked_templates": [d["id"] for d in templates],
         "withdrawn": bool(dependents and withdraw),
         "errors": withdrawal_errors,
     }

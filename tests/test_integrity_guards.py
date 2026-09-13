@@ -14,6 +14,7 @@ afterwards:
   the drift check then reports whichever lost as permanently wrong.
 """
 
+import inspect
 import os
 import tempfile
 import unittest
@@ -123,6 +124,27 @@ class _IsolatedDB(unittest.TestCase):
         conn.close()
         return sid
 
+    def _seed_template(self, name: str = "standard", **cols) -> int:
+        fields = {
+            "name": name,
+            "forward_scheme": "http",
+            "target_port": 8080,
+            "expose_mode": "proxy_dns",
+            "proxy_provider_id": 2,
+            "tag_ids_json": "[]",
+        }
+        fields.update(cols)
+        names = ", ".join(fields)
+        marks = ", ".join("?" * len(fields))
+        conn = models.get_db()
+        cur = conn.execute(
+            f"INSERT INTO service_templates ({names}) VALUES ({marks})", tuple(fields.values())
+        )
+        tid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return tid
+
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # Deleting a provider that services still use
@@ -198,6 +220,114 @@ class DeleteProviderAsksFirstTests(_IsolatedDB):
         with self.assertRaises(HTTPException) as caught:
             providers_api.delete_provider(999, _request("DELETE"))
         self.assertEqual(caught.exception.status_code, 404)
+
+    def test_every_reference_the_schema_declares_is_asked_about(self) -> None:
+        """The gate. A column added to the schema that points at a provider is a thing the
+        deletion silently takes with it, and the two readers below are the only things that
+        can put it in front of the operator first.
+
+        This is how `service_templates` was missed: the table was added with three provider
+        columns, `ON DELETE SET NULL` like the ones on `services`, and nothing swept the
+        delete path for it. A provider only a template named was deleted with no question
+        asked at all, and the template came back with an empty provider field.
+
+        Reading the FK declarations rather than a hand-kept list is the point: a fourth
+        table with a provider column fails here the day it is written, not the day somebody
+        deletes a provider.
+        """
+        conn = models.get_db()
+        tables = [
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            if not r["name"].startswith("sqlite_")
+        ]
+        declared = {
+            (table, fk["from"])
+            for table in tables
+            for fk in conn.execute(f"PRAGMA foreign_key_list({table})")
+            if fk["table"] == "providers"
+        }
+        conn.close()
+        self.assertTrue(declared, "no provider reference found at all; this test has no subject")
+
+        source = (
+            inspect.getsource(providers_api._provider_dependents)
+            + inspect.getsource(providers_api._provider_template_dependents)
+        )
+        unread = sorted(
+            f"{table}.{column}"
+            for table, column in declared
+            if column not in source or table not in source
+        )
+        self.assertEqual(
+            unread,
+            [],
+            "these columns point at a provider and nothing asks the operator about them "
+            "before the deletion blanks them",
+        )
+
+    def test_a_provider_only_a_template_names_is_refused_too(self) -> None:
+        """No services at all. This used to fall straight through to the DELETE."""
+        tid = self._seed_template()
+
+        with self.assertRaises(HTTPException) as caught:
+            providers_api.delete_provider(2, _request("DELETE"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        detail = caught.exception.detail
+        self.assertEqual(detail["services"], [], "nothing is published; the list is empty")
+        self.assertEqual([d["id"] for d in detail["templates"]], [tid])
+        self.assertEqual(detail["templates"][0]["roles"], ["proxy"])
+        self.assertIn("standard", detail["message"])
+        self.assertNotIn(
+            "withdraw=true",
+            detail["message"],
+            "a template publishes nothing, so there is no record to withdraw",
+        )
+        conn = models.get_db()
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM providers WHERE id=2").fetchone())
+        conn.close()
+
+    def test_a_template_is_named_alongside_the_services(self) -> None:
+        """Both halves in one answer, and the service language untouched by the template."""
+        sid = self._seed_service()
+        tid = self._seed_template(dns_provider_id=2)
+
+        with self.assertRaises(HTTPException) as caught:
+            providers_api.delete_provider(2, _request("DELETE"))
+
+        detail = caught.exception.detail
+        self.assertEqual([s["id"] for s in detail["services"]], [sid])
+        self.assertEqual([d["id"] for d in detail["templates"]], [tid])
+        self.assertEqual(sorted(detail["templates"][0]["roles"]), ["dns", "proxy"])
+        self.assertIn("withdraw=true", detail["message"], "the services half is unchanged")
+
+    def test_force_says_which_templates_it_blanked_and_logs_them(self) -> None:
+        tid = self._seed_template()
+
+        result = providers_api.delete_provider(2, _request("DELETE"), force=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["unlinked_templates"], [tid])
+        conn = models.get_db()
+        row = conn.execute(
+            "SELECT proxy_provider_id FROM service_templates WHERE id=?", (tid,)
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(row["proxy_provider_id"], "the FK blanks it, which is the whole point")
+        self.assertTrue(
+            any("standard" in m and "service template" in m for m in self._logs()),
+            self._logs(),
+        )
+
+    def test_a_provider_nothing_names_is_still_deleted_without_a_question(self) -> None:
+        """The new branch must not turn every deletion into a dialog."""
+        self._seed_template(proxy_provider_id=None, dns_provider_id=None)
+
+        result = providers_api.delete_provider(2, _request("DELETE"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["unlinked_templates"], [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────

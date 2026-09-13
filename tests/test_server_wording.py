@@ -64,10 +64,14 @@ class DependentsSentenceTests(unittest.TestCase):
     more disagreements in the paragraph under it.
     """
 
-    def _describe(self, dependents):
+    def _describe(self, dependents, templates=()):
         from app.api.providers import _describe_provider_removal
 
-        return _describe_provider_removal("cloudflare-home", dependents)
+        # `templates` defaults here and nowhere else. The production helper takes it
+        # positionally on purpose: a caller that forgets it is how the template half of this
+        # sentence went unwritten for as long as it did. The cases below are about the
+        # service half, and an empty list is what they mean.
+        return _describe_provider_removal("cloudflare-home", dependents, list(templates))
 
     def test_a_single_dependent_reads_as_one(self):
         text = self._describe([{"id": 1, "fqdn": "a.example.com", "still_published": False}])
@@ -95,6 +99,31 @@ class DependentsSentenceTests(unittest.TestCase):
             {"id": 2, "fqdn": "b.example.com", "still_published": True},
         ])
         self.assertIn("2 go on being published by their other targets.", text)
+
+    def test_a_single_template_agrees_with_itself(self):
+        # Its own sentence, and its own three agreements: the noun, the verb that follows it,
+        # and the pronoun at the end. Nothing above it is reused, because nothing above it is
+        # true of a template.
+        text = self._describe([], [{"id": 1, "name": "standard", "roles": ["proxy"]}])
+        self.assertIn('1 service template names "cloudflare-home"', text)
+        self.assertIn("loses that choice when it goes", text)
+        self.assertIn("the next service built from it simply starts with no provider", text)
+
+    def test_several_templates_agree_too(self):
+        text = self._describe([], [
+            {"id": 1, "name": "standard", "roles": ["proxy"]},
+            {"id": 2, "name": "tunnelled", "roles": ["tunnel"]},
+        ])
+        self.assertIn('2 service templates name "cloudflare-home"', text)
+        self.assertIn("lose that choice when it goes", text)
+        self.assertIn("the next service built from them simply starts with no provider", text)
+
+    def test_a_template_alone_is_never_offered_a_withdrawal(self):
+        # `?withdraw=true` asks the provider to take its records down. A template put no
+        # record anywhere, so offering it is offering to undo something that never happened.
+        text = self._describe([], [{"id": 1, "name": "standard", "roles": ["dns"]}])
+        self.assertNotIn("withdraw=true", text)
+        self.assertIn("?force=true to delete it anyway", text)
 
 
 class NoStringWritesItsOwnPluralTests(unittest.TestCase):

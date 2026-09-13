@@ -83,6 +83,17 @@ export function isProviderDeleteConflict(detail: unknown): detail is ProviderDel
 }
 
 /**
+ * Which title the confirm dialog wears. `deps_title` says "services still depend on it",
+ * which is simply untrue when the only thing depending on it is a template. It lives beside
+ * the guard that produces the detail, so the Integrations page and the Setup wizard cannot
+ * answer this differently.
+ */
+export function providerConflictTitleKey(detail: ProviderDeleteConflict): string {
+  return detail.services?.length ? 'providers.delete.deps_title' : 'providers.delete.tpl_title';
+}
+
+
+/**
  * What to say once the delete has gone through. A withdrawal that failed halfway is the one
  * outcome a plain "deleted" toast would hide: the integration is gone from Vauxtra and some
  * of its records are still live on the server, which is exactly the state the checkbox was
@@ -176,6 +187,11 @@ export function useProviderMutations(
       api.delete<ProviderDeleteResult>(`/providers/${vars.id}${providerDeleteQuery(vars)}`),
     onSuccess: async (result: ProviderDeleteResult, vars: ProviderDeleteVars) => {
       invalidateProviderQueries();
+      // The delete blanks the provider columns of every template that named it. Without
+      // this the Templates page goes on showing the provider that is no longer there.
+      if (result?.unlinked_templates?.length) {
+        queryClient.invalidateQueries({ queryKey: ['templates'] });
+      }
       const partial = describeWithdrawal(result, vars.name ?? '', t);
       if (partial) toast.error(partial, { duration: 8000 });
       else toast.success(t('provider_modal.toast.deleted'));

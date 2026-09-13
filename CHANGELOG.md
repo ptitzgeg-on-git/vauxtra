@@ -233,6 +233,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A provider that only a service template named was deleted with no question asked at all.**
+  The schema declares seven references to `providers.id`. The delete path read four of them —
+  the three on `services` and the one on `service_push_targets` — and the confirmation dialog
+  was built out of those. The other three are `service_templates.proxy_provider_id`,
+  `.dns_provider_id` and `.tunnel_provider_id`, and they carry `ON DELETE SET NULL` exactly as
+  the ones on `services` do. So a provider no service pointed at fell straight through the
+  check: no 409, no dialog, and every template that named it came back with an empty provider
+  field nobody had emptied. With services also in the conflict, the dialog was meticulous about
+  them and silent about the template it blanked in the same transaction.
+
+  Templates get their own block rather than extra rows in the service list, because none of the
+  service language is true of them. Nothing is published from a template, so no hostname goes
+  dark, there is no record left live on the provider, and there is nothing to withdraw — the
+  `?withdraw=true` checkbox is not offered when templates are the whole conflict. What a
+  template loses is a choice somebody typed, and the dialog now says so before the deletion
+  rather than leaving it to be found on the next service built from it. `?force=true` answers
+  with `unlinked_templates`, and the journal gets its own line naming the templates that lost
+  a provider, which is where an operator goes to find out why a template came back empty.
+
+  Two things around it were wrong for the same reason. The dialog title was hard-coded to
+  "Services still depend on it" at both call sites, which is simply untrue over a list of
+  templates; one shared helper now answers it so the Integrations page and the Setup wizard
+  cannot drift. And neither call site invalidated the Templates cache after a delete, so the
+  page went on showing a provider that was no longer there.
+
+  The guard is a gate rather than a list: `test_every_reference_the_schema_declares_is_asked_about`
+  reads the foreign keys out of the live schema with `PRAGMA foreign_key_list` and holds them
+  against the source of both readers. A fourth table given a provider column fails it the day it
+  is written, not the day somebody deletes a provider.
+
 - **The dialog that empties the database named seven of the eleven things it empties.** It
   listed services, providers, domains, tags, environments, webhooks and the log, and stopped.
   It did not name the templates the operator wrote by hand, the Docker endpoints they pointed
