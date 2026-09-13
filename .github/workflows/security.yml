@@ -59,10 +59,19 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # Both requirement files, because nothing else here reaches the second one.
+      # `vauxtra_mcp/requirements.txt` declares fastmcp and httpx, and neither name appears
+      # in `requirements.txt`. The image scan cannot see them -- the bridge is deliberately
+      # not in the image. Syft cannot either: it drops every line that is not an exact pin,
+      # which is both of them, so they are absent from the SBOM Grype reads. And this step
+      # named one file. That left the bridge's whole dependency tree -- authlib, joserfc,
+      # pyjwt and mcp among them -- audited by nothing, in the one component an operator
+      # points at their panel holding an API key.
       - name: pip-audit (Python dependencies)
         run: |
           python -m pip install pip-audit
-          python -m pip_audit --requirement requirements.txt
+          python -m pip_audit --requirement requirements.txt \
+                              --requirement vauxtra_mcp/requirements.txt
 
       # Through a runner, because `npm audit` exits 1 both when the registry reports a
       # high-severity advisory and when the registry reports nothing at all. The runner

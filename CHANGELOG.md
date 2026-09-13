@@ -211,6 +211,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The MCP bridge announced itself as version 3.2.4, which is fastmcp's.** `FastMCP(...)`
+  takes a `version` keyword and `vauxtra_mcp/app.py` passed none, so the handshake answered
+  `serverInfo: {"name": "Vauxtra", "version": "3.2.4"}` — a release of Vauxtra that has never
+  existed, and one that would move on its own with the next library bump. Found against a real
+  stdio client speaking protocol `2025-06-18` rather than in process: every test of this bridge
+  calls its functions directly, which proves the tools are right and says nothing about what a
+  desktop client is told while connecting. The bridge now declares `__version__` in
+  `vauxtra_mcp/__init__.py` and passes it. It deliberately does not read `app.config` — this
+  package imports nothing from `app`, and reaches an instance over HTTP that may be running a
+  different release — nor `APP_VERSION`, which the Dockerfile stamps at build time into an
+  image the bridge is deliberately not in, so out here it would always read `dev`.
+
+  `tests/test_version_declarations.py` holds the declaration to the version in
+  `frontend/package.json`, and holds the built instance to the declaration. Neither half is
+  hypothetical: `v1.0.2` was tagged while `package.json` still said `1.0.1` and nothing
+  anywhere noticed, and dropping the `version=` argument again leaves a bridge that still
+  starts, still lists all 84 tools, and quietly goes back to answering `3.2.4`.
+
+- **`pip-audit` never looked at the MCP bridge's dependencies.** The step named
+  `requirements.txt` and nothing else, and neither `fastmcp` nor `httpx` appears in that file:
+  both are declared in `vauxtra_mcp/requirements.txt`, which nothing in this pipeline read. No
+  other scanner covered them. The image scan cannot, the bridge not being in the image, and
+  Syft drops every requirement line that is not an exact pin, so both were missing from the
+  SBOM that Grype — the only step here allowed to break the build — compares against. That
+  left the bridge's whole dependency tree, `authlib`, `joserfc`, `pyjwt` and `mcp` among them,
+  audited by nothing, in the one component an operator points at their own panel holding an
+  API key. The step now passes both files. It reports no advisories today: the defect was the
+  blind spot, not a number.
+
 - **Two test modules ran against the database of whatever checkout they were on, and one
   of them emptied a table on it before every test.** `test_templates_api.py` and
   `test_metrics_endpoint.py` set `DATA_DIR` and `DB_PATH` in `os.environ` and called
