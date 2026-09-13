@@ -233,6 +233,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A hostname spelled with a capital at the provider imported a second service.** Everything
+  the editor writes is stored in lower case: `ServiceIn` lowercases the subdomain and
+  `normalize_domain` lowercases the domain. The import route stored what the provider spelled.
+  Nothing downstream complained, because the public hostname is derived through
+  `_service_fqdn`, which lowercases — so a service imported as `NAS.maison.lan` pushed, and
+  drifted, under `nas.maison.lan`: the same name as the service already tracking it. The
+  unique index on `(subdomain, domain)` compares the stored spelling, so it could not stop the
+  duplicate, and `_ensure_hostname_unique_index` could no longer be created on a fresh start.
+
+  Three consequences, all silent. The scan offered the row as new every time, because
+  `_already_imported` compared the stored spelling too. Ticking it inserted the second service.
+  And a proxy host and a DNS record for one name, spelled differently by their two providers,
+  stopped pairing — two services, each holding half of what one should have held, instead of
+  one holding both. Names are now compared and stored through one helper, stripped and
+  lowercased, the way the padded-name fix already handled the other half of the same question.
+
 - **Clearing a provider from a service left its route live, and unreachable.** An operator who
   moves a service to DNS only, or to proxy only, empties one of the two provider fields in the
   editor. Both blocks that reconfigure a provider on save open with `if body.<...>_provider_id`,

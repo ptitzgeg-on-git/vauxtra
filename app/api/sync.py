@@ -110,6 +110,25 @@ def _rewrite_for(rewrites, public_host: str) -> dict | None:
     )
 
 
+def _imported_name(value) -> str:
+    """A hostname read off a provider, reduced to the spelling a service is stored under.
+
+    `ServiceIn` lowercases the subdomain and `normalize_domain` lowercases the domain, so
+    every service the editor writes is stored in lower case. The import route wrote what the
+    provider spelled. Nothing downstream noticed, because `_service_fqdn` lowercases the
+    public hostname it derives -- so a service stored as `NAS.maison.lan` pushed, and drifted,
+    under `nas.maison.lan`, exactly like the service already tracking that name.
+
+    The three consequences were all silent. The row was offered as new on every scan, since
+    `_already_imported` compared against the stored spelling. Ticking it inserted a second
+    service, since the "Vauxtra already tracks this name" lookup compared the same way and so
+    does the unique index on `(subdomain, domain)`. And a proxy host and a DNS record for one
+    name, spelled differently by their two providers, stopped pairing: two services, each
+    holding half of what one should have held.
+    """
+    return str(value or "").strip().lower()
+
+
 def _find_host(proxy, public_host: str) -> dict | None:
     """The provider's host record for `public_host`, or None.
 
@@ -1091,7 +1110,7 @@ def sync_services(request: Request):
     conn = get_db()
     providers = conn.execute("SELECT * FROM providers WHERE enabled=1").fetchall()
     existing_fqdns = {
-        f"{r['subdomain']}.{r['domain']}"
+        _imported_name(f"{r['subdomain']}.{r['domain']}")
         for r in conn.execute("SELECT subdomain, domain FROM services").fetchall()
     }
     existing_tunnel_hosts = {
@@ -1142,7 +1161,7 @@ def sync_services(request: Request):
                 for r in rewrites:
                     r["_provider_id"]      = p["id"]
                     r["_provider_name"]    = p["name"]
-                    r["_already_imported"] = r.get("domain", "") in existing_fqdns
+                    r["_already_imported"] = _imported_name(r.get("domain")) in existing_fqdns
                 result["dns_rewrites"].extend(rewrites)
         except Exception as e:
             add_log("error", f"Sync {p['name']}: {e}")
@@ -1182,11 +1201,13 @@ def import_services(request: Request, data: dict = Body(...)):
     #
     # Two deliberate changes live here, neither of them a side effect of rewriting the loop.
     #
-    # Names are compared stripped. Unstripped, " nas.maison.lan " was a different key from
-    # "nas.maison.lan" and imported a second service whose subdomain was " nas" and whose
-    # domain was "maison.lan " -- a row that matches no scan and pushes nowhere. The proxy
-    # loop strips the same way, so a padded name on one side still pairs with a clean one on
-    # the other.
+    # Names are compared through `_imported_name`, stripped and lowercased. Unstripped,
+    # " nas.maison.lan " was a different key from "nas.maison.lan" and imported a second
+    # service whose subdomain was " nas" and whose domain was "maison.lan " -- a row that
+    # matches no scan and pushes nowhere. Uncased, "NAS.maison.lan" did the same thing, and
+    # kept doing it: the spelling a provider happens to use is not the spelling a service is
+    # stored under. The proxy loop normalizes the same way, so a padded or capitalized name
+    # on one side still pairs with a clean one on the other.
     #
     # And on a name two providers answer for, the comprehension kept the LAST record; this
     # keeps the first. Neither is a better guess: `sync_services` selects providers with no
@@ -1196,7 +1217,7 @@ def import_services(request: Request, data: dict = Body(...)):
     # `push_service` has been writing.
     dns_by_fqdn: dict[str, dict] = {}
     for r in data.get("dns_rewrites", []):
-        fqdn = str(r.get("domain") or "").strip()
+        fqdn = _imported_name(r.get("domain"))
         if not fqdn:
             refuse_import(
                 errors, conn,
@@ -1228,7 +1249,7 @@ def import_services(request: Request, data: dict = Body(...)):
         where = f"proxy host {h.get('id', '?')} on {h.get('_provider_name') or 'the provider'}"
         try:
             raw = h.get("domains") or h.get("domain_names") or []
-            domains = [str(d).strip() for d in raw if str(d).strip()]
+            domains = [_imported_name(d) for d in raw if str(d).strip()]
             if not domains:
                 refuse_import(errors, conn, where, "the provider listed no domain name for it")
                 continue
