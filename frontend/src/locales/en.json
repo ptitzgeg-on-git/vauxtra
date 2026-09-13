@@ -85,10 +85,7 @@
   "settings.dns.delete_failed": "Failed to delete domain",
   "settings.dns.service_count_one": "{count} service",
   "settings.dns.service_count_other": "{count} services",
-  "settings.dns.confirm.has_services_title": "Domain has services",
   "settings.dns.confirm.delete_title": "Delete domain",
-  "settings.dns.confirm.has_services_message_one": "{count} service uses \"{domain}\". Deleting it may break existing routes.\n\nDelete anyway?",
-  "settings.dns.confirm.has_services_message_other": "{count} services use \"{domain}\". Deleting it may break existing routes.\n\nDelete anyway?",
   "settings.dns.confirm.delete_message": "Delete domain \"{domain}\"?",
   "settings.tags.title": "Service Tags",
   "settings.tags.desc": "Create tags to organize and filter your services.",
@@ -2047,5 +2044,16 @@
   "providers.delete.hook_armed_other": "{count} of them are still switched on: they go on showing as enabled until their scope is changed.",
   "settings.webhooks.scope_provider_gone": "Provider deleted",
   "settings.webhooks.scope_service_gone": "Service deleted",
-  "settings.webhooks.scope_gone_badge": "Matches nothing"
+  "settings.webhooks.scope_gone_badge": "Matches nothing",
+  "settings.dns.template_count_one": "{count} template",
+  "settings.dns.template_count_other": "{count} templates",
+  "settings.dns.confirm.in_use_title": "Domain still in use",
+  "settings.dns.confirm.in_use_services_one": "{count} service is built on \"{domain}\".",
+  "settings.dns.confirm.in_use_services_other": "{count} services are built on \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_one": "{count} service template is built on \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_other": "{count} service templates are built on \"{domain}\".",
+  "settings.dns.confirm.in_use_more": "… and {count} more",
+  "settings.dns.confirm.in_use_effect": "Deleting the domain changes none of that: nothing at runtime reads the domain list, so every row above keeps its hostname and stays published exactly as it is.",
+  "settings.dns.confirm.in_use_pickers": "The pickers do change — \"{domain}\" stops being offered when a service or a template is created.",
+  "settings.dns.confirm.in_use_returns": "And \"{domain}\" can come back on its own: a Docker scan or a provider import re-adds the root domain of every service it brings in."
 }

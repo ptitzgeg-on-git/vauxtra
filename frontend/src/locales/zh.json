@@ -84,9 +84,7 @@
   "settings.dns.exists": "域名 \"{domain}\" 已存在",
   "settings.dns.delete_failed": "删除域名失败",
   "settings.dns.service_count_other": "{count} 个服务",
-  "settings.dns.confirm.has_services_title": "该域名已被服务使用",
   "settings.dns.confirm.delete_title": "删除域名",
-  "settings.dns.confirm.has_services_message_other": "{count} 个服务正在使用 \"{domain}\"。删除后可能导致现有路由异常。\n\n仍要删除吗？",
   "settings.dns.confirm.delete_message": "要删除域名 \"{domain}\" 吗？",
   "settings.tags.title": "服务标签",
   "settings.tags.desc": "创建标签以组织并筛选你的服务。",
@@ -1923,5 +1921,13 @@
   "providers.delete.hook_armed_other": "其中 {count} 个仍处于启用状态，在其范围被更改之前会一直显示为已启用。",
   "settings.webhooks.scope_provider_gone": "提供商已删除",
   "settings.webhooks.scope_service_gone": "服务已删除",
-  "settings.webhooks.scope_gone_badge": "无匹配对象"
+  "settings.webhooks.scope_gone_badge": "无匹配对象",
+  "settings.dns.template_count_other": "{count} 个模板",
+  "settings.dns.confirm.in_use_title": "该域名仍在使用中",
+  "settings.dns.confirm.in_use_services_other": "有 {count} 个服务建立在 \"{domain}\" 之上。",
+  "settings.dns.confirm.in_use_templates_other": "有 {count} 个服务模板建立在 \"{domain}\" 之上。",
+  "settings.dns.confirm.in_use_more": "…还有 {count} 个",
+  "settings.dns.confirm.in_use_effect": "删除域名不会改变这一点：运行时没有任何环节读取域名列表，上面每一行都保留其主机名，并继续按原样发布。",
+  "settings.dns.confirm.in_use_pickers": "改变的是选择列表 — 创建服务或模板时不再提供 \"{domain}\"。",
+  "settings.dns.confirm.in_use_returns": "而且 \"{domain}\" 可能自行回来：Docker 扫描或提供商导入会重新添加其引入的每个服务的根域名。"
 }

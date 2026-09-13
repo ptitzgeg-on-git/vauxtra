@@ -85,10 +85,7 @@
   "settings.dns.delete_failed": "Die Domäne konnte nicht gelöscht werden",
   "settings.dns.service_count_one": "{count} Dienst",
   "settings.dns.service_count_other": "{count} Dienste",
-  "settings.dns.confirm.has_services_title": "Domain verfügt über Dienste",
   "settings.dns.confirm.delete_title": "Domain löschen",
-  "settings.dns.confirm.has_services_message_one": "{count} Dienst verwendet „{domain}“. Durch das Löschen können bestehende Routen beschädigt werden.\n\nTrotzdem löschen?",
-  "settings.dns.confirm.has_services_message_other": "{count} Dienste verwenden „{domain}“. Durch das Löschen können bestehende Routen beschädigt werden.\n\nTrotzdem löschen?",
   "settings.dns.confirm.delete_message": "Domain „{domain}“ löschen?",
   "settings.tags.title": "Service-Tags",
   "settings.tags.desc": "Erstellen Sie Tags, um Ihre Dienste zu organisieren und zu filtern.",
@@ -2047,5 +2044,16 @@
   "providers.delete.hook_armed_other": "{count} davon sind weiterhin aktiviert: Sie werden weiter als aktiviert angezeigt, bis ihr Bereich geändert wird.",
   "settings.webhooks.scope_provider_gone": "Anbieter gelöscht",
   "settings.webhooks.scope_service_gone": "Dienst gelöscht",
-  "settings.webhooks.scope_gone_badge": "Trifft auf nichts zu"
+  "settings.webhooks.scope_gone_badge": "Trifft auf nichts zu",
+  "settings.dns.template_count_one": "{count} Vorlage",
+  "settings.dns.template_count_other": "{count} Vorlagen",
+  "settings.dns.confirm.in_use_title": "Domain wird weiterhin verwendet",
+  "settings.dns.confirm.in_use_services_one": "{count} Dienst baut auf „{domain}“ auf.",
+  "settings.dns.confirm.in_use_services_other": "{count} Dienste bauen auf „{domain}“ auf.",
+  "settings.dns.confirm.in_use_templates_one": "{count} Dienstvorlage baut auf „{domain}“ auf.",
+  "settings.dns.confirm.in_use_templates_other": "{count} Dienstvorlagen bauen auf „{domain}“ auf.",
+  "settings.dns.confirm.in_use_more": "… und {count} weitere",
+  "settings.dns.confirm.in_use_effect": "Das Löschen der Domain ändert daran nichts: zur Laufzeit liest nichts die Domainliste, jede Zeile oben behält ihren Hostnamen und bleibt unverändert veröffentlicht.",
+  "settings.dns.confirm.in_use_pickers": "Was sich ändert, sind die Auswahllisten — „{domain}“ wird beim Anlegen eines Dienstes oder einer Vorlage nicht mehr angeboten.",
+  "settings.dns.confirm.in_use_returns": "Und „{domain}“ kann von selbst zurückkehren: ein Docker-Scan oder ein Anbieterimport trägt die Root-Domain jedes übernommenen Dienstes erneut ein."
 }

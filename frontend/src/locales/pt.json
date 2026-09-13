@@ -85,10 +85,7 @@
   "settings.dns.delete_failed": "Falha ao excluir o domínio",
   "settings.dns.service_count_one": "{count} serviço",
   "settings.dns.service_count_other": "{count} serviços",
-  "settings.dns.confirm.has_services_title": "Domínio tem serviços",
   "settings.dns.confirm.delete_title": "Excluir domínio",
-  "settings.dns.confirm.has_services_message_one": "{count} serviço usa \"{domain}\". Excluí-lo pode interromper as rotas existentes.\n\nExcluir mesmo assim?",
-  "settings.dns.confirm.has_services_message_other": "{count} serviços usam \"{domain}\". Excluí-lo pode interromper as rotas existentes.\n\nExcluir mesmo assim?",
   "settings.dns.confirm.delete_message": "Excluir domínio \"{domain}\"?",
   "settings.tags.title": "Etiquetas de serviço",
   "settings.tags.desc": "Crie tags para organizar e filtrar seus serviços.",
@@ -2047,5 +2044,16 @@
   "providers.delete.hook_armed_other": "{count} deles continuam habilitados: continuam aparecendo como habilitados até que o escopo seja alterado.",
   "settings.webhooks.scope_provider_gone": "Provedor removido",
   "settings.webhooks.scope_service_gone": "Serviço removido",
-  "settings.webhooks.scope_gone_badge": "Não corresponde a nada"
+  "settings.webhooks.scope_gone_badge": "Não corresponde a nada",
+  "settings.dns.template_count_one": "{count} modelo",
+  "settings.dns.template_count_other": "{count} modelos",
+  "settings.dns.confirm.in_use_title": "Domínio ainda em uso",
+  "settings.dns.confirm.in_use_services_one": "{count} serviço se apoia em \"{domain}\".",
+  "settings.dns.confirm.in_use_services_other": "{count} serviços se apoiam em \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_one": "{count} modelo de serviço se apoia em \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_other": "{count} modelos de serviço se apoiam em \"{domain}\".",
+  "settings.dns.confirm.in_use_more": "… e mais {count}",
+  "settings.dns.confirm.in_use_effect": "Excluir o domínio não muda nada disso: em execução nada lê a lista de domínios, cada linha acima mantém seu nome de host e continua publicada exatamente como está.",
+  "settings.dns.confirm.in_use_pickers": "O que muda são as listas de seleção — \"{domain}\" deixa de ser oferecido ao criar um serviço ou um modelo.",
+  "settings.dns.confirm.in_use_returns": "E \"{domain}\" pode voltar sozinho: uma varredura do Docker ou uma importação de provedor recadastra o domínio raiz de cada serviço que traz."
 }

@@ -233,6 +233,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Deleting a root domain answered "ok" for a name that was never there, deleted nothing
+  when the name was typed the way it reads rather than the way it was stored, and warned
+  about breaking routes it cannot break.** `DELETE /api/domains/{name}` was the last delete
+  route of eleven still answering without looking its row up: on a database holding no such
+  name, `DELETE /api/domains/never-existed.test` returned `{"ok": true}`. And `POST /api/domains`
+  stores the name through `normalize_domain` — `  Example.TEST.  ` is kept as `example.test`
+  — while the delete compared the path segment raw, so `DELETE /api/domains/Example.TEST`
+  matched no row, changed nothing, and answered `{"ok": true}` all the same; the list came
+  back with the domain still in it. The MCP bridge hands that receipt straight to an
+  assistant, which reports a deletion that did not happen. Both are gone: the route
+  normalises the name the way it was stored and raises 404 when no row carries it, and the
+  bridge tool stops describing the match as exact when it never was.
+
+  The deletion also wrote nothing to the journal, on a table three other code paths write to
+  behind the operator's back. It now writes one line, and the line says what is still built
+  on the name: the services and the service templates that hold it, named up to five and
+  counted past that.
+
+  The confirmation dialog was the other half, and its sentence was false in the direction
+  that causes the wrong decision. It said deleting the domain "may break existing routes".
+  Nothing at runtime reads the `domains` table at all — the scheduler, the DNS push and the
+  proxy push all work off `services.domain` — so no route goes dark, no record is withdrawn,
+  and every hostname stays published exactly as it was. The tab also counted only services,
+  so a domain that only a service template named showed the neutral "0 services" badge and
+  the same plain question an unused domain gets.
+
+  The dialog now counts both kinds of holder, lists them, and says the three things that are
+  true instead of the one that was not: nothing above stops working, the name stops being
+  offered in the pickers when a service or a template is created, and the name can come back
+  on its own — `INSERT OR IGNORE INTO domains` in the Docker scan and in the provider import
+  re-adds the root domain of every service they bring in. A second badge counts the templates,
+  in all eight languages.
+
+  The sweep that measures this across the whole API used to carry a waiver naming this exact
+  route. The waiver is gone and the assertion is now an equality, so the twelfth delete route
+  written without a lookup is red the day it is written rather than the day somebody trusts
+  its answer.
+
 - **A notification webhook aimed at one provider survives that provider's deletion, keeps its
   green "enabled" badge, and never fires again.** A webhook's scope is two columns: a word
   (`all`, `provider`, `service`) and `webhooks.scope_ref_id`, a bare INTEGER holding the id

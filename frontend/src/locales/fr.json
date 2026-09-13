@@ -85,10 +85,7 @@
   "settings.dns.delete_failed": "Échec de suppression du domaine",
   "settings.dns.service_count_one": "{count} service associé",
   "settings.dns.service_count_other": "{count} services associés",
-  "settings.dns.confirm.has_services_title": "Le domaine est utilisé",
   "settings.dns.confirm.delete_title": "Supprimer le domaine",
-  "settings.dns.confirm.has_services_message_one": "{count} service utilise \"{domain}\". La suppression peut casser des routes existantes.\n\nSupprimer quand même ?",
-  "settings.dns.confirm.has_services_message_other": "{count} services utilisent \"{domain}\". La suppression peut casser des routes existantes.\n\nSupprimer quand même ?",
   "settings.dns.confirm.delete_message": "Supprimer le domaine \"{domain}\" ?",
   "settings.tags.title": "Étiquettes de services",
   "settings.tags.desc": "Créez des étiquettes pour organiser et filtrer vos services.",
@@ -2047,5 +2044,16 @@
   "providers.delete.hook_armed_other": "{count} d'entre eux sont encore actifs : ils continuent de s'afficher comme activés tant que leur portée n'est pas changée.",
   "settings.webhooks.scope_provider_gone": "Fournisseur supprimé",
   "settings.webhooks.scope_service_gone": "Service supprimé",
-  "settings.webhooks.scope_gone_badge": "Ne correspond à rien"
+  "settings.webhooks.scope_gone_badge": "Ne correspond à rien",
+  "settings.dns.template_count_one": "{count} modèle",
+  "settings.dns.template_count_other": "{count} modèles",
+  "settings.dns.confirm.in_use_title": "Domaine encore utilisé",
+  "settings.dns.confirm.in_use_services_one": "{count} service repose sur \"{domain}\".",
+  "settings.dns.confirm.in_use_services_other": "{count} services reposent sur \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_one": "{count} modèle de service repose sur \"{domain}\".",
+  "settings.dns.confirm.in_use_templates_other": "{count} modèles de service reposent sur \"{domain}\".",
+  "settings.dns.confirm.in_use_more": "… et {count} de plus",
+  "settings.dns.confirm.in_use_effect": "La suppression du domaine n'y change rien : aucun traitement ne lit la liste des domaines, chaque ligne ci-dessus garde son nom d'hôte et reste publiée telle quelle.",
+  "settings.dns.confirm.in_use_pickers": "Ce qui change, ce sont les suggestions : \"{domain}\" ne sera plus proposé à la création d'un service ou d'un modèle.",
+  "settings.dns.confirm.in_use_returns": "Et \"{domain}\" peut revenir tout seul : une analyse Docker ou un import de fournisseur réinscrit le domaine racine de chaque service qu'il rapporte."
 }

@@ -17,7 +17,9 @@ import {
   SkeletonRow,
   useConfirmDialog,
 } from '@/components/ui';
-import type { Service } from '@/types/api';
+import { fqdnOf } from '@/components/features/services/helpers';
+import type { Service, Template } from '@/types/api';
+import { DomainDeleteBody, type DomainDependent } from './DomainDeleteBody';
 import { SettingsSection } from './SettingsSection';
 
 // `POST /api/domains` runs `is_valid_domain(..., require_dot=True)` (`app/api/settings.py`),
@@ -25,6 +27,15 @@ import { SettingsSection } from './SettingsSection';
 // would accept what the request then rejects.
 const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 const SEARCH_THRESHOLD = 6;
+
+/** What a root domain still holds: rows that keep working after it is deleted. */
+interface Dependents {
+  services: DomainDependent[];
+  templates: DomainDependent[];
+}
+
+/** One shared empty object rather than a fresh `{ services: [], templates: [] }` per row per render. */
+const NO_DEPENDENTS: Dependents = { services: [], templates: [] };
 
 /** Root domains shared by every service and DNS provider. */
 export function DnsTab() {
@@ -43,13 +54,39 @@ export function DnsTab() {
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
+  // Templates name a root domain in exactly the same bare TEXT column services do, and this
+  // tab used to read only the services. A domain no service used but a template did showed
+  // the neutral "0 services" badge and the plain "Delete domain?" question.
+  const { data: templates = [] } = useQuery<Template[]>({
+    queryKey: ['templates'],
+    queryFn: () => api.get<Template[]>('/templates'),
+  });
 
   const domains = useMemo(() => domainsQuery.data ?? [], [domainsQuery.data]);
-  const usage = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const service of services) counts.set(service.domain, (counts.get(service.domain) ?? 0) + 1);
-    return counts;
-  }, [services]);
+  const dependents = useMemo(() => {
+    const byDomain = new Map<string, Dependents>();
+    const slot = (name: string) => {
+      let entry = byDomain.get(name);
+      if (!entry) byDomain.set(name, (entry = { services: [], templates: [] }));
+      return entry;
+    };
+    for (const service of services) {
+      slot(service.domain).services.push({ id: service.id, label: fqdnOf(service) });
+    }
+    for (const template of templates) {
+      // A template may leave the domain to the service it creates. That blank names no root,
+      // and this map is keyed by one: the empty key is read only when `domains` itself holds
+      // an empty name, which `app/api/sync.py` can write -- `fqdn.split(".", 1)` over a single
+      // label with a trailing dot yields `("host", "")`. The badge that row would then paint
+      // counts templates against a domain they are not built on.
+      if (template.domain) slot(template.domain).templates.push({ id: template.id, label: template.name });
+    }
+    for (const entry of byDomain.values()) {
+      entry.services.sort((a, b) => a.label.localeCompare(b.label));
+      entry.templates.sort((a, b) => a.label.localeCompare(b.label));
+    }
+    return byDomain;
+  }, [services, templates]);
 
   const addDomain = useMutation({
     mutationFn: (name: string) => api.post('/domains', { name }),
@@ -84,12 +121,13 @@ export function DnsTab() {
   };
 
   const requestDelete = async (domain: string) => {
-    const count = usage.get(domain) ?? 0;
+    const held = dependents.get(domain) ?? NO_DEPENDENTS;
+    const inUse = held.services.length + held.templates.length > 0;
     const ok = await confirm(
-      count > 0
+      inUse
         ? {
-            title: t('settings.dns.confirm.has_services_title'),
-            message: t('settings.dns.confirm.has_services_message', { count, domain }),
+            title: t('settings.dns.confirm.in_use_title'),
+            message: <DomainDeleteBody domain={domain} services={held.services} templates={held.templates} />,
             confirmLabel: t('common.delete'),
             variant: 'warning',
           }
@@ -174,7 +212,7 @@ export function DnsTab() {
         ) : (
           <ul className="divide-y divide-border rounded-xl border border-border">
             {visible.map((domain) => {
-              const count = usage.get(domain) ?? 0;
+              const held = dependents.get(domain) ?? NO_DEPENDENTS;
               return (
                 <li key={domain} className="flex items-center gap-3 px-4 py-3">
                   <span
@@ -184,9 +222,14 @@ export function DnsTab() {
                     <Globe className="h-4 w-4" />
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">{domain}</span>
-                  <Badge tone={count > 0 ? 'info' : 'neutral'} className="tabular-nums">
-                    {t('settings.dns.service_count', { count })}
+                  <Badge tone={held.services.length > 0 ? 'info' : 'neutral'} className="tabular-nums">
+                    {t('settings.dns.service_count', { count: held.services.length })}
                   </Badge>
+                  {held.templates.length > 0 && (
+                    <Badge tone="info" className="tabular-nums">
+                      {t('settings.dns.template_count', { count: held.templates.length })}
+                    </Badge>
+                  )}
                   <IconButton
                     label={t('settings.dns.delete_aria', { domain })}
                     icon={<Trash2 />}

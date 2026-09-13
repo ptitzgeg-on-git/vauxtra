@@ -6,8 +6,14 @@ Two habits, one shape. Both were measured on a running instance before anything 
 `200 {"ok": true}`: a receipt for a deletion that never happened. `PUT /api/webhooks/999999`
 answered 404 for that same missing row, so the two verbs disagreed about whether the id was
 real, and `vauxtra_mcp/tools/admin.py::delete_webhook` handed the `ok` back to its own caller
-as proof the webhook was gone. Ten of the eleven delete routes already looked before they
-wrote; this was the eleventh.
+as proof the webhook was gone. Nine of the eleven delete routes already looked before they
+wrote; this was one of the two that did not.
+
+`DELETE /api/domains/absent.test` was the other, and it failed twice over. It never looked,
+so it signed the same receipt for nothing; and it put the raw path segment into the DELETE
+while `POST /api/domains` stores `normalize_domain(...)`, so `Example.test` matched nothing
+on an instance holding `example.test` and said `ok` for that too. Both ends are measured
+below, and the sweep now demands 404 from all eleven with no waiver.
 
 `POST /api/docker/endpoints` wrapped its INSERT in a bare `except Exception` that raised
 `409 Docker endpoint host already exists`. The handler had no way to know that was true: a
@@ -39,18 +45,14 @@ import app.main as app_main
 import app.scheduler as scheduler
 from app import models
 from app.api import docker as docker_api
+from app.api import settings as settings_api
 from app.api import webhooks as webhooks_api
 
 _ROOT = Path(__file__).resolve().parents[1]
 
-# One delete route still answers 200 over a row that is not there, and this is measured
-# rather than assumed: the sweep below reports it by path. `DELETE /api/domains/{name}` is
-# `app/api/settings.py::delete_domain`, which runs one `DELETE FROM domains WHERE name=?`
-# and returns `{"ok": True}` whatever that statement matched. It is left alone here because
-# that file belongs to another change in flight. The assertion is a subset, not an equality,
-# so the day it grows its lookup this test stays green and the waiver stops mattering; a
-# twelfth route without one still turns it red.
-_MEASURED_GAP = {"/api/domains/{name}"}
+# There is no waiver list here any more. `DELETE /api/domains/{name}` was the one route this
+# sweep used to excuse, and it now looks its row up like the other ten, so the assertion is
+# an equality: a twelfth delete route written without a lookup is red the day it is written.
 
 
 def _request(method: str = "POST", path: str = "/") -> Request:
@@ -148,9 +150,9 @@ class EveryDeleteRouteAnswersForARowThatIsNotThereTests(_IsolatedDB):
     def test_no_delete_route_reports_success_for_a_row_that_is_not_there(self) -> None:
         answers = self._sweep()
         wrong = {path: answer for path, answer in answers.items() if answer[0] != 404}
-        self.assertLessEqual(
-            set(wrong),
-            _MEASURED_GAP,
+        self.assertEqual(
+            wrong,
+            {},
             f"a delete route answered for a row it never found: {wrong}",
         )
 
@@ -252,7 +254,213 @@ class DeletingAWebhookTests(_IsolatedDB):
         self.assertEqual(self._rows("webhook_delivery_log"), 0)
 
 
-# -- The 409 that named a cause nobody had measured -------------------------------------------
+# -- The domain that was the other one --------------------------------------------------------
+
+
+class DeletingADomainTests(_IsolatedDB):
+    """`DELETE /api/domains/{name}`: the receipt for nothing, and the name it never matched.
+
+    `domains.name` is a TEXT primary key, and `services.domain` and
+    `service_templates.domain` hold one of those names as plain text with no REFERENCES
+    declared. So the deletion refuses nothing and breaks nothing, and the assertions below
+    say so in both directions: the row goes, and every row built on the name stays exactly
+    where it was.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch.object(settings_api, "require_auth", _no_auth)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _add(self, name: str) -> str:
+        return settings_api.add_domain(_request("POST"), {"name": name})["name"]
+
+    def _domains(self) -> list[str]:
+        return list(settings_api.list_domains(_request("GET")))
+
+    def _service(self, subdomain: str, domain: str) -> None:
+        conn = models.get_db()
+        try:
+            conn.execute(
+                """INSERT INTO services (subdomain, domain, target_ip, target_port)
+                   VALUES (?,?,'10.0.0.9',8080)""",
+                (subdomain, domain),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _template(self, name: str, domain: str) -> None:
+        conn = models.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO service_templates (name, domain, target_port) VALUES (?,?,8080)",
+                (name, domain),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _journal(self) -> list[tuple[str, str]]:
+        conn = models.get_db()
+        try:
+            return [
+                (r["level"], r["message"])
+                for r in conn.execute("SELECT level, message FROM logs ORDER BY id")
+            ]
+        finally:
+            conn.close()
+
+    def _count(self, table: str) -> int:
+        conn = models.get_db()
+        try:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_deleting_a_domain_that_is_not_there_answers_404(self) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            settings_api.delete_domain("never-existed.test", _request("DELETE"))
+        self.assertEqual(caught.exception.status_code, 404)
+        self.assertEqual(caught.exception.detail, "Domain not found")
+
+    def test_it_answers_404_without_writing_a_line_about_a_deletion(self) -> None:
+        """A journal that records removals that did not happen is worse than a silent one."""
+        with self.assertRaises(HTTPException):
+            settings_api.delete_domain("never-existed.test", _request("DELETE"))
+        self.assertEqual(self._journal(), [])
+
+    def test_a_domain_that_is_there_is_still_deleted(self) -> None:
+        """The witness: green before this change and green after it."""
+        self._add("example.test")
+        self.assertEqual(settings_api.delete_domain("example.test", _request("DELETE")), {"ok": True})
+        self.assertEqual(self._domains(), [])
+
+    def test_the_name_is_normalised_the_way_it_was_stored(self) -> None:
+        """`add_domain` stores `normalize_domain(...)`; this route used the raw segment.
+
+        On an instance holding `example.test`, `DELETE /api/domains/Example.TEST` matched no
+        row and answered `{"ok": true}`. The list still held the domain, and nothing said so.
+        """
+        self.assertEqual(self._add("  Example.TEST.  "), "example.test")
+        self.assertEqual(self._domains(), ["example.test"])
+        self.assertEqual(settings_api.delete_domain("Example.TEST", _request("DELETE")), {"ok": True})
+        self.assertEqual(self._domains(), [])
+
+    def test_a_trailing_dot_names_the_same_domain(self) -> None:
+        self._add("example.test")
+        self.assertEqual(settings_api.delete_domain("example.test.", _request("DELETE")), {"ok": True})
+        self.assertEqual(self._domains(), [])
+
+    def test_removing_an_unused_domain_is_one_plain_line(self) -> None:
+        self._add("unused.test")
+        settings_api.delete_domain("unused.test", _request("DELETE"))
+        self.assertEqual(self._journal(), [("info", "Domain deleted: unused.test")])
+
+    def test_the_line_names_the_services_that_keep_working(self) -> None:
+        self._add("example.test")
+        self._service("nas", "example.test")
+        self._service("git", "example.test")
+        settings_api.delete_domain("example.test", _request("DELETE"))
+
+        (level, message), = self._journal()
+        self.assertEqual(level, "warning")
+        self.assertIn("2 services still use the name and keep working", message)
+        self.assertIn("git.example.test", message)
+        self.assertIn("nas.example.test", message)
+
+    def test_a_domain_only_a_template_holds_is_not_silent(self) -> None:
+        """The hole the DNS tab had: it counted services and nothing else.
+
+        A root domain no service used but a template did showed the neutral "0 services"
+        badge and got the plain "Delete domain?" question, so the one thing still built on
+        the name was the one thing never mentioned.
+        """
+        self._add("tpl-only.test")
+        self._template("mon modele", "tpl-only.test")
+        settings_api.delete_domain("tpl-only.test", _request("DELETE"))
+
+        (level, message), = self._journal()
+        self.assertEqual(level, "warning")
+        self.assertIn("1 service template still uses the name and keeps working", message)
+        self.assertIn("mon modele", message)
+
+    def test_both_kinds_of_holder_are_counted_together(self) -> None:
+        self._add("example.test")
+        self._service("nas", "example.test")
+        self._template("mon modele", "example.test")
+        settings_api.delete_domain("example.test", _request("DELETE"))
+
+        (_level, message), = self._journal()
+        self.assertIn("1 service and 1 service template still use the name", message)
+
+    def test_an_apex_route_is_not_named_with_a_leading_dot(self) -> None:
+        """`subdomain` is empty for an apex route, and the naive join says `.example.test`."""
+        self._add("example.test")
+        self._service("", "example.test")
+        settings_api.delete_domain("example.test", _request("DELETE"))
+
+        (_level, message), = self._journal()
+        self.assertIn("(example.test)", message)
+        self.assertNotIn("(.example.test)", message)
+
+    def test_past_five_holders_the_line_counts_instead_of_listing(self) -> None:
+        self._add("example.test")
+        for n in range(7):
+            self._service(f"svc{n}", "example.test")
+        settings_api.delete_domain("example.test", _request("DELETE"))
+
+        (_level, message), = self._journal()
+        self.assertIn("7 services still use the name", message)
+        self.assertIn("and 2 more", message)
+        self.assertNotIn("svc6", message)
+
+    def test_nothing_built_on_the_name_is_touched(self) -> None:
+        """The deletion refuses nothing and takes nothing with it, and that is the point.
+
+        `services.domain` and `service_templates.domain` declare no reference, so there is
+        no cascade to fire and nothing to blank. The rows keep the name and keep routing --
+        which is what the dialog was rewritten to say, after years of warning that existing
+        routes might break.
+        """
+        self._add("example.test")
+        self._service("nas", "example.test")
+        self._template("mon modele", "example.test")
+        settings_api.delete_domain("example.test", _request("DELETE"))
+
+        self.assertEqual(self._domains(), [])
+        self.assertEqual(self._count("services"), 1)
+        self.assertEqual(self._count("service_templates"), 1)
+        conn = models.get_db()
+        try:
+            self.assertEqual(
+                conn.execute("SELECT domain FROM services").fetchone()["domain"], "example.test"
+            )
+            self.assertEqual(
+                conn.execute("SELECT domain FROM service_templates").fetchone()["domain"],
+                "example.test",
+            )
+        finally:
+            conn.close()
+
+    def test_a_neighbouring_domain_keeps_its_own_holders_out_of_the_line(self) -> None:
+        """The control for the two SELECTs: they filter on the name, not on the table."""
+        self._add("example.test")
+        self._add("other.test")
+        self._service("nas", "example.test")
+        self._service("git", "other.test")
+        self._template("modele autre", "other.test")
+        settings_api.delete_domain("example.test", _request("DELETE"))
+
+        (_level, message), = self._journal()
+        self.assertIn("1 service still uses the name", message)
+        self.assertIn("nas.example.test", message)
+        self.assertNotIn("git.other.test", message)
+        self.assertNotIn("modele autre", message)
+        self.assertEqual(self._domains(), ["other.test"])
+
+
 
 
 class _InsertFails:
