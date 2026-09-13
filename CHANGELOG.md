@@ -337,6 +337,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A tag or environment whose name held a comma or a colon came back as a different label.**
+  Every service read serialised its labels as `GROUP_CONCAT(DISTINCT t.name || ':' || t.color
+  || ':' || t.id)` and took the answer back apart on `,` and then on `:`, keeping the chunks
+  that came out in exactly three pieces. The name is the first of those pieces, so the name was
+  the one field able to move the boundaries it was being read between — and nothing refuses
+  either character. `TagIn` and `EnvironmentIn` strip the name, refuse it empty and stop it at
+  32 characters, and that is the whole rule; the panel offers a free text field, and `web:prod`,
+  `a,b` and `staging: eu` are names an operator types without a second thought.
+
+  Measured before the change, with six tags on one service named `prod`, `a,b`, `web:prod`,
+  `a,`, `x:` and `zeta`, `GET /api/services` answered with four: `prod`, `b`, the empty string,
+  and `zeta`. Two names vanished, and two came back under the right id and a name nobody typed.
+  The second half is the worse one: a chip that goes missing is visible, while a chip reading
+  `b` over a tag called `a,b` is not, and `GET /api/tags` holds no `b` to reconcile it against.
+  The damage stopped at the label that caused it — each label contributed one comma-separated
+  run, so `prod` and `zeta` came back untouched — which is why nothing about the row looked
+  wrong enough to investigate.
+
+  The three queries in `app/api/services.py` no longer join the two label tables at all. A new
+  `labels_by_service` reads the links as rows, one query for tags and one for environments,
+  both keyed by service id, exactly as the push targets are already read on the same route;
+  rows carry their own boundaries, so there is nowhere for the fault to happen. `GROUP_CONCAT`,
+  `parse_tags`, `parse_environments` and the `GROUP BY` that existed only to undo the fan-out
+  are gone with them, along with a `tags_raw` parameter on `row_to_service` that all three
+  callers had already stopped passing. Labels now arrive ordered by name, which is the order
+  `GET /api/tags` and `GET /api/environments` already answer in and which `GROUP_CONCAT
+  DISTINCT` never promised.
+
 - **Deleting a label said nothing about what it took with it, and left no trace once it had.**
   "{name} will be removed from every service that carries it" was one line, for both taxonomies
   and both kinds of holder. It named no number, so a tag on one service and a tag on forty asked

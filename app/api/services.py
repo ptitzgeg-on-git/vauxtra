@@ -10,6 +10,7 @@ from app.auth import require_auth
 from app.models import (
     add_log,
     get_db,
+    labels_by_service,
     row_to_service,
     set_environments,
     set_push_targets,
@@ -764,18 +765,11 @@ def list_services(request: Request):
         SELECT s.*,
                dp.name AS dns_provider_name, dp.type AS dns_type,
                pp.name AS proxy_provider_name, pp.type AS proxy_type,
-             tp.name AS tunnel_provider_name, tp.type AS tunnel_type,
-               GROUP_CONCAT(DISTINCT t.name || ':' || t.color || ':' || t.id) AS tags_raw,
-               GROUP_CONCAT(DISTINCT e.name || ':' || e.color || ':' || e.id) AS envs_raw
+             tp.name AS tunnel_provider_name, tp.type AS tunnel_type
         FROM services s
         LEFT JOIN providers dp ON s.dns_provider_id  = dp.id
         LEFT JOIN providers pp ON s.proxy_provider_id = pp.id
          LEFT JOIN providers tp ON s.tunnel_provider_id = tp.id
-        LEFT JOIN service_tags st ON st.service_id = s.id
-        LEFT JOIN tags t ON t.id = st.tag_id
-        LEFT JOIN service_environments se ON se.service_id = s.id
-        LEFT JOIN environments e ON e.id = se.environment_id
-        GROUP BY s.id
         ORDER BY s.domain, s.subdomain
     """).fetchall()
 
@@ -811,11 +805,14 @@ def list_services(request: Request):
                 "provider_enabled": bool(t["provider_enabled"]),
             })
 
+    tags_by_service, envs_by_service = labels_by_service(conn, service_ids)
     conn.close()
 
     out = []
     for r in rows:
-        service = row_to_service(r)
+        service = row_to_service(
+            r, tags_by_service.get(r["id"], []), envs_by_service.get(r["id"], [])
+        )
         push_targets = targets_by_service.get(r["id"], [])
         service["push_targets"] = push_targets
         service["extra_proxy_provider_ids"] = [
@@ -859,19 +856,12 @@ def get_service(sid: int, request: Request):
         SELECT s.*,
                dp.name AS dns_provider_name, dp.type AS dns_type,
                pp.name AS proxy_provider_name, pp.type AS proxy_type,
-               tp.name AS tunnel_provider_name, tp.type AS tunnel_type,
-               GROUP_CONCAT(DISTINCT t.name || ':' || t.color || ':' || t.id) AS tags_raw,
-               GROUP_CONCAT(DISTINCT e.name || ':' || e.color || ':' || e.id) AS envs_raw
+               tp.name AS tunnel_provider_name, tp.type AS tunnel_type
         FROM services s
         LEFT JOIN providers dp ON s.dns_provider_id = dp.id
         LEFT JOIN providers pp ON s.proxy_provider_id = pp.id
         LEFT JOIN providers tp ON s.tunnel_provider_id = tp.id
-        LEFT JOIN service_tags st ON st.service_id = s.id
-        LEFT JOIN tags t ON t.id = st.tag_id
-        LEFT JOIN service_environments se ON se.service_id = s.id
-        LEFT JOIN environments e ON e.id = se.environment_id
         WHERE s.id = ?
-        GROUP BY s.id
         """,
         (sid,),
     ).fetchone()
@@ -894,9 +884,12 @@ def get_service(sid: int, request: Request):
         """,
         (sid,),
     ).fetchall()
+    tags_for_service, envs_for_service = labels_by_service(conn, [sid])
     conn.close()
 
-    service = row_to_service(row)
+    service = row_to_service(
+        row, tags_for_service.get(sid, []), envs_for_service.get(sid, [])
+    )
     push_targets = [
         {
             "role": t["role"],
@@ -1731,18 +1724,12 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         SELECT s.*,
                dp.name AS dns_provider_name, dp.type AS dns_type,
                pp.name AS proxy_provider_name, pp.type AS proxy_type,
-             tp.name AS tunnel_provider_name, tp.type AS tunnel_type,
-               GROUP_CONCAT(DISTINCT t.name || ':' || t.color || ':' || t.id) AS tags_raw,
-               GROUP_CONCAT(DISTINCT e.name || ':' || e.color || ':' || e.id) AS envs_raw
+             tp.name AS tunnel_provider_name, tp.type AS tunnel_type
         FROM services s
         LEFT JOIN providers dp ON s.dns_provider_id  = dp.id
         LEFT JOIN providers pp ON s.proxy_provider_id = pp.id
          LEFT JOIN providers tp ON s.tunnel_provider_id = tp.id
-        LEFT JOIN service_tags st ON st.service_id = s.id
-        LEFT JOIN tags t ON t.id = st.tag_id
-        LEFT JOIN service_environments se ON se.service_id = s.id
-        LEFT JOIN environments e ON e.id = se.environment_id
-        WHERE s.id=? GROUP BY s.id""", (sid,)).fetchone()
+        WHERE s.id=?""", (sid,)).fetchone()
     push_targets_rows = conn.execute(
         """
         SELECT spt.role,
@@ -1757,9 +1744,12 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         """,
         (sid,),
     ).fetchall()
+    tags_for_service, envs_for_service = labels_by_service(conn, [sid])
     conn.close()
 
-    service = row_to_service(row)
+    service = row_to_service(
+        row, tags_for_service.get(sid, []), envs_for_service.get(sid, [])
+    )
     push_targets = [
         {
             "role": t["role"],
