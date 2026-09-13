@@ -70,6 +70,8 @@ def dry_run_push(service_id: int) -> dict[str, Any]:
     Simulate pushing a service to all configured providers without making any changes.
 
     Returns the list of planned proxy and DNS actions, and whether anything would change.
+    A disabled service is withheld rather than published, so its plan describes the
+    withdrawal instead: `withheld` is true and the actions are `suspend` and `delete`.
     """
     r = client.post(f"/services/{service_id}/push/dry-run")
     client.check(r)
@@ -80,6 +82,10 @@ def dry_run_push(service_id: int) -> dict[str, Any]:
 def push_service(service_id: int) -> dict[str, Any]:
     """
     Push a service to all configured providers (proxy + DNS).
+
+    A push converges the providers on the service record, and a disabled service is
+    therefore withdrawn rather than published: the primary proxy host is suspended, every
+    other route is removed. Enable the service first if you meant to publish it.
 
     Use dry_run_push first to preview changes.
     """
@@ -93,7 +99,9 @@ def check_drift(service_id: int) -> dict[str, Any]:
     """
     Compare the expected service state against what is actually configured in providers.
 
-    Returns a list of issues (errors and warnings) if discrepancies are detected.
+    Returns a list of issues (errors and warnings) if discrepancies are detected. A disabled
+    service expects the opposite, so its issues name a provider that is still serving the
+    route (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than one missing it.
     """
     r = client.get(f"/services/{service_id}/drift")
     client.check(r)

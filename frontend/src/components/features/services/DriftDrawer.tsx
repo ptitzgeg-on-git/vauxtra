@@ -22,11 +22,15 @@ export interface DriftDrawerProps {
 }
 
 /** `services.drift.type.<type>` for the known issue types; the raw type otherwise. */
+// A disabled service expects the opposite of a published one, so the two `*_still_served`
+// types read the same drawer backwards: what is still answering rather than what is missing.
 const KNOWN_ISSUE_TYPES = new Set([
   'missing_proxy_route',
+  'proxy_route_still_served',
   'proxy_origin_mismatch',
   'proxy_check_failed',
   'missing_dns_rewrite',
+  'dns_rewrite_still_served',
   'dns_target_mismatch',
   'dns_check_failed',
 ]);
