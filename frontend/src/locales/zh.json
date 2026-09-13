@@ -900,7 +900,7 @@
   "providers.delete.deps_dark_other": "其中 {count} 个没有其他目标：它们保留公网地址，但不再由任何一方发布。",
   "providers.delete.deps_intro_other": "仍有 {count} 个服务指向 {name}。",
   "providers.delete.deps_kept_other": "{count} 个仍由其他目标继续发布。",
-  "providers.delete.deps_more": "…还有 {count} 个",
+  "providers.delete.deps_more_other": "…还有 {count} 个",
   "providers.delete.deps_title": "仍有服务依赖它",
   "providers.delete.force_confirm": "强制删除",
   "providers.delete.message": "{name} 将从 Vauxtra 中移除。提供商本身不会有任何改动。",
@@ -1926,7 +1926,7 @@
   "settings.dns.confirm.in_use_title": "该域名仍在使用中",
   "settings.dns.confirm.in_use_services_other": "有 {count} 个服务建立在 \"{domain}\" 之上。",
   "settings.dns.confirm.in_use_templates_other": "有 {count} 个服务模板建立在 \"{domain}\" 之上。",
-  "settings.dns.confirm.in_use_more": "…还有 {count} 个",
+  "settings.dns.confirm.in_use_more_other": "…还有 {count} 个",
   "settings.dns.confirm.in_use_effect": "删除域名不会改变这一点：运行时没有任何环节读取域名列表，上面每一行都保留其主机名，并继续按原样发布。",
   "settings.dns.confirm.in_use_pickers": "改变的是选择列表 — 创建服务或模板时不再提供 \"{domain}\"。",
   "settings.dns.confirm.in_use_returns": "而且 \"{domain}\" 可能自行回来：Docker 扫描或提供商导入会重新添加其引入的每个服务的根域名。"
