@@ -110,16 +110,21 @@ class DomainsApiTests(IsolatedDBTestCase):
     def test_add_list_delete_domain(self) -> None:
         with patch.object(settings_api, "require_auth", lambda _req, scope=None: None):
             with self.assertRaises(HTTPException) as exc:
-                settings_api.add_domain(_request("POST", "/api/domains"), {"name": "invalid"})
+                settings_api.add_domain(
+                    _request("POST", "/api/domains"), settings_api.DomainIn(name="invalid")
+                )
             self.assertEqual(exc.exception.status_code, 400)
 
             with self.assertRaises(HTTPException) as exc:
-                settings_api.add_domain(_request("POST", "/api/domains"), {"name": "https://vauxtra.magicgg.fr/"})
+                settings_api.add_domain(
+                    _request("POST", "/api/domains"),
+                    settings_api.DomainIn(name="https://vauxtra.magicgg.fr/"),
+                )
             self.assertEqual(exc.exception.status_code, 400)
 
             created = settings_api.add_domain(
                 _request("POST", "/api/domains"),
-                {"name": "Example.COM"},
+                settings_api.DomainIn(name="Example.COM"),
             )
             self.assertEqual(created["name"], "example.com")
 
@@ -408,22 +413,22 @@ class WebhooksApiTests(IsolatedDBTestCase):
         with patch.object(webhooks_api, "require_auth", lambda _req, scope=None: None):
             webhook = webhooks_api.add_webhook(
                 _request("POST", "/api/webhooks"),
-                {"name": "Ops", "url": "mailto://ops@example.com"},
+                webhooks_api.WebhookIn(name="Ops", url="mailto://ops@example.com"),
             )
 
             result = webhooks_api.set_service_alerts(
                 1,
                 _request("POST", "/api/services/1/alerts"),
-                {
-                    "alerts": [
-                        {
-                            "webhook_id": webhook["id"],
-                            "on_up": True,
-                            "on_down": True,
-                            "min_down_minutes": 3,
-                        }
+                webhooks_api.ServiceAlertsIn(
+                    alerts=[
+                        webhooks_api.ServiceAlertIn(
+                            webhook_id=webhook["id"],
+                            on_up=True,
+                            on_down=True,
+                            min_down_minutes=3,
+                        )
                     ]
-                },
+                ),
             )
             self.assertTrue(result["ok"])
 
@@ -438,14 +443,14 @@ class EnvironmentsApiTests(IsolatedDBTestCase):
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
             first = environments_api.add_environment(
                 _request("POST", "/api/environments"),
-                {"name": "production", "color": "not-a-color"},
+                environments_api.EnvironmentIn(name="production", color="not-a-color"),
             )
             self.assertEqual(first["color"], "blue")
 
             with self.assertRaises(HTTPException) as exc:
                 environments_api.add_environment(
                     _request("POST", "/api/environments"),
-                    {"name": "production", "color": "red"},
+                    environments_api.EnvironmentIn(name="production", color="red"),
                 )
             self.assertEqual(exc.exception.status_code, 409)
 

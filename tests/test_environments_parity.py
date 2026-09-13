@@ -74,7 +74,9 @@ def _create(kind: str, name: str, color: str = "blue"):
         with patch.object(tags_api, "require_auth", _no_auth):
             return tags_api.create_tag(_request(), tags_api.TagIn(name=name, color=color))
     with patch.object(environments_api, "require_auth", _no_auth):
-        return environments_api.add_environment(_request(), {"name": name, "color": color})
+        return environments_api.add_environment(
+            _request(), environments_api.EnvironmentIn(name=name, color=color)
+        )
 
 
 def _update(kind: str, ident: int, name: str, color: str = "blue"):
@@ -84,7 +86,7 @@ def _update(kind: str, ident: int, name: str, color: str = "blue"):
             return tags_api.update_tag(ident, _request("PUT"), body)
     with patch.object(environments_api, "require_auth", _no_auth):
         return environments_api.update_environment(
-            ident, _request("PUT"), {"name": name, "color": color}
+            ident, _request("PUT"), environments_api.EnvironmentIn(name=name, color=color)
         )
 
 

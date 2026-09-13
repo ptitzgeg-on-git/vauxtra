@@ -972,7 +972,7 @@ class EnvironmentUpdateTests(IsolatedDBTestCase):
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
             created = environments_api.add_environment(
                 _request("POST", "/api/environments"),
-                {"name": "staging", "color": "orange"},
+                environments_api.EnvironmentIn(name="staging", color="orange"),
             )
 
         eid = created["id"]
@@ -981,7 +981,7 @@ class EnvironmentUpdateTests(IsolatedDBTestCase):
             updated = environments_api.update_environment(
                 eid,
                 _request("PUT", f"/api/environments/{eid}"),
-                {"name": "production", "color": "red"},
+                environments_api.EnvironmentIn(name="production", color="red"),
             )
 
         self.assertEqual(updated["name"], "production")
@@ -997,21 +997,25 @@ class EnvironmentUpdateTests(IsolatedDBTestCase):
         """An invalid color must fall back to 'blue' without rejecting the request."""
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
             created = environments_api.add_environment(
-                _request(), {"name": "test-env", "color": "blue"}
+                _request(), environments_api.EnvironmentIn(name="test-env", color="blue")
             )
             updated = environments_api.update_environment(
                 created["id"],
                 _request("PUT", "/api/environments/1"),
-                {"name": "test-env", "color": "notacolor"},
+                environments_api.EnvironmentIn(name="test-env", color="notacolor"),
             )
         self.assertEqual(updated["color"], "blue")
 
     def test_create_duplicate_environment_raises(self) -> None:
         """Creating two environments with the same name must raise 409."""
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
-            environments_api.add_environment(_request(), {"name": "dev"})
+            environments_api.add_environment(
+                _request(), environments_api.EnvironmentIn(name="dev")
+            )
             with self.assertRaises(HTTPException) as ctx:
-                environments_api.add_environment(_request(), {"name": "dev"})
+                environments_api.add_environment(
+                    _request(), environments_api.EnvironmentIn(name="dev")
+                )
         self.assertEqual(ctx.exception.status_code, 409)
 
 

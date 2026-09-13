@@ -233,6 +233,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A body value of the wrong type answered `500`, and a body missing its one key deleted
+  every alert rule of a service and answered `ok`.** Seven write routes read their body as a
+  plain `dict` and reached straight for what they wanted. `.strip()` on a number, `int()` on a
+  word and `.get()` on a string all raise, nothing above them catches it, and the caller read
+  `500 Internal Server Error` for a mistake in their own payload: sixteen distinct ones were
+  measured. The panel produces none of them, because it types its own state and clamps its own
+  numbers before it posts. What reaches these routes unshaped is `vauxtra_mcp`, where
+  `create_webhook`, `update_webhook`, `test_webhook_url`, `set_service_alerts`, `add_domain`,
+  `create_environment` and `update_environment` pass their arguments on as JSON, and the thing
+  composing that JSON is a language model.
+
+  `POST /api/services/{sid}/alerts` is the one that cost something. It replaces every rule of
+  the service, and it read its list with `body.get("alerts", [])`: an empty body, or one whose
+  single key was misspelled, deleted every alert rule on the service and answered
+  `{"ok": true}`. An entry inside the list that had lost its `webhook_id` was skipped by the
+  same reasoning — and skipping an entry after the `DELETE` has run is not "not added", it is
+  "removed". Both are silent in the one direction nobody hears about: the service stops
+  alerting and goes on looking configured. Both ids are real foreign keys and both were left
+  to the index to report, so an id naming no row raised `IntegrityError` as a bare `500`
+  after the deletion had already run in the same transaction; the rollback saved the rules
+  that time, which is luck, not design.
+
+  All seven now declare their body, so a wrong type is the `422` that names the field. The
+  alert list has no default — clearing the rules is still one request, and it is
+  `{"alerts": []}`, which says so. The service id and every webhook id are checked before
+  anything is deleted, answering `404 Service not found` or naming every unknown webhook at
+  once, with the existing rules untouched in both cases. `min_down_minutes` is clamped at zero
+  here as it already was on the webhook itself.
+
+  Every refusal these routes had already written by hand is unchanged, and that is the point
+  of the shape chosen: the empty name is still `Name and URL are required`, a URL apprise
+  cannot parse is still refused by the same validator, and a webhook scope target is still
+  answered by `_normalize_scope` in the four different sentences it distinguishes — an unknown
+  word, a missing target, a target that is not a number, a number naming no row — rather than
+  being flattened into one generic `422` ahead of it. `PUT /api/webhooks/{id}` reads what the
+  caller actually sent rather than what has a value, so `{"enabled": false}` on its own is
+  still a partial update and leaves the other ten fields as stored.
+
+  `scripts/check_api_mcp_parity.py` compares an MCP tool's payload against the model of the
+  route it calls, and had nothing to compare for any of these: routes with a body and no model
+  fall from ten to three, and the three that remain are the free-form payloads that cannot
+  have one — the two import endpoints and the settings key/value map.
+
 - **A hostname was checked, then published, and only then refused — with a `500` and no
   record of what had gone out.** Both service write endpoints read the table for a service
   already answering for the hostname, then call the proxy and the DNS server, then store the
