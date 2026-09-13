@@ -929,6 +929,12 @@ the tag. An environment has only the first of those — no template names an env
 doing it; afterwards the id is gone, and the line the deletion writes to **Settings → Logs** is
 the only place the two counts are kept.
 
+**Note on label names:** a name is stripped of its surrounding spaces, refused empty and
+stopped at 32 characters, and that is the whole rule. Commas, colons and any other
+character are allowed, in a tag name and in an environment name alike, and come back
+from `GET /api/services` exactly as they were typed. Two labels of the same kind may not
+share a name (409); a tag and an environment may.
+
 ### Domains
 
 | Method | Endpoint | Description |
