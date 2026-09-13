@@ -12,10 +12,17 @@ afterwards:
   nothing in the database describing it.
 - nothing stopped two services from claiming one hostname. They push over each other, and
   the drift check then reports whichever lost as permanently wrong.
+- and the check that closed that last hole was only as fresh as the moment it ran. Both
+  service write endpoints, and both rename endpoints, read the name, did the work, then
+  wrote it: a second operator taking the name inside that window left the UNIQUE index as
+  the only thing that still knew, and it answered 500 -- after the hostname had been
+  published on the providers.
 """
 
+import ast
 import inspect
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -24,8 +31,10 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app import models
+from app.api import environments as environments_api
 from app.api import providers as providers_api
 from app.api import services as services_api
+from app.api import tags as tags_api
 from app.api import webhooks as webhooks_api
 
 
@@ -124,6 +133,18 @@ class _IsolatedDB(unittest.TestCase):
         conn.commit()
         conn.close()
         return sid
+
+    def _service_body(self, **overrides) -> services_api.ServiceIn:
+        payload = {
+            "subdomain": "app",
+            "domain": "example.com",
+            "target_ip": "10.0.0.10",
+            "target_port": 8080,
+            "proxy_provider_id": 2,
+            "dns_ip": "198.51.100.7",
+        }
+        payload.update(overrides)
+        return services_api.ServiceIn(**payload)
 
     def _seed_webhook(self, name: str = "on-call", **cols) -> int:
         fields = {
@@ -768,23 +789,11 @@ class OneHostnameOneServiceTests(_IsolatedDB):
         self.addCleanup(lambda: [p.stop() for p in reversed(self._patchers)])
         self._seed_providers()
 
-    def _body(self, **overrides) -> services_api.ServiceIn:
-        payload = {
-            "subdomain": "app",
-            "domain": "example.com",
-            "target_ip": "10.0.0.10",
-            "target_port": 8080,
-            "proxy_provider_id": 2,
-            "dns_ip": "198.51.100.7",
-        }
-        payload.update(overrides)
-        return services_api.ServiceIn(**payload)
-
     def test_a_second_service_on_the_same_hostname_is_refused(self) -> None:
         sid = self._seed_service()
 
         with self.assertRaises(HTTPException) as caught:
-            services_api.add_service(_request(), self._body())
+            services_api.add_service(_request(), self._service_body())
 
         self.assertEqual(caught.exception.status_code, 409)
         self.assertIn(f"#{sid}", caught.exception.detail)
@@ -797,7 +806,7 @@ class OneHostnameOneServiceTests(_IsolatedDB):
         with self.assertRaises(HTTPException) as caught:
             services_api.add_service(
                 _request(),
-                self._body(
+                self._service_body(
                     subdomain="other",
                     domain="example.org",
                     expose_mode="tunnel",
@@ -812,14 +821,15 @@ class OneHostnameOneServiceTests(_IsolatedDB):
     def test_a_different_hostname_is_accepted(self) -> None:
         self._seed_service()
 
-        result = services_api.add_service(_request(), self._body(subdomain="other"))
+        result = services_api.add_service(_request(), self._service_body(subdomain="other"))
 
         self.assertEqual(result.status_code, 201)
 
     def test_updating_a_service_does_not_collide_with_itself(self) -> None:
         sid = self._seed_service()
 
-        result = services_api.update_service(sid, _request("PUT"), self._body(target_port=9090))
+        body = self._service_body(target_port=9090)
+        result = services_api.update_service(sid, _request("PUT"), body)
 
         self.assertEqual(result["id"], sid)
         self.assertEqual(result["target_port"], 9090)
@@ -829,7 +839,8 @@ class OneHostnameOneServiceTests(_IsolatedDB):
         second = self._seed_service(subdomain="other")
 
         with self.assertRaises(HTTPException) as caught:
-            services_api.update_service(second, _request("PUT"), self._body(subdomain="app"))
+            body = self._service_body(subdomain="app")
+            services_api.update_service(second, _request("PUT"), body)
 
         self.assertEqual(caught.exception.status_code, 409)
 
@@ -868,6 +879,399 @@ class OneHostnameOneServiceTests(_IsolatedDB):
             any("Duplicate service hostnames" in m and "dup.example.com" in m for m in self._logs()),
             self._logs(),
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# The hostname was free when it was read, and taken by the time it was written
+# ─────────────────────────────────────────────────────────────────────────────────────
+class _RacingConnection:
+    """Lets a second writer in, once, at a chosen statement of the route's own connection.
+
+    The window is not reachable by calling an endpoint twice: it opens between a route's two
+    statements, the read that clears the name and the write that stores it, and every call
+    the route makes to a proxy or a DNS server sits inside it. Firing on the read reproduces
+    it exactly and in order; a thread racing a real one would reproduce it sometimes.
+    """
+
+    def __init__(self, inner, trigger: str, steal) -> None:
+        self._inner, self._trigger, self._steal = inner, trigger, steal
+        self._fired = False
+
+    def execute(self, sql, *args, **kwargs):
+        cursor = self._inner.execute(sql, *args, **kwargs)
+        if not self._fired and self._trigger in sql:
+            self._fired = True
+            self._steal()
+        return cursor
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _is_closed(conn) -> bool:
+    """A refusal that returns without closing leaks the handle for the life of the process."""
+    import sqlite3
+
+    try:
+        conn.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return True
+    return False
+
+
+# Both service routes scan the table for a published hostname before they touch a provider.
+# It is the last read either of them does, so it is where the other operator gets in.
+_CONFLICT_SCAN = "expose_mode, tunnel_hostname FROM services"
+
+
+class HostnameTakenMidWriteTests(_IsolatedDB):
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list = []
+        self.opened: list = []
+        self._patchers = [
+            patch.object(services_api, "require_auth", lambda _req, scope=None: None),
+            patch.object(services_api, "create_provider", lambda _row: _SilentProvider(self.calls)),
+        ]
+        for p in self._patchers:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in reversed(self._patchers)])
+        self._seed_providers()
+
+    def tearDown(self) -> None:
+        # Only reached when the fix is absent. An open handle keeps the database file, and
+        # the temporary directory then refuses to go on Windows -- so a regression here would
+        # report a teardown error stacked on top of the assertion that actually failed.
+        for conn in self.opened:
+            if not _is_closed(conn):
+                conn.close()
+        super().tearDown()
+
+    def _race(self, steal, trigger: str = _CONFLICT_SCAN) -> None:
+        real_get_db = models.get_db
+
+        def racing_get_db():
+            conn = real_get_db()
+            self.opened.append(conn)
+            return _RacingConnection(conn, trigger, steal)
+
+        patcher = patch.object(services_api, "get_db", racing_get_db)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _claims(self, subdomain: str) -> None:
+        """The other operator saves the same hostname while we are talking to a provider."""
+        self._race(lambda: self._seed_service(subdomain=subdomain))
+
+    def _warnings(self) -> list[str]:
+        conn = models.get_db()
+        rows = conn.execute("SELECT message FROM logs WHERE level='warning' ORDER BY id").fetchall()
+        conn.close()
+        return [r["message"] for r in rows]
+
+    # -- creating --------------------------------------------------------------------------
+    def test_a_creation_that_loses_the_race_is_refused_and_not_a_server_error(self) -> None:
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException) as caught:
+            services_api.add_service(_request(), self._service_body(subdomain="vault"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("vault.example.com", caught.exception.detail)
+
+    def test_the_refused_creation_names_what_it_had_already_published(self) -> None:
+        """The one thing the operator cannot look up afterwards: there is no row to look at."""
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException):
+            services_api.add_service(_request(), self._service_body(subdomain="vault"))
+
+        self.assertIn(("create_host", "vault.example.com"), self.calls)
+        published = [m for m in self._warnings() if "vault.example.com was published" in m]
+        self.assertEqual(len(published), 1, self._warnings())
+        self.assertIn("NPM", published[0])
+        self.assertIn("check those providers", published[0])
+        # The push's own line outlives the rolled-back INSERT because `add_log` opens its own
+        # connection when it is not handed one. The warning has to be written the same way:
+        # through the route's connection it would be discarded along with the INSERT, which is
+        # the single outcome this whole branch exists to prevent.
+        self.assertTrue(any("Proxy created: vault.example.com" in m for m in self._logs()))
+
+    def test_the_refused_creation_closes_its_connection(self) -> None:
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException):
+            services_api.add_service(_request(), self._service_body(subdomain="vault"))
+
+        self.assertTrue(self.opened, "the route never opened one, so nothing was measured")
+        self.assertTrue(all(_is_closed(c) for c in self.opened))
+
+    def test_an_uncontested_creation_is_still_created_and_says_nothing(self) -> None:
+        self._race(lambda: None)
+
+        result = services_api.add_service(_request(), self._service_body(subdomain="vault"))
+
+        self.assertEqual(result.status_code, 201)
+        self.assertEqual([m for m in self._warnings() if "was published" in m], [])
+
+    # -- renaming --------------------------------------------------------------------------
+    def test_a_rename_that_loses_the_race_is_refused_and_not_a_server_error(self) -> None:
+        sid = self._seed_service(subdomain="old", dns_provider_id=None, dns_ip="")
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException) as caught:
+            services_api.update_service(sid, _request("PUT"), self._service_body(subdomain="vault"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("vault.example.com", caught.exception.detail)
+
+    def test_the_refused_rename_says_what_the_providers_now_serve(self) -> None:
+        sid = self._seed_service(subdomain="old", dns_provider_id=None, dns_ip="")
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException):
+            services_api.update_service(sid, _request("PUT"), self._service_body(subdomain="vault"))
+
+        drifted = [m for m in self._warnings() if f"Service #{sid} was reconfigured" in m]
+        self.assertEqual(len(drifted), 1, self._warnings())
+        self.assertIn("vault.example.com", drifted[0])
+        self.assertIn("old.example.com", drifted[0])
+        self.assertIn("drift check", drifted[0])
+
+    def test_the_refused_rename_leaves_the_row_on_its_old_hostname(self) -> None:
+        """Deliberately not withdrawn: the winner holds that name on these same providers."""
+        sid = self._seed_service(subdomain="old", dns_provider_id=None, dns_ip="")
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException):
+            services_api.update_service(sid, _request("PUT"), self._service_body(subdomain="vault"))
+
+        conn = models.get_db()
+        row = conn.execute("SELECT subdomain, domain FROM services WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        self.assertEqual((row["subdomain"], row["domain"]), ("old", "example.com"))
+
+    def test_the_refused_rename_closes_its_connection(self) -> None:
+        sid = self._seed_service(subdomain="old", dns_provider_id=None, dns_ip="")
+        self._claims("vault")
+
+        with self.assertRaises(HTTPException):
+            services_api.update_service(sid, _request("PUT"), self._service_body(subdomain="vault"))
+
+        self.assertTrue(self.opened, "the route never opened one, so nothing was measured")
+        self.assertTrue(all(_is_closed(c) for c in self.opened))
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# A rename answers for the collision its own creation already answers for
+# ─────────────────────────────────────────────────────────────────────────────────────
+class RenamesRefuseTheWayCreationsDoTests(_IsolatedDB):
+    """Two lists, edited in the same panel, where only the create half had the handler.
+
+    Nothing is published for a tag or an environment, so the cost is smaller than the service
+    routes' -- but the reply was a 500 for a name collision the operator caused and could fix,
+    three lines of code away from the 409 the creation answers for exactly the same clash.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        for module in (tags_api, environments_api):
+            patcher = patch.object(module, "require_auth", lambda _req, scope=None: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _race(self, module, trigger: str, steal) -> None:
+        real_get_db = models.get_db
+
+        def racing_get_db():
+            return _RacingConnection(real_get_db(), trigger, steal)
+
+        patcher = patch.object(module, "get_db", racing_get_db)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _insert(self, table: str, name: str):
+        def steal():
+            conn = models.get_db()
+            statement = f"INSERT INTO {table} (name, color) VALUES (?, 'blue')"  # noqa: S608
+            conn.execute(statement, (name,))
+            conn.commit()
+            conn.close()
+
+        return steal
+
+    def test_a_tag_rename_that_loses_the_race_is_refused(self) -> None:
+        conn = models.get_db()
+        tid = conn.execute("INSERT INTO tags (name, color) VALUES ('draft', 'blue')").lastrowid
+        conn.commit()
+        conn.close()
+        self._race(tags_api, "FROM tags WHERE name=?", self._insert("tags", "prod"))
+
+        with self.assertRaises(HTTPException) as caught:
+            tags_api.update_tag(tid, _request("PUT"), tags_api.TagIn(name="prod"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail, "A tag with this name already exists")
+
+    def test_an_uncontested_tag_rename_still_goes_through(self) -> None:
+        conn = models.get_db()
+        tid = conn.execute("INSERT INTO tags (name, color) VALUES ('draft', 'blue')").lastrowid
+        conn.commit()
+        conn.close()
+
+        result = tags_api.update_tag(tid, _request("PUT"), tags_api.TagIn(name="prod"))
+
+        self.assertEqual(result, {"ok": True})
+
+    def test_an_environment_rename_that_loses_the_race_is_refused(self) -> None:
+        conn = models.get_db()
+        seed = "INSERT INTO environments (name, color) VALUES ('draft', 'blue')"
+        eid = conn.execute(seed).lastrowid
+        conn.commit()
+        conn.close()
+        self._race(
+            environments_api, "FROM environments WHERE name=?", self._insert("environments", "prod")
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            environments_api.update_environment(eid, _request("PUT"), {"name": "prod"})
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail, "An environment with this name already exists")
+
+    def test_an_uncontested_environment_rename_still_goes_through(self) -> None:
+        conn = models.get_db()
+        seed = "INSERT INTO environments (name, color) VALUES ('draft', 'blue')"
+        eid = conn.execute(seed).lastrowid
+        conn.commit()
+        conn.close()
+
+        result = environments_api.update_environment(eid, _request("PUT"), {"name": "prod"})
+
+        self.assertEqual(result["name"], "prod")
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# The same question, asked of every UNIQUE column in the schema
+# ─────────────────────────────────────────────────────────────────────────────────────
+_INSERT_SQL = re.compile(r"INSERT\s+(?:OR\s+(\w+)\s+)?INTO\s+(\w+)\s*\(([^)]*)\)", re.I | re.S)
+_UPDATE_SQL = re.compile(r"UPDATE\s+(\w+)\s+SET\s+(.*?)(?:\bWHERE\b|$)", re.I | re.S)
+_HANDLED = ("Exception", "BaseException", "sqlite3.IntegrityError", "IntegrityError")
+
+
+def _unique_columns() -> dict[str, set[str]]:
+    """Every column the schema refuses a duplicate on, read out of `app/models.py` itself."""
+    source = inspect.getsource(models)
+    unique: dict[str, set[str]] = {}
+    tables = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\n\s*\)", source, re.S)
+    for table, body in tables:
+        for line in body.splitlines():
+            column = re.match(r"\s*(\w+)\s+\w+.*\bUNIQUE\b", line)
+            if column:
+                unique.setdefault(table, set()).add(column.group(1))
+            combined = re.match(r"\s*UNIQUE\s*\(([^)]*)\)", line)
+            if combined:
+                names = combined.group(1).split(",")
+                unique.setdefault(table, set()).update(c.strip() for c in names)
+    # `idx_services_hostname` is built apart from its table, because an install that already
+    # holds duplicates has to keep booting. It constrains the same way once it exists.
+    for table, cols in re.findall(r"CREATE UNIQUE INDEX[^\"']*?ON (\w+)\s*\(([^)]*)\)", source):
+        unique.setdefault(table, set()).update(c.strip() for c in cols.split(","))
+    return unique
+
+
+def _catches_integrity(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:
+        return True
+    named = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(ast.unparse(name) in _HANDLED for name in named)
+
+
+def _unguarded_unique_writes(sources: dict[str, str]) -> list[str]:
+    """Writes to a UNIQUE column where nothing but the index would notice the duplicate.
+
+    Reads the SQL where it is written, so a statement hoisted into a module constant and
+    passed in by name is invisible here. No route writes one today -- every INSERT and
+    UPDATE in `app/api` is spelled at the call -- and this says so rather than implying a
+    reach it does not have.
+    """
+    unique = _unique_columns()
+    found = []
+    for filename, text in sources.items():
+        for function in ast.walk(ast.parse(text)):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            guarded = [
+                (min(s.lineno for s in node.body), max(s.end_lineno or s.lineno for s in node.body))
+                for node in ast.walk(function)
+                if isinstance(node, ast.Try) and any(_catches_integrity(h) for h in node.handlers)
+            ]
+            for node in ast.walk(function):
+                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                    continue
+                sql = node.value
+                written = set()
+                for conflict, table, columns in _INSERT_SQL.findall(sql):
+                    # `INSERT OR REPLACE` / `OR IGNORE` settles the clash in the statement.
+                    if not conflict:
+                        named = {c.strip() for c in columns.split(",")}
+                        written |= named & unique.get(table, set())
+                for table, assignments in _UPDATE_SQL.findall(sql):
+                    assigned = {m.group(1) for m in re.finditer(r"(\w+)\s*=", assignments)}
+                    written |= assigned & unique.get(table, set())
+                if not written or re.search(r"ON\s+CONFLICT\b", sql, re.I):
+                    continue
+                if any(low <= node.lineno <= high for low, high in guarded):
+                    continue
+                found.append(f"{filename}:{node.lineno} {function.name}() -> {sorted(written)}")
+    return sorted(found)
+
+
+def _api_sources() -> dict[str, str]:
+    directory = os.path.dirname(inspect.getfile(services_api))
+    sources = {}
+    for filename in sorted(os.listdir(directory)):
+        if filename.endswith(".py"):
+            with open(os.path.join(directory, filename), encoding="utf-8") as handle:
+                sources[filename] = handle.read()
+    return sources
+
+
+class EveryUniqueWriteAnswersForItselfTests(unittest.TestCase):
+    """The four routes above were found by asking this of the whole schema rather than one route.
+
+    Kept so the next write to a UNIQUE column has to answer it too. A write is accounted for
+    when the statement settles the clash itself -- `INSERT OR IGNORE`, `INSERT OR REPLACE`, an
+    `ON CONFLICT ... DO UPDATE` upsert -- or when it sits inside a handler that would take an
+    `IntegrityError`, including the per-row `except Exception` an import uses to refuse one
+    line and carry on with the rest. Anything else reaches the operator as a 500.
+    """
+
+    def test_no_write_to_a_unique_column_is_left_to_the_index_alone(self) -> None:
+        self.assertEqual(_unguarded_unique_writes(_api_sources()), [])
+
+    def test_the_scan_reports_an_unguarded_write_and_spares_a_guarded_one(self) -> None:
+        """A guard that finds nothing is worth exactly as much as no guard."""
+        fixture = {
+            "sample.py": (
+                "def unguarded(conn, name):\n"
+                "    conn.execute('INSERT INTO tags (name) VALUES (?)', (name,))\n"
+                "\n"
+                "def guarded(conn, name):\n"
+                "    try:\n"
+                "        conn.execute('INSERT INTO tags (name) VALUES (?)', (name,))\n"
+                "    except sqlite3.IntegrityError:\n"
+                "        raise HTTPException(409, 'taken')\n"
+                "\n"
+                "def settled(conn, name):\n"
+                "    conn.execute('INSERT OR IGNORE INTO tags (name) VALUES (?)', (name,))\n"
+            )
+        }
+
+        reported = _unguarded_unique_writes(fixture)
+
+        self.assertEqual(len(reported), 1, reported)
+        self.assertIn("unguarded()", reported[0])
 
 
 if __name__ == "__main__":

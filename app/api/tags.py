@@ -82,8 +82,16 @@ def update_tag(tid: int, request: Request, body: TagIn):
         conflict = conn.execute("SELECT id FROM tags WHERE name=? AND id!=?", (body.name, tid)).fetchone()
         if conflict:
             raise HTTPException(409, "A tag with this name already exists")
-        conn.execute("UPDATE tags SET name=?, color=? WHERE id=?", (body.name, body.color, tid))
-        conn.commit()
+        try:
+            conn.execute("UPDATE tags SET name=?, color=? WHERE id=?", (body.name, body.color, tid))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # The window `create_tag` documents, on the rename rather than the creation. The
+            # conflict lookup above and this UPDATE are the same two statements, and the same
+            # writer can take the name in between -- with the same UNIQUE index left as the
+            # only thing that knows. It answered 500 here while the creation, three lines of
+            # code away, answered 409 for the collision the operator had actually caused.
+            raise HTTPException(409, "A tag with this name already exists")
         return {"ok": True}
     finally:
         conn.close()

@@ -85,8 +85,14 @@ def update_environment(eid: int, request: Request, body: dict):
         ).fetchone()
         if conflict:
             raise HTTPException(409, "An environment with this name already exists")
-        conn.execute("UPDATE environments SET name=?, color=? WHERE id=?", (name, color, eid))
-        conn.commit()
+        try:
+            conn.execute("UPDATE environments SET name=?, color=? WHERE id=?", (name, color, eid))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # The window `add_environment` documents, on the rename rather than the creation.
+            # Same two statements, same index, and the 500 it used to answer contradicted the
+            # 409 the creation answers for the very same collision.
+            raise HTTPException(409, "An environment with this name already exists")
         # The row is echoed back rather than tags' `{"ok": True}`: the MCP bridge returns this
         # reply to its own caller (vauxtra_mcp/tools/admin.py), while the panel only refetches.
         return {"id": eid, "name": name, "color": color}

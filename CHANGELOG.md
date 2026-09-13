@@ -233,6 +233,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A hostname was checked, then published, and only then refused — with a `500` and no
+  record of what had gone out.** Both service write endpoints read the table for a service
+  already answering for the hostname, then call the proxy and the DNS server, then store the
+  row. That is two statements with every provider call sitting between them, so a second
+  operator saving the same hostname inside that window passes the same check, and
+  `idx_services_hostname` is left as the only thing that still knows — firing once the
+  route is already live. Measured on a creation: the DNS record answered for the name and no
+  row in the database described it, so there was nothing to list and nothing to delete from.
+  Measured on a rename: the provider served the new hostname while the surviving row still
+  spelled the old one, which the drift check then reports as wrong for as long as it stands.
+  Both answered `500`, and both leaked the connection they refused on.
+
+  Both now answer the same `409` the check itself answers, naming the service that won the
+  race, and both write down the one fact the operator cannot recover afterwards — the
+  creation names the providers the hostname reached, the rename names the hostname those
+  providers now serve. Neither withdraws anything, deliberately: the winner holds that name
+  on those same providers, so a withdrawal keyed on the hostname would remove its records
+  rather than the orphaned ones.
+
+  Renaming a tag or an environment had the small version of the same gap, with its own
+  creation three lines away already handling it — a `500` where the create answers `409`
+  for the identical collision. A guard now walks the AST of `app/api/*.py` and fails on any
+  write to a `UNIQUE` column that neither settles the clash in the statement itself
+  (`INSERT OR IGNORE`, an `ON CONFLICT` upsert) nor sits inside a handler that would take an
+  `IntegrityError`.
+
 - **An edit that dropped a provider answered "saved" when the provider refused to let
   go.** Removing a second DNS server from a service's target list, or emptying the proxy
   field in the editor, withdraws that provider's route as it saves. When the withdrawal was
