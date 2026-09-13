@@ -2036,5 +2036,16 @@
   "providers.diag.detail.zones_listed_other": "{count} Zonen mit diesem Token erreichbar — die automatische Erkennung funktioniert.",
   "providers.diag.detail.zones_none": "Keine Zone gefunden.",
   "layout.nav.item_with_badge": "{label} ({badge})",
-  "ui.tooltip.exact_time": "Genaue Zeit: {when}"
+  "ui.tooltip.exact_time": "Genaue Zeit: {when}",
+  "providers.delete.hook_title": "Benachrichtigungen zeigen noch darauf",
+  "providers.delete.hook_intro_one": "{count} Benachrichtigungs-Webhook zeigt weiterhin auf {name}.",
+  "providers.delete.hook_intro_other": "{count} Benachrichtigungs-Webhooks zeigen weiterhin auf {name}.",
+  "providers.delete.hook_armed_tag": "aktiviert",
+  "providers.delete.hook_off_tag": "deaktiviert",
+  "providers.delete.hook_effect": "Aus einem Webhook wird nichts veröffentlicht, es muss also nichts von {name} entfernt werden. Die Regel bleibt unverändert und trifft auf nichts mehr zu.",
+  "providers.delete.hook_armed_one": "{count} davon ist weiterhin aktiviert: Er wird weiter als aktiviert angezeigt, bis sein Bereich geändert wird.",
+  "providers.delete.hook_armed_other": "{count} davon sind weiterhin aktiviert: Sie werden weiter als aktiviert angezeigt, bis ihr Bereich geändert wird.",
+  "settings.webhooks.scope_provider_gone": "Anbieter gelöscht",
+  "settings.webhooks.scope_service_gone": "Dienst gelöscht",
+  "settings.webhooks.scope_gone_badge": "Trifft auf nichts zu"
 }

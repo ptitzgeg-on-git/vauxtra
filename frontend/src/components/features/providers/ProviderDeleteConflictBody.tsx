@@ -19,6 +19,13 @@
  * them -- a template publishes nothing, so no hostname goes dark and there is no record to
  * withdraw. With no services in the conflict the whole service half of this body, checkbox
  * included, is about something that is not happening, so it is not rendered.
+ *
+ * The fourth: a notification webhook can be scoped to one integration, and that reference
+ * is the only one the schema never declared -- a bare column, no foreign key, nothing to
+ * cascade or blank. So unlike the two above, the deletion changes nothing about it: it
+ * keeps its name, its scope and its switch, and quietly stops matching anything. That is
+ * what its badge is for, and why its paragraph is the only one that has to say a row was
+ * left switched on.
  */
 import { useState } from 'react';
 import { useT } from '@/i18n';
@@ -42,10 +49,13 @@ export function ProviderDeleteConflictBody({ name, detail, choiceRef }: Props) {
 
   const services = detail.services ?? [];
   const templates = detail.templates ?? [];
+  const hooks = detail.webhooks ?? [];
   const kept = services.filter((s) => s.still_published);
   const dark = services.filter((s) => !s.still_published);
+  const armed = hooks.filter((h) => h.enabled);
   const rest = services.length - MAX_ROWS;
   const tplRest = templates.length - MAX_ROWS;
+  const hookRest = hooks.length - MAX_ROWS;
 
   const toggle = (next: boolean) => {
     choiceRef.current = next;
@@ -99,6 +109,33 @@ export function ProviderDeleteConflictBody({ name, detail, choiceRef }: Props) {
           </ul>
 
           <p>{t('providers.delete.tpl_effect', { name })}</p>
+        </>
+      )}
+
+      {hooks.length > 0 && (
+        <>
+          <p>{t('providers.delete.hook_intro', { count: hooks.length, name })}</p>
+
+          <ul className="space-y-1">
+            {hooks.slice(0, MAX_ROWS).map((hook) => (
+              <li key={hook.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-medium text-foreground">{hook.name}</span>
+                <span
+                  className={
+                    hook.enabled
+                      ? 'rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning'
+                      : 'rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground'
+                  }
+                >
+                  {t(hook.enabled ? 'providers.delete.hook_armed_tag' : 'providers.delete.hook_off_tag')}
+                </span>
+              </li>
+            ))}
+            {hookRest > 0 && <li className="text-xs">{t('providers.delete.deps_more', { count: hookRest })}</li>}
+          </ul>
+
+          <p>{t('providers.delete.hook_effect', { name })}</p>
+          {armed.length > 0 && <p>{t('providers.delete.hook_armed', { count: armed.length })}</p>}
         </>
       )}
 

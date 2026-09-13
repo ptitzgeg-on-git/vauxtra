@@ -58,14 +58,18 @@ export function WebhooksTab() {
   const hook = useWebhookActions(true);
   const { webhooks, webhooksQuery, name, setName, url, setUrl, testResult, setTestResult } = hook;
 
-  const { data: providers = [] } = useQuery<Provider[]>({
+  // Kept whole rather than destructured to a default: `scopeSummary` has to tell an empty
+  // list apart from a list that has not arrived yet, and `data = []` erases that difference.
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
   });
-  const { data: services = [] } = useQuery<Service[]>({
+  const servicesQuery = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
+  const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
 
   const enabledProviders = useMemo(() => providers.filter((p) => !!p.enabled), [providers]);
   const enabledServices = useMemo(() => services.filter((s) => !!s.enabled), [services]);
@@ -213,20 +217,48 @@ export function WebhooksTab() {
       return next;
     });
 
-  const scopeSummary = (webhook: Webhook): string => {
+  /**
+   * What a row says about its own scope, and whether that is a warning.
+   *
+   * `webhooks.scope_ref_id` carries no foreign key, so deleting the integration or the
+   * endpoint a rule watches leaves the id behind: the row keeps its name, its URL and its
+   * switch, and matches nothing from then on. This used to fall back to the placeholder --
+   * "Choose a provider" -- which is the text of a row nobody has finished configuring yet.
+   * A rule that has gone dead and a rule that was never set up read identically, and only
+   * one of them is a thing to act on.
+   *
+   * `isSuccess` is what keeps it honest: an empty list is also what the first render sees
+   * while the query is in flight, and a warning that fires on every page load until the
+   * data lands is not a warning. A NULL target is the genuinely unconfigured case, and it
+   * keeps the placeholder it always had.
+   */
+  const scopeSummary = (webhook: Webhook): { text: string; broken: boolean } => {
     if (webhook.scope_type === 'provider') {
       const provider = providers.find((p) => p.id === webhook.scope_ref_id);
-      return provider
-        ? t('settings.webhooks.scope_provider_named', { name: provider.name })
-        : t('settings.webhooks.choose_provider');
+      if (provider) {
+        return { text: t('settings.webhooks.scope_provider_named', { name: provider.name }), broken: false };
+      }
+      const gone = providersQuery.isSuccess && webhook.scope_ref_id != null;
+      return {
+        text: t(gone ? 'settings.webhooks.scope_provider_gone' : 'settings.webhooks.choose_provider'),
+        broken: gone,
+      };
     }
     if (webhook.scope_type === 'service') {
       const service = services.find((s) => s.id === webhook.scope_ref_id);
-      return service
-        ? t('settings.webhooks.scope_service_named', { host: `${service.subdomain}.${service.domain}` })
-        : t('settings.webhooks.choose_service');
+      if (service) {
+        return {
+          text: t('settings.webhooks.scope_service_named', { host: `${service.subdomain}.${service.domain}` }),
+          broken: false,
+        };
+      }
+      const gone = servicesQuery.isSuccess && webhook.scope_ref_id != null;
+      return {
+        text: t(gone ? 'settings.webhooks.scope_service_gone' : 'settings.webhooks.choose_service'),
+        broken: gone,
+      };
     }
-    return t('settings.webhooks.scope_all');
+    return { text: t('settings.webhooks.scope_all'), broken: false };
   };
 
   const needle = search.trim().toLowerCase();
@@ -449,6 +481,7 @@ export function WebhooksTab() {
               const outcome = outcomes[webhook.id];
               const enabled = !!webhook.enabled;
               const scopeType: ScopeType = webhook.scope_type ?? 'all';
+              const scope = scopeSummary(webhook);
               return (
                 <li
                   key={webhook.id}
@@ -464,6 +497,13 @@ export function WebhooksTab() {
                         <Badge size="sm" tone={enabled ? 'success' : 'neutral'} dot>
                           {enabled ? t('settings.webhooks.enabled') : t('settings.webhooks.disabled')}
                         </Badge>
+                        {scope.broken && (
+                          /* The badge above says "Enabled" and is telling the truth: the rule is
+                             switched on and will never fire. This is the half it cannot say. */
+                          <Badge size="sm" tone="danger">
+                            {t('settings.webhooks.scope_gone_badge')}
+                          </Badge>
+                        )}
                         {outcome && (
                           <Badge size="sm" tone={outcome.ok ? 'success' : 'danger'}>
                             {outcome.ok ? t('settings.webhooks.test_ok') : t('settings.webhooks.test_ko')}
@@ -471,7 +511,9 @@ export function WebhooksTab() {
                         )}
                       </div>
                       <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {scopeSummary(webhook)}
+                        <span className={scope.broken ? 'font-medium text-destructive' : undefined}>
+                          {scope.text}
+                        </span>
                         <span aria-hidden="true"> · </span>
                         <code className="font-mono">{webhook.url_masked}</code>
                       </p>

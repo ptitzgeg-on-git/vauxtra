@@ -84,12 +84,19 @@ export function isProviderDeleteConflict(detail: unknown): detail is ProviderDel
 
 /**
  * Which title the confirm dialog wears. `deps_title` says "services still depend on it",
- * which is simply untrue when the only thing depending on it is a template. It lives beside
- * the guard that produces the detail, so the Integrations page and the Setup wizard cannot
- * answer this differently.
+ * which is simply untrue when the only thing depending on it is a template -- and
+ * `tpl_title` is just as untrue when the only thing is a notification webhook. Three
+ * dependents, three titles, in the order the body renders them. It lives beside the guard
+ * that produces the detail, so the Integrations page and the Setup wizard cannot answer
+ * this differently.
  */
 export function providerConflictTitleKey(detail: ProviderDeleteConflict): string {
-  return detail.services?.length ? 'providers.delete.deps_title' : 'providers.delete.tpl_title';
+  if (detail.services?.length) return 'providers.delete.deps_title';
+  if (detail.templates?.length) return 'providers.delete.tpl_title';
+  if (detail.webhooks?.length) return 'providers.delete.hook_title';
+  // Nothing named at all should not have produced a 409; the service wording is the one
+  // that was here before this branch existed, so an impossible detail reads as it always did.
+  return 'providers.delete.deps_title';
 }
 
 

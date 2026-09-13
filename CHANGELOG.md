@@ -233,6 +233,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A notification webhook aimed at one provider survives that provider's deletion, keeps its
+  green "enabled" badge, and never fires again.** A webhook's scope is two columns: a word
+  (`all`, `provider`, `service`) and `webhooks.scope_ref_id`, a bare INTEGER holding the id
+  the word points at. The column carries no REFERENCES clause, so no cascade reaches it, no
+  `ON DELETE` blanks it, and no `PRAGMA foreign_key_list` sweep can see it — which matters
+  because the census behind the deletion dialog was built from exactly that sweep, and the
+  sweep was complete. It found all seven declared references to `providers.id`. The eighth
+  was never in the answer.
+
+  Measured end to end on a live instance: the 409 that refuses a provider deletion listed the
+  services and the templates and did not mention the webhook; a provider whose only dependent
+  was an alert rule raised no dialog at all and simply vanished; the row survived holding the
+  dead id with `enabled = 1`; `_service_matches_scope` answered False for every service from
+  then on; the journal held nothing about any of it; and the Webhooks tab drew the orphan as
+  "Choose a provider" — the same words it draws for a rule nobody has configured yet. So the
+  one screen that could still have told the operator, a week later, that their alerting had a
+  hole in it said instead that the rule was merely unfinished. `delete_service` had the
+  identical hole for `scope_type='service'`.
+
+  Nothing is switched off or deleted by the fix, because either would be a second surprise:
+  an operator who removes a provider and rebuilds it under a new id wants the alert rule
+  waiting, not silently disarmed. What changes is that the state is now said at the three
+  moments it can be said. `delete_provider` counts the webhooks scoped to the provider and
+  refuses on them alone, and the dialog gives them their own paragraph, because none of the
+  language written for services or templates is true of a webhook: nothing is published from
+  one, so no hostname goes dark and there is no DNS record to withdraw — and the withdrawal
+  checkbox is therefore not offered when webhooks are the whole conflict. It also says the
+  sentence an operator would not guess, that a rule left switched on goes on looking armed.
+
+  `delete_service` gets no such moment: its confirmation dialog is built in the browser from
+  data already on the page, before any request is sent, so there is no 409 to add to. It
+  writes the journal line after the fact instead, naming the webhooks it just orphaned — once
+  per bulk delete rather than once per row, since ten rows selected in the table with a rule
+  each are one thing that happened and ten warnings saying so bury it. And the Webhooks tab
+  now labels such a scope "Provider deleted" or "Service deleted" with a "Matches nothing"
+  badge, in all eight languages. That last one is the only one of the three an operator can
+  still find later, which is why it is the one that had to be permanent rather than a toast.
+
+  It is gated on the list query having actually answered. Before it does the list is empty,
+  and an id matching nothing in an empty list is a provider nobody has fetched yet, not a
+  provider that was deleted — without the gate every rule on the instance is accused of
+  pointing at a corpse for the length of one page load, and a badge that cries on every load
+  is not read on the load that counts.
+
+  Two gates hold the class of defect rather than this instance of it, and both sit next to
+  the FK sweep that missed it rather than inside it, since the sweep answers a question this
+  column was never in. A column named `*_provider_id` holds a provider id whether or not
+  anybody wrote REFERENCES beside it, so every such column must be read by the census before
+  a provider is deleted. And every scope in `_WEBHOOK_SCOPE_TYPES` except `all` names a table
+  whose rows can be deleted, so each must have a delete path that asks about it — a fourth
+  scope fails the gate on the day it is added, not on the day somebody's alert stops
+  arriving. Thirty-four tests cover the change, and eight negative controls confirm that each
+  gate goes red when the line it guards is taken out.
+
 - **"This will replace all current data" — for the action log and the uptime history it is a
   plain delete, and no backup file has ever carried either one.** A restore empties the same
   sixteen tables a reset does, then refills them from the file. Four of the sixteen are carried

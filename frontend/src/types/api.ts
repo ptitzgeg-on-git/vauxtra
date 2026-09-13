@@ -274,12 +274,31 @@ export interface ProviderTemplateDependent {
   roles: string[];
 }
 
+/**
+ * A notification webhook scoped to a provider about to be deleted
+ * (`DELETE /api/providers/{pid}` -> 409 `detail.webhooks[]`).
+ *
+ * The only one of the three that the deletion does not change at all. A service is blanked
+ * and a template is blanked, both by the foreign key; `webhooks.scope_ref_id` has none, so
+ * the row keeps its name, its URL, its scope and its `enabled` flag, and simply stops
+ * matching anything. Hence `enabled`: an operator needs to know which of these still wear a
+ * green badge in Settings while matching nothing.
+ */
+export interface ProviderWebhookDependent {
+  id: number;
+  name: string;
+  /** Still switched on, so it goes on reading as armed until the scope is changed. */
+  enabled: boolean;
+}
+
 /** The 409 `detail` of `DELETE /api/providers/{pid}` when anything depends on it and `?force=` was not set. */
 export interface ProviderDeleteConflict {
   message: string;
   services: ProviderDependent[];
   /** Absent on an instance older than the release that added the template half of this check. */
   templates?: ProviderTemplateDependent[];
+  /** Absent on an instance older than the release that added the webhook half of this check. */
+  webhooks?: ProviderWebhookDependent[];
 }
 
 /** `DELETE /api/providers/{pid}?force=true`. */
@@ -289,6 +308,8 @@ export interface ProviderDeleteResult {
   unlinked_services: number[];
   /** Templates whose provider slot was blanked by the deletion; the Templates cache is stale. */
   unlinked_templates?: number[];
+  /** Webhooks left scoped to an id that is gone. Nothing blanked them; they match nothing. */
+  orphaned_webhooks?: number[];
   /** `withdraw=true` was honoured: the records were taken off the provider before it went. */
   withdrawn?: boolean;
   /** One `fqdn: reason` per record the withdrawal could not remove; it is still live there. */

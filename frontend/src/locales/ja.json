@@ -1914,5 +1914,14 @@
   "providers.diag.detail.zones_listed_other": "このトークンで {count} 個のゾーンに到達できます。自動判別が使えます。",
   "providers.diag.detail.zones_none": "ゾーンが見つかりませんでした。",
   "layout.nav.item_with_badge": "{label}（{badge}）",
-  "ui.tooltip.exact_time": "正確な時刻：{when}"
+  "ui.tooltip.exact_time": "正確な時刻：{when}",
+  "providers.delete.hook_title": "まだ参照している通知があります",
+  "providers.delete.hook_intro_other": "{count} 件の通知 Webhook がまだ {name} を参照しています。",
+  "providers.delete.hook_armed_tag": "有効",
+  "providers.delete.hook_off_tag": "無効",
+  "providers.delete.hook_effect": "Webhook からは何も公開されないため、{name} から取り下げるものはありません。ルールはそのまま残りますが、どの対象にも一致しなくなります。",
+  "providers.delete.hook_armed_other": "うち {count} 件はまだ有効です。対象範囲が変更されるまで、有効のまま表示され続けます。",
+  "settings.webhooks.scope_provider_gone": "プロバイダーは削除済み",
+  "settings.webhooks.scope_service_gone": "サービスは削除済み",
+  "settings.webhooks.scope_gone_badge": "一致する対象なし"
 }

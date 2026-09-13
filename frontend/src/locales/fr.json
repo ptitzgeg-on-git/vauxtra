@@ -2036,5 +2036,16 @@
   "providers.diag.detail.zones_listed_other": "{count} zones accessibles avec ce jeton : la détection automatique fonctionnera.",
   "providers.diag.detail.zones_none": "Aucune zone trouvée.",
   "layout.nav.item_with_badge": "{label} ({badge})",
-  "ui.tooltip.exact_time": "Heure exacte : {when}"
+  "ui.tooltip.exact_time": "Heure exacte : {when}",
+  "providers.delete.hook_title": "Des notifications pointent encore vers elle",
+  "providers.delete.hook_intro_one": "{count} webhook de notification pointe encore vers {name}.",
+  "providers.delete.hook_intro_other": "{count} webhooks de notification pointent encore vers {name}.",
+  "providers.delete.hook_armed_tag": "activé",
+  "providers.delete.hook_off_tag": "désactivé",
+  "providers.delete.hook_effect": "Rien n'est publié depuis un webhook, il n'y a donc rien à retirer de {name}. La règle reste telle quelle et ne correspond plus à rien.",
+  "providers.delete.hook_armed_one": "{count} d'entre eux est encore actif : il continue de s'afficher comme activé tant que sa portée n'est pas changée.",
+  "providers.delete.hook_armed_other": "{count} d'entre eux sont encore actifs : ils continuent de s'afficher comme activés tant que leur portée n'est pas changée.",
+  "settings.webhooks.scope_provider_gone": "Fournisseur supprimé",
+  "settings.webhooks.scope_service_gone": "Service supprimé",
+  "settings.webhooks.scope_gone_badge": "Ne correspond à rien"
 }
