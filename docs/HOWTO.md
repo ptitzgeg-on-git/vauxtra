@@ -111,6 +111,28 @@ docker compose exec vauxtra \
 sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='auth_mode';"
 ```
 
+### What reaches the activity log
+
+Four authentication events are written to the journal you read in *Recent activity* and in
+**Settings → Logs**:
+
+| Event | Level |
+| --- | --- |
+| A sign-in was refused because the password was wrong | `warning` |
+| Somebody signed in | `info` |
+| The wizard set the admin password | `info` |
+| The admin password was changed, ending every other session | `info` |
+
+No client address is written beside them. Behind a reverse proxy the address Vauxtra sees is
+the proxy's, identically for every caller, unless `FORWARDED_ALLOW_IPS` names the hop allowed
+to set `X-Forwarded-For` — so an address in those lines would be a false lead in exactly the
+investigation they exist for.
+
+Only the attempts that reach the route are recorded. Past five a minute the rate limiter
+answers 429 before anything is written, which is what stops an unauthenticated caller from
+filling the table at its own rate: a burst of guesses reads as five lines a minute, not as one
+line per request.
+
 ---
 
 ## 3) SECRET_KEY — Important Warning
