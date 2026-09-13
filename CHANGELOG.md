@@ -112,6 +112,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **A gate for the one locale question neither existing gate could ask: does the code name a
+  key that exists?** `check-locale-parity.mjs` and `check-locale-quality.mjs` read
+  `src/locales/*.json` and never open a component, so between them they check that the eight
+  files agree with each other, and nothing checks them against the code that calls `t()`. The
+  cost of that gap falls on an operator rather than on CI: `t()` returns the key it was given
+  when it misses, so a single typo ships as `settings.logs.autoscrol` printed in the middle of
+  the page, in all eight languages at once, with every check green.
+
+  `frontend/scripts/check-locale-usage.mjs` reads every literal key a `t()` call spells out in
+  `src/**/*.ts` and `.tsx` — 1798 of them today — and fails if one is absent from `en.json`,
+  accepting a plural base whose `_other` form exists. It runs from `npm run i18n:check`, which
+  CI already calls, so no workflow changed. A call Prettier wrapped onto a second line is the
+  same call and is checked; a key shown as an example inside a comment is not a call and is
+  not, so documenting `t()` in a JSDoc block stays safe.
+
+  Only literal names are checked. The provider wizard assembles
+  `provider_guide.${type}.step_N` and the taxonomy tab keeps its prefix in a config object;
+  resolving those takes a guess, and a gate that guesses fails on code that is correct. The
+  reverse question — which keys nothing reads — is deliberately left ungated: a dead key is
+  inert, a wrongly deleted one prints its own name to an operator, and measuring it took four
+  calibrations before the count stopped moving.
+
 - **A frontend test runner, because three fixes in a row shipped with the same caveat.** The
   bodies of the last three pull requests each ended by saying their defect could only be
   reproduced by hand — cut the backend, open the wizard, watch a green tick appear over a
