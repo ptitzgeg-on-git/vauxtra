@@ -141,7 +141,7 @@ function unwrapHealthMap(raw: ProvidersHealthMap | { items?: ProvidersHealthMap 
 export function Providers() {
   const t = useT();
   const queryClient = useQueryClient();
-  const { formatDateTime, formatRelative } = useFormat();
+  const { formatNumber, formatDateTime, formatRelative } = useFormat();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -350,7 +350,7 @@ export function Providers() {
       setDiagnostics((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
       const failed = entries.filter(([, data]) => !data?.ok).length;
       if (failed === 0) toast.success(t('providers.refresh.success_all_passed'));
-      else toast.error(t('providers.refresh.failed_count', { count: failed, total: enabled.length }));
+      else toast.error(t('providers.refresh.failed_count', { count: failed, total: formatNumber(enabled.length) }));
     } catch {
       toast.error(t('providers.refresh.failed'));
     } finally {

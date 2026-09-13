@@ -21,6 +21,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -130,6 +131,7 @@ const isModeFilter = (value: string): value is ModeFilter => (MODE_FILTERS as st
 
 export function Services() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -819,7 +821,7 @@ export function Services() {
         description={t('services.description')}
         meta={
           !servicesQuery.isPending && !servicesQuery.isError ? (
-            <span className="text-xs text-muted-foreground">{t('services.meta', { count: shown, total })}</span>
+            <span className="text-xs text-muted-foreground">{t('services.meta', { count: shown, total: formatNumber(total) })}</span>
           ) : undefined
         }
         actions={
