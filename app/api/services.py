@@ -4,7 +4,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from app.api.sync import push_extra_targets, withdraw_service_routes
+from app.api.sync import push_extra_targets, withdraw_extra_targets, withdraw_service_routes
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -1581,6 +1581,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     # Adding a second DNS server through this route answered 200 while that server stayed
     # empty, and the drift check then contradicted the response about the same service.
     errors.extend(push_extra_targets(conn, sid))
+    # And the same gap on the way down. The enable/disable block above walks the three
+    # provider columns, so disabling a service left the second proxy forwarding and the
+    # second DNS server resolving a hostname the table showed as off. Exactly one of these
+    # two lines does anything: the service is either published everywhere or nowhere.
+    errors.extend(withdraw_extra_targets(conn, sid))
 
     row = conn.execute("""
         SELECT s.*,
@@ -1900,6 +1905,14 @@ def bulk_action(body: _BulkActionBody, request: Request):
             pub = _service_public_hostname(
                 mode, svc["tunnel_hostname"] or "", svc["subdomain"], svc["domain"]
             )
+
+            # The extra targets follow the flag too, and only the three provider columns
+            # were walked here: a bulk disable suspended the primary proxy and left the
+            # second one forwarding the same hostname. Placed before the mode branching so
+            # the `continue` below cannot skip it. `update_service` had the same gap.
+            for message in (push_extra_targets(conn, sid_b) if enable
+                            else withdraw_extra_targets(conn, sid_b)):
+                errors.append(f"{pub}: {message}")
 
             if mode == "tunnel":
                 # These rows used to be skipped entirely: the `enabled` flag was written and

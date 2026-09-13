@@ -602,5 +602,151 @@ class RemovingAProviderTellsTheTruthTests(_MultiSyncTestCase):
         conn.close()
 
 
+class DisablingWithdrawsFromEveryTargetTests(_MultiSyncTestCase):
+    """Turning a service off has to take it off the extra targets, not only the two columns.
+
+    The write routes learned to publish on every target and to withdraw from one that is
+    dropped or renamed away. The `enabled` flag was left out of both walks: disabling a
+    service suspended the primary proxy and deleted the primary DNS record, and said nothing
+    to the second proxy or the second DNS server. The hostname went on resolving and the
+    proxy went on forwarding while the interface showed the service as off, which is the one
+    state an operator reads as "this is not reachable any more".
+    """
+
+    HOST = "vault.example.com"
+
+    def _service_with_a_second_dns_server(self) -> int:
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(3, "Technitium", "technitium")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3])
+        self.assertTrue(self.providers[3].holds(self.HOST), "the fixture never published")
+        return body["id"]
+
+    def _service_with_a_second_proxy(self) -> int:
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(4, "NPM bis", "npm")
+        _, body = self._create(
+            proxy_provider_id=1, dns_provider_id=2, extra_proxy_provider_ids=[4]
+        )
+        self.assertTrue(self.providers[4].holds(self.HOST), "the fixture never published")
+        return body["id"]
+
+    def _bulk(self, ids: list[int], action: str):
+        return services_api.bulk_action(
+            services_api._BulkActionBody(ids=ids, action=action), _request("POST")
+        )
+
+    def test_disabling_takes_the_record_off_the_second_dns_server(self):
+        sid = self._service_with_a_second_dns_server()
+
+        services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(
+                proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3], enabled=False
+            ),
+        )
+
+        self.assertFalse(
+            self.providers[3].holds(self.HOST),
+            "the second DNS server kept resolving a service shown as disabled",
+        )
+        self.assertFalse(self.providers[2].holds(self.HOST), "the primary is the control")
+
+    def test_disabling_takes_the_route_off_the_second_proxy(self):
+        sid = self._service_with_a_second_proxy()
+
+        services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(
+                proxy_provider_id=1, dns_provider_id=2, extra_proxy_provider_ids=[4], enabled=False
+            ),
+        )
+
+        self.assertFalse(
+            self.providers[4].holds(self.HOST),
+            "the second proxy kept forwarding a service shown as disabled",
+        )
+
+    def test_editing_a_service_that_is_already_off_leaves_the_extra_target_empty(self):
+        """The primary had this exact defect: the branch only ran on a transition."""
+        sid = self._service_with_a_second_dns_server()
+        disabled = self._body(
+            proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3], enabled=False
+        )
+        services_api.update_service(sid, _request("PUT"), disabled)
+        self.providers[3].rewrites.append({"domain": self.HOST, "answer": self.IP})
+
+        services_api.update_service(sid, _request("PUT"), disabled)
+
+        self.assertFalse(
+            self.providers[3].holds(self.HOST),
+            "a record that reappeared on the extra target survived an edit of a disabled service",
+        )
+
+    def test_re_enabling_publishes_on_the_extra_target_again(self):
+        sid = self._service_with_a_second_dns_server()
+        services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(
+                proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3], enabled=False
+            ),
+        )
+        self.assertFalse(self.providers[3].holds(self.HOST))
+
+        services_api.update_service(
+            sid,
+            _request("PUT"),
+            self._body(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3]),
+        )
+
+        self.assertTrue(
+            self.providers[3].holds(self.HOST),
+            "the extra target stayed empty after the service came back",
+        )
+
+    def test_the_bulk_disable_withdraws_the_extra_target_too(self):
+        """Selecting rows in the table has to do what editing them one by one does."""
+        sid = self._service_with_a_second_dns_server()
+
+        self._bulk([sid], "disable")
+
+        self.assertFalse(
+            self.providers[3].holds(self.HOST),
+            "a bulk disable left the second DNS server resolving the hostname",
+        )
+
+    def test_the_bulk_enable_republishes_on_the_extra_target(self):
+        sid = self._service_with_a_second_dns_server()
+        self._bulk([sid], "disable")
+        self.assertFalse(self.providers[3].holds(self.HOST))
+
+        self._bulk([sid], "enable")
+
+        self.assertTrue(
+            self.providers[3].holds(self.HOST),
+            "a bulk enable brought back the primary and left the extra target empty",
+        )
+
+    def test_a_service_with_no_extra_target_is_not_made_to_talk_to_anyone(self):
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        self.calls.clear()
+
+        services_api.update_service(
+            sid := body["id"],
+            _request("PUT"),
+            self._body(proxy_provider_id=1, dns_provider_id=2, enabled=False),
+        )
+
+        self.assertEqual(sid, body["id"])
+        self.assertEqual([c for c in self.calls if c[0] not in ("NPM", "AdGuard")], [])
+
+
 if __name__ == "__main__":
     unittest.main()
