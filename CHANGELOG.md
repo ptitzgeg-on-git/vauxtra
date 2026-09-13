@@ -233,6 +233,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The per-row switch reported a refused disable as done.** The answer to
+  `PUT /api/services/{sid}` carries an `errors` field: what the save could not carry out on a
+  provider. The delete button and the bulk bar both read it and raise a warning; the switch on
+  each row threw it away, and the `Service` type did not even declare the field. A disable
+  whose proxy refuses the suspension now stops rather than deleting a host it was only asked
+  to switch off — and that refusal was exactly what the switch announced in green as
+  `{host} disabled`, while the name went on answering. It now warns the way the other two
+  callers do, naming the first two failures and counting the rest.
+
 - **A hostname spelled with a capital at the provider imported a second service.** Everything
   the editor writes is stored in lower case: `ServiceIn` lowercases the subdomain and
   `normalize_domain` lowercases the domain. The import route stored what the provider spelled.

@@ -416,11 +416,30 @@ export function Services() {
     mutationFn: (service: Service) =>
       api.put<Service>(`/services/${service.id}`, buildServicePayload(service, { enabled: !service.enabled })),
     onMutate: (service) => startAction(service.id),
-    onSuccess: (_data, service) => {
+    onSuccess: (result, service) => {
       invalidateAfterPush();
       forgetDrift([service.id]);
       const host = publicHostOf(service);
-      toast.success(service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host }));
+      // The save answers with what it could not carry out on a provider, and this switch was
+      // the one caller that threw the field away: a disable the proxy refused -- the host
+      // still up, still serving, and deliberately not deleted rather than removed behind the
+      // operator's back -- was reported as a green "{host} disabled". The delete button and
+      // the bulk bar had both already learnt to read the same field.
+      //
+      // Written out rather than built from `service.enabled`, because `npm run i18n:check`
+      // only sees a key spelled in full, and these four are exactly the kind a later rename
+      // would leave behind untranslated.
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      if (errors.length > 0) {
+        const shown = errors.slice(0, 2).join(' · ');
+        const more = errors.length > 2 ? t('services.toast.more', { count: errors.length - 2 }) : '';
+        const message = service.enabled
+          ? t('services.toast.disabled_warnings', { host, errors: shown, more })
+          : t('services.toast.enabled_warnings', { host, errors: shown, more });
+        toast(message, { icon: '⚠️', duration: 8000 });
+      } else {
+        toast.success(service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host }));
+      }
     },
     onError: (err, service) => {
       toast.error(translateApiError(err, t, t('services.toast.update_failed', { host: publicHostOf(service) })));
