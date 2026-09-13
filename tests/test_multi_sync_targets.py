@@ -183,6 +183,25 @@ class _ProviderRefusingTheToggle(_FakeProvider):
         return False
 
 
+class _ProviderEchoingMixedCase(_FakeProvider):
+    """A provider that hands back the hostname in the case it was typed, as Zoraxy does.
+
+    Only the listings are affected: what it holds stays spelled the way the route wrote it,
+    so `holds` and `serves` go on asking the question they ask everywhere else, and the test
+    is about the reading back -- which is the half Vauxtra got wrong.
+    """
+
+    @staticmethod
+    def _as_typed(name: str) -> str:
+        return ".".join(part.capitalize() for part in str(name).split("."))
+
+    def list_hosts(self):
+        return [dict(h, domains=[self._as_typed(d) for d in h["domains"]]) for h in self.hosts]
+
+    def list_rewrites(self):
+        return [dict(r, domain=self._as_typed(r["domain"])) for r in self.rewrites]
+
+
 class _MultiSyncTestCase(unittest.TestCase):
     IP = "198.51.100.7"
 
@@ -1322,3 +1341,65 @@ class ResumingAProxyHostOnEnableTests(_MultiSyncTestCase):
         result = self._enable(sid)
 
         self.assertEqual(result["errors"], [])
+
+
+class AProviderThatSpellsTheHostnameBackTests(_MultiSyncTestCase):
+    """A hostname is not case-sensitive, and half of Vauxtra compared it as if it were.
+
+    Zoraxy keeps a rule under the spelling it was typed with and AdGuard echoes the name it
+    was given, so a route created as "Vault.Example.com" is the route the service spells
+    "vault.example.com". The push had learned that; the drift check and one of the two DNS
+    readers had not. The result was a route reported missing with a Reconcile button beside
+    it, a push that found the host and updated it, and the same error still on screen -- plus
+    a second DNS record added next to the one that was already right.
+    """
+
+    HOST = "vault.example.com"
+
+    def _published_then_spelled_back(self) -> int:
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        sid = body["id"]
+        for pid in (1, 2):
+            stale = self.providers[pid]
+            echoing = _ProviderEchoingMixedCase(stale.name, self.calls)
+            echoing.hosts, echoing.rewrites = stale.hosts, stale.rewrites
+            self.providers[pid] = echoing
+        return sid
+
+    def test_drift_does_not_call_an_existing_route_missing(self):
+        sid = self._published_then_spelled_back()
+
+        drift = sync_api.service_drift(sid, _request("GET"))
+
+        kinds = {i["type"] for i in drift["issues"]}
+        self.assertNotIn("missing_proxy_route", kinds, drift["issues"])
+        self.assertNotIn("missing_dns_rewrite", kinds, drift["issues"])
+        self.assertTrue(drift["ok"], drift["issues"])
+
+    def test_a_push_does_not_add_a_second_record_beside_the_first(self):
+        sid = self._published_then_spelled_back()
+        dns = self.providers[2]
+
+        result = sync_api.push_service(sid, _request("POST"))
+
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            [r["domain"] for r in dns.rewrites],
+            [self.HOST],
+            "the push read past a record it could not spell and added another",
+        )
+
+    def test_a_provider_that_answers_in_the_same_spelling_is_unaffected(self):
+        """The positive control: the pair above measures the spelling, nothing else."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+
+        drift = sync_api.service_drift(body["id"], _request("GET"))
+        result = sync_api.push_service(body["id"], _request("POST"))
+
+        self.assertTrue(drift["ok"], drift["issues"])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual([r["domain"] for r in self.providers[2].rewrites], [self.HOST])

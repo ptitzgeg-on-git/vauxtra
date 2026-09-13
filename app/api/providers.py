@@ -948,9 +948,13 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
     try:
         # If answer not provided, find it from list
         if not answer:
+            # Same comparison the sync layer makes: a record is the same record whatever
+            # case the provider echoes it in, and answering 404 on a spelling difference
+            # sends the operator looking for a record that is right there.
+            wanted = domain.strip().lower()
             records = provider.list_rewrites() or []
             for r in records:
-                if r.get("domain") == domain:
+                if str(r.get("domain") or "").strip().lower() == wanted:
                     answer = r.get("answer")
                     break
 
