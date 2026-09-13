@@ -3,6 +3,7 @@ import sqlite3
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.api.templates import templates_naming_label
 from app.auth import require_auth
 from app.models import add_log, get_db
 from app.text import name_list, plural, verb
@@ -116,14 +117,22 @@ def update_environment(eid: int, request: Request, body: EnvironmentIn):
         conn.close()
 
 
-def services_in_environment(conn, eid: int) -> list[str]:
-    """The services set to this environment, sorted, read before the cascade takes them.
+def holders_of_environment(conn, eid: int) -> tuple[list[str], list[str]]:
+    """The services set to the environment and the templates naming it, both already sorted.
 
-    One holder where `holders_of_tag` has two: a service template names tags and never names
-    an environment (`TemplateIn`, `app/api/templates.py`), so there is no JSON column to scan
-    and nothing that rots quietly on the next read.
+    The exact sibling of `holders_of_tag` (`app/api/tags.py`), down to the two tables it has
+    to ask separately. `service_environments` declares `ON DELETE CASCADE` (`app/models.py`),
+    so a deleted environment unlinks its services and the rows themselves are untouched.
+    `service_templates.environment_ids_json` is TEXT holding a JSON array, which no
+    constraint reaches: the id survives the delete and is dropped on the next read by
+    `_drop_dead_labels` (`app/api/templates.py`).
+
+    This had one holder where the tag half had two, and the docstring said why: a template
+    named tags and never named an environment. That was true of the storage and false of the
+    panel, which offered both halves and kept one. Now that the column exists, so does the
+    second holder, and an environment deletion has the same two things to report.
     """
-    return [
+    services = [
         # `.strip(".")` the way every other fqdn in the API is built: an apex route stores
         # an empty subdomain, and the naive join names it `.example.test`.
         f"{r['subdomain']}.{r['domain']}".strip(".")
@@ -134,27 +143,38 @@ def services_in_environment(conn, eid: int) -> list[str]:
             (eid,),
         )
     ]
+    return services, templates_naming_label(conn, "environment_ids", eid)
 
 
-def _log_environment_removal(conn, name: str, services: list[str]) -> None:
+def _log_environment_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
     """The only trace an environment deletion leaves, so it carries what was set to it.
 
     The sibling of `_log_tag_removal` in `app/api/tags.py`, for the same reason and with the
-    same shape: `service_environments` declares `ON DELETE CASCADE`, the services go on
-    working, and the label they were grouped and filtered by is gone with no record that it
-    ever applied to them.
+    same shape: both join tables declare `ON DELETE CASCADE`, the services go on working,
+    and the label they were grouped and filtered by is gone with no record that it ever
+    applied to them.
     """
-    if not services:
+    if not services and not templates:
         add_log("info", f"Environment deleted: {name}", conn)
         return
-    add_log(
-        "warn",
-        f"Environment deleted: {name} -- {plural(len(services), 'service')} "
-        f"{verb(len(services), 'was', 'were')} set to it and "
-        f"{verb(len(services), 'keeps', 'keep')} working without it "
-        f"({name_list(services)})",
-        conn,
-    )
+    # A sentence each, rather than one count over both. They are not the same event: the
+    # services lose a label and go on routing, the templates change what they will build
+    # next.
+    said = []
+    if services:
+        said.append(
+            f"{plural(len(services), 'service')} "
+            f"{verb(len(services), 'was', 'were')} set to it and "
+            f"{verb(len(services), 'keeps', 'keep')} working without it "
+            f"({name_list(services)})"
+        )
+    if templates:
+        said.append(
+            f"{plural(len(templates), 'service template')} named it and "
+            f"{verb(len(templates), 'drops', 'drop')} it on the next read, so a service "
+            f"built from one starts without the environment ({name_list(templates)})"
+        )
+    add_log("warn", f"Environment deleted: {name} -- {'. '.join(said)}", conn)
 
 
 @router.delete("/api/environments/{eid}")
@@ -166,11 +186,12 @@ def delete_environment(eid: int, request: Request):
         row = conn.execute("SELECT name FROM environments WHERE id=?", (eid,)).fetchone()
         if not row:
             raise HTTPException(404, "Environment not found")
-        # Read before the DELETE: the cascade takes `service_environments` with it, so after
-        # the commit nothing is left that knows which services were set to this one.
-        services = services_in_environment(conn, eid)
+        # Read before the DELETE: the cascade takes `service_environments` with it and the
+        # next template read drops the id, so after the commit nothing is left that knows
+        # which services were set to this one or which templates named it.
+        services, templates = holders_of_environment(conn, eid)
         conn.execute("DELETE FROM environments WHERE id=?", (eid,))
-        _log_environment_removal(conn, row["name"], services)
+        _log_environment_removal(conn, row["name"], services, templates)
         conn.commit()
         return {"ok": True}
     finally:

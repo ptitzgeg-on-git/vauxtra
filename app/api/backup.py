@@ -544,14 +544,15 @@ def import_backup(request: Request, body: RestoreRequest):
         # `dns_provider_id` and `tunnel_provider_id` are real foreign keys, and the
         # connection runs with `foreign_keys=ON`. Explicit ids everywhere else in this
         # function mean the columns land on the same rows they named in the export, and
-        # `tag_ids_json` needs no remapping for the same reason.
+        # the two label columns need no remapping for the same reason.
         for tpl in data.get("service_templates", []):
             conn.execute(
                 """INSERT OR REPLACE INTO service_templates
                    (id, name, description, forward_scheme, target_port, websocket,
                     expose_mode, proxy_provider_id, dns_provider_id, tunnel_provider_id,
-                    public_target_mode, domain, dns_ip, tag_ids_json, icon_url, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    public_target_mode, domain, dns_ip, tag_ids_json,
+                    environment_ids_json, icon_url, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     tpl.get("id"),
                     tpl.get("name"),
@@ -567,6 +568,10 @@ def import_backup(request: Request, body: RestoreRequest):
                     tpl.get("domain", ""),
                     tpl.get("dns_ip", ""),
                     tpl.get("tag_ids_json", "[]"),
+                    # An export taken before templates carried environments has no such key.
+                    # Defaulting it to the empty list restores exactly what that template
+                    # held: no environment, because none could be chosen.
+                    tpl.get("environment_ids_json", "[]"),
                     tpl.get("icon_url", ""),
                     tpl.get("created_at"),
                 ),

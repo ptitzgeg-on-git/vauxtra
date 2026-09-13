@@ -174,6 +174,7 @@ def init_db() -> None:
             domain             TEXT    NOT NULL DEFAULT '',
             dns_ip             TEXT    NOT NULL DEFAULT '',
             tag_ids_json       TEXT    NOT NULL DEFAULT '[]',
+            environment_ids_json TEXT  NOT NULL DEFAULT '[]',
             icon_url           TEXT    NOT NULL DEFAULT '',
             created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
         );
@@ -246,6 +247,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
         "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
         "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
+        # A template carried only half of the label control the form shows. The other
+        # half is added here rather than in a rebuild because the column has a default:
+        # every template written before this reads back as naming no environment, which
+        # is exactly what it named.
+        "ALTER TABLE service_templates ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]'",
     ]:
         try:
             conn.execute(sql)

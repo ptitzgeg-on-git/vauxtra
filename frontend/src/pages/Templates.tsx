@@ -2,9 +2,10 @@
  * Templates — the presets a service is created from.
  *
  * A template holds everything the service form repeats (forward scheme, port, providers,
- * domain, tags) and nothing that is unique to one service (subdomain, target IP). "Use
- * template" hands the id to the Services page through `?template=<id>`, which fetches
- * `GET /api/templates/{id}/apply` and opens a pre-filled create form.
+ * domain, both halves of the label control) and nothing that is unique to one service
+ * (subdomain, target IP). "Use template" hands the id to the Services page through
+ * `?template=<id>`, which fetches `GET /api/templates/{id}/apply` and opens a pre-filled
+ * create form.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -18,7 +19,7 @@ import { TemplateModal } from '@/components/features/templates/TemplateModal';
 import {
   duplicateName,
   searchHaystack,
-  tagTone,
+  labelFacets,
   toTemplateForm,
   toTemplateIn,
 } from '@/components/features/templates/types';
@@ -34,10 +35,11 @@ import {
   SkeletonCard,
   useConfirmDialog,
 } from '@/components/ui';
+import { labelDotClass, labelDotStyle, labelTone } from '@/lib/labels';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { translateApiError } from '@/lib/errors';
-import type { OkResponse, Provider, Tag, Template } from '@/types/api';
+import type { Environment, OkResponse, Provider, Tag, Template } from '@/types/api';
 
 type RouteModal = { mode: 'create' } | { mode: 'edit'; id: number };
 
@@ -59,6 +61,7 @@ export function Templates() {
 
   const [search, setSearch] = useState('');
   const [activeTagIds, setActiveTagIds] = useState<number[]>([]);
+  const [activeEnvironmentIds, setActiveEnvironmentIds] = useState<number[]>([]);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<number | null>(null);
 
@@ -108,43 +111,67 @@ export function Templates() {
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
   });
+  const { data: environments = [] } = useQuery<Environment[]>({
+    queryKey: ['environments'],
+    queryFn: () => api.get<Environment[]>('/environments'),
+  });
 
   const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
   const providersById = useMemo(() => new Map(providers.map((p) => [p.id, p])), [providers]);
   const tagsById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
+  const environmentsById = useMemo(() => new Map(environments.map((env) => [env.id, env])), [environments]);
 
   // --- filtering ----------------------------------------------------------
-  const tagFacets = useMemo(() => {
-    const counts = new Map<number, number>();
-    for (const template of templates) {
-      for (const id of template.tag_ids ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .map(([id, count]) => ({ tag: tagsById.get(id), id, count }))
-      .filter((facet) => Boolean(facet.tag))
-      .sort((a, b) => (a.tag?.name ?? '').localeCompare(b.tag?.name ?? ''));
-  }, [templates, tagsById]);
+  // Both halves of the label control filter, and they filter separately: a chip row per
+  // half, an active list per half. Two labels of different kinds may share a name (the
+  // server only refuses a duplicate within one kind), so one shared list would filter on
+  // whichever happened to be clicked.
+  const tagFacets = useMemo(() => labelFacets(templates, 'tag_ids', tagsById), [templates, tagsById]);
+  const environmentFacets = useMemo(
+    () => labelFacets(templates, 'environment_ids', environmentsById),
+    [templates, environmentsById],
+  );
 
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
+    const namesOf = (
+      template: Template,
+      key: 'tag_ids' | 'environment_ids',
+      byId: ReadonlyMap<number, Tag | Environment>,
+    ) => (template[key] ?? []).map((id) => byId.get(id)?.name ?? '');
     return templates.filter((template) => {
       if (activeTagIds.length > 0 && !activeTagIds.every((id) => (template.tag_ids ?? []).includes(id))) {
         return false;
       }
+      if (
+        activeEnvironmentIds.length > 0 &&
+        !activeEnvironmentIds.every((id) => (template.environment_ids ?? []).includes(id))
+      ) {
+        return false;
+      }
       if (!needle) return true;
-      const tagNames = (template.tag_ids ?? []).map((id) => tagsById.get(id)?.name ?? '');
-      return searchHaystack(template, tagNames).includes(needle);
+      return searchHaystack(template, [
+        ...namesOf(template, 'tag_ids', tagsById),
+        ...namesOf(template, 'environment_ids', environmentsById),
+      ]).includes(needle);
     });
-  }, [templates, search, activeTagIds, tagsById]);
+  }, [templates, search, activeTagIds, activeEnvironmentIds, tagsById, environmentsById]);
 
   const toggleTag = useCallback((tagId: number) => {
     setActiveTagIds((prev) => (prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]));
   }, []);
 
-  const isFiltering = search.trim().length > 0 || activeTagIds.length > 0;
+  const toggleEnvironment = useCallback((environmentId: number) => {
+    setActiveEnvironmentIds((prev) =>
+      prev.includes(environmentId) ? prev.filter((id) => id !== environmentId) : [...prev, environmentId],
+    );
+  }, []);
+
+  const isFiltering = search.trim().length > 0 || activeTagIds.length > 0 || activeEnvironmentIds.length > 0;
   const clearFilters = useCallback(() => {
     setSearch('');
     setActiveTagIds([]);
+    setActiveEnvironmentIds([]);
   }, []);
 
   // --- mutations ----------------------------------------------------------
@@ -327,22 +354,44 @@ export function Templates() {
               )}
             </div>
 
-            {tagFacets.length > 0 && (
+            {(tagFacets.length > 0 || environmentFacets.length > 0) && (
               <div className="flex flex-wrap items-center gap-2">
-                <ChipGroup label={t('templates.filter_tags')}>
-                  {tagFacets.map((facet) => (
-                    <Chip
-                      key={facet.id}
-                      size="sm"
-                      tone={tagTone(facet.tag?.color)}
-                      selected={activeTagIds.includes(facet.id)}
-                      count={facet.count}
-                      onClick={() => toggleTag(facet.id)}
-                    >
-                      {facet.tag?.name}
-                    </Chip>
-                  ))}
-                </ChipGroup>
+                {tagFacets.length > 0 && (
+                  <ChipGroup label={t('templates.filter_tags')}>
+                    {tagFacets.map((facet) => (
+                      <Chip
+                        key={facet.id}
+                        size="sm"
+                        tone={labelTone('tag')}
+                        icon={<span className={labelDotClass('tag')} style={labelDotStyle(facet.label.color)} />}
+                        selected={activeTagIds.includes(facet.id)}
+                        count={facet.count}
+                        onClick={() => toggleTag(facet.id)}
+                      >
+                        {facet.label.name}
+                      </Chip>
+                    ))}
+                  </ChipGroup>
+                )}
+                {environmentFacets.length > 0 && (
+                  <ChipGroup label={t('templates.filter_environments')}>
+                    {environmentFacets.map((facet) => (
+                      <Chip
+                        key={facet.id}
+                        size="sm"
+                        tone={labelTone('environment')}
+                        icon={
+                          <span className={labelDotClass('environment')} style={labelDotStyle(facet.label.color)} />
+                        }
+                        selected={activeEnvironmentIds.includes(facet.id)}
+                        count={facet.count}
+                        onClick={() => toggleEnvironment(facet.id)}
+                      >
+                        {facet.label.name}
+                      </Chip>
+                    ))}
+                  </ChipGroup>
+                )}
                 {isFiltering && (
                   <Button size="sm" variant="ghost" onClick={clearFilters}>
                     {t('templates.clear_filters')}
@@ -372,8 +421,11 @@ export function Templates() {
                   template={template}
                   providersById={providersById}
                   tagsById={tagsById}
+                  environmentsById={environmentsById}
                   activeTagIds={activeTagIds}
                   onToggleTag={toggleTag}
+                  activeEnvironmentIds={activeEnvironmentIds}
+                  onToggleEnvironment={toggleEnvironment}
                   onUse={() => navigate(`/services?template=${encodeURIComponent(String(template.id))}`)}
                   onEdit={() => openEdit(template.id)}
                   onDuplicate={() => handleDuplicate(template)}

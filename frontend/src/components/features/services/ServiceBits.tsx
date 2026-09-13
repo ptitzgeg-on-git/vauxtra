@@ -13,6 +13,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
+import { labelDotClass, labelDotStyle, labelTone } from '@/lib/labels';
 import { useFormat } from '@/hooks/useFormat';
 import { Badge, Chip, IconButton, ProviderLogo, Tooltip } from '@/components/ui';
 import type { Tone } from '@/components/ui';
@@ -227,8 +228,6 @@ export function ProviderLogos({ service, providers, className }: { service: Serv
   );
 }
 
-const dotStyle = (color: string | null | undefined) => (color ? { backgroundColor: color } : undefined);
-
 /** Tags and environments as filter chips — clicking one narrows the list. */
 export function TaxonomyChips({
   service,
@@ -248,11 +247,11 @@ export function TaxonomyChips({
         <Chip
           key={`tag-${tag.id}`}
           size="sm"
-          tone="primary"
+          tone={labelTone('tag')}
           selected={activeTagId === tag.id}
           onClick={() => onTagClick(tag)}
           aria-label={t('services.filter_by_tag', { name: tag.name })}
-          icon={<span className="inline-block h-2 w-2 rounded-full bg-primary" style={dotStyle(tag.color)} />}
+          icon={<span className={labelDotClass('tag')} style={labelDotStyle(tag.color)} />}
         >
           {tag.name}
         </Chip>
@@ -261,11 +260,11 @@ export function TaxonomyChips({
         <Chip
           key={`env-${env.id}`}
           size="sm"
-          tone="info"
+          tone={labelTone('environment')}
           selected={activeEnvId === env.id}
           onClick={() => onEnvClick(env)}
           aria-label={t('services.filter_by_env', { name: env.name })}
-          icon={<span className="inline-block h-2 w-2 rounded-full bg-info" style={dotStyle(env.color)} />}
+          icon={<span className={labelDotClass('environment')} style={labelDotStyle(env.color)} />}
         >
           {env.name}
         </Chip>

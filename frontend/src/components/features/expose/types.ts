@@ -114,7 +114,8 @@ export const toFormState = (service?: Service | null): FormState => {
 
 /**
  * A fresh form seeded from `GET /api/templates/{id}/apply`: the template decides scheme,
- * port, mode, providers, domain and tags; subdomain and target stay for the user to fill.
+ * port, mode, providers, domain and both halves of the label control; subdomain and target
+ * stay for the user to fill.
  */
 export const templateToFormState = (
   tpl: TemplateApplyResult | Record<string, unknown> | null | undefined,
@@ -138,7 +139,11 @@ export const templateToFormState = (
     proxy_provider_id: proxyId,
     dns_provider_id: dnsId,
     dns_ip: String(record.dns_ip || ''),
+    // Both halves, and both through `toIdList`: a template written before environments
+    // were storable answers with no `environment_ids` key at all, which reads here as the
+    // empty list it means rather than throwing on the way in.
     tag_ids: toIdList(record.tag_ids),
+    environment_ids: toIdList(record.environment_ids),
     icon_url: String(record.icon_url || ''),
   };
 };

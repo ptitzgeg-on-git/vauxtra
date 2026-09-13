@@ -3,9 +3,10 @@ import { Cable, Copy, Globe, Link2, Network, Pencil, Server, Trash2, Wand2 } fro
 import { Badge, Button, Chip, IconButton, Tooltip, cn } from '@/components/ui';
 import { useFormat } from '@/hooks/useFormat';
 import { useT } from '@/i18n';
-import type { Provider, Tag, Template } from '@/types/api';
+import type { Environment, Provider, Tag, Template } from '@/types/api';
+import { labelDotClass, labelDotStyle, labelTone } from '@/lib/labels';
 import { TemplateIcon } from './TemplateIcon';
-import { endpointLabel, tagTone } from './types';
+import { endpointLabel } from './types';
 
 export interface TemplateCardProps {
   template: Template;
@@ -13,9 +14,18 @@ export interface TemplateCardProps {
   providersById: Map<number, Provider>;
   /** Every tag, by id, same reason. */
   tagsById: Map<number, Tag>;
+  /** Every environment, by id, same reason again. */
+  environmentsById: Map<number, Environment>;
   /** Tag ids the list is currently filtered on; a card chip toggles one. */
   activeTagIds: number[];
   onToggleTag: (tagId: number) => void;
+  /**
+   * The same pair for the other half. They stay separate because the two filters are
+   * separate: a tag and an environment may share a name, and clicking one chip must not
+   * quietly filter on the other.
+   */
+  activeEnvironmentIds: number[];
+  onToggleEnvironment: (environmentId: number) => void;
   onUse: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
@@ -47,8 +57,11 @@ export const TemplateCard = memo(function TemplateCard({
   template,
   providersById,
   tagsById,
+  environmentsById,
   activeTagIds,
   onToggleTag,
+  activeEnvironmentIds,
+  onToggleEnvironment,
   onUse,
   onEdit,
   onDuplicate,
@@ -60,7 +73,18 @@ export const TemplateCard = memo(function TemplateCard({
   const { formatRelative, formatDateTime } = useFormat();
 
   const isTunnel = template.expose_mode === 'tunnel';
-  const tags = (template.tag_ids ?? []).map((id) => ({ id, tag: tagsById.get(id) })).filter((entry) => entry.tag);
+  /**
+   * Both halves of the label control, as one row of chips. Each chip remembers which half
+   * it came from, because that decides which filter it toggles and how it reads out.
+   */
+  const labels = [
+    ...(template.tag_ids ?? []).map((id) => ({ kind: 'tag' as const, id, label: tagsById.get(id) })),
+    ...(template.environment_ids ?? []).map((id) => ({
+      kind: 'environment' as const,
+      id,
+      label: environmentsById.get(id),
+    })),
+  ].filter((entry) => entry.label);
 
   /** A provider id as a name, or the reason there is no name to show. */
   const providerLabel = (id: number | null | undefined): { text: string; missing: boolean } | null => {
@@ -135,20 +159,35 @@ export const TemplateCard = memo(function TemplateCard({
           )}
         </dl>
 
-        {tags.length > 0 && (
-          <div role="group" aria-label={t('templates.card.tags')} className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            {tags.map(({ id, tag }) => (
-              <Chip
-                key={id}
-                size="sm"
-                tone={tagTone(tag?.color)}
-                selected={activeTagIds.includes(id)}
-                onClick={() => onToggleTag(id)}
-                title={t('templates.card.filter_by_tag', { name: tag?.name ?? '' })}
-              >
-                {tag?.name}
-              </Chip>
-            ))}
+        {labels.length > 0 && (
+          <div
+            role="group"
+            aria-label={t('templates.card.labels')}
+            className="flex flex-wrap items-center gap-1.5 pt-0.5"
+          >
+            {labels.map(({ kind, id, label }) => {
+              const isTag = kind === 'tag';
+              // Both keys spelled out, rather than one `t()` on a computed key: the locale
+              // gate (`scripts/check-locale-usage.mjs`) only reads literal keys, and a key
+              // it cannot see is a key it cannot tell you is missing.
+              const name = label?.name ?? '';
+              const title = isTag
+                ? t('templates.card.filter_by_tag', { name })
+                : t('templates.card.filter_by_environment', { name });
+              return (
+                <Chip
+                  key={`${kind}-${id}`}
+                  size="sm"
+                  tone={labelTone(kind)}
+                  icon={<span className={labelDotClass(kind)} style={labelDotStyle(label?.color)} />}
+                  selected={(isTag ? activeTagIds : activeEnvironmentIds).includes(id)}
+                  onClick={() => (isTag ? onToggleTag(id) : onToggleEnvironment(id))}
+                  title={title}
+                >
+                  {label?.name}
+                </Chip>
+              );
+            })}
           </div>
         )}
 

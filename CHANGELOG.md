@@ -337,6 +337,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Saving an exposure as a template kept the tags and dropped the environments.** The expose
+  wizard offers one label control with two halves: the tags a service carries, and the
+  environments it is set to. "Save as template" read the first half and not the second. The body
+  it sent listed `tag_ids` and no `environment_ids`; `TemplateIn` had no such field to receive
+  one; `service_templates` had no column to store it. None of those three floors said so. The
+  route answered 201, the template appeared in the list, and it named no environment — which
+  is exactly what a template where none was chosen looks like. The next service built from it
+  started one label short of the exposure it was copied from, and the only way to notice was to
+  remember what had been on screen.
+
+  `environment_ids_json` is added by migration with a `'[]'` default, so every template written
+  before this reads back as naming no environment, which is what it named. The two halves are now
+  one `_LABEL_COLUMNS` table in `app/api/templates.py`, and everything that used to spell out the
+  tag half — reading the row, writing it, checking the ids exist, dropping the ids whose row is
+  gone — loops over it instead. A second half maintained by hand beside a working first half is
+  how this happened once already.
+
+  `TemplateIn` also refuses unknown keys now (`extra="forbid"`), the rule `ServiceIn` already
+  applies and for the same reason: a field the model does not know is a 422 on the save, not a
+  template quietly missing it. That is the half of this fix that catches the next one.
+
+  The panel follows the model. The template form grew an Environments section beside its Tags
+  one — written once as a `LabelSection` and used twice, because a section that existed for
+  one half and not the other is how the environments came to be dropped. The template card shows
+  both halves in one chip row, the Templates page offers a filter row per half, and
+  **Settings → Taxonomy** counts the templates naming an environment where it used to count
+  only tags and tell you, wrongly, that deleting an environment had no template to affect. The
+  two filter rows keep separate active lists: a tag and an environment may share a name, and the
+  server only refuses a duplicate within one kind.
+
+  That last sentence is also why the chips changed colour. A template chip used to take its
+  tone from the tag's own colour, which the Services list had already decided against: it
+  gives the two halves nothing to be told apart by, and two labels sharing a name and a colour
+  are then the same chip. Labels now read the same way everywhere, out of one
+  `frontend/src/lib/labels.ts`: the tone says which half it is, and the label's own colour
+  rides on the dot in front of the name.
+
 - **A tag or environment whose name held a comma or a colon came back as a different label.**
   Every service read serialised its labels as `GROUP_CONCAT(DISTINCT t.name || ':' || t.color
   || ':' || t.id)` and took the answer back apart on `,` and then on `:`, keeping the chunks
@@ -378,10 +415,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   keep their hostname and stay published, and lose only the label somebody was filtering and
   grouping by. `service_templates.tag_ids_json` is TEXT holding a JSON array, which no
   constraint reaches — the id survives the delete and is dropped on the next read by
-  `_drop_dead_tags`, silently and by design, because the alternative is a template that cannot
-  be saved. So the template comes back one tag shorter, the next service built from it starts
-  without the tag, and nothing anywhere says why. An environment has only the first of those:
-  no service template names an environment, so there is no JSON column to rot.
+  `_drop_dead_labels`, silently and by design, because the alternative is a template that
+  cannot be saved. So the template comes back one tag shorter, the next service built from it
+  starts without the tag, and nothing anywhere says why. An environment had only the first of
+  those when this was written, having no JSON column to rot; the entry above gives it one, and
+  both paragraphs are now said over both halves.
 
   Each chip now carries the number of services holding it, and the delete question says the two
   paragraphs above over the rows behind that number — capped at five, with a tail counting the

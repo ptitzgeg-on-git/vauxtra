@@ -467,6 +467,11 @@ export function ExposeModal({
       domain: payload.domain,
       dns_ip: payload.dns_ip,
       tag_ids: payload.tag_ids,
+      // Both halves of the label control, because the form offers both. The tags used to
+      // travel alone from here: the environments were chosen on the form, left out of this
+      // body, and had no column waiting for them either -- so a template saved from a
+      // finished exposure came back naming fewer labels than the exposure it was taken from.
+      environment_ids: payload.environment_ids,
       icon_url: payload.icon_url,
     };
   };
