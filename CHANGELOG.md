@@ -233,6 +233,53 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Pushing a disabled service published it again, and the drift check called its absence an
+  error.** A push converges the providers on what the record says, and the record is allowed
+  to say "off" — but `_push_service_row` never read `services.enabled`. It read
+  `providers.enabled` to pick its targets, then created the route on every one of them. Two
+  one-click paths reached it: the drift drawer offers Reconcile beside the errors it has just
+  listed, and `ExposeModal` fires a push of its own right after saving any service carrying a
+  multi-sync target, so pressing Save on a disabled service republished it on every provider
+  while the row went on reading "off". The scheduler was the only safe caller, and only
+  because `run_auto_reconcile` selects `WHERE enabled=1`.
+
+  The drift check had the same blind spot from the other side. Reading every service as if it
+  were published, a correctly disabled one came back "out of sync, 2 errors" — one
+  `missing_proxy_route`, one `missing_dns_rewrite` — for routes Vauxtra had itself removed,
+  with a Reconcile button beside them whose only honest meaning would have been "publish it
+  again". Drift now reads the flag and asks the opposite question of a disabled service: two
+  new issue types, `proxy_route_still_served` and `dns_rewrite_still_served`, name a provider
+  still answering for a service the table shows as off. NPM and Zoraxy suspend a host rather
+  than delete it, so the route stays in the listing and `enabled` is the only thing that says
+  whether it answers; a provider that does not report the flag has no suspension, and a rule
+  it still holds is a rule still serving.
+
+  A push of a disabled service now withholds it, the way disabling it does rather than the
+  way deleting it does. The primary proxy host is suspended, not deleted, so NPM keeps the
+  custom locations, the advanced configuration and the certificate binding that Vauxtra does
+  not model, and `npm_host_id` stays valid for the re-enable to toggle back on. Everything
+  else is removed, because DNS has no suspension and Vauxtra never stores the host ids of the
+  extra proxies — a suspension there could never be lifted. A provider with no suspension at
+  all falls back to the deletion and clears `npm_host_id` with it, or the re-enable would
+  toggle an id that is no longer there, read the refusal as "toggle not supported, host
+  already present", and leave the service dark while reporting it switched on.
+
+  The dry-run answers the same way, because it is the documented way to find out what a push
+  will write — `docs/TROUBLESHOOTING.md` says to run it first. It used to promise to create
+  the route on every provider for a service the push would then remove from every provider,
+  which is the one answer a dry-run must never give. A disabled service now gets a plan
+  carrying `withheld: true` and one `suspend` or `delete` per provider, and the panel says so
+  in a sentence above the list instead of leaving the operator to infer it from the verbs.
+  Whether the primary is suspended or deleted is read off the provider class rather than
+  discovered by the failed call: a provider that never overrode `toggle_host` inherits the
+  base's `return False`, so its suspension could only fail. `dry_run_push`, `push_service` and
+  `check_drift` say the same thing in the MCP bridge, which is where a model reads what a tool
+  does before calling it.
+
+  `tests/test_multi_sync_targets.py` covers the push, the drift report, the reconcile, the
+  dry-run, the return to service and a proxy with no suspension; eight of the twelve new tests
+  fail on the code as it stood.
+
 - **Disabling a service took it off the primary proxy and left the second one forwarding it.**
   The write routes learned to publish a service on every multi-sync target and to withdraw it
   from one dropped off the list or renamed away, but the `enabled` flag was never part of that

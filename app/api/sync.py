@@ -3,6 +3,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from app.auth import require_auth, require_auth_or_setup
 from app.importing import refuse_import, set_aside
 from app.models import add_log, get_db
+from app.providers.base import ProxyProvider
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import describe_public_target_failure, resolve_public_target
 from app.text import plural
@@ -262,7 +263,172 @@ def withdraw_service_routes(
     return errors
 
 
+def withhold_service_routes(
+    conn, svc, sid: int, *, only_provider_ids: set[int] | None = None
+) -> list[str]:
+    """Take a disabled service out of service, the way disabling it does.
+
+    A push converges the providers on what the record says, and for a disabled service the
+    record says "not reachable". `withdraw_service_routes` is the wrong tool for the primary
+    proxy: it deletes the host, and the disable path in `update_service` suspends it. The
+    difference is not cosmetic. NPM keeps the custom locations, the advanced configuration
+    and the certificate binding that Vauxtra does not model, and `npm_host_id` stays valid so
+    the re-enable can toggle the same host back on. Deleting it here would leave that column
+    pointing at a host that no longer exists, and the re-enable would call `toggle_host` on a
+    dead id, read the `False` it gets back as "toggle not supported, host already present",
+    and leave the service dark while telling the operator it was switched on.
+
+    Everything else is removed rather than suspended, for the reasons the two neighbours
+    already carry: DNS has no suspension, and Vauxtra never stores the host ids of the extra
+    proxies, so a suspension there could never be lifted -- `withdraw_extra_targets` spells
+    that out.
+
+    Returns one message per failure, in the shape both push routes already put in `errors`.
+    """
+    expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
+    if only_provider_ids is not None:
+        proxy_rows = [r for r in proxy_rows if r["id"] in only_provider_ids]
+        dns_rows = [r for r in dns_rows if r["id"] in only_provider_ids]
+    errors: list[str] = []
+
+    # Tunnel mode has no primary proxy to suspend: Cloudflare Tunnel addresses its rules by
+    # hostname and does not implement `toggle_host`, so the withdrawal below is the whole
+    # answer there, which is also what the tunnel branch of `update_service` does.
+    primary_id = svc["proxy_provider_id"] if expose_mode != "tunnel" else None
+    primary_row = next((r for r in proxy_rows if r["id"] == primary_id), None) if primary_id else None
+    stored_host_id = svc["npm_host_id"]
+    suspended: set = set()
+
+    if primary_row is not None and stored_host_id \
+            and not PROVIDER_TYPES.get(primary_row["type"], {}).get("read_only"):
+        suspended.add(primary_row["id"])
+        try:
+            proxy = create_provider(primary_row)
+            if proxy.toggle_host(stored_host_id, False):
+                add_log("info", f"[Disable] Proxy suspended on {primary_row['name']}: {public_host}", conn)
+            elif proxy.delete_host(stored_host_id):
+                # No suspension on this provider, so the route has to go -- and the column has
+                # to go with it, or the re-enable toggles an id that is not there any more.
+                conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
+                add_log("info", f"[Disable] Proxy route removed on {primary_row['name']} (suspend unsupported): {public_host}", conn)
+            else:
+                errors.append(f"Failed to suspend the proxy host on {primary_row['name']}")
+        except Exception as e:
+            # Deliberately not falling through to the deletion: the provider just failed to
+            # answer, and a delete would fail the same way or, worse, half-succeed.
+            errors.append(f"Proxy ({primary_row['name']}): {e}")
+
+    rest = ({r["id"] for r in proxy_rows} | {r["id"] for r in dns_rows}) - suspended
+    if rest:
+        errors.extend(
+            withdraw_service_routes(conn, svc, sid, only_provider_ids=rest, log_prefix="[Disable]")
+        )
+
+    return errors
+
+
+def _build_withhold_plan(conn, svc, sid: int) -> dict:
+    """What the push would do to a service the record says is off.
+
+    The dry-run is the documented way to find out what a push will write -- `docs/TROUBLESHOOTING.md`
+    says to run it first -- so it has to describe the withdrawal, not the publication that
+    used to happen. Read as if every service were published, the plan promised to create the
+    route on every provider and the push then removed it from every provider, which is the
+    one answer a dry-run must never give.
+
+    It reaches the providers only to ask what they are, never what they hold: `create_provider`
+    builds the client, and whether the primary can be suspended is a property of its class.
+    The publication plan calls out to look a host up because "create" and "update" are
+    different writes; here they are not, so the plan costs no round trip.
+
+    As in the publication plan, an action is what the push will attempt rather than a diff
+    against the provider, and `would_change` follows it -- the same reading that makes an
+    `update` on an unchanged host count as a change.
+    """
+    expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
+
+    proxy_actions: list[dict] = []
+    dns_actions: list[dict] = []
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    primary_id = svc["proxy_provider_id"] if expose_mode != "tunnel" else None
+    stored_host_id = svc["npm_host_id"]
+
+    for row in proxy_rows:
+        if PROVIDER_TYPES.get(row["type"], {}).get("read_only"):
+            proxy_actions.append(
+                {
+                    "provider_id": row["id"],
+                    "provider_name": row["name"],
+                    "provider_type": row["type"],
+                    "action": "skip_read_only",
+                    "target_host": public_host,
+                }
+            )
+            warnings.append(f"Proxy {row['name']} is read-only")
+            continue
+
+        action = "delete"
+        if row["id"] == primary_id and stored_host_id:
+            try:
+                proxy = create_provider(row)
+                # The fallback in `withhold_service_routes` is not a guess: a provider that
+                # does not override `toggle_host` inherits the base's `return False`, so the
+                # suspension it would try can only fail, and the route has to be deleted.
+                if type(proxy).toggle_host is not ProxyProvider.toggle_host:
+                    action = "suspend"
+            except Exception as e:
+                errors.append(f"Proxy ({row['name']}): {e}")
+                continue
+
+        proxy_actions.append(
+            {
+                "provider_id": row["id"],
+                "provider_name": row["name"],
+                "provider_type": row["type"],
+                "action": action,
+                "target_host": public_host,
+            }
+        )
+
+    for row in dns_rows:
+        # No suspension exists in DNS, and the tunnel branch of the withdrawal removes the
+        # rewrites the same way the proxy branch does.
+        dns_actions.append(
+            {
+                "provider_id": row["id"],
+                "provider_name": row["name"],
+                "provider_type": row["type"],
+                "action": "delete",
+                "domain": public_host,
+                "target": "",
+            }
+        )
+
+    return {
+        "service_id": sid,
+        "mode": expose_mode,
+        "public_host": public_host,
+        "proxy_actions": proxy_actions,
+        "dns_actions": dns_actions,
+        "service_updates": [],
+        "warnings": warnings,
+        "errors": errors,
+        "dns_target": "",
+        "dns_target_source": "",
+        "would_change": bool(
+            [a for a in proxy_actions if a.get("action") != "skip_read_only"] or dns_actions
+        ),
+        "ok": len(errors) == 0,
+        "withheld": True,
+    }
+
+
 def _build_push_plan(conn, svc, sid: int) -> dict:
+    if not svc["enabled"]:
+        return _build_withhold_plan(conn, svc, sid)
+
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
 
     proxy_actions: list[dict] = []
@@ -364,6 +530,9 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
         "dns_target_source": dns_target_source,
         "would_change": would_change,
         "ok": len(errors) == 0,
+        # Always present, so the panel reads one key rather than inferring the state from the
+        # action words: false here, true on the plan a disabled service gets.
+        "withheld": False,
     }
 
 
@@ -376,6 +545,11 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
     issues: list[dict] = []
 
     expected_origin = f"{svc['forward_scheme']}://{svc['target_ip']}:{svc['target_port']}"
+    # Drift is the distance between the record and the providers, and a disabled service has
+    # the opposite expectation rather than no expectation. Read as if every service were
+    # published, a correctly disabled one came back as "out of sync, 2 errors" -- with a
+    # Reconcile button beside it whose only honest meaning would have been "publish it again".
+    service_enabled = bool(svc["enabled"])
 
     for row in proxy_targets:
         try:
@@ -387,6 +561,24 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                 if public_host in domains:
                     hit = host
                     break
+
+            if not service_enabled:
+                # NPM and Zoraxy suspend a host rather than delete it, so the route stays in
+                # the listing and `enabled` is the only thing that says whether it still
+                # answers. Providers with no suspension do not report the flag at all, and
+                # `True` is the right default for them: a rule that exists is a rule serving.
+                if hit and hit.get("enabled", True):
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "type": "proxy_route_still_served",
+                            "provider": row["name"],
+                            "detail": f"Route {public_host} still served while the service is disabled",
+                            "detail_key": "route_still_served",
+                            "detail_params": {"host": public_host},
+                        }
+                    )
+                continue
 
             if not hit:
                 issues.append(
@@ -423,12 +615,30 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                 }
             )
 
-    if expose_mode != "tunnel" and svc["dns_ip"]:
+    # `dns_ip` is the address the records are compared against, so an empty one used to mean
+    # there was nothing to compare. A disabled service is not comparing anything: it is asking
+    # whether a record is still there, which is a question worth answering even once Vauxtra
+    # has forgotten which address it pointed at.
+    if expose_mode != "tunnel" and (svc["dns_ip"] or not service_enabled):
         for row in dns_targets:
             try:
                 provider = create_provider(row)
                 rewrites = provider.list_rewrites() or []
                 match = next((r for r in rewrites if str(r.get("domain", "")).strip().lower() == public_host), None)
+                if not service_enabled:
+                    # No suspension exists in DNS: a rewrite that is there is a name resolving.
+                    if match:
+                        issues.append(
+                            {
+                                "severity": "error",
+                                "type": "dns_rewrite_still_served",
+                                "provider": row["name"],
+                                "detail": f"Rewrite {public_host} still resolving while the service is disabled",
+                                "detail_key": "rewrite_still_served",
+                                "detail_params": {"host": public_host},
+                            }
+                        )
+                    continue
                 if not match:
                     issues.append(
                         {
@@ -508,7 +718,19 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
     `only_provider_ids` narrows the push to part of the targets. `push_extra_targets` uses
     it to reach the multi-sync providers on their own, once the write routes have dealt
     with the primary proxy and the primary DNS server themselves.
+
+    A disabled service is withheld instead of published. The record is what a push converges
+    the providers on, and the record says this one is off -- publishing it here is how a
+    service the table showed as disabled came back. Two one-click paths reach this: the drift
+    drawer offers Reconcile beside the errors it just reported, and `ExposeModal` fires a push
+    of its own right after saving any service that has a multi-sync target, so pressing Save
+    on a disabled service republished it on every provider at once.
     """
+    if not svc["enabled"]:
+        errors = withhold_service_routes(conn, svc, sid, only_provider_ids=only_provider_ids)
+        conn.commit()
+        return {"ok": not errors, "errors": errors}
+
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
     if only_provider_ids is not None:
         proxy_targets = [r for r in proxy_targets if r["id"] in only_provider_ids]

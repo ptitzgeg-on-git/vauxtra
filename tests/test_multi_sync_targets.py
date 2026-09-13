@@ -38,6 +38,7 @@ from app import models
 from app.api import providers as providers_api
 from app.api import services as services_api
 from app.api import sync as sync_api
+from app.providers.base import ProxyProvider
 
 
 def _request(method: str = "POST", path: str = "/") -> Request:
@@ -79,7 +80,11 @@ class _FakeProvider:
         if not self.ok:
             return None
         self._next_id += 1
-        host = {"id": self._next_id, "domains": [domain], "host": ip, "port": port}
+        # `enabled` is in the shape because NPM puts it there: a suspended host stays in the
+        # listing and only that flag says it has stopped answering. Without it the fake could
+        # not tell "suspended" from "serving", which is the whole question a disabled service
+        # asks of its proxy.
+        host = {"id": self._next_id, "domains": [domain], "host": ip, "port": port, "enabled": True}
         self.hosts.append(host)
         return host
 
@@ -104,7 +109,11 @@ class _FakeProvider:
 
     def toggle_host(self, host_id, enabled):
         self.calls.append((self.name, "toggle_host", host_id, enabled))
-        return True
+        for host in self.hosts:
+            if host["id"] == host_id or host_id in host["domains"]:
+                host["enabled"] = enabled
+                return True
+        return False  # nothing under that id: NPM answers 404, which reads as False
 
     # -- dns --------------------------------------------------------------------------
     def list_rewrites(self):
@@ -137,6 +146,29 @@ class _FakeProvider:
             domain in h["domains"] for h in self.hosts
         )
 
+    def serves(self, domain: str) -> bool:
+        """Still answering for the name, which is not the same as still holding a row.
+
+        A suspended proxy host is held and not served. `holds` is the right question for a
+        deletion, this one for a service that was switched off.
+        """
+        return any(r["domain"] == domain for r in self.rewrites) or any(
+            domain in h["domains"] and h.get("enabled", True) for h in self.hosts
+        )
+
+
+
+class _ProviderWithoutSuspension(_FakeProvider):
+    """A proxy that never implemented the toggle, which most of them never did.
+
+    `toggle_host` exists on three providers; everywhere else the base's `return False` is
+    what answers, so the suspension can only fail and the route has to be deleted instead.
+    Taking that method verbatim is what makes this a fake of such a provider rather than a
+    fake of a provider that refuses one particular host.
+    """
+
+    toggle_host = ProxyProvider.toggle_host
+
 
 class _MultiSyncTestCase(unittest.TestCase):
     IP = "198.51.100.7"
@@ -158,6 +190,9 @@ class _MultiSyncTestCase(unittest.TestCase):
             patch.object(providers_api, "require_auth_or_setup", lambda _req, scope=None: None),
             patch.object(services_api, "create_provider", self._provider_for),
             patch.object(sync_api, "create_provider", self._provider_for),
+            # The push, drift and reconcile routes live in `sync`, and they check their own
+            # scope. Only the two write routes were patched, because only they were called.
+            patch.object(sync_api, "require_auth", lambda _req, scope=None: None),
         ]
         for p in self._patchers:
             p.start()
@@ -785,3 +820,259 @@ class DisablingWithdrawsFromEveryTargetTests(_MultiSyncTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PushingADisabledServiceTests(_MultiSyncTestCase):
+    """A push converges the providers on the record, and the record is allowed to say off.
+
+    `_collect_push_targets` reads `providers.enabled` and never read `services.enabled`, and
+    neither did the push or the drift check. So a service the table showed as disabled was
+    published again by anything that pushed it, and the drift check reported the absence it
+    had itself asked for as two errors -- with a Reconcile button beside them whose only
+    honest meaning would have been "publish it again".
+
+    Two clicks reached that. The drift drawer offers Reconcile next to the errors it just
+    listed, and `ExposeModal` fires a push of its own right after saving any service that
+    carries a multi-sync target: pressing Save on a disabled service republished it on every
+    provider while the row went on reading "off". The scheduler was the only safe caller, and
+    only because `run_auto_reconcile` selects `WHERE enabled=1`.
+    """
+
+    HOST = "vault.example.com"
+
+    def _published_then_switched_off_behind_the_route(self) -> int:
+        """Published on two proxies and two DNS servers, then switched off in the table.
+
+        The flag is written to the row rather than sent through `PUT` on purpose. The write
+        route now withdraws as it disables, so going through it would converge the providers
+        before the push could be asked anything. What is under test is the state the route is
+        not the only way to reach: a disable whose provider was unreachable at the time, a row
+        written before the withdrawal existed, a flag flipped anywhere else.
+        """
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(3, "Technitium", "technitium")
+        self._add_provider(4, "NPM bis", "npm")
+        _, body = self._create(
+            proxy_provider_id=1,
+            dns_provider_id=2,
+            extra_dns_provider_ids=[3],
+            extra_proxy_provider_ids=[4],
+        )
+        sid = body["id"]
+        for pid in (1, 2, 3, 4):
+            self.assertTrue(
+                self.providers[pid].serves(self.HOST), f"the fixture never published on {pid}"
+            )
+        conn = models.get_db()
+        conn.execute("UPDATE services SET enabled=0 WHERE id=?", (sid,))
+        conn.commit()
+        conn.close()
+        return sid
+
+    def _stored_host_id(self, sid: int):
+        conn = models.get_db()
+        row = conn.execute("SELECT npm_host_id FROM services WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        return row["npm_host_id"]
+
+    def _full_body(self, **overrides):
+        fields = {
+            "proxy_provider_id": 1,
+            "dns_provider_id": 2,
+            "extra_dns_provider_ids": [3],
+            "extra_proxy_provider_ids": [4],
+        }
+        fields.update(overrides)
+        return self._body(**fields)
+
+    def test_pushing_a_disabled_service_withdraws_it_instead_of_publishing_it(self):
+        sid = self._published_then_switched_off_behind_the_route()
+
+        result = sync_api.push_service(sid, _request("POST"))
+
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["ok"])
+        for pid in (1, 2, 3, 4):
+            self.assertFalse(
+                self.providers[pid].serves(self.HOST),
+                f"provider {pid} still answers for a service the table shows as off",
+            )
+
+    def test_the_primary_proxy_is_suspended_where_the_second_one_is_deleted(self):
+        """The asymmetry is the point, and it is the one the disable path already draws.
+
+        Suspending keeps what NPM holds and Vauxtra does not model -- custom locations, the
+        advanced block, the certificate binding -- and keeps `npm_host_id` pointing at a host
+        that exists, which is what the re-enable toggles. The extra proxy has no stored id, so
+        a suspension there could never be lifted; deleting it is what lets the next push
+        create it again.
+        """
+        sid = self._published_then_switched_off_behind_the_route()
+        stored = self._stored_host_id(sid)
+
+        sync_api.push_service(sid, _request("POST"))
+
+        self.assertTrue(self.providers[1].holds(self.HOST), "the primary host was deleted")
+        self.assertFalse(self.providers[1].serves(self.HOST), "the primary host still answers")
+        self.assertFalse(self.providers[4].holds(self.HOST), "the extra proxy was only suspended")
+        self.assertEqual(
+            self._stored_host_id(sid), stored, "npm_host_id moved, so the re-enable would miss"
+        )
+
+    def test_the_service_comes_back_whole_after_being_pushed_while_off(self):
+        """The witness for the line above: withheld is a state a service can leave."""
+        sid = self._published_then_switched_off_behind_the_route()
+        sync_api.push_service(sid, _request("POST"))
+
+        services_api.update_service(sid, _request("PUT"), self._full_body(enabled=True))
+
+        for pid in (1, 2, 3, 4):
+            self.assertTrue(
+                self.providers[pid].serves(self.HOST),
+                f"provider {pid} stayed dark after the service was switched back on",
+            )
+
+    def test_drift_is_clean_once_the_disabled_service_is_withheld(self):
+        sid = self._published_then_switched_off_behind_the_route()
+        sync_api.push_service(sid, _request("POST"))
+
+        report = sync_api.service_drift(sid, _request("GET"))
+
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertEqual(report["issues"], [], "a suspended proxy host was read as drift")
+
+    def test_drift_names_what_still_serves_a_disabled_service(self):
+        sid = self._published_then_switched_off_behind_the_route()
+
+        report = sync_api.service_drift(sid, _request("GET"))
+
+        self.assertFalse(report["ok"])
+        types = {i["type"] for i in report["issues"]}
+        self.assertIn("proxy_route_still_served", types)
+        self.assertIn("dns_rewrite_still_served", types)
+        self.assertNotIn("missing_proxy_route", types)
+        self.assertNotIn("missing_dns_rewrite", types)
+        self.assertEqual(
+            {i["provider"] for i in report["issues"]},
+            {"NPM", "NPM bis", "AdGuard", "Technitium"},
+        )
+        self.assertEqual(
+            {i["detail_key"] for i in report["issues"]},
+            {"route_still_served", "rewrite_still_served"},
+        )
+
+    def test_reconcile_converges_a_disabled_service_rather_than_publishing_it(self):
+        sid = self._published_then_switched_off_behind_the_route()
+
+        result = sync_api.reconcile_service(sid, _request("POST"))
+
+        self.assertFalse(result["before"]["ok"], "the fixture was already converged")
+        self.assertTrue(result["after"]["ok"], result["after"]["issues"])
+        self.assertTrue(result["ok"], result["push"])
+        for pid in (1, 2, 3, 4):
+            self.assertFalse(self.providers[pid].serves(self.HOST), f"provider {pid} answers")
+
+    def test_saving_a_disabled_service_does_not_bring_it_back_through_the_push(self):
+        """ExposeModal pushes on its own after saving any service with a multi-sync target."""
+        sid = self._published_then_switched_off_behind_the_route()
+        services_api.update_service(sid, _request("PUT"), self._full_body(enabled=False))
+
+        sync_api.push_service(sid, _request("POST"))
+
+        for pid in (1, 2, 3, 4):
+            self.assertFalse(
+                self.providers[pid].serves(self.HOST),
+                f"Save republished a disabled service on provider {pid}",
+            )
+
+    def test_an_enabled_service_is_still_published_by_the_same_push(self):
+        """The other witness: the guard reads the flag, it does not stop the push."""
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        self._add_provider(3, "Technitium", "technitium")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2, extra_dns_provider_ids=[3])
+        self.providers[3].rewrites.clear()
+
+        result = sync_api.push_service(body["id"], _request("POST"))
+
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(self.providers[3].serves(self.HOST), "the push stopped publishing")
+
+    # -- the dry-run, which is what says what the push will write -------------------------
+    def _plan_actions(self, plan: dict) -> dict:
+        """Provider name to the single action the plan holds for it."""
+        actions = {a["provider_name"]: a["action"] for a in plan["proxy_actions"]}
+        actions.update({a["provider_name"]: a["action"] for a in plan["dns_actions"]})
+        self.assertEqual(
+            len(actions),
+            len(plan["proxy_actions"]) + len(plan["dns_actions"]),
+            "two actions for one provider, so the mapping above hides one",
+        )
+        return actions
+
+    def test_the_dry_run_describes_the_withdrawal_rather_than_a_publication(self):
+        """`docs/TROUBLESHOOTING.md` sends the operator here first, so it has to be true.
+
+        A plan promising to create the route on four providers, followed by a push that
+        removes it from four providers, is the one answer a dry-run must never give.
+        """
+        sid = self._published_then_switched_off_behind_the_route()
+
+        plan = sync_api.dry_run_push_service(sid, _request("POST"))
+
+        self.assertTrue(plan["withheld"])
+        self.assertTrue(plan["ok"], plan["errors"])
+        self.assertTrue(plan["would_change"])
+        self.assertEqual(
+            self._plan_actions(plan),
+            {"NPM": "suspend", "NPM bis": "delete", "AdGuard": "delete", "Technitium": "delete"},
+        )
+        self.assertEqual(plan["service_updates"], [])
+        self.assertEqual(plan["dns_target"], "", "a withdrawal resolves no address")
+
+    def test_the_dry_run_writes_nothing(self):
+        """The note under the panel says a dry run only reads. It has to stay true here."""
+        sid = self._published_then_switched_off_behind_the_route()
+        before = self._stored_host_id(sid)
+
+        sync_api.dry_run_push_service(sid, _request("POST"))
+
+        for pid in (1, 2, 3, 4):
+            self.assertTrue(self.providers[pid].serves(self.HOST), f"provider {pid} was touched")
+        self.assertEqual(self._stored_host_id(sid), before)
+
+    def test_a_proxy_with_no_suspension_is_planned_as_the_deletion_it_will_be(self):
+        """The fallback read off the class instead of discovered by the failed call.
+
+        `ProxyProvider.toggle_host` returns False, so a provider that never overrode it can
+        only fail the suspension `withhold_service_routes` would send, and the route has to
+        be deleted. The plan says so in advance rather than promising a suspension nobody
+        can perform.
+        """
+        sid = self._published_then_switched_off_behind_the_route()
+        stale = self.providers[1]
+        plain = _ProviderWithoutSuspension(stale.name, self.calls)
+        plain.hosts, plain.rewrites = stale.hosts, stale.rewrites
+        self.providers[1] = plain
+
+        plan = sync_api.dry_run_push_service(sid, _request("POST"))
+
+        self.assertEqual(self._plan_actions(plan)["NPM"], "delete")
+
+        # And the push agrees, which is the only thing that makes the plan worth reading.
+        sync_api.push_service(sid, _request("POST"))
+        self.assertFalse(plain.holds(self.HOST))
+        self.assertIsNone(
+            self._stored_host_id(sid), "npm_host_id outlived the host it names"
+        )
+
+    def test_the_dry_run_of_an_enabled_service_still_plans_the_publication(self):
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+
+        plan = sync_api.dry_run_push_service(body["id"], _request("POST"))
+
+        self.assertFalse(plan["withheld"])
+        self.assertEqual(self._plan_actions(plan), {"NPM": "update", "AdGuard": "upsert"})

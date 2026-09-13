@@ -33,6 +33,7 @@ import {
   Modal,
   ProviderLogo,
   SectionHeading,
+  type Tone,
   useConfirmDialog,
 } from '@/components/ui';
 import type {
@@ -41,6 +42,8 @@ import type {
   PreflightCheck,
   PreflightRequest,
   PreflightResult,
+  PushPlanDnsAction,
+  PushPlanProxyAction,
   PushResult,
   Service,
   ServicePayload,
@@ -117,6 +120,16 @@ const CHECK_ICONS: Record<CheckTone, ReactNode> = {
   success: <CircleCheck className="h-4 w-4 text-success" />,
   warning: <TriangleAlert className="h-4 w-4 text-warning" />,
   danger: <CircleAlert className="h-4 w-4 text-destructive" />,
+};
+
+// A withdrawal is not the same kind of write as a publication, and reading the badge colour
+// as "this is routine" would be the wrong reading on a plan that removes routes. Anything the
+// map does not name falls back to `info`, so a new action word from the API is rendered rather
+// than swallowed.
+const PLAN_ACTION_TONE: Partial<Record<PushPlanProxyAction['action'] | PushPlanDnsAction['action'], Tone>> = {
+  skip_read_only: 'neutral',
+  suspend: 'warning',
+  delete: 'warning',
 };
 
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
@@ -808,6 +821,10 @@ export function ExposeModal({
                     )}
                   </div>
 
+                  {dryRun.withheld && (
+                    <InlineAlert tone="info" title={t('expose.dry_run.withheld')} />
+                  )}
+
                   {dryRun.proxy_actions.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -818,7 +835,7 @@ export function ExposeModal({
                           <li key={`proxy-${action.provider_id}`} className="flex items-center gap-2 text-sm">
                             <ProviderLogo type={action.provider_type} className="h-4 w-4" />
                             <span className="font-medium text-foreground">{action.provider_name}</span>
-                            <Badge size="sm" tone={action.action === 'skip_read_only' ? 'neutral' : 'info'}>
+                            <Badge size="sm" tone={PLAN_ACTION_TONE[action.action] ?? 'info'}>
                               {t(`expose.dry_run.action.${action.action}`)}
                             </Badge>
                             <span className="truncate font-mono text-xs text-muted-foreground">
@@ -841,11 +858,12 @@ export function ExposeModal({
                           <li key={`dns-${action.provider_id}`} className="flex items-center gap-2 text-sm">
                             <ProviderLogo type={action.provider_type} className="h-4 w-4" />
                             <span className="font-medium text-foreground">{action.provider_name}</span>
-                            <Badge size="sm" tone="info">
+                            <Badge size="sm" tone={PLAN_ACTION_TONE[action.action] ?? 'info'}>
                               {t(`expose.dry_run.action.${action.action}`)}
                             </Badge>
                             <span className="truncate font-mono text-xs text-muted-foreground">
-                              {action.domain} → {action.target}
+                              {action.domain}
+                              {action.target ? ` → ${action.target}` : ''}
                             </span>
                           </li>
                         ))}

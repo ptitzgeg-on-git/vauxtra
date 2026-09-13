@@ -607,7 +607,8 @@ export interface PushPlanProxyAction {
   provider_id: number;
   provider_name: string;
   provider_type: ProviderType;
-  action: 'update' | 'create' | 'skip_read_only';
+  /** `suspend` and `delete` only ever appear on a withheld plan -- see `withheld`. */
+  action: 'update' | 'create' | 'skip_read_only' | 'suspend' | 'delete';
   target_host: string;
   target_origin?: string;
 }
@@ -617,7 +618,7 @@ export interface PushPlanDnsAction {
   provider_id: number;
   provider_name: string;
   provider_type: ProviderType;
-  action: 'upsert';
+  action: 'upsert' | 'delete';
   domain: string;
   target: string;
 }
@@ -644,6 +645,8 @@ export interface DryRunPlan {
   dns_target_source: string;
   would_change: boolean;
   ok: boolean;
+  /** The service is disabled, so the push withdraws it instead of publishing it. */
+  withheld: boolean;
 }
 
 /** `POST /api/services/{sid}/push`. */

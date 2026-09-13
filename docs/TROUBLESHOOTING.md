@@ -113,16 +113,18 @@ Symptoms:
 
 - Push fails
 - Drift always reported
+- A disabled service is reported as still served
 
 Checks:
 
 1. Provider write permissions still valid.
 2. Service target and domain fields valid.
 3. Provider type supports writes (Traefik is read-only; Zoraxy only manages host rules, and a rule renamed in Zoraxy is reported as drift).
+4. The service is enabled. A push converges the providers on the record, so pushing a **disabled** service withdraws it instead of publishing it: the primary proxy host is suspended, everything else is removed. Drift on a disabled service asks the opposite question and reports what still answers (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than what is missing.
 
 Actions:
 
-1. Use dry-run push first (`/api/services/{sid}/push/dry-run`).
+1. Use dry-run push first (`/api/services/{sid}/push/dry-run`). Its `withheld` field says which of the two plans you are reading.
 2. Inspect logs for precise provider-side error.
 3. Reconcile only after validation succeeds.
 
