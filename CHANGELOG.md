@@ -211,6 +211,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The API tells "a provider refused" apart from "Vauxtra broke", and the panel threw that
+  distinction away.** `app/api/providers.py`, `app/api/docker.py` and `app/api/webhooks.py`
+  raise `502` in eleven places between them, and each argues the choice in its own comment:
+  the request left, the far end refused, and nothing in this server broke. The panel mapped
+  every status at or above 500 onto one sentence — "The server ran into a problem. Try again
+  in a moment." — so an expired Cloudflare token, a Docker socket that was never mounted and
+  a webhook target that refused all read as a fault in Vauxtra, sending an operator to read
+  its logs when the answer was on their own side.
+
+  `common.error.upstream` — "The service Vauxtra contacted refused the request. Check that
+  integration, then try again." — was already written and already translated into all eight
+  locales. Nothing referenced it. `translateApiError` now answers it for a 502, but only when
+  FastAPI wrote the body: a 502 from a proxy in front of the API means the API itself never
+  answered, and that one really is this server. `frontend/src/lib/errors.test.ts` is new and
+  pins both halves, along with the rest of the status table, which had no test at all.
+
 - **`CONTRIBUTING.md` asked for a Node version the toolchain does not accept.** It said
   "Requires **Node.js 22+**", and nothing in the repository backed that number. The Python
   floor is declared twice — the README sentence and `ruff.toml`'s `target-version = "py313"` —
@@ -1473,6 +1489,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   reader scanning that family in order could not find.
 
 ### Removed
+
+- **Thirteen locale keys that no code path could reach, in eight languages each.** A key
+  nothing reads is eight translations of nothing, and it invites the next reader to believe a
+  feature is there. Four were labels for settings tabs that no longer exist: `tags`,
+  `environments`, `migration` and `backup` were folded into `taxonomy` and `data` and survive
+  only as `?tab=` values in `TAB_ALIASES`, which redirect and never render a label.
+  `settings.group.help` named a sidebar group absent from `SETTINGS_GROUPS`.
+  `settings.logs.clearing` and `settings.migration.importing` predate `Button`'s `loading`
+  prop, which shows a spinner and sets `aria-busy` under the button's own label.
+  `dashboard.quick_actions.shortcuts` spelled out "G then D, P, S" as prose before the card
+  rendered real `<Kbd>` chips. `monitoring.table.provider` and `monitoring.table.target` were
+  headers for two columns the table never grew, and the drawer shows both under other keys.
+  `settings.list.compact_rows` and `settings.language.contribute_hint` named a row-density
+  toggle and a fourth contribution hint that were never built.
+
+  Neither locale gate could have found them: `check-locale-parity.mjs` and
+  `check-locale-quality.mjs` read `src/locales/*.json` and never open a component, so parity
+  between the keys and the code is unchecked in both directions. The direction that would
+  print a raw key name to an operator was measured and is clean — every key a `t()` call
+  names exists in `en.json`, including those assembled in two stages, as the provider wizard
+  and the taxonomy tab both do.
 
 - `settings.docker.import_done`, in all eight locales — the single green line reporting
   "{imported} imported, {skipped} skipped" for the Docker import. It is replaced by
