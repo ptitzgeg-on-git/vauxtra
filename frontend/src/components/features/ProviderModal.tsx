@@ -278,6 +278,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
               }}
               placeholder={t('provider_modal.docker.name_placeholder')}
               autoComplete="off"
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
               autoFocus
             />
           </Field>

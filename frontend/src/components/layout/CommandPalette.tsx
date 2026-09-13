@@ -310,6 +310,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
                   const index = runningIndex;
                   const isActive = index === activeIndex;
                   return (
+                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus -- combobox option; the keys live on the input, which names this one via aria-activedescendant
                     <div
                       key={item.id}
                       id={optionId(item)}

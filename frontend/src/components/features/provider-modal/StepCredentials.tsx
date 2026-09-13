@@ -73,6 +73,7 @@ function SecretInput({ value, onChange, placeholder, autoFocus }: SecretInputPro
       placeholder={placeholder}
       autoComplete="new-password"
       spellCheck={false}
+      // eslint-disable-next-line jsx-a11y/no-autofocus -- the caller passes true only for the first field of a freshly shown step
       autoFocus={autoFocus}
       className="font-mono"
       rightIcon={
@@ -131,6 +132,7 @@ export function StepCredentials({
         labelAddon={optional ? <span className="text-xs text-muted-foreground">{t('provider_modal.guided.optional')}</span> : undefined}
       >
         {field.inputType === 'password' ? (
+          // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
           <SecretInput value={value} onChange={(v) => onChange(field.key, v)} placeholder={field.placeholder} autoFocus={index === 0} />
         ) : (
           <Input
@@ -140,6 +142,7 @@ export function StepCredentials({
             placeholder={field.placeholder}
             autoComplete="off"
             spellCheck={false}
+            // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
             autoFocus={index === 0}
             className="font-mono"
           />
@@ -214,12 +217,11 @@ export function StepCredentials({
               <span className="text-xs font-semibold uppercase tracking-wider text-primary">
                 {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
               </span>
-              <div className="flex gap-1.5" role="list" aria-label={t('provider_modal.mode.guided')}>
+              <div className="flex gap-1.5" role="group" aria-label={t('provider_modal.mode.guided')}>
                 {guidedSteps.map((_, i) => (
                   <button
                     key={i}
                     type="button"
-                    role="listitem"
                     aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
                     aria-current={i === guidedStepIndex ? 'step' : undefined}
                     onClick={() => onGuidedStepChange(i)}
@@ -272,6 +274,7 @@ export function StepCredentials({
               value={formData.name}
               onChange={(e) => onChange('name', e.target.value)}
               placeholder={t('provider_modal.field.name_placeholder', { label: typeLabel })}
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
               autoFocus
             />
           </Field>

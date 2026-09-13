@@ -11,10 +11,15 @@
  * The finding proposed dropping that button along with the counter. Reading the panel showed
  * that would be wrong, and the last test here is why: it is the only way to reach the field
  * where the integration is named. So it stays, demoted and renamed after its destination.
+ *
+ * A third defect hid behind this file rather than being caught by it: each dot is a button
+ * that jumps to its step, and each carried `role="listitem"`, which overrode the button role
+ * and left the set announced as a list nobody could be told was clickable. The dots are asked
+ * for by the role they actually have now.
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
 import { buttonVariants } from '@/components/ui';
@@ -69,13 +74,14 @@ describe('A one-step wizard is not a journey', () => {
   it('counts nothing when there is nothing to count', () => {
     panel(ONE_STEP);
     expect(screen.queryByText(STEP_COUNTER)).toBeNull();
-    expect(screen.queryByRole('list', { name: DOTS })).toBeNull();
+    expect(screen.queryByRole('group', { name: DOTS })).toBeNull();
   });
 
   it('still counts, and still paginates, as soon as there are two steps', () => {
     panel(THREE_STEPS);
     expect(screen.getByText(STEP_COUNTER)).toBeInTheDocument();
-    expect(screen.getAllByRole('listitem')).toHaveLength(THREE_STEPS.length);
+    const dots = within(screen.getByRole('group', { name: DOTS })).getAllByRole('button');
+    expect(dots).toHaveLength(THREE_STEPS.length);
   });
 
   it('shows the step itself either way', () => {

@@ -68,6 +68,7 @@ export function ProviderDeleteConflictBody({ name, detail, choiceRef }: Props) {
       {dark.length > 0 && <p>{t('providers.delete.deps_dark', { count: dark.length })}</p>}
       {kept.length > 0 && <p>{t('providers.delete.deps_kept', { count: kept.length })}</p>}
 
+      {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- the checkbox is wrapped by this label; its text sits one span deeper than the rule looks */}
       <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border bg-muted/40 p-3">
         <input
           type="checkbox"
