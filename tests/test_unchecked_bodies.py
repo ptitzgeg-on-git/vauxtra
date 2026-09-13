@@ -184,6 +184,33 @@ class WebhookCreationTests(_OverHttp):
         self.assertEqual(stored["repeat_interval_minutes"], 30)
         self.assertEqual(stored["alert_on_any_down"], 1)
 
+    def test_a_webhook_asked_for_disabled_is_created_disabled(self) -> None:
+        """The panel has sent `enabled` since this form existed, and the INSERT wrote `1`.
+
+        `WebhookIn` did not declare the field, so pydantic dropped it before the handler ever
+        saw it, and the row went in with a hardcoded `1`. The answer said `"enabled": 1` too,
+        because that was hardcoded as well -- so the reply agreed with the row and both
+        disagreed with the request, which is the shape that hides longest.
+        """
+        resp = self.client.post(
+            "/api/webhooks",
+            json={"name": "later", "url": "json://hook.test/x", "enabled": False},
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        self.assertEqual(resp.json()["enabled"], 0)
+
+        # And the row, not just the answer: the two were hardcoded together before.
+        listed = {w["id"]: w for w in self.client.get("/api/webhooks").json()}
+        self.assertEqual(listed[resp.json()["id"]]["enabled"], 0)
+
+    def test_a_body_that_says_nothing_about_it_still_creates_an_enabled_one(self) -> None:
+        """The default is what every caller today relies on, `create_webhook` included."""
+        resp = self.client.post(
+            "/api/webhooks", json={"name": "now", "url": "json://hook.test/x"}
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        self.assertEqual(resp.json()["enabled"], 1)
+
 
 class WebhookUpdateTests(_OverHttp):
     """`PUT /api/webhooks/{wid}` fills what the caller left out from the stored row."""

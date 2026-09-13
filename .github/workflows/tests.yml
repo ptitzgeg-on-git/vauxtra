@@ -67,6 +67,14 @@ jobs:
       - name: API-MCP parity gate
         run: python scripts/check_api_mcp_parity.py
 
+      # The gate above holds the MCP bridge to the models; this one holds the panel, which
+      # posts to the same routes and was held to nothing. Pydantic drops a key it does not
+      # declare and still answers 200, so a field the form sends and the model never learned
+      # about is lost without a word. It reads TypeScript, and runs here rather than in the
+      # frontend job because the models it compares against are Python.
+      - name: Panel contract gate
+        run: python scripts/check_panel_contract.py
+
       - name: Repo hygiene gate
         run: python scripts/check_repo_hygiene.py
 

@@ -234,8 +234,16 @@ export interface ProviderIn {
   extra: Record<string, unknown>;
 }
 
-/** Body of `PUT /api/providers/{pid}` (every field optional; empty password keeps the stored one); answers `{ok}`. */
-export interface ProviderUpdate extends Partial<ProviderIn> {
+/**
+ * Body of `PUT /api/providers/{pid}` (every field optional; empty password keeps the stored
+ * one); answers `{ok}`.
+ *
+ * `type` is omitted rather than optional. The route reads `row["type"]` to normalise the URL
+ * and never writes the column, so a provider is whatever kind it was created as. Declaring it
+ * here made the panel able to send a field the server drops without a word -- `tsc` agreed,
+ * the save answered `200`, and the kind never moved.
+ */
+export interface ProviderUpdate extends Omit<Partial<ProviderIn>, 'type'> {
   enabled?: boolean | number;
 }
 

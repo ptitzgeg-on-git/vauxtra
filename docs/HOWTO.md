@@ -932,7 +932,7 @@ no such capability, and 502 when the provider itself refuses.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/webhooks` | List webhooks (URLs masked — see [The URL is the credential](#the-url-is-the-credential)) |
-| `POST` | `/api/webhooks` | Create a webhook |
+| `POST` | `/api/webhooks` | Create a webhook (`enabled: false` creates it configured but silent) |
 | `PUT` | `/api/webhooks/{wid}` | Update a webhook |
 | `DELETE` | `/api/webhooks/{wid}` | Delete a webhook |
 | `POST` | `/api/webhooks/test-url` | Test a webhook URL |
