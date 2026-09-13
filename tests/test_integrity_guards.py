@@ -124,6 +124,25 @@ class _IsolatedDB(unittest.TestCase):
         conn.close()
         return sid
 
+    def _seed_webhook(self, name: str = "on-call", **cols) -> int:
+        fields = {
+            "name": name,
+            "url": "json://hook.test/x",
+            "enabled": 1,
+            "scope_type": "provider",
+            "scope_ref_id": 2,
+        }
+        fields.update(cols)
+        names = ", ".join(fields)
+        marks = ", ".join("?" * len(fields))
+        conn = models.get_db()
+        cur = conn.execute(f"INSERT INTO webhooks ({names}) VALUES ({marks})", tuple(fields.values()))
+        wid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return wid
+
+
     def _seed_template(self, name: str = "standard", **cols) -> int:
         fields = {
             "name": name,
@@ -253,6 +272,7 @@ class DeleteProviderAsksFirstTests(_IsolatedDB):
         source = (
             inspect.getsource(providers_api._provider_dependents)
             + inspect.getsource(providers_api._provider_template_dependents)
+            + inspect.getsource(providers_api._provider_webhook_dependents)
         )
         unread = sorted(
             f"{table}.{column}"
@@ -319,6 +339,180 @@ class DeleteProviderAsksFirstTests(_IsolatedDB):
             any("standard" in m and "service template" in m for m in self._logs()),
             self._logs(),
         )
+
+    def test_a_provider_only_a_webhook_watches_is_refused_too(self) -> None:
+        """No services, no templates. The eighth reference, and the only undeclared one.
+
+        `webhooks.scope_ref_id` holds a provider id when `scope_type` says 'provider', and
+        the column carries no foreign key. So the deletion did not blank it, did not cascade
+        it and did not mention it: the row stayed exactly as the operator left it, pointing
+        at an id that no longer existed, and `_service_matches_scope` answered False from
+        then on for every service there is.
+        """
+        wid = self._seed_webhook()
+
+        with self.assertRaises(HTTPException) as caught:
+            providers_api.delete_provider(2, _request("DELETE"))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        detail = caught.exception.detail
+        self.assertEqual(detail["services"], [], "nothing is published; the list is empty")
+        self.assertEqual(detail["templates"], [])
+        self.assertEqual([d["id"] for d in detail["webhooks"]], [wid])
+        self.assertIn("on-call", detail["message"])
+        self.assertNotIn(
+            "withdraw=true",
+            detail["message"],
+            "a webhook publishes nothing, so there is no record to withdraw",
+        )
+        conn = models.get_db()
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM providers WHERE id=2").fetchone())
+        conn.close()
+
+    def test_a_webhook_is_named_alongside_the_services(self) -> None:
+        """Three kinds of dependent in one answer, each with its own language."""
+        sid = self._seed_service()
+        tid = self._seed_template(dns_provider_id=2)
+        wid = self._seed_webhook()
+
+        with self.assertRaises(HTTPException) as caught:
+            providers_api.delete_provider(2, _request("DELETE"))
+
+        detail = caught.exception.detail
+        self.assertEqual([s["id"] for s in detail["services"]], [sid])
+        self.assertEqual([d["id"] for d in detail["templates"]], [tid])
+        self.assertEqual([d["id"] for d in detail["webhooks"]], [wid])
+        self.assertIn("withdraw=true", detail["message"], "the services half is unchanged")
+        self.assertIn("service template", detail["message"])
+        self.assertIn("notification webhook", detail["message"])
+
+    def test_a_webhook_watching_another_provider_is_none_of_this_deletion_business(self) -> None:
+        """The negative half of the same question, without which the census could be a
+        constant: a webhook watching provider 3 must not appear when provider 2 goes."""
+        self._seed_webhook(name="other-provider", scope_ref_id=3)
+
+        result = providers_api.delete_provider(2, _request("DELETE"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["orphaned_webhooks"], [])
+        self.assertFalse([m for m in self._logs() if "webhook" in m.lower()], self._logs())
+
+    def test_a_webhook_scoped_to_everything_is_not_a_dependent_either(self) -> None:
+        """`scope_type='all'` means the webhook never named a provider. `scope_ref_id` is
+        NULL there, and a census that read the column without reading the type beside it
+        would have counted it as soon as one provider happened to carry a matching id."""
+        self._seed_webhook(name="everything", scope_type="all", scope_ref_id=None)
+
+        result = providers_api.delete_provider(2, _request("DELETE"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["orphaned_webhooks"], [])
+
+    def test_force_says_which_webhooks_it_orphaned_and_logs_them(self) -> None:
+        """The journal is the only trace. Nothing else in the instance changes at all."""
+        wid = self._seed_webhook()
+
+        result = providers_api.delete_provider(2, _request("DELETE"), force=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["orphaned_webhooks"], [wid])
+        self.assertTrue(
+            any("on-call" in m and "notification webhook" in m for m in self._logs()),
+            self._logs(),
+        )
+
+    def test_the_deletion_leaves_the_webhook_switched_on_which_is_why_it_is_said(self) -> None:
+        """The measurement the whole change rests on.
+
+        A service loses its provider link and the Services table shows the gap. A template
+        loses its choice and the field comes back empty. A webhook loses nothing visible:
+        same name, same URL, same enabled flag, same `scope_ref_id`. It reads as configured
+        and armed, and it can never match again. If this ever starts failing because the
+        deletion switches it off, the sentence and the journal line both have to be
+        rewritten: they promise the operator that nothing here was turned off for them.
+        """
+        wid = self._seed_webhook()
+
+        providers_api.delete_provider(2, _request("DELETE"), force=True)
+
+        conn = models.get_db()
+        row = conn.execute(
+            "SELECT enabled, scope_type, scope_ref_id FROM webhooks WHERE id=?", (wid,)
+        ).fetchone()
+        self.assertIsNone(conn.execute("SELECT 1 FROM providers WHERE id=2").fetchone())
+        conn.close()
+        self.assertIsNotNone(row, "no foreign key, so nothing cascaded it away")
+        self.assertEqual(row["enabled"], 1, "still on")
+        self.assertEqual(row["scope_type"], "provider")
+        self.assertEqual(row["scope_ref_id"], 2, "still pointing at the provider that is gone")
+
+    def test_a_column_named_like_a_provider_link_is_asked_about_declared_or_not(self) -> None:
+        """The companion to the FK sweep above, for the half that sweep cannot see.
+
+        `PRAGMA foreign_key_list` answers about declared references, and the column that
+        started this is not one: `webhooks.scope_ref_id` is a bare INTEGER that holds a
+        provider id only when the word beside it says so. The FK sweep was complete and
+        still missed it, which is exactly why this test sits next to it instead of inside.
+
+        What is decidable without a declaration is the name. A column called
+        `*_provider_id` holds a provider id whether or not anybody wrote REFERENCES beside
+        it, and on the day one is added without that clause the schema stops cleaning up
+        after the deletion and this is the only thing left that will say so.
+        """
+        conn = models.get_db()
+        named = set()
+        for table in [
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            if not r["name"].startswith("sqlite_")
+        ]:
+            for col in conn.execute(f"PRAGMA table_info({table})"):
+                if col["name"].endswith("_provider_id"):
+                    named.add((table, col["name"]))
+        conn.close()
+        self.assertTrue(named, "no provider-shaped column found at all; this test has no subject")
+
+        source = (
+            inspect.getsource(providers_api._provider_dependents)
+            + inspect.getsource(providers_api._provider_template_dependents)
+            + inspect.getsource(providers_api._provider_webhook_dependents)
+        )
+        unread = sorted(
+            f"{table}.{column}"
+            for table, column in named
+            if column not in source or table not in source
+        )
+        self.assertEqual(
+            unread,
+            [],
+            "these columns are named after a provider link and nothing asks the operator "
+            "about them before the deletion",
+        )
+
+    def test_everything_a_webhook_can_be_scoped_to_is_asked_about_when_it_goes(self) -> None:
+        """The gate that generalises, because the naming rule above could not.
+
+        A webhook points at things through one untyped column and a word beside it. The word
+        is the whole list -- `_WEBHOOK_SCOPE_TYPES` -- and every entry in it names a table
+        whose rows can be deleted. A scope added to that set is a new way to leave a webhook
+        aimed at an id that is gone, and it fails here until the delete path of the thing it
+        names asks the question too.
+        """
+        from app.api.webhooks import _WEBHOOK_SCOPE_TYPES
+
+        # `all` points at nothing, so nothing can be deleted out from under it.
+        targets = sorted(_WEBHOOK_SCOPE_TYPES - {"all"})
+        readers = {
+            "provider": inspect.getsource(providers_api._provider_webhook_dependents),
+            "service": inspect.getsource(services_api._webhooks_scoped_to),
+        }
+        self.assertEqual(
+            sorted(readers),
+            targets,
+            "a webhook scope whose target can be deleted with nothing asking about it",
+        )
+        for scope, src in readers.items():
+            self.assertIn(f"scope_type = '{scope}'", src, f"{scope}: reads the wrong scope")
 
     def test_a_provider_nothing_names_is_still_deleted_without_a_question(self) -> None:
         """The new branch must not turn every deletion into a dialog."""

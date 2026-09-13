@@ -2036,5 +2036,16 @@
   "providers.diag.detail.zones_listed_other": "{count} zones reachable with this token — auto-detection will work.",
   "providers.diag.detail.zones_none": "No zone found.",
   "layout.nav.item_with_badge": "{label} ({badge})",
-  "ui.tooltip.exact_time": "Exact time: {when}"
+  "ui.tooltip.exact_time": "Exact time: {when}",
+  "providers.delete.hook_title": "Notifications still point at it",
+  "providers.delete.hook_intro_one": "{count} notification webhook is scoped to {name}.",
+  "providers.delete.hook_intro_other": "{count} notification webhooks are scoped to {name}.",
+  "providers.delete.hook_armed_tag": "switched on",
+  "providers.delete.hook_off_tag": "switched off",
+  "providers.delete.hook_effect": "Nothing is published from a webhook, so nothing has to be taken off {name}. The rule stays exactly as it is and stops matching anything.",
+  "providers.delete.hook_armed_one": "{count} of them is still switched on: it goes on showing as enabled until its scope is changed.",
+  "providers.delete.hook_armed_other": "{count} of them are still switched on: they go on showing as enabled until their scope is changed.",
+  "settings.webhooks.scope_provider_gone": "Provider deleted",
+  "settings.webhooks.scope_service_gone": "Service deleted",
+  "settings.webhooks.scope_gone_badge": "Matches nothing"
 }

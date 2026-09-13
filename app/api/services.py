@@ -20,7 +20,7 @@ from app.public_target import (
     resolve_public_target,
     suggest_public_targets,
 )
-from app.text import plural
+from app.text import plural, verb
 from app.validators import (
     DOMAIN_REASONS,
     FQDN_REASONS,
@@ -1636,6 +1636,51 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     return {**service, "errors": errors}
 
 
+def _webhooks_scoped_to(conn, sids: list[int]) -> list[dict]:
+    """Notification webhooks aimed at one of `sids`, which deleting them silences for good.
+
+    `service_alerts` names a service with a real foreign key and `ON DELETE CASCADE` takes
+    those rows out with it. `webhooks.scope_ref_id` names one without: it is a bare INTEGER,
+    so nothing fires, nothing cascades and nothing blanks it. The row outlives the service
+    still holding its id, `_service_matches_scope` (`app/scheduler.py`) answers False for
+    every service from then on, and Settings goes on showing the webhook as enabled.
+
+    Deleting a service has no "something still depends on this" dialog to put that in -- the
+    confirmation is built in the browser, before any request -- so the journal is where it
+    goes. `app/api/providers.py` asks the same question of the same column for the provider
+    scope, and `tests/test_integrity_guards.py` is what makes sure both keep asking it.
+    """
+    if not sids:
+        return []
+    marks = ",".join("?" for _ in sids)
+    rows = conn.execute(
+        f"""
+        SELECT id, name, enabled
+          FROM webhooks
+         WHERE scope_type = 'service' AND scope_ref_id IN ({marks})
+         ORDER BY name
+        """,  # noqa: S608 -- `marks` is a run of literal `?`, one per id; the ids are bound
+        sids,
+    ).fetchall()
+    return [{"id": r["id"], "name": r["name"], "enabled": bool(r["enabled"])} for r in rows]
+
+
+def _log_orphaned_webhooks(hooks: list[dict], what: str, conn=None) -> None:
+    """One warn line naming them, which is the only trace the deletion leaves anywhere."""
+    if not hooks:
+        return
+    names = ", ".join(h["name"] for h in hooks[:5])
+    if len(hooks) > 5:
+        names += f", and {len(hooks) - 5} more"
+    add_log(
+        "warn",
+        f"{what}: {plural(len(hooks), 'notification webhook')} "
+        f"{verb(len(hooks), 'was', 'were')} scoped to it and now "
+        f"{verb(len(hooks), 'matches', 'match')} nothing ({names})",
+        conn,
+    )
+
+
 @router.delete("/api/services/{sid}")
 def delete_service(sid: int, request: Request):
     require_auth(request, scope="write")
@@ -1653,6 +1698,11 @@ def delete_service(sid: int, request: Request):
     # deleted service, and nothing in Vauxtra was left to point at them.
     errors = withdraw_service_routes(conn, svc, sid)
 
+    # Read before the row goes: nothing here cascades, so these webhooks survive the service
+    # with its id still written in their scope, and this is the last moment anything can name
+    # them for the journal.
+    orphaned_hooks = _webhooks_scoped_to(conn, [sid])
+
     # Boundary-aware, and lowercased so it keeps matching whatever case a message used.
     # `LIKE '%service 1%'` also matched "service 12", "service 100" and every other id that
     # merely starts with this one: deleting service 1 silently purged the monitoring
@@ -1665,6 +1715,7 @@ def delete_service(sid: int, request: Request):
     conn.commit()
     conn.close()
     add_log("info", f"Service deleted: {public_host}")
+    _log_orphaned_webhooks(orphaned_hooks, f"Service deleted: {public_host}")
     # `ok` stays true even with errors: the service is gone from Vauxtra either way, and a
     # false would push a client into retrying a delete that can only answer 404 now. The
     # provider failures are in `errors`, and the caller has to show them.
@@ -1945,6 +1996,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
         add_log("info", f"Bulk {body.action}: {plural(affected, 'service')}")
 
     elif body.action == "delete":
+        orphaned_hooks: list[dict] = []
         for sid in body.ids:
             svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
             if not svc:
@@ -1961,6 +2013,10 @@ def bulk_action(body: _BulkActionBody, request: Request):
             # one would.
             errors.extend(f"{public_host}: {e}" for e in withdraw_service_routes(conn, svc, sid))
 
+            # Same question as the single delete, asked per service: selecting ten rows in
+            # the table has to leave the same trace as deleting them one by one.
+            orphaned_hooks.extend(_webhooks_scoped_to(conn, [sid]))
+
             # And the logs, which the bulk path never purged: a deleted service left its
             # monitoring history behind, attached to an id nothing could resolve any more.
             conn.execute(
@@ -1972,6 +2028,11 @@ def bulk_action(body: _BulkActionBody, request: Request):
 
         conn.commit()
         add_log("info", f"Bulk delete: {plural(affected, 'service')}")
+        # Once, after the loop, not once per service: ten selected rows with a rule each are
+        # one thing that happened, and ten warnings saying so bury it. No de-duplication is
+        # needed to get there -- a webhook holds one `scope_ref_id`, so it answers for exactly
+        # one of the ids, and a repeated id finds its row already gone and skips above.
+        _log_orphaned_webhooks(orphaned_hooks, f"Bulk delete: {plural(affected, 'service')}")
 
     conn.close()
     return {"ok": True, "affected": affected, "errors": errors}

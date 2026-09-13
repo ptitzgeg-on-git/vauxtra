@@ -481,8 +481,38 @@ def _provider_template_dependents(conn, pid: int) -> list[dict[str, Any]]:
     return out
 
 
+def _provider_webhook_dependents(conn, pid: int) -> list[dict[str, Any]]:
+    """Notification webhooks scoped to `pid`, which the deletion silences without a word.
+
+    The two helpers above were written from the schema's declared foreign keys, and they
+    cover every one of them. `webhooks.scope_ref_id` is the eighth reference to
+    `providers.id` and the only one that is not declared: the column is a bare INTEGER, so
+    no `ON DELETE` clause fires, nothing cascades, and nothing blanks it. The row outlives
+    the provider still holding its id, `_service_matches_scope` (`app/scheduler.py`) answers
+    False for every service from then on, and the Settings list goes on showing the webhook
+    as enabled. It is dead and it looks armed.
+
+    Which is also the reason `tests/test_integrity_guards.py` no longer asks
+    `PRAGMA foreign_key_list` what depends on a provider: that is the question this column
+    was never in the answer to.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, name, enabled
+          FROM webhooks
+         WHERE scope_type = 'provider' AND scope_ref_id = ?
+         ORDER BY name
+        """,
+        (pid,),
+    ).fetchall()
+    return [{"id": r["id"], "name": r["name"], "enabled": bool(r["enabled"])} for r in rows]
+
+
 def _describe_provider_removal(
-    name: str, dependents: list[dict[str, Any]], templates: list[dict[str, Any]]
+    name: str,
+    dependents: list[dict[str, Any]],
+    templates: list[dict[str, Any]],
+    webhooks: list[dict[str, Any]],
 ) -> str:
     """What the operator actually gets, told apart service by service.
 
@@ -535,6 +565,31 @@ def _describe_provider_removal(
             f'"{name}"; the next service built from '
             f"{verb(len(templates), 'it', 'them')} simply starts with no provider."
         )
+    if webhooks:
+        # A third kind of dependent and a third paragraph, for the same reason the template
+        # half got its own: none of the language above is true of a webhook. It publishes
+        # nothing, so no hostname goes dark and there is no record to withdraw -- and unlike
+        # a service or a template, nothing blanks it either. The scope stays exactly as the
+        # operator left it, pointing at an id that is gone.
+        hook_names = ", ".join(f'"{d["name"]}"' for d in webhooks[:3])
+        if len(webhooks) > 3:
+            hook_names += f", and {len(webhooks) - 3} more"
+        parts.append(
+            f'{plural(len(webhooks), "notification webhook")} '
+            f'{verb(len(webhooks), "is", "are")} scoped to "{name}" and '
+            f'{verb(len(webhooks), "loses", "lose")} that target when it goes ({hook_names}). '
+            "Nothing is published from a webhook, so there is nothing to take off "
+            f'"{name}"; the rule simply stops matching anything.'
+        )
+        armed = [d for d in webhooks if d.get("enabled")]
+        if armed:
+            # The one sentence an operator needs and would not guess: a dead webhook is not
+            # switched off by any of this. It keeps its green badge in Settings.
+            parts.append(
+                f'{len(armed)} {verb(len(armed), "is", "are")} still switched on and '
+                f'{verb(len(armed), "goes", "go")} on looking armed in Settings until the '
+                "scope is changed."
+            )
     if not dependents:
         parts.append("Re-send with ?force=true to delete it anyway.")
     return " ".join(parts)
@@ -551,7 +606,8 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
 
     dependents = _provider_dependents(conn, pid)
     templates = _provider_template_dependents(conn, pid)
-    if (dependents or templates) and not force:
+    hooks = _provider_webhook_dependents(conn, pid)
+    if (dependents or templates or hooks) and not force:
         # The frontend has been sending `?force=true` and reading a `detail.services` list
         # since it was written (`useProviderMutations.ts`, `Providers.tsx`); the API never
         # answered 409, so its "N service(s) depend on this provider" dialog was unreachable
@@ -560,13 +616,20 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
         # `templates` is the other half of the same question. A provider only a template
         # named used to fall straight through this branch -- no services, no 409, no word to
         # anybody -- and `ON DELETE SET NULL` blanked the template on the way out.
+        #
+        # `hooks` is the third, and it is the one the schema could not have told us about.
+        # The census was taken over the declared foreign keys to `providers.id`; a webhook
+        # scoped to a provider references it without declaring it, so a provider only a
+        # webhook watched went through here unannounced too -- and unlike the template,
+        # nothing blanked it afterwards either.
         conn.close()
         raise HTTPException(
             409,
             {
-                "message": _describe_provider_removal(row["name"], dependents, templates),
+                "message": _describe_provider_removal(row["name"], dependents, templates, hooks),
                 "services": dependents,
                 "templates": templates,
+                "webhooks": hooks,
             },
         )
 
@@ -604,7 +667,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
             "warn",
             f"Provider deleted: {row['name']} -- {plural(len(dependents), 'service')} {what} ({names})",
         )
-    elif not templates:
+    elif not templates and not hooks:
         add_log("info", f"Provider deleted: {row['name']}")
     if templates:
         # Its own line rather than a clause on the one above, because a template loss is the
@@ -618,10 +681,25 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
             f"Provider deleted: {row['name']} -- {plural(len(templates), 'service template')} "
             f"lost the provider {verb(len(templates), 'it named', 'they named')} ({tpl_names})",
         )
+    if hooks:
+        # The journal is the only place this leaves a mark at all. The webhook row is
+        # untouched by the deletion -- same name, same URL, same enabled flag, same
+        # `scope_ref_id` -- so an operator reading Settings a week later sees a rule that
+        # looks configured and armed, with nothing to suggest the provider under it is gone.
+        hook_names = ", ".join(d["name"] for d in hooks[:5])
+        if len(hooks) > 5:
+            hook_names += f", and {len(hooks) - 5} more"
+        add_log(
+            "warn",
+            f"Provider deleted: {row['name']} -- {plural(len(hooks), 'notification webhook')} "
+            f"{verb(len(hooks), 'was', 'were')} scoped to it and now "
+            f"{verb(len(hooks), 'matches', 'match')} nothing ({hook_names})",
+        )
     return {
         "ok": not withdrawal_errors,
         "unlinked_services": [d["id"] for d in dependents],
         "unlinked_templates": [d["id"] for d in templates],
+        "orphaned_webhooks": [d["id"] for d in hooks],
         "withdrawn": bool(dependents and withdraw),
         "errors": withdrawal_errors,
     }

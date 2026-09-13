@@ -64,14 +64,16 @@ class DependentsSentenceTests(unittest.TestCase):
     more disagreements in the paragraph under it.
     """
 
-    def _describe(self, dependents, templates=()):
+    def _describe(self, dependents, templates=(), webhooks=()):
         from app.api.providers import _describe_provider_removal
 
-        # `templates` defaults here and nowhere else. The production helper takes it
-        # positionally on purpose: a caller that forgets it is how the template half of this
-        # sentence went unwritten for as long as it did. The cases below are about the
-        # service half, and an empty list is what they mean.
-        return _describe_provider_removal("cloudflare-home", dependents, list(templates))
+        # `templates` and `webhooks` default here and nowhere else. The production helper
+        # takes both positionally on purpose: a caller that forgets one is how the template
+        # half of this sentence went unwritten for as long as it did. Most cases below are
+        # about the service half, and an empty list is what they mean.
+        return _describe_provider_removal(
+            "cloudflare-home", dependents, list(templates), list(webhooks)
+        )
 
     def test_a_single_dependent_reads_as_one(self):
         text = self._describe([{"id": 1, "fqdn": "a.example.com", "still_published": False}])
@@ -117,6 +119,38 @@ class DependentsSentenceTests(unittest.TestCase):
         self.assertIn('2 service templates name "cloudflare-home"', text)
         self.assertIn("lose that choice when it goes", text)
         self.assertIn("the next service built from them simply starts with no provider", text)
+
+    def test_a_single_webhook_agrees_with_itself(self):
+        # The third kind of dependent and the third paragraph. A webhook is not published
+        # and is not blanked either, so the one thing it needs said is the one thing the
+        # other two never had to: it stays switched on.
+        text = self._describe([], [], [{"id": 1, "name": "on-call", "enabled": True}])
+        self.assertIn('1 notification webhook is scoped to "cloudflare-home"', text)
+        self.assertIn("loses that target when it goes", text)
+        self.assertIn("1 is still switched on and goes on looking armed", text)
+
+    def test_several_webhooks_agree_too(self):
+        text = self._describe([], [], [
+            {"id": 1, "name": "on-call", "enabled": True},
+            {"id": 2, "name": "pager", "enabled": True},
+        ])
+        self.assertIn('2 notification webhooks are scoped to "cloudflare-home"', text)
+        self.assertIn("lose that target when it goes", text)
+        self.assertIn("2 are still switched on and go on looking armed", text)
+
+    def test_a_webhook_already_switched_off_is_not_called_armed(self):
+        # The sentence is about a rule that looks alive and is not. One that was already
+        # off looks exactly as dead as it is, and saying otherwise would be the invention
+        # this whole paragraph exists to avoid.
+        text = self._describe([], [], [{"id": 1, "name": "on-call", "enabled": False}])
+        self.assertIn('1 notification webhook is scoped to "cloudflare-home"', text)
+        self.assertNotIn("switched on", text)
+
+    def test_a_webhook_alone_is_never_offered_a_withdrawal(self):
+        # Same reason as a template: nothing was ever published from it.
+        text = self._describe([], [], [{"id": 1, "name": "on-call", "enabled": True}])
+        self.assertNotIn("withdraw=true", text)
+        self.assertIn("?force=true to delete it anyway", text)
 
     def test_a_template_alone_is_never_offered_a_withdrawal(self):
         # `?withdraw=true` asks the provider to take its records down. A template put no

@@ -2036,5 +2036,16 @@
   "providers.diag.detail.zones_listed_other": "{count} zones bereikbaar met dit token — automatische detectie zal werken.",
   "providers.diag.detail.zones_none": "Geen zone gevonden.",
   "layout.nav.item_with_badge": "{label} ({badge})",
-  "ui.tooltip.exact_time": "Exacte tijd: {when}"
+  "ui.tooltip.exact_time": "Exacte tijd: {when}",
+  "providers.delete.hook_title": "Meldingen wijzen er nog naar",
+  "providers.delete.hook_intro_one": "{count} meldingswebhook wijst nog naar {name}.",
+  "providers.delete.hook_intro_other": "{count} meldingswebhooks wijzen nog naar {name}.",
+  "providers.delete.hook_armed_tag": "ingeschakeld",
+  "providers.delete.hook_off_tag": "uitgeschakeld",
+  "providers.delete.hook_effect": "Vanuit een webhook wordt niets gepubliceerd, dus er hoeft niets van {name} te worden verwijderd. De regel blijft zoals hij is en komt nergens meer mee overeen.",
+  "providers.delete.hook_armed_one": "{count} daarvan staat nog aan: deze blijft als ingeschakeld weergegeven totdat het bereik wordt gewijzigd.",
+  "providers.delete.hook_armed_other": "{count} daarvan staan nog aan: ze blijven als ingeschakeld weergegeven totdat hun bereik wordt gewijzigd.",
+  "settings.webhooks.scope_provider_gone": "Provider verwijderd",
+  "settings.webhooks.scope_service_gone": "Service verwijderd",
+  "settings.webhooks.scope_gone_badge": "Komt nergens mee overeen"
 }

@@ -1914,5 +1914,14 @@
   "providers.diag.detail.zones_listed_other": "此令牌可访问 {count} 个区域，自动识别可以正常工作。",
   "providers.diag.detail.zones_none": "未找到任何区域。",
   "layout.nav.item_with_badge": "{label}（{badge}）",
-  "ui.tooltip.exact_time": "准确时间：{when}"
+  "ui.tooltip.exact_time": "准确时间：{when}",
+  "providers.delete.hook_title": "仍有通知指向它",
+  "providers.delete.hook_intro_other": "仍有 {count} 个通知 Webhook 指向 {name}。",
+  "providers.delete.hook_armed_tag": "已启用",
+  "providers.delete.hook_off_tag": "已禁用",
+  "providers.delete.hook_effect": "Webhook 不发布任何内容，因此无需从 {name} 撤下任何记录。规则将原样保留，但不再匹配任何对象。",
+  "providers.delete.hook_armed_other": "其中 {count} 个仍处于启用状态，在其范围被更改之前会一直显示为已启用。",
+  "settings.webhooks.scope_provider_gone": "提供商已删除",
+  "settings.webhooks.scope_service_gone": "服务已删除",
+  "settings.webhooks.scope_gone_badge": "无匹配对象"
 }
