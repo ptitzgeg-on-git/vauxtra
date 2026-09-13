@@ -284,7 +284,7 @@ _RESET_NOUNS = {
     "docker_endpoints": "Docker endpoints",
     "domains": "domains",
     "environments": "environments",
-    "logs": "the log",
+    "logs": "action log",
     "providers": "providers",
     "service_templates": "templates",
     "services": "services",
@@ -394,6 +394,123 @@ class TheResetDialogNamesWhatItDestroysTests(unittest.TestCase):
                     f"{path.name} repeats the typed word the confirm field already asks for",
                 )
 
+
+# The two things a wipe destroys that no backup file can give back, and the English words the
+# dialogs use for them. Four tables are carried by no export (`_NOT_EXPORTED_ON_PURPOSE` in
+# `app/api/backup.py`); two of the four are plumbing the operator never sees -- the webhook
+# send queue and the scheduler's alert cursor -- and two are screens they can open.
+#
+# That difference is the whole point. A sentence that offers an export as the undo for a wipe
+# is true of everything else and false of these two, and the operator reading it is by
+# definition the operator about to lose them.
+_NO_EXPORT_CARRIES_THEM = {
+    "logs": "action log",
+    "uptime_events": "uptime history",
+}
+
+
+def _tables_no_export_carries() -> set:
+    """Parsed out of `backup.py`, like `_RESTORE_WIPE_TABLES` above, so neither can drift."""
+    backup = (_ROOT / "app" / "api" / "backup.py").read_text(encoding="utf-8")
+    listed = backup[backup.index("_NOT_EXPORTED_ON_PURPOSE = frozenset({") :]
+    listed = listed[: listed.index("})")]
+    return set(re.findall(r'"(\w+)"', listed))
+
+
+class NoDialogOffersAnExportAsTheUndoTests(unittest.TestCase):
+    """Three sentences promised a protection the export does not give.
+
+    Measured on a live instance rather than read off the table lists: seed forty uptime
+    events and twenty-five journal lines, export, restore that same file onto that same
+    instance, and both are gone -- the journal down to the single line the restore writes
+    about itself, so the screen looks like a journal with nothing older rather than one that
+    was emptied. `RestoreDeletesTheHistoryNoFileCarriesTests` in `test_restore_reporting.py`
+    is that measurement, kept.
+
+    The three read:
+
+      reset_hint               "Export a backup first: a reset cannot be undone." The export
+                               is the undo for the configuration and for nothing else.
+      reset_confirm_message    named both, and hung "that no backup carries" on the uptime
+                               history alone, so the log beside it read as covered.
+      restore_confirm_message  "This will replace all current data." Replace implies
+                               conservation, and for these two it is a plain delete. That is
+                               the worst of the three: a reset is pressed by somebody who
+                               means to lose everything, a restore by somebody rolling back a
+                               bad change on an instance they intend to keep.
+
+    What this class holds is the join. The nouns are checked against the table list that
+    executes, so making the export carry one of them fails here rather than leaving three
+    sentences claiming a loss that no longer happens.
+    """
+
+    def test_the_scan_still_finds_the_exemption_list(self):
+        """The witness: everything below is vacuous if the parse returns nothing."""
+        self.assertGreaterEqual(
+            len(_tables_no_export_carries()),
+            4,
+            "_NOT_EXPORTED_ON_PURPOSE no longer parses as a set of table names",
+        )
+
+    def test_the_two_the_dialogs_name_are_really_carried_by_no_export(self):
+        """The sentences state a fact about `backup.py`. This is that fact."""
+        self.assertLessEqual(
+            set(_NO_EXPORT_CARRIES_THEM),
+            _tables_no_export_carries(),
+            "three dialogs tell the operator an export cannot bring these back; one of them "
+            "is now exported, so the sentences describe a loss that no longer happens",
+        )
+
+    def test_both_wiping_dialogs_name_both_of_them(self):
+        en = _en()
+        for key in ("settings.data.reset_confirm_message", "settings.backup.restore_confirm_message"):
+            for table, noun in sorted(_NO_EXPORT_CARRIES_THEM.items()):
+                with self.subTest(key=key, table=table):
+                    self.assertIn(
+                        noun,
+                        en[key],
+                        f"this dialog empties {table}, no export carries it, and the dialog "
+                        f"does not say so",
+                    )
+
+    def test_the_hint_above_the_reset_button_names_them_too(self):
+        """The hint is read before the dialog, and it is the one that recommends the export."""
+        hint = _en()["settings.data.reset_hint"]
+        for noun in sorted(_NO_EXPORT_CARRIES_THEM.values()):
+            with self.subTest(noun=noun):
+                self.assertIn(noun, hint)
+
+    def test_the_restore_dialog_still_says_what_does_come_back(self):
+        """The other half, so honesty is never bought by deleting the good news.
+
+        The counted line is what makes the dialog worth reading at all: seven numbers that
+        say whether the file is the one the operator meant to pick. A future edit that
+        trimmed it to make room for the warning would leave a dialog that only frightens.
+        """
+        message = _en()["settings.backup.restore_confirm_message"]
+        for placeholder in ("services", "providers", "domains", "tags", "environments", "webhooks", "templates"):
+            with self.subTest(placeholder=placeholder):
+                self.assertIn("{" + placeholder + "}", message)
+
+    def test_every_locale_carries_the_added_paragraph(self):
+        """Language-neutral, because the nouns above cannot be checked in eight languages.
+
+        The restore dialog is four paragraphs: what happens, what is coming in, what is going
+        that nothing replaces, and that it is final. A translator who updates one locale and
+        leaves another at three has left that operator with the sentence this fix removed.
+        """
+        locales = sorted((_ROOT / "frontend" / "src" / "locales").glob("*.json"))
+        self.assertEqual(len(locales), 8, "the locale set moved; this test walks all of them")
+        for path in locales:
+            with self.subTest(locale=path.name):
+                message = json.loads(path.read_text(encoding="utf-8"))[
+                    "settings.backup.restore_confirm_message"
+                ]
+                self.assertEqual(
+                    message.count("\n\n"),
+                    3,
+                    f"{path.name} does not say what a restore deletes and no file replaces",
+                )
 
 if __name__ == "__main__":
     unittest.main()
