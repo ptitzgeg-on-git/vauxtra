@@ -1586,6 +1586,12 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     # second DNS server resolving a hostname the table showed as off. Exactly one of these
     # two lines does anything: the service is either published everywhere or nowhere.
     errors.extend(withdraw_extra_targets(conn, sid))
+    # The withdrawal writes nothing but journal lines, and it writes them on this connection.
+    # The last commit is above `push_extra_targets`, which commits its own; nothing committed
+    # after the withdrawal, so every "record removed on <server>" line it wrote was rolled
+    # back on close. The record really was deleted on the second DNS server and the journal
+    # said nothing about it -- the one place an operator looks to find out what Vauxtra did.
+    conn.commit()
 
     row = conn.execute("""
         SELECT s.*,

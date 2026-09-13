@@ -171,7 +171,8 @@ def _all_route_holders(conn, svc, sid: int) -> tuple[str, str, list, list]:
 
 
 def withdraw_service_routes(
-    conn, svc, sid: int, *, only_provider_ids: set[int] | None = None
+    conn, svc, sid: int, *, only_provider_ids: set[int] | None = None,
+    log_prefix: str = "[Delete]",
 ) -> list[str]:
     """Take a service's public route off every provider that may still serve it.
 
@@ -181,9 +182,16 @@ def withdraw_service_routes(
     deletion, the hostname stayed resolvable, the proxy kept forwarding, and nothing was
     left in Vauxtra to show for it.
 
-    `only_provider_ids` narrows the withdrawal to part of the holders, for the two cases
-    where the service itself survives: a multi-sync target dropped from an edit, and a
-    provider being deleted while other targets go on serving the same hostname.
+    `only_provider_ids` narrows the withdrawal to part of the holders, for the three cases
+    where the service itself survives: a multi-sync target dropped from an edit, a provider
+    being deleted while other targets go on serving the same hostname, and a service being
+    disabled.
+
+    `log_prefix` is the why, and the journal is where an operator reconstructs it. Three of
+    the four callers really are deleting something; a disabled service still exists, and a
+    line reading `[Delete] Proxy route removed` beside it would be read as the deletion that
+    never happened -- the primary path says `DNS record withheld (service disabled)` for the
+    same reason.
 
     Returns one message per failure; an empty list means everything is withdrawn.
     """
@@ -214,7 +222,7 @@ def withdraw_service_routes(
                 continue  # nothing there under this hostname
 
             if proxy.delete_host(host_id):
-                add_log("info", f"[Delete] Proxy route removed on {row['name']}: {public_host}", conn)
+                add_log("info", f"{log_prefix} Proxy route removed on {row['name']}: {public_host}", conn)
             else:
                 errors.append(f"Failed to delete proxy host on {row['name']}")
         except Exception as e:
@@ -239,7 +247,7 @@ def withdraw_service_routes(
                 continue
 
             if dns.delete_rewrite(public_host, ip):
-                add_log("info", f"[Delete] DNS record removed on {row['name']}: {public_host}", conn)
+                add_log("info", f"{log_prefix} DNS record removed on {row['name']}: {public_host}", conn)
             else:
                 errors.append(f"Failed to delete DNS rewrite on {row['name']}")
         except Exception as e:
@@ -665,6 +673,16 @@ def withdraw_extra_targets(conn, sid: int) -> list[str]:
     which is the one state an operator reads as "this is not reachable any more", and the
     only thing that had changed was who Vauxtra was still talking to.
 
+    The extras are deleted where the primary proxy is merely suspended, and that asymmetry
+    is load-bearing rather than an oversight. NPM's enable and disable live on their own
+    endpoints: `update_host` is a PUT that never touches the flag, so a suspended host stays
+    suspended through any number of pushes. The re-enable path here is `push_extra_targets`,
+    which finds the existing host by hostname and calls `update_host` -- it has no stored id
+    to toggle and no toggle to make. Suspending an extra would therefore leave it dark
+    forever after a re-enable, and silently: the PUT answers 200, so `errors` stays empty
+    and the journal reads "Proxy synced". Deleting it means the next push finds nothing and
+    calls `create_host`, which is what actually brings the route back.
+
     Returns one message per failure, in the shape both routes already put in `errors`.
     """
     svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
@@ -681,7 +699,11 @@ def withdraw_extra_targets(conn, sid: int) -> list[str]:
     if not extra_ids:
         return []
 
-    return withdraw_service_routes(conn, svc, sid, only_provider_ids=extra_ids)
+    # `[Disable]`, not `[Delete]`: the service still exists, and the journal is where an
+    # operator reconstructs which of the two happened.
+    return withdraw_service_routes(
+        conn, svc, sid, only_provider_ids=extra_ids, log_prefix="[Disable]"
+    )
 
 
 @router.post("/api/services/{sid}/push/dry-run")
