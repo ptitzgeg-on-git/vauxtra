@@ -900,7 +900,7 @@
   "providers.delete.deps_dark_other": "うち {count} 件には他の配信先がありません。公開アドレスは残りますが、どこからも公開されなくなります。",
   "providers.delete.deps_intro_other": "{count} 件のサービスがまだ {name} を参照しています。",
   "providers.delete.deps_kept_other": "{count} 件は他の配信先から引き続き公開されます。",
-  "providers.delete.deps_more": "…他{count}件",
+  "providers.delete.deps_more_other": "…他{count}件",
   "providers.delete.deps_title": "まだ依存しているサービスがあります",
   "providers.delete.force_confirm": "強制削除",
   "providers.delete.message": "{name} を Vauxtra から削除します。プロバイダー側は変更されません。",
@@ -1926,7 +1926,7 @@
   "settings.dns.confirm.in_use_title": "ドメインは引き続き使用中です",
   "settings.dns.confirm.in_use_services_other": "{count} 件のサービスが「{domain}」の上に構成されています。",
   "settings.dns.confirm.in_use_templates_other": "{count} 件のサービステンプレートが「{domain}」の上に構成されています。",
-  "settings.dns.confirm.in_use_more": "…他{count}件",
+  "settings.dns.confirm.in_use_more_other": "…他{count}件",
   "settings.dns.confirm.in_use_effect": "ドメインを削除してもその点は変わりません。実行時にドメイン一覧を読む処理はなく、上記の各行はホスト名を保ち、これまでどおり公開され続けます。",
   "settings.dns.confirm.in_use_pickers": "変わるのは選択リストです。サービスやテンプレートの作成時に「{domain}」は提示されなくなります。",
   "settings.dns.confirm.in_use_returns": "また「{domain}」は自動的に戻ることがあります。Docker のスキャンやプロバイダーの取り込みは、取り込んだ各サービスのルートドメインを再登録します。"

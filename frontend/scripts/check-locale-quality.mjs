@@ -166,7 +166,6 @@ const DECLARED = new Map(
     // span rather than with either end, so `log_retention_days` reaching down to 1 is fine.
     'certificates.stat.expiring_hint': { days: 'the certificate warning window, a constant, never 1' },
     'certificates.stat.valid_hint': { days: 'the same window constant' },
-    'providers.delete.deps_more': { count: 'the word "more" does not inflect, and neither do its translations' },
     'settings.auth.new_distinct': { count: 'MIN_PASSWORD_DISTINCT_CHARS, a constant, never 1' },
     'settings.auth.new_min': { min: 'MIN_PASSWORD_LENGTH, a constant, never 1' },
     'settings.auth.new_password': { min: 'the same length constant' },

@@ -233,6 +233,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **German printed the plural adjective at one wherever a truncated list said how many
+  holders it had hidden.** Both delete-confirmation dialogs cut their list of dependants at
+  five and finish with a counted phrase, and both wrote that phrase as a single form:
+  `providers.delete.deps_more` and `settings.dns.confirm.in_use_more` carried no `_one`, so
+  `Intl.PluralRules` fell through to `_other` and German read „und 1 weitere“ where it
+  should read „und 1 weiterer“. Six holders is the common case that reaches it — five
+  named, one counted. Both keys now carry `_one` and `_other` in the six locales that declare
+  a singular and `_other` alone in ja and zh, which is what the four sibling `+{count} more`
+  keys already did.
+
+  The gate that should have caught it had been told not to look. `providers.delete.deps_more`
+  sat in the quality checker's `DECLARED` map under the reason "the word 'more' does not
+  inflect, and neither do its translations" — a claim `expose.toast.more_one` disproves two
+  lines of German away in the same file. The waiver is gone rather than widened.
+
 - **Deleting a root domain answered "ok" for a name that was never there, deleted nothing
   when the name was typed the way it reads rather than the way it was stored, and warned
   about breaking routes it cannot break.** `DELETE /api/domains/{name}` was the last delete
