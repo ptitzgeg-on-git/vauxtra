@@ -1403,3 +1403,192 @@ class AProviderThatSpellsTheHostnameBackTests(_MultiSyncTestCase):
         self.assertTrue(drift["ok"], drift["issues"])
         self.assertEqual(result["errors"], [])
         self.assertEqual([r["domain"] for r in self.providers[2].rewrites], [self.HOST])
+
+
+class ClearingAPrimaryTakesItsRouteDownTests(_MultiSyncTestCase):
+    """The provider columns can be emptied, and until now that only hid the route.
+
+    An operator who moves a service to DNS only, or to proxy only, clears one of the two
+    fields in the editor. The route that provider was publishing has to come down with it,
+    the same way a target dropped from the multi-sync list does -- and the same way the
+    switch to tunnel mode already does it for both columns at once.
+    """
+
+    HOST = "vault.example.com"
+
+    def _published(self) -> int:
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        self.assertTrue(self.providers[1].holds(self.HOST))
+        self.assertTrue(self.providers[2].holds(self.HOST))
+        return body["id"]
+
+    def _stored(self, sid: int) -> dict:
+        conn = models.get_db()
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        return dict(row)
+
+    def test_clearing_the_proxy_provider_takes_its_host_down(self):
+        sid = self._published()
+
+        services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=None, dns_provider_id=2)
+        )
+
+        self.assertIsNone(self._stored(sid)["proxy_provider_id"])
+        self.assertFalse(
+            self.providers[1].holds(self.HOST),
+            "the proxy went on serving a hostname Vauxtra had stopped claiming, and the "
+            "same edit blanked `npm_host_id`, so nothing could reach the host afterwards",
+        )
+
+    def test_clearing_the_dns_provider_takes_its_record_down(self):
+        sid = self._published()
+
+        services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=1, dns_provider_id=None)
+        )
+
+        self.assertIsNone(self._stored(sid)["dns_provider_id"])
+        self.assertFalse(
+            self.providers[2].holds(self.HOST),
+            "the rewrite went on resolving the hostname with no DNS provider on the service",
+        )
+
+    def test_deleting_the_service_afterwards_finds_nothing_left(self):
+        """What the orphan cost: the columns are the only map to the holders.
+
+        `_all_route_holders` reads `proxy_provider_id` and `dns_provider_id`, so a route
+        left behind by the edit that emptied them is one no later deletion can see.
+        """
+        sid = self._published()
+        services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=None, dns_provider_id=None,
+                                             extra_proxy_provider_ids=[1])
+        )
+
+        services_api.delete_service(sid, _request("DELETE"))
+
+        self.assertFalse(self.providers[1].holds(self.HOST))
+        self.assertFalse(self.providers[2].holds(self.HOST))
+
+    def test_a_primary_moved_into_the_extras_keeps_serving(self):
+        """The control that matters: dropped from the column is not dropped from the service."""
+        sid = self._published()
+        self._add_provider(4, "NPM bis", "npm")
+
+        services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=4, dns_provider_id=2,
+                                             extra_proxy_provider_ids=[1])
+        )
+
+        self.assertEqual(self._push_targets(sid), {1})
+        self.assertTrue(
+            self.providers[1].holds(self.HOST),
+            "a provider promoted to a multi-sync target was withdrawn from instead",
+        )
+        self.assertTrue(self.providers[4].holds(self.HOST))
+
+    def test_an_edit_that_keeps_both_primaries_withdraws_nothing(self):
+        """The second control: an ordinary edit must not take anything down."""
+        sid = self._published()
+
+        services_api.update_service(
+            sid, _request("PUT"), self._body(proxy_provider_id=1, dns_provider_id=2,
+                                             target_port=9000)
+        )
+
+        self.assertTrue(self.providers[1].holds(self.HOST))
+        self.assertTrue(self.providers[2].holds(self.HOST))
+
+
+class DisablingAServiceDoesNotDeleteARefusedHostTests(_MultiSyncTestCase):
+    """The reading `withhold_service_routes` was taught, asked of the two write routes.
+
+    NPM and Zoraxy answer `False` from `toggle_host` when the call failed, and the base's
+    `toggle_host` answers the same `False` because there is no suspension to attempt. Both
+    disable paths here read every `False` as the second one and deleted the host: the custom
+    locations, the advanced block and the certificate binding went with it, `npm_host_id` was
+    blanked so nothing could put it back, and the journal recorded an info line saying the
+    route had been removed on purpose.
+    """
+
+    HOST = "vault.example.com"
+
+    def _published(self, proxy_class=None) -> int:
+        self._add_provider(1, "NPM", "npm")
+        self._add_provider(2, "AdGuard", "adguard")
+        _, body = self._create(proxy_provider_id=1, dns_provider_id=2)
+        if proxy_class is not None:
+            swapped = proxy_class("NPM", self.calls)
+            swapped.hosts = self.providers[1].hosts
+            swapped.rewrites = self.providers[1].rewrites
+            self.providers[1] = swapped
+        self.assertTrue(self.providers[1].holds(self.HOST))
+        return body["id"]
+
+    def _stored_host_id(self, sid: int):
+        conn = models.get_db()
+        row = conn.execute("SELECT npm_host_id FROM services WHERE id=?", (sid,)).fetchone()
+        conn.close()
+        return row["npm_host_id"]
+
+    # -- the editor's own toggle ------------------------------------------------------------
+    def test_the_editor_reports_a_refused_suspension_instead_of_deleting(self):
+        sid = self._published(_ProviderRefusingTheToggle)
+        host_id_before = self._stored_host_id(sid)
+
+        result = services_api.update_service(
+            sid, _request("PUT"),
+            self._body(proxy_provider_id=1, dns_provider_id=2, enabled=False),
+        )
+
+        self.assertTrue(
+            self.providers[1].holds(self.HOST),
+            "a provider that refused one toggle had its host deleted, configuration and all",
+        )
+        self.assertEqual(self._stored_host_id(sid), host_id_before)
+        self.assertTrue(any("suspend" in e for e in result["errors"]), result["errors"])
+
+    def test_the_editor_still_deletes_where_there_is_no_suspension(self):
+        """The control: the fallback exists for this provider and has to keep working."""
+        sid = self._published(_ProviderWithoutSuspension)
+
+        result = services_api.update_service(
+            sid, _request("PUT"),
+            self._body(proxy_provider_id=1, dns_provider_id=2, enabled=False),
+        )
+
+        self.assertFalse(self.providers[1].holds(self.HOST))
+        self.assertIsNone(self._stored_host_id(sid))
+        self.assertEqual(result["errors"], [])
+
+    # -- the table's bulk action ------------------------------------------------------------
+    def test_a_bulk_disable_reports_a_refused_suspension_instead_of_deleting(self):
+        sid = self._published(_ProviderRefusingTheToggle)
+        host_id_before = self._stored_host_id(sid)
+
+        result = services_api.bulk_action(
+            services_api._BulkActionBody(ids=[sid], action="disable"), _request("POST")
+        )
+
+        self.assertTrue(
+            self.providers[1].holds(self.HOST),
+            "selecting the row and pressing Disable deleted the host the editor now keeps",
+        )
+        self.assertEqual(self._stored_host_id(sid), host_id_before)
+        self.assertTrue(any("suspend" in e for e in result["errors"]), result["errors"])
+
+    def test_a_bulk_disable_still_deletes_where_there_is_no_suspension(self):
+        """The control for the batch, and the one that says the two routes agree."""
+        sid = self._published(_ProviderWithoutSuspension)
+
+        result = services_api.bulk_action(
+            services_api._BulkActionBody(ids=[sid], action="disable"), _request("POST")
+        )
+
+        self.assertFalse(self.providers[1].holds(self.HOST))
+        self.assertIsNone(self._stored_host_id(sid))
+        self.assertEqual(result["errors"], [])
