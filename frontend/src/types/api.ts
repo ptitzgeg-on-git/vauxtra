@@ -607,8 +607,12 @@ export interface PushPlanProxyAction {
   provider_id: number;
   provider_name: string;
   provider_type: ProviderType;
-  /** `suspend` and `delete` only ever appear on a withheld plan -- see `withheld`. */
-  action: 'update' | 'create' | 'skip_read_only' | 'suspend' | 'delete';
+  /**
+   * `suspend` and `delete` only ever appear on a withheld plan -- see `withheld`.
+   * `resume` is the opposite case on a published one: the host is there and suspended, so
+   * the push updates it and switches it back on, which `update` alone did not say.
+   */
+  action: 'update' | 'create' | 'resume' | 'skip_read_only' | 'suspend' | 'delete';
   target_host: string;
   target_origin?: string;
 }

@@ -130,6 +130,9 @@ const PLAN_ACTION_TONE: Partial<Record<PushPlanProxyAction['action'] | PushPlanD
   skip_read_only: 'neutral',
   suspend: 'warning',
   delete: 'warning',
+  // A resume is a repair rather than a routine write: the route is down right now, which is
+  // the same thing the drift report says one panel away.
+  resume: 'warning',
 };
 
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>

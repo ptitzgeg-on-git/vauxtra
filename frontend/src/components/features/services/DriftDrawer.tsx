@@ -27,6 +27,7 @@ export interface DriftDrawerProps {
 const KNOWN_ISSUE_TYPES = new Set([
   'missing_proxy_route',
   'proxy_route_still_served',
+  'proxy_route_suspended',
   'proxy_origin_mismatch',
   'proxy_check_failed',
   'missing_dns_rewrite',

@@ -114,6 +114,7 @@ Symptoms:
 - Push fails
 - Drift always reported
 - A disabled service is reported as still served
+- A hostname answers nothing while every screen says the service is published and in sync
 
 Checks:
 
@@ -121,6 +122,7 @@ Checks:
 2. Service target and domain fields valid.
 3. Provider type supports writes (Traefik is read-only; Zoraxy only manages host rules, and a rule renamed in Zoraxy is reported as drift).
 4. The service is enabled. A push converges the providers on the record, so pushing a **disabled** service withdraws it instead of publishing it: the primary proxy host is suspended, everything else is removed. Drift on a disabled service asks the opposite question and reports what still answers (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than what is missing.
+5. The proxy host is not suspended. Disabling a service suspends its primary proxy host rather than deleting it, so a route can exist and answer nothing -- and a failed re-enable leaves exactly that. Drift reports it as `proxy_route_suspended`, and a push lifts the suspension as it updates the host. If a disable reports `Failed to suspend the proxy host`, the host is still there and still serving: the provider refused the call, and Vauxtra stops rather than deleting a host it was only asked to switch off. Fix the provider (an expired token is the usual cause) and disable again.
 
 Actions:
 

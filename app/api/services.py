@@ -14,6 +14,7 @@ from app.models import (
     set_push_targets,
     set_tags,
 )
+from app.providers.base import supports_suspension
 from app.providers.factory import create_provider, host_id_is_hostname
 from app.public_target import (
     describe_public_target_failure,
@@ -1543,8 +1544,16 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                             # Host exists in provider (was suspended via toggle) — un-suspend it
                             if proxy.toggle_host(next_npm_host_id, True):
                                 add_log("info", f"Proxy enabled: {new_public_host}", conn)
+                            elif not supports_suspension(proxy):
+                                add_log("info", f"Proxy active (this provider has no suspension, host already present): {new_public_host}", conn)
                             else:
-                                add_log("info", f"Proxy active (toggle not supported, host already present): {new_public_host}", conn)
+                                # The providers that implement the toggle answer False when
+                                # the call failed, never when it is unsupported. Filing that
+                                # under "already present" is how the one case that matters
+                                # was lost: the host stays suspended, the row reads enabled,
+                                # and the journal says the proxy is active.
+                                errors.append("Failed to resume the proxy host on enable")
+                                add_log("error", f"Proxy still suspended: {new_public_host}", conn)
                         else:
                             # Host was removed from provider when disabled — re-deploy it
                             cert_id = proxy.find_best_certificate(body.domain)
@@ -1960,8 +1969,14 @@ def bulk_action(body: _BulkActionBody, request: Request):
                             if svc["npm_host_id"]:
                                 if proxy.toggle_host(svc["npm_host_id"], True):
                                     add_log("info", f"Proxy enabled: {pub}", conn)
+                                elif not supports_suspension(proxy):
+                                    add_log("info", f"Proxy active (this provider has no suspension): {pub}", conn)
                                 else:
-                                    add_log("info", f"Proxy active (toggle not supported): {pub}", conn)
+                                    # Same reading as the single-service route: a provider
+                                    # that implements the toggle refused the call, so the
+                                    # host is still suspended and the batch has to say so.
+                                    errors.append(f"Service {sid_b}: failed to resume the proxy host")
+                                    add_log("error", f"Proxy still suspended: {pub}", conn)
                             else:
                                 # Was deleted — re-deploy
                                 cert_id = proxy.find_best_certificate(svc["domain"])
