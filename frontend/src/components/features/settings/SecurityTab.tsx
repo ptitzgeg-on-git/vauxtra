@@ -8,7 +8,7 @@ import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
 import { MIN_PASSWORD_DISTINCT_CHARS, MIN_PASSWORD_LENGTH, isPasswordStrongEnough } from '@/constants';
 import { Button, Checkbox, Field, InlineAlert, Input, SkeletonCard, buttonVariants } from '@/components/ui';
-import type { AuthStatus } from '@/types/api';
+import type { ApiKey, AuthStatus } from '@/types/api';
 import { SettingsSection } from './SettingsSection';
 
 /** The admin password: set one when the instance runs open, change it otherwise. */
@@ -205,6 +205,30 @@ function EnvManagedPasswordCard() {
 
 function ChangePasswordCard() {
   const t = useT();
+
+  /**
+   * How far the change reaches, said before the button rather than discovered after it.
+   *
+   * Measured against a running instance rather than read off the SQL: after a change, the
+   * browser that made it keeps its session, every other one is refused and has its cookie
+   * cleared, the old password stops opening a new session -- and an API key minted before
+   * the change still answers 200 on every admin route. The first three are the point of the
+   * button. The fourth is the one nobody is told, and it is the one that matters in the only
+   * situation that makes somebody press it: a password changed because the old one may have
+   * leaked ends nothing at all while the keys that leaked with it are still valid.
+   *
+   * So the count is fetched and the sentence names it. `['api-keys']` is the key the API
+   * keys tab already uses, so moving between the two tabs costs no extra request, and a
+   * revocation there is reflected here. A count of zero prints no sentence: an instance with
+   * no keys has nothing to revoke, and a permanent warning about an empty list is how a
+   * warning stops being read.
+   */
+  const keysQuery = useQuery<ApiKey[]>({
+    queryKey: ['api-keys'],
+    queryFn: () => api.get<ApiKey[]>('/settings/api-keys'),
+  });
+  const keyCount = keysQuery.data?.length ?? 0;
+
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -249,6 +273,20 @@ function ChangePasswordCard() {
           </Button>
         }
       >
+        <InlineAlert
+          tone="info"
+          title={t('settings.security.change_scope_title')}
+          action={
+            keyCount > 0 ? (
+              <Link to="/settings?tab=apikeys" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+                {t('settings.security.api_keys_cta')}
+              </Link>
+            ) : undefined
+          }
+        >
+          <p>{t('settings.security.change_scope_sessions')}</p>
+          {keyCount > 0 && <p className="mt-1">{t('settings.security.change_scope_keys', { count: keyCount })}</p>}
+        </InlineAlert>
         <Field
           label={t('settings.auth.current_password')}
           required
