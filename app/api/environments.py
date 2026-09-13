@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import require_auth
-from app.models import get_db
+from app.models import add_log, get_db
+from app.text import name_list, plural, verb
 
 router = APIRouter()
 
@@ -115,16 +116,61 @@ def update_environment(eid: int, request: Request, body: EnvironmentIn):
         conn.close()
 
 
+def services_in_environment(conn, eid: int) -> list[str]:
+    """The services set to this environment, sorted, read before the cascade takes them.
+
+    One holder where `holders_of_tag` has two: a service template names tags and never names
+    an environment (`TemplateIn`, `app/api/templates.py`), so there is no JSON column to scan
+    and nothing that rots quietly on the next read.
+    """
+    return [
+        # `.strip(".")` the way every other fqdn in the API is built: an apex route stores
+        # an empty subdomain, and the naive join names it `.example.test`.
+        f"{r['subdomain']}.{r['domain']}".strip(".")
+        for r in conn.execute(
+            "SELECT s.subdomain, s.domain FROM services s "
+            "JOIN service_environments se ON se.service_id = s.id "
+            "WHERE se.environment_id=? ORDER BY s.domain, s.subdomain",
+            (eid,),
+        )
+    ]
+
+
+def _log_environment_removal(conn, name: str, services: list[str]) -> None:
+    """The only trace an environment deletion leaves, so it carries what was set to it.
+
+    The sibling of `_log_tag_removal` in `app/api/tags.py`, for the same reason and with the
+    same shape: `service_environments` declares `ON DELETE CASCADE`, the services go on
+    working, and the label they were grouped and filtered by is gone with no record that it
+    ever applied to them.
+    """
+    if not services:
+        add_log("info", f"Environment deleted: {name}", conn)
+        return
+    add_log(
+        "warn",
+        f"Environment deleted: {name} -- {plural(len(services), 'service')} "
+        f"{verb(len(services), 'was', 'were')} set to it and "
+        f"{verb(len(services), 'keeps', 'keep')} working without it "
+        f"({name_list(services)})",
+        conn,
+    )
+
+
 @router.delete("/api/environments/{eid}")
 def delete_environment(eid: int, request: Request):
     """Delete an environment by ID. Associated services are unlinked, not deleted."""
     require_auth(request, scope="write")
     conn = get_db()
     try:
-        row = conn.execute("SELECT id FROM environments WHERE id=?", (eid,)).fetchone()
+        row = conn.execute("SELECT name FROM environments WHERE id=?", (eid,)).fetchone()
         if not row:
             raise HTTPException(404, "Environment not found")
+        # Read before the DELETE: the cascade takes `service_environments` with it, so after
+        # the commit nothing is left that knows which services were set to this one.
+        services = services_in_environment(conn, eid)
         conn.execute("DELETE FROM environments WHERE id=?", (eid,))
+        _log_environment_removal(conn, row["name"], services)
         conn.commit()
         return {"ok": True}
     finally:

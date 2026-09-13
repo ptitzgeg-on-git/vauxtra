@@ -19,6 +19,7 @@ they were already green and must stay green, otherwise these assertions are meas
 harness instead of the fix.
 """
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -127,6 +128,69 @@ def _stored(kind: str, ident: int) -> dict | None:
     finally:
         conn.close()
 
+
+def _logs() -> list[tuple[str, str]]:
+    """Every journal line written so far, oldest first, as `(level, message)` pairs."""
+    conn = models.get_db()
+    try:
+        return [
+            (r["level"], r["message"])
+            for r in conn.execute("SELECT level, message FROM logs ORDER BY id")
+        ]
+    finally:
+        conn.close()
+
+
+def _hostnames() -> list[str]:
+    """Every service still in the base, so a deletion can be shown not to have taken them."""
+    conn = models.get_db()
+    try:
+        return sorted(
+            f"{r['subdomain']}.{r['domain']}".strip(".")
+            for r in conn.execute("SELECT subdomain, domain FROM services")
+        )
+    finally:
+        conn.close()
+
+
+def _hold(
+    kind: str, label_id: int, hostnames: tuple[str, ...], templates: tuple[str, ...] = ()
+) -> None:
+    """Give the label its holders: one service per hostname, one template per name.
+
+    A service template names tags and never names an environment (`TemplateIn`,
+    `app/api/templates.py`), so `templates` stays empty for that half of the panel. That
+    asymmetry is the reason the two journal lines are not one helper, and
+    `test_an_environment_never_names_a_template` is what keeps it honest.
+    """
+    conn = models.get_db()
+    try:
+        for host in hostnames:
+            sub, _, dom = host.partition(".")
+            sid = conn.execute(
+                "INSERT INTO services (subdomain, domain, target_ip, target_port, enabled) "
+                "VALUES (?, ?, '10.0.0.4', 80, 1)",
+                (sub, dom),
+            ).lastrowid
+            if kind == "tags":
+                conn.execute(
+                    "INSERT INTO service_tags (service_id, tag_id) VALUES (?, ?)",
+                    (sid, label_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO service_environments (service_id, environment_id) "
+                    "VALUES (?, ?)",
+                    (sid, label_id),
+                )
+        for name in templates:
+            conn.execute(
+                "INSERT INTO service_templates (name, tag_ids_json) VALUES (?, ?)",
+                (name, json.dumps([label_id])),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 class _IsolatedDB(unittest.TestCase):
     """Each test gets its own database file. `tests/` is not a package, so this is per-file."""
@@ -247,6 +311,128 @@ class NameLengthTests(_IsolatedDB):
             with self.subTest(kind=kind):
                 self.assertIn(_status(_create, kind, "   "), (400, 422))
 
+
+class DeletionJournalTests(_IsolatedDB):
+    """Deleting a label changed rows nobody was looking at and left no trace of it.
+
+    These two were the only destructive routes in the API writing nothing to the journal.
+    Services, providers, root domains, Docker endpoints and API keys all report what they
+    removed; a tag or an environment unlinked itself from every service carrying it and said
+    nothing. And it is the one deletion whose damage cannot be reconstructed afterwards: the
+    id is gone from the base, `service_tags` and `service_environments` went with it in the
+    cascade, so a bare count would be a number with nowhere left to resolve it. The line
+    therefore names what it counted.
+    """
+
+    def test_a_label_nothing_holds_is_a_plain_info_line(self) -> None:
+        """Nothing changed but the label itself, so there is nothing to warn about."""
+        for kind in _KINDS:
+            with self.subTest(kind=kind):
+                created = _create(kind, f"{kind}-unused")
+                _delete(kind, created["id"])
+                level, message = _logs()[-1]
+                self.assertEqual(level, "info")
+                self.assertIn(f"{kind}-unused", message)
+                self.assertNotIn("--", message)
+
+    def test_a_held_label_warns_and_names_the_services_it_unlinks(self) -> None:
+        """A count alone would be unresolvable: the link rows go in the same cascade."""
+        for kind in _KINDS:
+            with self.subTest(kind=kind):
+                created = _create(kind, f"{kind}-held")
+                _hold(kind, created["id"], (f"api.{kind}.test", f"web.{kind}.test"))
+                _delete(kind, created["id"])
+                level, message = _logs()[-1]
+                self.assertEqual(level, "warning")
+                self.assertIn(f"{kind}-held", message)
+                self.assertIn("2 services", message)
+                self.assertIn(f"api.{kind}.test", message)
+                self.assertIn(f"web.{kind}.test", message)
+
+    def test_one_holder_is_said_in_the_singular(self) -> None:
+        """What a log line nobody proofreads ends up saying: "1 service(s) carried it"."""
+        for kind in _KINDS:
+            with self.subTest(kind=kind):
+                created = _create(kind, f"{kind}-lone")
+                _hold(kind, created["id"], (f"only.{kind}.test",))
+                _delete(kind, created["id"])
+                message = _logs()[-1][1]
+                self.assertIn("1 service ", message)
+                self.assertIn("keeps working without it", message)
+                self.assertNotIn("service(s)", message)
+
+    def test_the_services_are_still_there_afterwards(self) -> None:
+        """The witness. A line reporting rows it had deleted would be a different product."""
+        for kind in _KINDS:
+            with self.subTest(kind=kind):
+                created = _create(kind, f"{kind}-kept")
+                _hold(kind, created["id"], (f"kept.{kind}.test",))
+                _delete(kind, created["id"])
+                self.assertIsNone(_stored(kind, created["id"]))
+                self.assertIn(f"kept.{kind}.test", _hostnames())
+
+    def test_the_names_stop_at_five_and_count_the_rest(self) -> None:
+        """Forty hostnames on one line is a line nobody reads, so it names five and counts."""
+        for kind in _KINDS:
+            with self.subTest(kind=kind):
+                created = _create(kind, f"{kind}-many")
+                hosts = tuple(f"svc{n}.{kind}.test" for n in range(1, 8))
+                _hold(kind, created["id"], hosts)
+                _delete(kind, created["id"])
+                message = _logs()[-1][1]
+                self.assertIn("7 services", message)
+                self.assertIn("and 2 more", message)
+                for named in hosts[:5]:
+                    self.assertIn(named, message)
+                for unnamed in hosts[5:]:
+                    self.assertNotIn(unnamed, message)
+
+    def test_a_tag_gives_its_templates_a_sentence_of_their_own(self) -> None:
+        """Two different disappearances, so two sentences rather than one count over both.
+
+        The services are unlinked by the cascade and go on routing. The templates keep the
+        dead id until the next read and `_drop_dead_tags` removes it then, so what changes
+        there is the next service built from one. Joined into a single list the rarer half is
+        also the half "and 3 more" hides, and it is the half nothing else in the product says.
+        """
+        created = _create("tags", "tags-both")
+        _hold("tags", created["id"], ("api.tpl.test",), ("Reverse proxy", "Static site"))
+        _delete("tags", created["id"])
+        message = _logs()[-1][1]
+        self.assertIn("1 service carried it", message)
+        self.assertIn("2 service templates named it", message)
+        self.assertIn("Reverse proxy", message)
+        self.assertIn("Static site", message)
+        self.assertIn("starts without the tag", message)
+
+    def test_a_tag_held_only_by_a_template_still_warns(self) -> None:
+        """No service carries it, and the next service built from the template still loses it."""
+        created = _create("tags", "tags-template-only")
+        _hold("tags", created["id"], (), ("Compose stack",))
+        _delete("tags", created["id"])
+        level, message = _logs()[-1]
+        self.assertEqual(level, "warning")
+        self.assertIn("1 service template named it", message)
+        self.assertNotIn("carried it", message)
+
+    def test_an_environment_never_names_a_template(self) -> None:
+        """The asymmetry, stated adversarially: the same id exists on both sides here.
+
+        `tags` and `environments` are separate AUTOINCREMENT tables, so in a fresh base the
+        first row of each is id 1, and a template naming tag 1 would be named by an
+        environment deletion that scanned `tag_ids_json` the way the tag route has to. It
+        does not scan it, because no template names an environment, and a line that said
+        otherwise would be telling the operator something untrue about a row that is fine.
+        """
+        tag = _create("tags", "shared-id-tag")
+        env = _create("environments", "shared-id-env")
+        self.assertEqual(tag["id"], env["id"])
+        _hold("environments", env["id"], ("only.env.test",), ("Reverse proxy",))
+        _delete("environments", env["id"])
+        message = _logs()[-1][1]
+        self.assertIn("only.env.test", message)
+        self.assertNotIn("template", message)
+        self.assertNotIn("Reverse proxy", message)
 
 if __name__ == "__main__":
     unittest.main()

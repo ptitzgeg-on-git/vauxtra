@@ -337,6 +337,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Deleting a label said nothing about what it took with it, and left no trace once it had.**
+  "{name} will be removed from every service that carries it" was one line, for both taxonomies
+  and both kinds of holder. It named no number, so a tag on one service and a tag on forty asked
+  the same question — over the two lists in Settings that are the easiest thing in the product
+  to delete by accident. Every other deletion here counts what it is about to change: a provider
+  names the services, the templates and the webhooks that point at it, a root domain names the
+  services and the templates built on it.
+
+  The second half was not said at all. A tag is held in two places that behave nothing alike.
+  `service_tags` declares `ON DELETE CASCADE`, so the services are unlinked on the spot: they
+  keep their hostname and stay published, and lose only the label somebody was filtering and
+  grouping by. `service_templates.tag_ids_json` is TEXT holding a JSON array, which no
+  constraint reaches — the id survives the delete and is dropped on the next read by
+  `_drop_dead_tags`, silently and by design, because the alternative is a template that cannot
+  be saved. So the template comes back one tag shorter, the next service built from it starts
+  without the tag, and nothing anywhere says why. An environment has only the first of those:
+  no service template names an environment, so there is no JSON column to rot.
+
+  Each chip now carries the number of services holding it, and the delete question says the two
+  paragraphs above over the rows behind that number — capped at five, with a tail counting the
+  rest, through the same `DependentList` the root-domain dialog uses so the two caps cannot
+  drift apart. The plain question is kept for a label nothing holds: asking the long one over a
+  tag created by mistake a minute ago is how a confirmation stops being read.
+
+  `DELETE /api/tags/{tid}` and `DELETE /api/environments/{eid}` were also the only destructive
+  routes in the API writing nothing to the journal, and this is the one deletion whose damage
+  cannot be reconstructed afterwards — the id is gone and the link rows went with it in the same
+  cascade. Each now writes one line that names what it unlinked rather than counting it, since
+  by the time the line is read there is nowhere left to resolve a number. The two MCP tools say
+  the same thing in their docstrings, so an agent knows to call `list_services` and
+  `list_templates` before `delete_tag` rather than after.
+
 - **One route answered under two cache keys with four different sets of options, and the
   events that change the answer refreshed only one of the keys.** `GET /api/auth/me` says who
   the caller is and whether the instance has a password at all. Six components read it: the
