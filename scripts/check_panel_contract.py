@@ -25,11 +25,14 @@ key set resolved by binding names the way the language binds them:
   * a call, resolved through the callee's declared return type or its single `return`.
 
 Names are looked up the way a module does: the declaration in this file, else the file this
-file imports the name from, else a single unambiguous declaration in the panel. Both halves
-of that matter. `buildPayload` is declared twice -- a local one in `ExposeModal.tsx` and the
-exported one in `providerConstants.ts` -- and eleven type names are declared in two files
-each, `Provider` among them. A flat repo-wide table would quietly union two unrelated
-`Provider`s and answer with keys that exist in neither call.
+file imports the name from -- following a re-export through to whichever file finally
+declares it -- else a single unambiguous declaration in the panel. Both halves of that
+matter. `buildPayload` is declared twice -- a local one in `ExposeModal.tsx` and the
+exported one in `providerConstants.ts` -- and six type names are declared in two files each.
+`StatusFilter` is the sharpest of those: `monitoring/uptime.ts` calls it
+`MonitoringStatus | 'all'`, `services/helpers.ts` calls it `'ok' | 'error'`, and
+`pages/Monitoring.tsx` and `pages/Services.tsx` each import the one they mean. A flat
+repo-wide table would union the two and answer with a filter neither page accepts.
 
 Which is the whole design rule here: a resolver that guesses is worse than one that refuses.
 An earlier draft took "the last `name:` above the call", read `data` off an
@@ -73,7 +76,7 @@ IDENT = re.compile(r"^[A-Za-z_$][\w$]*$")
 CALL_HEAD = re.compile(r"^([A-Za-z_$][\w$]*)\s*\(")
 KEY = re.compile(r"^\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][\w$]*))\s*(?::|$)")
 MEMBER = re.compile(
-    r"^\s*(?:readonly\s+)?(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][\w$]*))\s*\??\s*:\s*(.+)$",
+    r"^\s*(?:readonly\s+)?(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][\w$]*))\s*(\?)?\s*:\s*(.+)$",
     re.S,
 )
 TYPE_DECL = re.compile(
@@ -84,6 +87,16 @@ CONST_FN = re.compile(
     r"\b(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?=\()"
 )
 IMPORT = re.compile(r"\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]")
+# `export { X } from './mod'` and `export type { X } from '@/types/api'` bind a name in
+# this module just as an import does. Several panel modules re-export the shared
+# declaration of a type rather than declaring a second one -- that is the fix for a name
+# that means two things -- and a resolver stopping at the re-export read those modules as
+# declaring nothing at all.
+EXPORT_FROM = re.compile(r"\bexport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*[\'\"]([^\'\"]+)[\'\"]")
+
+# A re-export chain longer than this is a barrel of barrels, not a declaration anyone reads;
+# the bound also stops two files that re-export each other from looping forever.
+MAX_REEXPORT_HOPS = 8
 UTILITY = re.compile(r"^(Partial|Required|Readonly|NonNullable|Pick|Omit)\s*<(.*)>$", re.S)
 
 
@@ -229,6 +242,9 @@ class TsType:
 
     name: str
     members: dict[str, str] = field(default_factory=dict)
+    #: Members written `name?: ...`. This gate only needs the key set, but a reader that
+    #: compares two declarations of the same bytes needs to know which keys may be absent.
+    optional: set[str] = field(default_factory=set)
     parents: list[str] = field(default_factory=list)
     readable: bool = True
 
@@ -374,12 +390,14 @@ class PanelIndex:
     # -- declarations ------------------------------------------------------
 
     def _index_imports(self, src: Source) -> None:
-        for m in IMPORT.finditer(src.raw):
-            for spec in split_str(m.group(1), ","):
-                spec = re.sub(r"^type\s+", "", spec.strip())
-                local = spec.split(" as ")[-1].strip()
-                if IDENT.match(local):
-                    src.imports[local] = m.group(2)
+        for pattern in (IMPORT, EXPORT_FROM):
+            for m in pattern.finditer(src.raw):
+                for spec in split_str(m.group(1), ","):
+                    spec = re.sub(r"^type\s+", "", spec.strip())
+                    local = spec.split(" as ")[-1].strip()
+                    if IDENT.match(local):
+                        src.imports.setdefault(local, m.group(2))
+
 
     def _index_types(self, src: Source) -> None:
         for m in TYPE_DECL.finditer(src.code):
@@ -431,21 +449,24 @@ class PanelIndex:
                 if members is None:
                     t.readable = False
                 else:
-                    t.members.update(members)
+                    t.members.update({k: v for k, (v, _) in members.items()})
+                    t.optional |= {k for k, (_, opt) in members.items() if opt}
             elif term:
                 t.parents.append(term)
 
-    def _members(self, block: str) -> dict[str, str] | None:
-        """Members of a `{ ... }` type body, or None when one is not a plain field."""
+    def _members(self, block: str) -> dict[str, tuple[str, bool]] | None:
+        """Members of a `{ ... }` body as name -> (type, optional), or None when one is not
+        a plain field."""
         block = block.strip()
         if not (block.startswith("{") and block.endswith("}")):
             return None
-        out: dict[str, str] = {}
+        out: dict[str, tuple[str, bool]] = {}
         for part in split_str(block[1:-1], ",;", angle=True):
             m = MEMBER.match(part)
             if not m:
                 return None
-            out[m.group(1) or m.group(2) or m.group(3)] = m.group(4).strip()
+            key = m.group(1) or m.group(2) or m.group(3)
+            out[key] = (m.group(5).strip(), bool(m.group(4)))
         return out
 
     def _index_functions(self, src: Source) -> None:
@@ -488,7 +509,14 @@ class PanelIndex:
             return None  # a package, not one of ours
         return self.by_stem.get(base) or self.by_stem.get(base + "/index")
 
-    def _lookup(self, src: Source, name: str, table: str, by_name: dict[str, list[Source]]):
+    def _lookup(
+        self,
+        src: Source,
+        name: str,
+        table: str,
+        by_name: dict[str, list[Source]],
+        seen: frozenset[str] = frozenset(),
+    ):
         """This file's declaration, else the file it imports the name from, else a unique one."""
         own = getattr(src, table).get(name)
         if own is not None:
@@ -499,7 +527,14 @@ class PanelIndex:
             if other is None:
                 return None  # imported from a package: nothing of ours to read
             found = getattr(other, table).get(name)
-            return (other, found) if found is not None else None
+            if found is not None:
+                return other, found
+            #: The module we were sent to re-exports the name instead of declaring it, which
+            #: is what a panel does once its private copy of a shared type is deleted. Keep
+            #: walking; `seen` and the hop bound stop a cycle between two barrel files.
+            if other.rel in seen or len(seen) >= MAX_REEXPORT_HOPS:
+                return None
+            return self._lookup(other, name, table, by_name, seen | {src.rel, other.rel})
         hits = by_name.get(name) or []
         if len(hits) != 1:
             return None  # undeclared, or declared in several files with no import to pick one
@@ -535,7 +570,7 @@ class PanelIndex:
             return out
         if expr.startswith("{"):
             members = self._members(expr)
-            return None if members is None else set(members)
+            return None if members is None else set(members)  # keys only; see `member_map`
         util = UTILITY.match(expr)
         if util:
             args = split_str(util.group(2), ",", angle=True)
@@ -583,7 +618,7 @@ class PanelIndex:
             members = self._members(expr)
             if members is None or name not in members:
                 return None
-            return src, members[name]
+            return src, members[name][0]
         terms = split_str(expr, "&", angle=True)
         if len(terms) > 1:
             for term in terms:

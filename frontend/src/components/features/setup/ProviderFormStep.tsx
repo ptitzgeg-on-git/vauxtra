@@ -33,7 +33,7 @@ import {
   getPassLabel,
   getProviderGroup,
   getUserLabel,
-  type GuidedStep,
+  type WizardStep,
   type ProviderFormState,
   type ProviderGroup,
   type ProviderTypeMeta,
@@ -75,7 +75,7 @@ const GROUP_TONE: Record<ProviderGroup, Tone> = {
 };
 
 /** True when a guided step still has a required field the user has not filled. */
-function stepIncomplete(step: GuidedStep | undefined, formData: ProviderFormState): boolean {
+function stepIncomplete(step: WizardStep | undefined, formData: ProviderFormState): boolean {
   if (!step?.fields) return false;
   return step.fields.some((f) => !f.optional && !formData[f.key]?.trim());
 }

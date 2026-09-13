@@ -842,25 +842,61 @@ export interface ServiceAlertsConfig {
 // Certificates
 // ---------------------------------------------------------------------------
 
+/**
+ * One row of `GET /api/certificates`, and the base of every `/expiry` row.
+ *
+ * Both routes spread whatever the provider's `get_certificates()` built and add
+ * `provider_id`, `provider_name` and `domain_names` on top, so the first seven keys are on
+ * every row of both routes. The last three come from Zoraxy only; NPM rows carry none of
+ * them, and the Cloudflare Tunnel and Traefik providers return no certificates at all.
+ *
+ * This declaration used to say `id: number`, `provider: string` and `issuer?: string`, and
+ * left out `domains`, `provider_id` and `provider_name` entirely. Zoraxy ids are file
+ * names, and no route has ever sent `provider` or `issuer`. Nothing imported the interface
+ * -- the page read a second, closer copy declared beside it -- so nothing ever contradicted
+ * it, which is how a declaration drifts this far from the route it names.
+ */
 export interface Certificate {
-  id: number;
-  provider: string;
-  domain_names: string[];
-  expires_on: string;
-  nice_name?: string;
-  issuer?: string;
-}
-
-export interface CertificateExpiry {
-  id: number;
+  //: NPM answers an integer, Zoraxy the certificate filename -- `id` is whichever the
+  //: provider that owns the row uses, and the panel only ever passes it back.
+  id: number | string;
   provider_id: number;
   provider_name: string;
-  domain_names?: string[];
-  domains?: string[];
+  nice_name: string;
+  //: `domains` is what the providers build; `domain_names` is back-filled from it by
+  //: `_with_domain_names` when a provider omits it, so both are on every row.
+  domains: string[];
+  domain_names: string[];
+  //: `""` when the provider could not parse a date -- never null, never absent.
   expires_on: string;
+  //: Zoraxy states its own countdown and these two flags; NPM rows carry neither.
+  remaining_days?: number | null;
+  use_dns?: boolean;
+  is_fallback?: boolean;
+}
+
+/** One row of `GET /api/certificates/expiry`: the same row, with the arithmetic done. */
+export interface CertificateExpiry extends Certificate {
   days_remaining: number | null;
   expiring_soon: boolean;
   expired: boolean;
+  //: `expiry_date` or `expires_on` or `valid_to`, so null only when all three are empty.
+  expiry_date_raw: string | null;
+}
+
+/**
+ * A certificate row as the page handles it, from whichever of the two routes answered.
+ *
+ * `/expiry` is the page's source of truth and `/certificates` is its fallback, so the four
+ * keys `/expiry` adds are the only optional ones. This used to be declared the other way
+ * round -- every key optional, plus an `issuer` and a `provider` no provider sends -- which
+ * made the table render a chip that could never appear and hid that `days_remaining` is
+ * always there on the route the page actually calls.
+ */
+export interface CertificateRow extends Certificate {
+  days_remaining?: number | null;
+  expiring_soon?: boolean;
+  expired?: boolean;
   expiry_date_raw?: string | null;
 }
 
@@ -884,22 +920,49 @@ export interface DockerEndpoint {
   created_at: string;
 }
 
+/**
+ * The suggestion block `GET /api/docker/containers` builds for every container.
+ *
+ * `target_port` is `null` when the container publishes no port and no label names one, and
+ * `analyze_container` fills every other field on every row, so none of them is optional.
+ */
 export interface ContainerSuggestion {
   subdomain: string;
-  target_port: number;
+  target_port: number | null;
   forward_scheme: ForwardScheme;
+  websocket: boolean;
   confidence: 'high' | 'medium' | 'low';
-  source: 'traefik_label' | 'vauxtra_label' | 'port_heuristic' | 'none';
+  source: 'vauxtra_label' | 'traefik_label' | 'port_heuristic';
+  middlewares: string[];
+  tls_resolver: string | null;
 }
 
+/**
+ * One row of `GET /api/docker/containers`.
+ *
+ * This declaration used to describe a route that no longer existed: it claimed a `ports` array
+ * the handler has never sent, left out eight keys it does send, and made `suggestion` nullable
+ * when every row carries one. Nothing imported it -- the discovery panel read a second, correct
+ * copy declared inside the hook -- so the two never had to agree, and the wrong one was the copy
+ * sitting in the file a reader looks in first. There is now one declaration, here, and the hook
+ * re-exports it the same way it re-exports `DockerEndpoint`.
+ */
 export interface DockerContainer {
   id: string;
   name: string;
   image: string;
   status: string;
+  target_ip: string;
+  target_port: number | null;
   labels: Record<string, string>;
-  ports: Array<{ private_port: number; public_port?: number; type: string }>;
-  suggestion: ContainerSuggestion | null;
+  //: kept for older panels; `suggestion` carries the same three values.
+  suggested_subdomain: string;
+  suggested_scheme: ForwardScheme;
+  websocket: boolean;
+  suggestion: ContainerSuggestion;
+  endpoint_id: number | null;
+  endpoint_name: string;
+  existing_service?: { id: number; fqdn: string } | null;
 }
 
 /**

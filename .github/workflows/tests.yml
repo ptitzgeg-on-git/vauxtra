@@ -75,6 +75,14 @@ jobs:
       - name: Panel contract gate
         run: python scripts/check_panel_contract.py
 
+      # The gate above holds what the panel sends; this one holds what it believes it gets
+      # back. No route in app/ sets a response_model and api.get<T> casts through unknown,
+      # so a declared answer shape is checked by nothing at either end. Two files reading
+      # one route can therefore disagree about it for a year in silence -- which is how a
+      # certificates table came to render an "issued by" chip no provider has ever filled.
+      - name: Read contract gate
+        run: python scripts/check_read_contract.py
+
       - name: Repo hygiene gate
         run: python scripts/check_repo_hygiene.py
 

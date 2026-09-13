@@ -4,38 +4,9 @@ import toast from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
-import type { DockerEndpoint, DockerImportResult } from '@/types/api';
+import type { DockerContainer, DockerEndpoint, DockerImportResult } from '@/types/api';
 
-export type { DockerEndpoint };
-
-export type DockerContainer = {
-  id: string;
-  name: string;
-  image: string;
-  status: string;
-  target_ip: string;
-  target_port: number | null;
-  labels: Record<string, string>;
-  suggested_subdomain: string;
-  suggested_scheme: string;
-  websocket: boolean;
-  suggestion: {
-    subdomain: string;
-    target_port: number | null;
-    forward_scheme: string;
-    websocket: boolean;
-    confidence: 'high' | 'medium' | 'low';
-    source: string;
-    middlewares: string[];
-    tls_resolver: string | null;
-  };
-  endpoint_id: number | null;
-  endpoint_name: string;
-  existing_service?: {
-    id: number;
-    fqdn: string;
-  } | null;
-};
+export type { DockerContainer, DockerEndpoint };
 
 export function useDockerDiscovery() {
   const queryClient = useQueryClient();

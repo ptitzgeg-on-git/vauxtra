@@ -1,12 +1,13 @@
-import type { SyncResult, SyncProxyHost, SyncDnsRewrite } from '@/types/api';
+import type { ProviderType, SyncResult, SyncProxyHost, SyncDnsRewrite } from '@/types/api';
 import type { ProviderFormState, ProviderValidationResult, ProviderTypeMeta } from '@/components/features/providers/providerConstants';
 
 export type StepName = 'welcome' | 'restore' | 'password' | 'providers' | 'provider-form' | 'notifications' | 'docker' | 'import' | 'done';
 
+/** The three columns of a `GET /api/providers` row the wizard steps actually read. */
 export interface ProviderItem {
   id: number;
   name: string;
-  type: string;
+  type: ProviderType;
 }
 
 export interface ImportableService {

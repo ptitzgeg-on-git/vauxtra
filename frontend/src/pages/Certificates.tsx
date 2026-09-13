@@ -34,11 +34,9 @@ import {
   sortCertificates,
   toCertFilter,
   type CertFilter,
-  type CertificateExpiryPayload,
-  type CertificateRow,
   type CertificateSource,
 } from '@/components/features/certificates/certificates';
-import type { Provider } from '@/types/api';
+import type { Certificate, CertificateExpiryResponse, CertificateRow, Provider } from '@/types/api';
 
 /**
  * Certificates — what is about to expire, and where to go and renew it.
@@ -72,14 +70,14 @@ export function Certificates() {
     return () => window.clearInterval(id);
   }, []);
 
-  const expiryQuery = useQuery<CertificateExpiryPayload>({
+  const expiryQuery = useQuery<CertificateExpiryResponse>({
     queryKey: ['certificates-expiry'],
-    queryFn: () => api.get<CertificateExpiryPayload>('/certificates/expiry'),
+    queryFn: () => api.get<CertificateExpiryResponse>('/certificates/expiry'),
   });
 
-  const listQuery = useQuery<CertificateRow[]>({
+  const listQuery = useQuery<Certificate[]>({
     queryKey: ['certificates'],
-    queryFn: () => api.get<CertificateRow[]>('/certificates'),
+    queryFn: () => api.get<Certificate[]>('/certificates'),
     enabled: expiryQuery.isError,
   });
 
@@ -93,7 +91,7 @@ export function Certificates() {
   const usingFallback = expiryQuery.isError;
   const warnDays = expiryQuery.data?.warn_threshold_days ?? WARN_DAYS;
 
-  const certificates = useMemo(() => {
+  const certificates = useMemo<CertificateRow[]>(() => {
     const rows = usingFallback ? listQuery.data : expiryQuery.data?.certificates;
     return Array.isArray(rows) ? rows : [];
   }, [usingFallback, listQuery.data, expiryQuery.data]);
@@ -129,13 +127,9 @@ export function Certificates() {
   const providerOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const cert of certificates) {
-      const key = cert.provider_id === undefined ? cert.provider_name || cert.provider || '' : String(cert.provider_id);
+      const key = String(cert.provider_id);
       if (!key) continue;
-      const name =
-        (cert.provider_id !== undefined ? sources.get(cert.provider_id)?.name : undefined) ||
-        cert.provider_name ||
-        cert.provider ||
-        key;
+      const name = sources.get(cert.provider_id)?.name || cert.provider_name || key;
       if (!seen.has(key)) seen.set(key, name);
     }
     return [...seen.entries()].map(([value, label]) => ({ value, label }));
@@ -146,9 +140,7 @@ export function Certificates() {
     const rows = certificates.filter((cert) => {
       if (statusFilter !== 'all' && certBucket(certDays(cert, now), warnDays) !== statusFilter) return false;
       if (providerFilter !== 'all') {
-        const key =
-          cert.provider_id === undefined ? cert.provider_name || cert.provider || '' : String(cert.provider_id);
-        if (key !== providerFilter) return false;
+        if (String(cert.provider_id) !== providerFilter) return false;
       }
       return matchesSearch(cert, needle);
     });
