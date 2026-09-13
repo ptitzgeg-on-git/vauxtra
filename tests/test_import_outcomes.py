@@ -450,5 +450,131 @@ class EverySubmittedRowIsAccountedForTests(_IsolatedDB):
         self.assertIsInstance(result["skipped"], list)
 
 
+class _Scanned:
+    """A provider that answers a scan with exactly what the test handed it, nothing more."""
+
+    def __init__(self, hosts=(), rewrites=()):
+        self._hosts = [dict(h) for h in hosts]
+        self._rewrites = [dict(r) for r in rewrites]
+
+    def list_hosts(self):
+        return [dict(h) for h in self._hosts]
+
+    def list_rewrites(self):
+        return [dict(r) for r in self._rewrites]
+
+
+class ANameIsTheSameNameInAnyCaseTests(_IsolatedDB):
+    """A provider spells a hostname however it likes; a service is stored in one spelling.
+
+    `ServiceIn` lowercases the subdomain and `normalize_domain` lowercases the domain, so
+    everything the editor writes is stored in lower case. This route wrote what the provider
+    spelled, and compared what the provider spelled -- and nothing downstream ever noticed,
+    because `_service_fqdn` lowercases the public hostname it derives. A service stored as
+    `NAS.vxlab.test` pushed, and drifted, under `nas.vxlab.test`: the same name as the
+    service already tracking it.
+
+    Three things followed, none of them visible. The scan offered the row as new every time.
+    Ticking it inserted a second service, because the "already tracks" lookup compared the
+    stored spelling and so does the unique index on `(subdomain, domain)` -- so the index
+    could not stop it either, and two services pushed over each other. And a proxy host and
+    a DNS record for one name, spelled differently by their two providers, stopped pairing:
+    two services, each holding half of what one should have held.
+    """
+
+    def _scan(self, *, hosts=(), rewrites=()):
+        """`POST /api/services/sync`, with the three fixture providers answering."""
+        answers = {1: _Scanned(rewrites=rewrites), 2: _Scanned(hosts=hosts), 3: _Scanned()}
+        with patch.object(sync_api, "create_provider", lambda row: answers[row["id"]]):
+            return sync_api.sync_services(_request())
+
+    def _track(self, subdomain: str, domain: str) -> None:
+        conn = models.get_db()
+        conn.execute(
+            "INSERT INTO services (subdomain, domain, target_ip, target_port) VALUES (?,?,?,80)",
+            (subdomain, domain, "10.0.0.9"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_a_scan_marks_a_tracked_name_spelled_with_a_capital_as_already_imported(self) -> None:
+        """The first screen the operator sees. An unticked row is one they never import."""
+        self._track("nas", "vxlab.test")
+
+        result = self._scan(rewrites=[{"domain": "NAS.vxlab.test", "answer": "10.0.0.9"}])
+
+        self.assertEqual(len(result["dns_rewrites"]), 1, result)
+        self.assertTrue(result["dns_rewrites"][0]["_already_imported"], result["dns_rewrites"][0])
+
+    def test_a_scan_still_calls_an_untracked_name_new(self) -> None:
+        """The witness. A marker stuck on "already imported" would pass the test above it."""
+        self._track("nas", "vxlab.test")
+
+        result = self._scan(rewrites=[{"domain": "autre.vxlab.test", "answer": "10.0.0.9"}])
+
+        self.assertFalse(result["dns_rewrites"][0]["_already_imported"], result["dns_rewrites"][0])
+
+    def test_a_tracked_name_spelled_with_a_capital_is_not_imported_twice(self) -> None:
+        self._track("nas", "vxlab.test")
+
+        result = sync_api.import_services(_request(), {"dns_rewrites": [_dns("NAS.vxlab.test")]})
+
+        self.assertEqual(result["imported"], 0, result)
+        self.assertEqual(self._services(), ["nas.vxlab.test"])
+
+    def test_a_proxy_host_and_a_dns_record_pair_across_spellings(self) -> None:
+        """One name, two providers, two spellings: one service holding both halves."""
+        result = sync_api.import_services(
+            _request(),
+            {
+                "proxy_hosts": [_host("WWW.vxlab.test")],
+                "dns_rewrites": [_dns("www.vxlab.test", "10.0.0.13")],
+            },
+        )
+
+        self.assertEqual(result["imported"], 1, result)
+        self.assertEqual(self._services(), ["www.vxlab.test"])
+        row = self._rows()[0]
+        self.assertEqual(row["dns_ip"], "10.0.0.13", row)
+        self.assertEqual(row["target_ip"], "10.0.0.9", row)
+
+    def test_an_imported_name_is_stored_the_way_the_editor_would_store_it(self) -> None:
+        """Not cosmetic: the unique index on `(subdomain, domain)` compares these literally."""
+        result = sync_api.import_services(_request(), {"dns_rewrites": [_dns("Cave.VXLab.Test")]})
+
+        self.assertEqual(result["imported"], 1, result)
+        self.assertEqual(self._services(), ["cave.vxlab.test"])
+        conn = models.get_db()
+        domains = [r["name"] for r in conn.execute("SELECT name FROM domains").fetchall()]
+        conn.close()
+        self.assertIn("vxlab.test", domains)
+
+    def test_two_providers_answering_in_two_spellings_are_still_two_answers_for_one_name(self) -> None:
+        """The disagreement this route exists to report, hidden by a capital letter."""
+        result = sync_api.import_services(
+            _request(),
+            {
+                "dns_rewrites": [
+                    _dns("NAS.vxlab.test", "10.0.0.9", 1, "Technitium"),
+                    _dns("nas.vxlab.test", "10.0.0.10", 3, "AdGuard"),
+                ]
+            },
+        )
+
+        self.assertEqual(result["imported"], 1, result)
+        self.assertEqual(self._services(), ["nas.vxlab.test"])
+        self.assertEqual(len(result["errors"]), 1, result)
+        self.assertIn("Technitium", result["errors"][0])
+        self.assertIn("AdGuard", result["errors"][0])
+
+    def test_a_name_already_in_the_right_case_still_imports(self) -> None:
+        """The witness for the import half."""
+        result = sync_api.import_services(_request(), {"dns_rewrites": [_dns("essai.vxlab.test")]})
+
+        self.assertEqual(result["imported"], 1, result)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(self._services(), ["essai.vxlab.test"])
+
+
 if __name__ == "__main__":
     unittest.main()
