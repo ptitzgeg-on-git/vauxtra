@@ -233,6 +233,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A notification webhook could be armed at a target that was not there.** A rule is stored
+  as a word and a number — `scope_type` `service` plus `scope_ref_id` 12 — and the number had
+  nothing checking it. `webhooks.scope_ref_id` carries no foreign key, so any positive integer
+  was accepted and written: a typo, a stale id from a copied body, an id borrowed from the
+  other list. `_service_matches_scope` then answers False for every service forever, while
+  Settings goes on showing the rule as enabled. It is the same end state the delete paths in
+  `app/api/providers.py` and `app/api/services.py` each already warn about in the journal —
+  a webhook that outlives its target is dead and it looks armed — reached instead through the
+  door that had no warning at all. Creating or updating a scoped webhook now reads the table
+  its word names and answers `400 Nothing to alert on — unknown service 12` before anything
+  is stored.
+
+  The second half was worse than dead. The two words share one id space and mean different
+  things in it, so changing only the word carried the old number across: a rule watching
+  service 4 became a rule watching whichever *provider* holds id 4 — an unrelated row, alerted
+  on with confidence. Silence someone eventually notices; a wrong subject reported correctly
+  they do not. Changing the word now asks for the new target. The panel already sent both
+  fields on every scope change, so nothing in the UI had to move.
+
 - **The per-row switch reported a refused disable as done.** The answer to
   `PUT /api/services/{sid}` carries an `errors` field: what the save could not carry out on a
   provider. The delete button and the bulk bar both read it and raise a warning; the switch on
