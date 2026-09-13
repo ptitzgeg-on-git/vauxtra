@@ -701,7 +701,7 @@ export function ExposeModal({
         <div className="space-y-6 animate-in fade-in animate-duration-200">
           {blockingFailures > 0 ? (
             <InlineAlert tone="danger" title={t('expose.preflight.blocked_title', { count: blockingFailures })}>
-              {t('expose.preflight.blocked_body')}
+              {t('expose.preflight.blocked_body', { count: blockingFailures })}
             </InlineAlert>
           ) : warningCount > 0 ? (
             <InlineAlert tone="warning" title={t('expose.preflight.warnings_title', { count: warningCount })}>
