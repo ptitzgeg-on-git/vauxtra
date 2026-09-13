@@ -596,6 +596,143 @@ class RestoreWipesEveryTableTests(IsolatedDBTestCase):
             with self.subTest(child=child, parent=parent):
                 self.assertLess(order.index(child), order.index(parent))
 
+    def _export(self) -> dict:
+        with patch.object(backup_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(backup_api, "limiter") as mock_limiter:
+            mock_limiter.limit = lambda *a, **kw: (lambda f: f)
+            return json.loads(backup_api.export_backup(_request("GET", "/api/backup")).body)
+
+    def test_every_wiped_table_is_exported(self) -> None:
+        """The other half of the wipe gate: emptied, and nothing to put back.
+
+        `test_restore_wipe_covers_the_schema` holds the wipe list to the schema, so no
+        table outlives a restore. Nothing held the wipe list to the *export*, so a table
+        could be emptied by every restore and carried by no backup file, which is the
+        louder failure of the two: the data is gone and the answer is still `ok: true`.
+        `service_templates` sat there for the whole of 1.4, and only the Templates page
+        ever said so.
+
+        The export is called rather than read, so a key renamed in the dict fails here.
+        """
+        exported = set(self._export())
+        wiped = set(backup_api._RESTORE_WIPE_TABLES)
+        self.assertEqual(
+            wiped - exported - backup_api._NOT_EXPORTED_ON_PURPOSE,
+            set(),
+            "a table the restore empties is in no export and is not named as deliberate",
+        )
+        # And the reverse, so the exemption list cannot outlive the table it excuses.
+        self.assertEqual(backup_api._NOT_EXPORTED_ON_PURPOSE - wiped, set())
+
+    def test_templates_survive_the_round_trip_pointing_at_the_right_rows(self) -> None:
+        """Two templates in, two templates out, still naming their provider and tags.
+
+        Surviving is not the same as surviving intact. `proxy_provider_id` is a real
+        foreign key; `tag_ids_json` is a list of ids in a TEXT column no constraint
+        watches. The restore re-inserts providers and tags under their exported ids, so
+        neither needs remapping -- and this is what fails if that ever stops being true.
+        """
+        pid = self._insert_provider("NPM-tpl")
+        conn = models.get_db()
+        try:
+            tag_id = conn.execute(
+                "INSERT INTO tags (name, color) VALUES ('homelab', 'blue')"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO service_templates "
+                "(name, description, target_port, proxy_provider_id, tag_ids_json, icon_url) "
+                "VALUES (?,?,?,?,?,?)",
+                ("Jellyfin", "media server", 8096, pid, json.dumps([tag_id]), "https://i/jf.png"),
+            )
+            conn.execute(
+                "INSERT INTO service_templates (name, target_port) VALUES ('Grafana', 3000)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        backup = self._export()
+        self.assertEqual(len(backup["service_templates"]), 2)
+
+        result = self._restore(backup)
+        self.assertEqual(result["templates"], 2)
+
+        conn = models.get_db()
+        try:
+            rows = {
+                r["name"]: dict(r)
+                for r in conn.execute("SELECT * FROM service_templates").fetchall()
+            }
+            provider_names = {
+                r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM providers").fetchall()
+            }
+            tag_names = {
+                r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM tags").fetchall()
+            }
+        finally:
+            conn.close()
+
+        self.assertEqual(set(rows), {"Jellyfin", "Grafana"})
+        jf = rows["Jellyfin"]
+        self.assertEqual(jf["description"], "media server")
+        self.assertEqual(jf["target_port"], 8096)
+        self.assertEqual(jf["icon_url"], "https://i/jf.png")
+        # The ids are only worth anything if they still name the same rows.
+        self.assertEqual(provider_names.get(jf["proxy_provider_id"]), "NPM-tpl")
+        self.assertEqual(
+            [tag_names.get(i) for i in json.loads(jf["tag_ids_json"])],
+            ["homelab"],
+        )
+
+    def test_a_file_written_before_templates_were_exported_says_the_table_was_emptied(self) -> None:
+        """Every backup taken before this release still loses them -- out loud, now.
+
+        The wipe is unconditional and the file has nothing to put back, so the outcome is
+        the old one. What changed is that it is no longer silent: the count is taken before
+        the wipe, and the warning is written only when there were templates and the file
+        offered none, so an instance that never had any reads nothing at all.
+        """
+        conn = models.get_db()
+        try:
+            conn.execute("INSERT INTO service_templates (name, target_port) VALUES ('Grafana', 3000)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        legacy = self._minimal_backup()
+        self.assertNotIn("service_templates", legacy)
+        result = self._restore(legacy)
+
+        self.assertEqual(result["templates"], 0)
+        self.assertEqual(self._count("service_templates"), 0)
+        conn = models.get_db()
+        try:
+            warnings = [
+                r["message"]
+                for r in conn.execute("SELECT message FROM logs WHERE level='warning'").fetchall()
+            ]
+        finally:
+            conn.close()
+        self.assertTrue(
+            any("service template" in m for m in warnings),
+            f"the restore emptied a template table and said nothing: {warnings}",
+        )
+        # Singular, because one was lost: the line is read by whoever lost it.
+        self.assertTrue(any("1 service template was" in m for m in warnings), warnings)
+
+    def test_an_instance_with_no_templates_reads_no_warning(self) -> None:
+        """Calibration: a line that fired on every restore would teach the eye to skip it."""
+        self._restore(self._minimal_backup())
+        conn = models.get_db()
+        try:
+            warnings = [
+                r["message"]
+                for r in conn.execute("SELECT message FROM logs WHERE level='warning'").fetchall()
+            ]
+        finally:
+            conn.close()
+        self.assertEqual([m for m in warnings if "template" in m], [])
+
 
 # ===========================================================================
 # 2. Auth — change-password

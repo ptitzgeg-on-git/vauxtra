@@ -16,7 +16,7 @@ import { Badge, Button, Field, Input, useConfirmDialog } from '@/components/ui';
 import type { RestoreResult } from '@/types/api';
 import { SettingsSection } from '../SettingsSection';
 
-type BackupSummary = { services: number; providers: number; domains: number; tags: number; environments: number; webhooks: number };
+type BackupSummary = { services: number; providers: number; domains: number; tags: number; environments: number; webhooks: number; templates: number };
 
 interface PendingRestore {
   json: Record<string, unknown>;
@@ -33,10 +33,11 @@ function summarizeBackup(backup: Record<string, unknown>): BackupSummary {
     tags: count('tags'),
     environments: count('environments'),
     webhooks: count('webhooks'),
+    templates: count('service_templates'),
   };
 }
 
-const SUMMARY_KEYS: (keyof BackupSummary)[] = ['services', 'providers', 'domains', 'tags', 'environments', 'webhooks'];
+const SUMMARY_KEYS: (keyof BackupSummary)[] = ['services', 'providers', 'domains', 'tags', 'environments', 'webhooks', 'templates'];
 
 export function RestoreSection() {
   const t = useT();
@@ -58,6 +59,10 @@ export function RestoreSection() {
         queryClient.invalidateQueries({ queryKey: ['tags'] }),
         queryClient.invalidateQueries({ queryKey: ['environments'] }),
         queryClient.invalidateQueries({ queryKey: ['webhooks'] }),
+        // The restore empties and refills this table like any other, and the Templates
+        // page held whatever was cached from before it: the old rows if the file carried
+        // none, the old rows still if it carried different ones.
+        queryClient.invalidateQueries({ queryKey: ['templates'] }),
         queryClient.invalidateQueries({ queryKey: ['logs'] }),
         queryClient.invalidateQueries({ queryKey: ['certificates-expiry'] }),
         queryClient.invalidateQueries({ queryKey: ['health'] }),
@@ -119,7 +124,7 @@ export function RestoreSection() {
     const ok = await confirm({
       title: t('settings.backup.restore_confirm_title'),
       // Each noun is counted in its own language before the sentence is assembled: `t()`
-      // inflects exactly one `{count}`, and six numbers cannot share it.
+      // inflects exactly one `{count}`, and seven numbers cannot share it.
       message: t(
         'settings.backup.restore_confirm_message',
         Object.fromEntries(

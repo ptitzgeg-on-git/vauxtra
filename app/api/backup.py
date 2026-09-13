@@ -46,8 +46,11 @@ def _table_exists(conn, table_name: str) -> bool:
 #     `webhooks`, so a queued send left behind kept firing at a webhook the restored set
 #     does not contain.
 #   - `scheduler_state` keys its alert bookkeeping by (service_id, webhook_id).
-#   - `service_templates` is in neither export, so it survived a restore with its provider
-#     columns blanked by the cascade and `tag_ids_json` naming other people's tags.
+#   - `service_templates` is exported now; back then it was in neither export, so it
+#     survived a restore with its provider columns blanked by the cascade and
+#     `tag_ids_json` naming other people's tags. It stays in the wipe either way: the
+#     restore re-inserts templates by explicit id like everything else, and a survivor
+#     does not dangle, it silently re-points at whatever template now holds its id.
 #   - `uptime_events` was already emptied by its ON DELETE CASCADE on services; it is listed
 #     anyway so the wipe does not depend on a pragma being on.
 _RESTORE_WIPE_TABLES = (
@@ -73,6 +76,25 @@ _RESTORE_WIPE_TABLES = (
 # decision rather than an oversight. `settings` is wiped separately, down to the protected
 # keys; `api_keys` is never touched.
 _RESTORE_KEEPS = frozenset({"settings", "api_keys"})
+
+# Wiped by a restore and carried by no export, on purpose. Four tables are the history and
+# the bookkeeping of the instance that produced them, not of the file: the journal, the
+# uptime stream, the webhook send queue and the scheduler's alert cursor. Restoring those
+# onto another instance would date its journal with someone else's outages and re-arm
+# notifications for services it never watched.
+#
+# `service_templates` used to be a fifth, by accident rather than by decision. It is the
+# only table the operator fills in by hand that no export carried, so a backup taken to
+# survive a reinstall gave back every service and not one template to build the next one
+# with -- and the restore answered `ok: true`. `_every_wiped_table_is_exported` now holds
+# the wipe list and the export together, so a table added to one has to be added to the
+# other or named here.
+_NOT_EXPORTED_ON_PURPOSE = frozenset({
+    "logs",
+    "scheduler_state",
+    "uptime_events",
+    "webhook_delivery_log",
+})
 
 # Settings a backup file carries and a restore does NOT take, on purpose, so that they are
 # never reported as lost.
@@ -165,6 +187,7 @@ def export_backup(request: Request):
                 ).fetchall()
             ],
             "docker_endpoints":    [dict(r) for r in conn.execute("SELECT * FROM docker_endpoints").fetchall()],
+            "service_templates":   [dict(r) for r in conn.execute("SELECT * FROM service_templates").fetchall()],
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
                 for r in conn.execute("SELECT id, name, prefix, scopes, created_at FROM api_keys").fetchall()
@@ -259,6 +282,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             "service_alerts":      [dict(r) for r in conn.execute("SELECT * FROM service_alerts").fetchall()],
             "settings":            settings_rows,
             "docker_endpoints":    docker_endpoints,
+            "service_templates":   [dict(r) for r in conn.execute("SELECT * FROM service_templates").fetchall()],
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
                 for r in conn.execute("SELECT id, name, prefix, scopes, created_at FROM api_keys").fetchall()
@@ -339,6 +363,10 @@ def import_backup(request: Request, body: RestoreRequest):
     conn = get_db()
     try:
         conn.execute("BEGIN EXCLUSIVE")
+        # Counted before the wipe empties it: a file written by a version whose export did
+        # not carry templates has none to put back, and that is a loss the operator has to
+        # be told about rather than discover on the Templates page.
+        templates_before = conn.execute("SELECT COUNT(*) FROM service_templates").fetchone()[0]
         # One execute() per table, NOT executescript(): executescript() issues an implicit
         # COMMIT before running, which would close the transaction opened above and make the
         # rollback handlers below no-ops on an already-destroyed database.
@@ -512,6 +540,38 @@ def import_backup(request: Request, body: RestoreRequest):
                  sa.get("on_up", 1), sa.get("on_down", 1), sa.get("min_down_minutes", 0)),
             )
 
+        # After the providers and the tags it points at: `proxy_provider_id`,
+        # `dns_provider_id` and `tunnel_provider_id` are real foreign keys, and the
+        # connection runs with `foreign_keys=ON`. Explicit ids everywhere else in this
+        # function mean the columns land on the same rows they named in the export, and
+        # `tag_ids_json` needs no remapping for the same reason.
+        for tpl in data.get("service_templates", []):
+            conn.execute(
+                """INSERT OR REPLACE INTO service_templates
+                   (id, name, description, forward_scheme, target_port, websocket,
+                    expose_mode, proxy_provider_id, dns_provider_id, tunnel_provider_id,
+                    public_target_mode, domain, dns_ip, tag_ids_json, icon_url, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    tpl.get("id"),
+                    tpl.get("name"),
+                    tpl.get("description", ""),
+                    tpl.get("forward_scheme", "http"),
+                    tpl.get("target_port"),
+                    tpl.get("websocket", 0),
+                    tpl.get("expose_mode", "proxy_dns"),
+                    tpl.get("proxy_provider_id"),
+                    tpl.get("dns_provider_id"),
+                    tpl.get("tunnel_provider_id"),
+                    tpl.get("public_target_mode", "manual"),
+                    tpl.get("domain", ""),
+                    tpl.get("dns_ip", ""),
+                    tpl.get("tag_ids_json", "[]"),
+                    tpl.get("icon_url", ""),
+                    tpl.get("created_at"),
+                ),
+            )
+
         for setting in data.get("settings", []):
             # Whitelist: `_VALID_SETTINGS` is the same list `POST /api/settings` writes
             # through, so an imported file reaches no key an operator could not set by
@@ -596,6 +656,20 @@ def import_backup(request: Request, body: RestoreRequest):
             + plural(domains_without_name, "domain")
             + " in the file carried no name and could not be recreated",
         )
+    tpl_count = len(data.get("service_templates", []))
+    if templates_before and not tpl_count:
+        # Not a failure, and not silence either. Every file written before the export
+        # carried templates lands here, and the operator who restores one has to hear that
+        # the Templates page is empty because of the file, not because of a bug.
+        add_log(
+            "warning",
+            "Backup restored: "
+            + plural(templates_before, "service template")
+            + " "
+            + verb(templates_before, "was", "were")
+            + " emptied and the file carried none to put back "
+            + "(it was written by a version whose export did not include them)",
+        )
     svc_count = len(data.get("services", []))
     prv_count = len(data.get("providers", []))
     # Reported, not buried: without this the operator has no way of knowing that some
@@ -605,6 +679,7 @@ def import_backup(request: Request, body: RestoreRequest):
         "ok": True,
         "services": svc_count,
         "providers": prv_count,
+        "templates": tpl_count,
         "webhooks_needing_url": webhooks_needing_url,
         "settings_not_restored": sorted(settings_not_restored),
         "domains_without_name": domains_without_name,

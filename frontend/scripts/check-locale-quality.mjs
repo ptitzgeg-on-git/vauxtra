@@ -82,8 +82,8 @@ const QUANTITY = new Set([
   'answers', 'badge', 'blocking', 'checks', 'clients', 'connections', 'count', 'days',
   'disk', 'domains', 'enabled', 'environments', 'error', 'errors', 'failed', 'healthy',
   'keys', 'latency', 'max', 'min', 'minutes', 'more', 'ms', 'ok', 'page', 'pages',
-  'percent', 'providers', 'score', 'seconds', 'services', 'step', 'tags', 'total',
-  'value', 'values', 'warnings', 'webhooks',
+  'percent', 'providers', 'score', 'seconds', 'services', 'step', 'tags', 'templates',
+  'total', 'value', 'values', 'warnings', 'webhooks',
 ]);
 
 /**
@@ -159,6 +159,7 @@ const DECLARED = new Map(
       tags: 'counted by settings.backup.restore_count.tags',
       environments: 'counted by settings.backup.restore_count.environments',
       webhooks: 'counted by settings.backup.restore_count.webhooks',
+      templates: 'counted by settings.backup.restore_count.templates',
     },
 
     // A constant, or a bound that cannot be 1 -- and one range where the noun agrees with the
