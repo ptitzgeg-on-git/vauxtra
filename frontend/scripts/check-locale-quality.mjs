@@ -152,6 +152,14 @@ const DECLARED = new Map(
       errors: 'the failure messages themselves, joined',
       more: 'counted by services.toast.more',
     },
+    'services.toast.disabled_warnings': {
+      errors: 'the failure messages themselves, joined',
+      more: 'counted by services.toast.more',
+    },
+    'services.toast.enabled_warnings': {
+      errors: 'the failure messages themselves, joined',
+      more: 'counted by services.toast.more',
+    },
     'settings.backup.restore_confirm_message': {
       services: 'counted by settings.backup.restore_count.services',
       providers: 'counted by settings.backup.restore_count.providers',

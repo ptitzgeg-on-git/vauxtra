@@ -429,6 +429,13 @@ export interface Service {
   extra_proxy_provider_ids?: number[];
   extra_dns_provider_ids?: number[];
   public_host?: string;
+  /**
+   * Only on the answer to `PUT /api/services/{sid}`: what the save could not carry out on a
+   * provider. The list rows from `GET /api/services` never carry it. A provider that refuses
+   * to suspend a host, or a former target that would not give a route back, lands here and
+   * nowhere else -- the save itself succeeded, so there is no error status to read.
+   */
+  errors?: string[];
 }
 
 export interface PushTarget {
