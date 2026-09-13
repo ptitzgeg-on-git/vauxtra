@@ -104,7 +104,7 @@ class NotificationTargetRefusalTests(_IsolatedDB):
         conn.close()
 
     def _test_url(self) -> None:
-        webhooks_api.test_webhook_url(_request(), {"url": self.URL})
+        webhooks_api.test_webhook_url(_request(), webhooks_api.WebhookUrlIn(url=self.URL))
 
     def _test_stored(self) -> None:
         webhooks_api.test_webhook(1, _request())
@@ -163,8 +163,10 @@ class NotificationTargetRefusalTests(_IsolatedDB):
     def test_a_target_that_accepts_the_message_still_answers_ok(self) -> None:
         """Green before the fix and green after it: 502 is a reattribution, not a new floor."""
         with patch("apprise.Apprise.notify", return_value=True):
-            self.assertEqual(webhooks_api.test_webhook_url(_request(), {"url": self.URL}),
-                             {"ok": True})
+            self.assertEqual(
+                webhooks_api.test_webhook_url(_request(), webhooks_api.WebhookUrlIn(url=self.URL)),
+                {"ok": True},
+            )
             self.assertEqual(webhooks_api.test_webhook(1, _request()), {"ok": True})
 
 

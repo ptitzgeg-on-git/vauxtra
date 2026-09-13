@@ -660,7 +660,7 @@ class WebhookScopeNamesSomethingThatExistsTests(_IsolatedDB):
     def _create(self, **overrides) -> dict:
         body = {"name": "on-call", "url": "json://hook.test/x"}
         body.update(overrides)
-        return webhooks_api.add_webhook(_request(), body)
+        return webhooks_api.add_webhook(_request(), webhooks_api.WebhookIn(**body))
 
     def _stored(self, wid: int) -> dict:
         conn = models.get_db()
@@ -694,7 +694,9 @@ class WebhookScopeNamesSomethingThatExistsTests(_IsolatedDB):
         created = self._create(scope_type="provider", scope_ref_id=2)
 
         with self.assertRaises(HTTPException) as caught:
-            webhooks_api.update_webhook(created["id"], _request("PUT"), {"scope_ref_id": 404})
+            webhooks_api.update_webhook(
+                created["id"], _request("PUT"), webhooks_api.WebhookUpdateIn(scope_ref_id=404)
+            )
 
         self.assertIn("provider 404", caught.exception.detail)
         self.assertEqual(self._stored(created["id"])["scope_ref_id"], 2)
@@ -705,7 +707,11 @@ class WebhookScopeNamesSomethingThatExistsTests(_IsolatedDB):
         created = self._create(scope_type="service", scope_ref_id=sid)
 
         with self.assertRaises(HTTPException) as caught:
-            webhooks_api.update_webhook(created["id"], _request("PUT"), {"scope_type": "provider"})
+            webhooks_api.update_webhook(
+                created["id"],
+                _request("PUT"),
+                webhooks_api.WebhookUpdateIn(scope_type="provider"),
+            )
 
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(
@@ -718,7 +724,9 @@ class WebhookScopeNamesSomethingThatExistsTests(_IsolatedDB):
         created = self._create(scope_type="service", scope_ref_id=sid)
 
         webhooks_api.update_webhook(
-            created["id"], _request("PUT"), {"scope_type": "provider", "scope_ref_id": 3}
+            created["id"],
+            _request("PUT"),
+            webhooks_api.WebhookUpdateIn(scope_type="provider", scope_ref_id=3),
         )
 
         self.assertEqual(
@@ -747,7 +755,9 @@ class WebhookScopeNamesSomethingThatExistsTests(_IsolatedDB):
         the one already stored, and the check must not fire on a scope nobody touched."""
         created = self._create(scope_type="provider", scope_ref_id=2)
 
-        webhooks_api.update_webhook(created["id"], _request("PUT"), {"enabled": 0})
+        webhooks_api.update_webhook(
+            created["id"], _request("PUT"), webhooks_api.WebhookUpdateIn(enabled=0)
+        )
 
         self.assertEqual(
             self._stored(created["id"]),
@@ -1134,7 +1144,9 @@ class RenamesRefuseTheWayCreationsDoTests(_IsolatedDB):
         )
 
         with self.assertRaises(HTTPException) as caught:
-            environments_api.update_environment(eid, _request("PUT"), {"name": "prod"})
+            environments_api.update_environment(
+                eid, _request("PUT"), environments_api.EnvironmentIn(name="prod")
+            )
 
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(caught.exception.detail, "An environment with this name already exists")
@@ -1146,7 +1158,9 @@ class RenamesRefuseTheWayCreationsDoTests(_IsolatedDB):
         conn.commit()
         conn.close()
 
-        result = environments_api.update_environment(eid, _request("PUT"), {"name": "prod"})
+        result = environments_api.update_environment(
+            eid, _request("PUT"), environments_api.EnvironmentIn(name="prod")
+        )
 
         self.assertEqual(result["name"], "prod")
 

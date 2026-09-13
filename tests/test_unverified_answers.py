@@ -220,7 +220,9 @@ class DeletingAWebhookTests(_IsolatedDB):
         """`update_webhook` already answered 404 here. Half a rule is not a rule."""
         statuses = {}
         for verb, call in (
-            ("PUT", lambda: webhooks_api.update_webhook(999999, _request("PUT"), {"enabled": 0})),
+            ("PUT", lambda: webhooks_api.update_webhook(
+                999999, _request("PUT"), webhooks_api.WebhookUpdateIn(enabled=0)
+            )),
             ("DELETE", lambda: webhooks_api.delete_webhook(999999, _request("DELETE"))),
         ):
             with self.assertRaises(HTTPException) as caught:
@@ -274,7 +276,7 @@ class DeletingADomainTests(_IsolatedDB):
         self.addCleanup(patcher.stop)
 
     def _add(self, name: str) -> str:
-        return settings_api.add_domain(_request("POST"), {"name": name})["name"]
+        return settings_api.add_domain(_request("POST"), settings_api.DomainIn(name=name))["name"]
 
     def _domains(self) -> list[str]:
         return list(settings_api.list_domains(_request("GET")))

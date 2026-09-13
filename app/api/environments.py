@@ -1,6 +1,7 @@
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from app.auth import require_auth
 from app.models import get_db
@@ -15,8 +16,22 @@ _VALID_COLORS = {"blue","teal","green","red","orange","purple","cyan","yellow","
 _MAX_NAME_LENGTH = 32
 
 
+class EnvironmentIn(BaseModel):
+    """The body both environment write routes accept.
+
+    `TagIn` next door refuses its two fields in validators; this carries the types and leaves
+    every sentence to `_read_name_and_color` below, because the two lists are edited through
+    one field of one panel and `tests/test_environments_parity.py` measures them together.
+    What the model adds is the case neither list had an answer for: a `name` that is not a
+    string at all reached `.strip()` and came back as a 500.
+    """
+
+    name: str
+    color: str = "blue"
+
+
 def _read_name_and_color(body: dict) -> tuple[str, str]:
-    """Validate a body the way `TagIn` does, a plain dict having no model to do it."""
+    """Validate a body the way `TagIn` does, the model above carrying only the types."""
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "Name is required")
@@ -41,10 +56,10 @@ def list_environments(request: Request):
 
 
 @router.post("/api/environments", status_code=201)
-def add_environment(request: Request, body: dict):
+def add_environment(request: Request, body: EnvironmentIn):
     """Create a new environment. Returns 409 if the name is already taken."""
     require_auth(request, scope="write")
-    name, color = _read_name_and_color(body)
+    name, color = _read_name_and_color(body.model_dump())
     conn = get_db()
     try:
         # Asked before writing, so that a duplicate is the only thing answered as a duplicate.
@@ -71,10 +86,10 @@ def add_environment(request: Request, body: dict):
 
 
 @router.put("/api/environments/{eid}")
-def update_environment(eid: int, request: Request, body: dict):
+def update_environment(eid: int, request: Request, body: EnvironmentIn):
     """Update an environment by ID. 404 if it is gone, 409 if the name belongs to another one."""
     require_auth(request, scope="write")
-    name, color = _read_name_and_color(body)
+    name, color = _read_name_and_color(body.model_dump())
     conn = get_db()
     try:
         row = conn.execute("SELECT id FROM environments WHERE id=?", (eid,)).fetchone()

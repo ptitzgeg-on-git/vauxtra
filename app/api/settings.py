@@ -3,6 +3,7 @@ import json
 import re
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from app.auth import require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
@@ -483,10 +484,21 @@ def list_domains(request: Request):
     return [r["name"] for r in rows]
 
 
+class DomainIn(BaseModel):
+    """The body of `POST /api/domains`.
+
+    `normalize_domain` lowercases and strips, so it needed a string in order to be handed
+    one; a number reached it and raised. Everything a domain can be wrong about is still
+    answered by `domain_problem`, in the sentence `DOMAIN_REASONS` already writes.
+    """
+
+    name: str
+
+
 @router.post("/api/domains", status_code=201)
-def add_domain(request: Request, body: dict):
+def add_domain(request: Request, body: DomainIn):
     require_auth(request, scope="write")
-    name = normalize_domain(body.get("name", ""))
+    name = normalize_domain(body.name)
     problem = domain_problem(name, require_dot=True)
     if problem:
         raise HTTPException(400, f"Invalid domain name: {DOMAIN_REASONS[problem]}")

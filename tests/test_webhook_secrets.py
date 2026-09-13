@@ -150,12 +150,15 @@ class WebhookReadPathTests(_IsolatedDB):
     def test_write_responses_echo_a_masked_url(self) -> None:
         with patch.object(webhooks_api, "require_auth", lambda _r, scope=None: None):
             created = webhooks_api.add_webhook(
-                _request("POST", "/api/webhooks"), {"name": "D", "url": SECRET_URL}
+                _request("POST", "/api/webhooks"),
+                webhooks_api.WebhookIn(name="D", url=SECRET_URL),
             )
             # A partial update -- the enable/disable toggle sends only `enabled` -- must not
             # echo back a URL the caller never sent.
             updated = webhooks_api.update_webhook(
-                created["id"], _request("PUT", "/api/webhooks/1"), {"enabled": 0}
+                created["id"],
+                _request("PUT", "/api/webhooks/1"),
+                webhooks_api.WebhookUpdateIn(enabled=0),
             )
 
         for body in (created, updated):
@@ -174,7 +177,9 @@ class WebhookReadPathTests(_IsolatedDB):
         with patch.object(webhooks_api, "require_auth", lambda _r, scope=None: None):
             with self.assertRaises(HTTPException) as ctx:
                 webhooks_api.update_webhook(
-                    wid, _request("PUT", f"/api/webhooks/{wid}"), {"url": "discord://***"}
+                    wid,
+                    _request("PUT", f"/api/webhooks/{wid}"),
+                    webhooks_api.WebhookUpdateIn(url="discord://***"),
                 )
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("masked", ctx.exception.detail)
@@ -189,7 +194,9 @@ class WebhookReadPathTests(_IsolatedDB):
         wid = self._insert_webhook()
         with patch.object(webhooks_api, "require_auth", lambda _r, scope=None: None):
             webhooks_api.update_webhook(
-                wid, _request("PUT", f"/api/webhooks/{wid}"), {"enabled": 0}
+                wid,
+                _request("PUT", f"/api/webhooks/{wid}"),
+                webhooks_api.WebhookUpdateIn(enabled=0),
             )
 
         conn = models.get_db()
