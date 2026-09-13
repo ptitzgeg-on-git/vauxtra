@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "i18n:check": "node scripts/check-locale-parity.mjs",
+    "i18n:check": "node scripts/check-locale-parity.mjs && node scripts/check-locale-usage.mjs",
     "i18n:quality": "node scripts/check-locale-quality.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
