@@ -14,7 +14,7 @@ a branch, on somebody's dashboard.
 Comparing every `T` against the real answer would mean running the backend, which this job
 does not do. But one thing is decidable by reading alone: when two places read the SAME
 bytes -- the same route, or the same react-query cache key -- and each names its own `T`,
-at most one of them can be right. That is what this compares, in two rules.
+at most one of them can be right. That is what this compares, in three rules.
 
   R1  One route, one shape. Every `api.get<T>(url)` on a URL, and every `useQuery<T>` on a
       `queryKey`, is resolved to a structure and compared with the others on the same URL
@@ -27,8 +27,17 @@ at most one of them can be right. That is what this compares, in two rules.
       declaration nobody has to keep in step with the first, and the stale one is the copy
       sitting where a reader looks first.
 
-Both rules were written after they had already caught something, and both counts below are
-what this file printed on the commit before the fixes.
+  R3  One answer, one cache entry. A `useQuery` or `queryOptions` whose `queryFn` reads a
+      URL is paired with that URL verbatim -- `/logs?per_page=8` and `/logs?page=${page}`
+      are one route but two questions, and two questions belong in two entries. Readers
+      asking byte-for-byte the same thing have to share one key, because a key is a
+      lifetime: two keys over one answer means every place that invalidates has to remember
+      both names. A key hoisted into a `const` is resolved to the array it was declared
+      with: a shared hook naming its key once is the arrangement this rule asks for, and
+      reading only a literal `queryKey` would have left it blind to its own remedy.
+
+Each rule was written after it had already caught something, and every count below is what
+this file printed on the commit before that rule's fix.
 
 R2 found five, each a second declaration of a name `types/api.ts` already owned: a
 `DockerContainer` claiming a `ports` array the handler has never sent while missing eight
@@ -43,6 +52,14 @@ per reader, and two of them disagreed about whether six keys -- `expires_on`,
 or required. The remaining two are the `AuthStatus` shadow seen from the other side, once
 under its route and once under its cache key, which is the point: a name collision and a
 disagreement about bytes are the same defect described twice.
+
+R3 found one. `/auth/me` says who the caller is, and six components asked it: the boot gate,
+the layout banner, the sidebar and the dashboard under `['auth-status']`, the two settings
+tabs under `['auth-me']`. Of the eight places that invalidate once the answer could have
+changed, five named `['auth-status']` alone. The settings copy also declared no `staleTime`,
+which means zero, so opening Settings drew a skeleton and spent a round trip re-fetching an
+answer the shell already held. `/logs` is read under three keys and is not a finding: those
+three ask three different questions of one route, which is what a key is for.
 
 The resolver is `check_panel_contract`'s, unchanged, for the reason that file argues at
 length: a resolver that guesses is worse than one that refuses. Every shape it cannot read
@@ -75,6 +92,14 @@ SHARED_TYPES = "types/api.ts"
 
 GET_CALL = re.compile(r"\bapi\.get\s*<")
 USE_QUERY = re.compile(r"\buseQuery\s*<")
+#: R3 does not care what `T` is, only which URL was asked for, so it matches an
+#: `api.get` written with or without a type argument.
+ANY_GET = re.compile(r"\bapi\.get\s*[<(]")
+#: R3 reads the pairing wherever the key and the URL are written together: a `useQuery`
+#: with or without a type argument, and a `queryOptions` whose object a hook hands to
+#: `useQuery` later. Requiring the type argument would have left the rule blind to its own
+#: fix -- `useAuthStatus` spells the key and the URL inside `queryOptions` and nowhere else.
+QUERY_BLOCK = re.compile(r"\b(?:useQuery|queryOptions)\s*[<(]")
 ARRAY_OF = re.compile(r"^(?:Array|ReadonlyArray)\s*<(.*)>$", re.S)
 QUOTED = re.compile(r"^['\"](.*)['\"]$", re.S)
 
@@ -183,10 +208,11 @@ def shape(ix: PanelIndex, src: Source, expr: str, seen=frozenset(), depth: int =
         })
     util = UTILITY.match(expr)
     if util:
-        #: `Template` is `Omit<TemplateIn, 'websocket'>` and `Layout.tsx` reads
-        #: `/auth/status` as `Pick<AuthStatus, 'auth_mode'>`. Both are readable, and
-        #: refusing them would have meant writing two exemptions for shapes the panel
-        #: states exactly.
+        #: `Template` is `Omit<TemplateIn, 'websocket'>` with a `websocket` of its own
+        #: put back, and refusing that would have meant an exemption for a shape the
+        #: panel states exactly. `Layout.tsx` used to read `/auth/me` as
+        #: `Pick<AuthStatus, 'auth_mode'>` and goes through the shared hook now, so no
+        #: reader spells a `Pick` today -- the branch stays because the next one will.
         args = split_str(util.group(2), ",", angle=True)
         inner = shape(ix, src, args[0], seen, depth)
         if inner is None or inner[0] != "object":
@@ -315,6 +341,31 @@ def route_of(url: str) -> str:
     return re.sub(r"\$\{[^}]*\}", "*", plain).split("?")[0].rstrip("/") or "/"
 
 
+def const_array(src: Source, name: str) -> str | None:
+    """The array literal a module-level `const` of that name is declared with.
+
+    A key hoisted into a named constant is still a literal key: `useAuthStatus` declares
+    `AUTH_STATUS_KEY = ['auth-status'] as const` and writes `queryKey: AUTH_STATUS_KEY`
+    four lines below. Reading only the inline spelling would have left the rule blind to
+    the one hook that exists because the rule caught this URL under two keys.
+    """
+    if IDENT.match(name) is None:
+        return None
+    for m in re.finditer(rf"\b(?:const|let|var)\s+{re.escape(name)}\b", src.code):
+        eq = src.code.find("=", m.end())
+        stop = src.code.find(";", m.end())
+        if eq < 0 or 0 <= stop < eq:
+            continue
+        i = eq + 1
+        while i < len(src.code) and src.code[i].isspace():
+            i += 1
+        close = src.brackets.get(i)
+        if i < len(src.code) and src.code[i] == "[" and close is not None:
+            #: `as const` sits outside the brackets, so slicing the pair drops it.
+            return " ".join(src.raw[i : close + 1].split())
+    return None
+
+
 def key_of(src: Source, open_at: int) -> str | None:
     """The `queryKey` of the options object opening at `open_at`, normalised.
 
@@ -332,7 +383,10 @@ def key_of(src: Source, open_at: int) -> str | None:
             continue
         value = " ".join(field.split(":", 1)[1].split())
         if not (value.startswith("[") and value.endswith("]")):
-            return None
+            resolved = const_array(src, value)
+            if resolved is None:
+                return None
+            value = resolved
         parts = []
         for part in split_str(value[1:-1], ",", angle=True):
             m = QUOTED.match(part)
@@ -410,6 +464,78 @@ def shadowed(ix: PanelIndex) -> list[tuple[str, str]]:
         for name in sorted(set(src.types) & owned)
     ]
 
+def url_of(src: Source, open_at: int) -> str | None:
+    """The URL the `queryFn` of the options object opening at `open_at` reads, verbatim.
+
+    Verbatim, not routed: `/logs?per_page=8` and `/logs?page=${page}` are one route and two
+    different questions, and two questions belong in two cache entries. Only readers asking
+    byte-for-byte the same thing are answered by the same bytes.
+    """
+    close = src.brackets.get(open_at)
+    if close is None:
+        return None
+    m = ANY_GET.search(src.code, open_at, close)
+    if m is None:
+        return None
+    if src.code[m.end() - 1] == "<":
+        _, end = type_arg(src, m.end() - 1)
+        paren = src.code.find("(", end)
+    else:
+        paren = m.end() - 1
+    if paren < 0 or paren >= close:
+        return None
+    url = first_arg(src, paren)
+    return " ".join(url.split()) if url is not None else None
+
+
+def options_at(src: Source, m: re.Match[str]) -> int | None:
+    """Where the inline options object of the call `m` matched opens, if it has one."""
+    if src.code[m.end() - 1] == "<":
+        _, end = type_arg(src, m.end() - 1)
+        paren = src.code.find("(", end)
+        if paren < 0:
+            return None
+    else:
+        paren = m.end() - 1
+    i = paren + 1
+    while i < len(src.code) and src.code[i].isspace():
+        i += 1
+    #: `useQuery(authStatusQuery)` passes an object built elsewhere. The pairing is read at
+    #: the `queryOptions` that builds it, and reading it here too would count it twice.
+    return i if i < len(src.code) and src.code[i] == "{" else None
+
+
+def split_cache(ix: PanelIndex) -> tuple[int, list[str]]:
+    """URLs read under more than one react-query key.
+
+    A cache key is a lifetime. Two keys over one URL is two lifetimes for one answer, and
+    then every place that invalidates after the answer changed has to remember both names,
+    which is a thing the compiler cannot check and people do not do.
+    """
+    seen: dict[str, dict[str, list[str]]] = {}
+    paired = 0
+    for src in ix.sources:
+        for m in QUERY_BLOCK.finditer(src.code):
+            open_at = options_at(src, m)
+            if open_at is None:
+                continue
+            key = key_of(src, open_at)
+            url = url_of(src, open_at)
+            if key is None or url is None:
+                continue
+            paired += 1
+            seen.setdefault(url, {}).setdefault(key, []).append(
+                f"{src.rel}:{src.line_of(m.start())}"
+            )
+    split = []
+    for url in sorted(seen):
+        if len(seen[url]) < 2:
+            continue
+        readers = " and ".join(
+            f"{key} at {', '.join(sorted(at))}" for key, at in sorted(seen[url].items())
+        )
+        split.append(f"{url}: {readers}")
+    return paired, split
 
 def run(ix: PanelIndex):
     """Compare every group, and say what could not be compared."""
@@ -468,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
     ix = PanelIndex(REPO_ROOT)
     stats, conflicts, narrowed, unexplained, used = run(ix)
     shadows = shadowed(ix)
+    paired, split = split_cache(ix)
 
     print(f"READ_GET_COUNT {stats['gets']}")
     print(f"READ_QUERY_COUNT {stats['queries']}")
@@ -476,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"READ_SKIPPED_COUNT {stats['skipped']}")
     print(f"READ_NARROWING_COUNT {len(narrowed)}")
     print(f"READ_SHADOW_COUNT {len(shadows)}")
+    print(f"READ_PAIRED_COUNT {paired}")
+    print(f"READ_SPLIT_COUNT {len(split)}")
     print(f"READ_EXEMPT_COUNT {len(used)}")
     print(f"READ_DIVERGENCE_COUNT {len(conflicts)}")
 
@@ -502,6 +631,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Names {SHARED_TYPES} already declares, declared a second time:")
         for rel, name in shadows:
             print(f"  {rel}: {name} -- import it from @/types/api instead")
+        return 1
+
+    if split:
+        print("One answer, more than one cache entry:")
+        for line in split:
+            print(f"  {line}")
         return 1
 
     if unexplained:

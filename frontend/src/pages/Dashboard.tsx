@@ -14,8 +14,8 @@ import { NeedsAttention, type AttentionItem } from '@/components/features/dashbo
 import { RecentActivity } from '@/components/features/dashboard/RecentActivity';
 import { IntegrationsGlance } from '@/components/features/dashboard/IntegrationsGlance';
 import { QuickActions } from '@/components/features/dashboard/QuickActions';
+import { useAuthStatus } from '@/hooks/useAuthStatus';
 import type {
-  AuthStatus,
   CertificateExpiryResponse,
   LogsResponse,
   Provider,
@@ -138,12 +138,7 @@ export function Dashboard() {
     refetchInterval: 60_000,
   });
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 120_000,
-    retry: false,
-  });
+  const { data: authStatus } = useAuthStatus();
 
   // -- Session cache (survives a reload within the tab) ----------------------
   useEffect(() => {

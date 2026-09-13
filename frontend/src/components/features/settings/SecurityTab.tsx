@@ -8,26 +8,25 @@ import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
 import { MIN_PASSWORD_DISTINCT_CHARS, MIN_PASSWORD_LENGTH, isPasswordStrongEnough } from '@/constants';
 import { Button, Checkbox, Field, InlineAlert, Input, SkeletonCard, buttonVariants } from '@/components/ui';
-import type { ApiKey, AuthStatus } from '@/types/api';
+import { AUTH_STATUS_KEY, useAuthStatus } from '@/hooks/useAuthStatus';
+import type { ApiKey } from '@/types/api';
 import { SettingsSection } from './SettingsSection';
 
 /** The admin password: set one when the instance runs open, change it otherwise. */
 export function SecurityTab() {
   const t = useT();
-  const authQuery = useQuery<AuthStatus>({
-    queryKey: ['auth-me'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-  });
+  const authQuery = useAuthStatus();
 
   /**
    * Which card is shown is decided by the data, and only by the data.
    *
    * The error branch used to come first. `/auth/me` is refetched in the background -- on
-   * window focus, like every query here -- and a refetch that failed swapped whatever card
-   * was on screen for an alert. React Query keeps the last good data through that, so
-   * nothing was actually unknown; but the card was gone, and with it the password somebody
-   * was halfway through typing. The retry then mounted a fresh, empty one. A blip behind a
-   * reverse proxy was enough, and the operator did nothing to cause it.
+   * every remount while it is stale, and whenever anything invalidates it -- and a refetch
+   * that failed swapped whatever card was on screen for an alert. React Query keeps the last
+   * good data through that, so nothing was actually unknown; but the card was gone, and with
+   * it the password somebody was halfway through typing. The next fetch that succeeded
+   * mounted a fresh, empty one. A blip behind a reverse proxy was enough, and the operator
+   * did nothing to cause it.
    *
    * So a failure that still has data behind it is reported *above* the form rather than in
    * place of it. The alert is a sibling of the card, not a branch around it: rendering
@@ -102,8 +101,7 @@ function SetPasswordCard() {
   const setPasswordMutation = useMutation({
     mutationFn: (value: string) => api.post('/auth/setup-password', { password: value }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
-      queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
       setPassword('');
       setConfirmPassword('');
       setTouched(false);
