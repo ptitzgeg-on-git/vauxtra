@@ -19,10 +19,16 @@ export function useDockerEndpoints() {
   const [name, setName] = useState('');
   const [host, setHost] = useState('unix:///var/run/docker.sock');
 
-  const { data: endpoints = [], refetch } = useQuery<DockerEndpoint[]>({
+  // Returned whole, the way `useWebhookActions` returns its own: `endpoints = []` after a
+  // failed fetch and `endpoints = []` on an instance with no Docker engine are the same
+  // array, and the three screens built on this hook have to be able to tell them apart
+  // before one of them draws an empty list or counts a nought.
+  const endpointsQuery = useQuery<DockerEndpoint[]>({
     queryKey: ['docker-endpoints'],
     queryFn: () => api.get('/docker/endpoints'),
   });
+  const endpoints = endpointsQuery.data ?? [];
+  const refetch = endpointsQuery.refetch;
 
   const canSubmit = Boolean(name.trim()) && /^(unix|tcp|ssh):\/\//.test(host.trim());
 
@@ -52,6 +58,7 @@ export function useDockerEndpoints() {
 
   return {
     endpoints,
+    endpointsQuery,
     refetch,
     name, setName,
     host, setHost,
