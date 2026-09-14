@@ -285,6 +285,7 @@
   "providers.status.degraded": "Degraded",
   "providers.status.error": "Error",
   "providers.status.disabled": "Disabled",
+  "providers.status.unknown": "Unknown",
   "common.version": "Version",
   "common.save": "Save",
   "common.cancel": "Cancel",

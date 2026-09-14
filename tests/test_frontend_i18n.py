@@ -23,12 +23,32 @@ _REFERENCE = "en"
 
 # `t('some.key')` with a literal key. A computed key cannot be checked from here.
 _T_CALL = re.compile(r"""\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]""")
+# `labelKey: 'some.key'`, a key spelt out by hand with no `t(` in front of it. The value is
+# handed to `t()` one file away -- `{t(status.labelKey)}` -- so it reaches the page exactly as
+# a literal call does. Fourteen of the twenty-one keys written this way are reached by no
+# `t()` literal anywhere: every settings tab and group, the three theme buttons, and the
+# operational chip on every integration card were outside this scan entirely.
+_LABEL_KEY = re.compile(r"""\blabelKey:\s*['"]([a-zA-Z0-9_.]+)['"]""")
+
+# A line opening with `//`, `*` or `/*` is prose, and prose shows examples: `ConfirmDialog.tsx`
+# documents its own API with a `t('services.confirm.delete_title')` in a JSDoc block. An
+# illustrative key is not a call. `check-locale-usage.mjs` writes that rule down and blanks
+# such lines before it reads them; this scan did not, so the two gates over one rule differed
+# on what counts as asking for a key -- and the one that fails the build over a sentence is
+# this one, inside the required `Backend (Python)` check.
+_COMMENT_LINE = re.compile(r"^\s*(//|\*|/\*)")
+
 _PLACEHOLDER = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
 # A counted sentence is written once per plural category the language has, so `foo` lives in
 # the files as `foo_one` and `foo_other` and never as `foo`. These are the six CLDR category
 # names; which of them a given language declares is `check-locale-parity.mjs`'s business.
 _PLURAL_SUFFIXES = ("_zero", "_one", "_two", "_few", "_many", "_other")
+
+
+def _without_prose(source: str) -> str:
+    """Blank every comment line, keeping the line count so positions still match the file."""
+    return "\n".join("" if _COMMENT_LINE.match(x) else x for x in source.split("\n"))
 
 
 def _logical(key: str) -> str:
@@ -118,9 +138,10 @@ class EveryKeyTheUiAsksForExistsTests(unittest.TestCase):
         used: dict[str, str] = {}
         source = _ROOT / "frontend" / "src"
         for path in sorted(source.rglob("*.ts")) + sorted(source.rglob("*.tsx")):
-            text = path.read_text(encoding="utf-8")
-            for match in _T_CALL.finditer(text):
-                used.setdefault(match.group(1), str(path.relative_to(_ROOT)))
+            text = _without_prose(path.read_text(encoding="utf-8"))
+            for pattern in (_T_CALL, _LABEL_KEY):
+                for match in pattern.finditer(text):
+                    used.setdefault(match.group(1), str(path.relative_to(_ROOT)))
         return used
 
     def test_the_ui_never_asks_for_a_key_no_locale_defines(self):
@@ -139,6 +160,20 @@ class EveryKeyTheUiAsksForExistsTests(unittest.TestCase):
     def test_the_scan_actually_found_the_calls(self):
         """A regex that matches nothing would make the test above pass for free."""
         self.assertGreater(len(self._used_keys()), 100)
+    def test_the_scan_reads_the_keys_that_no_t_call_spells_out(self):
+        """The other half: these reach `t()` through a variable, so nothing here says `t(`."""
+        self.assertIn("providers.status.unknown", self._used_keys())
+
+    def test_a_key_shown_as_an_example_is_not_a_key_the_ui_asks_for(self):
+        """Prose shows keys. Failing a build over a sentence teaches people to stop writing.
+
+        The subject is written out here rather than looked for in the tree: the tree holds
+        one such line today, and a check that leans on that staying true measures the tree
+        rather than the scan.
+        """
+        sample = "// as in t('made.up.example')\nconst label = t('real.call');"
+        self.assertEqual(_T_CALL.findall(_without_prose(sample)), ["real.call"])
+
 
 class NoWordLostItsAccentsTests(unittest.TestCase):
     """A string can arrive stripped of its accents and still be perfectly valid JSON.

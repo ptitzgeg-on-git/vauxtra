@@ -337,6 +337,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **An integration nothing had measured was published as a green "Active", on the very page
+  the dashboard sends you to when the health check fails.** `getOperationalStatus` answered
+  `active` for `score < 0` and for `score >= 80` on one line, so no evidence and the best
+  evidence there is were painted the same word in the same green. That is the state of every
+  enabled integration between the list arriving and `GET /providers/health` answering, and
+  the state they stay in for good when that request fails, because the page never reads the
+  query's error. Every other reader of the same cache entry already disagreed:
+  `getProviderSeverity` returns `unknown`, so the "Healthy" count left those cards out and
+  the "Healthy" filter hid them; the dashboard's glance tile showed an "Unknown" chip; and
+  the dashboard raised "Integration health could not be checked", whose link points here.
+  The chip now says "Unknown" in neutral — the word the rest of the product already uses for
+  this state, reused verbatim in all eight languages — and the green is kept for a reading
+  that actually happened. Neutral rather than the dashboard's amber, because this is also the
+  ordinary first-paint window and an alarm that fires on every load is an alarm nobody reads.
+- **Twenty-one locale keys reached the page through a field neither gate could read.** Two
+  checks enforce this one rule — `check-locale-usage.mjs` in `Frontend (Node)` and
+  `EveryKeyTheUiAsksForExists` in `Backend (Python)` — and both matched only a name written
+  out inside the `t(` call. The settings tabs and groups, the three theme buttons and the
+  operational chip on every integration card do not write that: they carry
+  `labelKey: 'settings.tab.general'` in an object and hand it to `t()` a file away, and
+  fourteen of those keys are reached by no `t()` literal anywhere. They are literals and need
+  no guessing, which is the one thing these gates ask of a key, so both read them now — 1838
+  keys checked became 1859 on the Node side. A typo in any of them fails the build instead of
+  printing `providers.status.actve` into the chip, in eight languages, with every check green.
+- **A key named as an example in a comment failed the build.** The same two gates disagreed
+  in the other direction too: the Node one blanks a line opening with `//`, `*` or `/*`
+  before reading it, and says why — prose shows keys, and failing a build over a sentence
+  teaches the next reader to stop writing examples. The Python one read prose as code. That
+  went unnoticed because the one illustrative key in the tree, in `ConfirmDialog.tsx`,
+  happens to name a string that exists. The Python scan now blanks the same lines by the
+  same rule, and a written-out sample keeps it honest.
 - **A provider you switch off was published as "Failing", on a card that already said
   "Disabled" one chip to the left.** `getHealthScore` clamped the score of a disabled
   provider to 30, which lands in the `error` band, so `ProviderCard` drew a red
