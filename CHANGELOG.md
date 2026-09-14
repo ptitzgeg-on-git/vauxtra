@@ -175,11 +175,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   are the generic taxonomy tab, whose key and endpoint both arrive as props, and the monitoring
   page's log query, whose `queryFn` is a named function rather than a call.
 
+  The fourth rule reads which of a query's states each caller ever names. `useQuery` reports
+  a request that failed and one that answered with nothing as two different states, and a
+  caller naming neither receives both as an absent `data` — so what reaches the screen is
+  the fallback written beside the read, `?? []`, `?? 0`, `|| ''`. A list nobody could fetch
+  is then drawn as a list with nothing in it, which is not a slower answer to the operator's
+  question but a different one, given with the same confidence.
+
+  It is the only rule here that caught nothing on the commit that introduced it, which is
+  what it is for. The eighteen commits before it each gave one panel read a way to say it
+  had failed: a command palette answering "No matches." over a list it never received, two
+  wizard steps hiding their own, a certificates page reporting on an integration it had not
+  read, a form telling an operator that his proxy cannot detect a public address when the
+  lookup had never come back. Every one was a `useQuery` read down to its `data`, and every
+  one was found by reading the file. This rule is what stops the nineteenth.
+
+  Of the sixty-nine `useQuery` sites in the panel, fifty-two name a signal, nine hand the
+  whole query object somewhere this gate cannot follow — a hook returning it to its callers,
+  which is where its state is read — and eight withdraw into something that states nothing.
+  Those eight carry a written reason naming what gets drawn instead: a sidebar badge that
+  does not appear, a dash where a version would be, the browser's own time zone, a cadence
+  reported as `unknown`. A reason that stops being true fails the build, the same way a dead
+  entry in the first rule's table does.
+
+  The exemptions are keyed by file and bound name rather than by line, because a line number
+  goes stale on the next edit above it and an excuse that moves is an excuse nobody rereads.
+  Two reads in one file bound to one name therefore collide rather than share one, which is
+  its own failure with its own message. `isPending` and `isFetching` are deliberately not
+  accepted: they describe a request still in flight, and a caller naming only those still
+  cannot tell the other two states apart once it lands.
+
   `tests/test_read_contract_parity.py` reads four of those shapes back out by hand, builds
   the disagreements the panel no longer contains so the comparison has something to fail on,
-  and pins the premise itself — no `response_model=` anywhere in `app/`, and a client that
-  casts rather than checks. If either half of that stops being true, this gate is the wrong
-  place to catch the problem and should go.
+  resolves the fourth rule against ghost sources written for one case each — a read that
+  names no signal, one that names any of the five, one handed back whole, one renamed to
+  `error` without ever having asked for it — and pins the premise itself: no `response_model=`
+  anywhere in `app/`, and a client that casts rather than checks. If either half of that
+  stops being true, this gate is the wrong place to catch the problem and should go.
 
 - **A panel contract gate**, `scripts/check_panel_contract.py`, run in the backend job beside
   the API-MCP parity, repo hygiene and runtime parity gates. `check_api_mcp_parity.py` holds

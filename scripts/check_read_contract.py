@@ -36,6 +36,14 @@ at most one of them can be right. That is what this compares, in three rules.
       with: a shared hook naming its key once is the arrangement this rule asks for, and
       reading only a literal `queryKey` would have left it blind to its own remedy.
 
+  R4  A read that can fail says so. `useQuery` reports a failure and an empty answer as two
+      different states, and a caller naming none of `isError`, `error`, `isSuccess`,
+      `status` or `isLoadingError` has thrown that distinction away before it reaches the
+      screen: both arrive as an absent `data`, and what gets drawn is the fallback written
+      beside it -- `?? []`, `?? 0`, `|| ''`. A list nobody could fetch is then rendered as a
+      list with nothing in it, which is not a slower answer to the question. It is a
+      different answer, given with the same confidence.
+
 Each rule was written after it had already caught something, and every count below is what
 this file printed on the commit before that rule's fix.
 
@@ -60,6 +68,18 @@ changed, five named `['auth-status']` alone. The settings copy also declared no 
 which means zero, so opening Settings drew a skeleton and spent a round trip re-fetching an
 answer the shell already held. `/logs` is read under three keys and is not a finding: those
 three ask three different questions of one route, which is what a key is for.
+
+R4 is the only rule here that caught nothing on the commit that introduced it, which is what it
+is for. Eighteen commits before it each gave a panel read a way to say it had failed: a command
+palette answering "no results" over a list it never received, two wizard steps hiding their own,
+a certificates page reporting on an integration it had not read, a form telling an operator that
+his proxy cannot detect a public address when the lookup had never come back. Every one of those
+was a `useQuery` read down to its `data`, and every one was found by reading the file. This rule
+is what stops the nineteenth. Of the 69 `useQuery` sites in the panel, 52 name a signal, 9 hand
+the whole query object somewhere this file cannot follow -- a hook returning it to its callers,
+which is where its state is read -- and the remaining 8 withdraw into something that states
+nothing. Those 8 are in `BLIND_REASONS` with what each falls back to, and one that stops being
+true fails the build the way a dead `REASONS` entry does.
 
 The resolver is `check_panel_contract`'s, unchanged, for the reason that file argues at
 length: a resolver that guesses is worse than one that refuses. Every shape it cannot read
@@ -110,6 +130,23 @@ PRIMITIVES = frozenset(
     {"string", "number", "boolean", "bigint", "null", "undefined", "void", "never"}
 )
 
+#: R4 reads the binding a `useQuery` answer is given, which is the only place a file says
+#: which of the query's states it means to look at. Two spellings reach it: the destructured
+#: one, whose names are written at the call, and the named one, whose names are property
+#: accesses on an identifier somewhere below it.
+QUERY_DESTRUCTURE = re.compile(r"(?:const|let)\s*\{([^{}]*)\}\s*=\s*useQuery\s*[<(]", re.S)
+QUERY_BINDING = re.compile(r"(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*useQuery\s*[<(]")
+#: A hook whose whole body is the query hands it straight back; the states are read by
+#: whoever called it, in a file this one is not reading.
+QUERY_RETURNED = re.compile(r"\breturn\s+useQuery\s*[<(]")
+PROPERTY_AT = re.compile(r"\s*\??\.\s*([A-Za-z_$][\w$]*)")
+
+#: Anything that tells a read that failed from one that answered with nothing. `isPending`
+#: and `isFetching` are deliberately absent: they describe the third state, a request still
+#: in flight, and a caller naming only those still cannot tell the other two apart once it
+#: lands.
+FAILURE_SIGNALS = frozenset({"isError", "error", "isSuccess", "status", "isLoadingError"})
+
 
 # Groups whose observers cannot be compared, and why. Keyed the way the report names them.
 # A group listed here that turns out to compare cleanly fails the build: an excuse nobody
@@ -143,6 +180,84 @@ REASONS = {
         "The union is deliberate -- the route answered a wrapped object for one version "
         "and `unwrapHealthMap` still takes either spelling -- and a union of object types "
         "is not a shape this resolver reads."
+    ),
+}
+
+
+# Reads that cannot tell a failure from an empty answer, and why each is allowed to. Keyed
+# by the file and the name the answer is bound to, because a line number goes stale on the
+# next edit and an excuse that moves is an excuse nobody rereads. Every one of these has to
+# withdraw into something that states nothing -- a badge that does not appear, a dash, a
+# verdict of "unknown". An entry whose read starts naming a signal is dead and fails the
+# build.
+BLIND_REASONS = {
+    "components/features/settings/data/SyncSection.tsx:existingServices": (
+        "A second opinion on a question the server has already answered. Every scanned row "
+        "arrives carrying `_already_imported`, which `app/api/sync.py` sets from the "
+        "services table itself, and a row counts as known if that flag is true or this list "
+        "holds its public host. A `['services']` read that fails empties the right-hand "
+        "side of that `or` and leaves the authoritative left-hand side standing: the scan "
+        "then marks exactly what the server says was imported, which is what it would have "
+        "done had this query never been written."
+    ),
+    "components/layout/Sidebar.tsx:services": (
+        "The count of enabled services, drawn as `enabledServicesCount || undefined` -- a "
+        "nought is not rendered at all. A list that never arrived leaves the nav item with "
+        "no badge, which is what it looks like before anything has loaded and what it looks "
+        "like for an estate with nothing in it. The error count beside it withdraws the "
+        "same way and takes its danger tone and its `alert` glyph with it, so nothing on "
+        "this rail claims the estate is well."
+    ),
+    "components/layout/Sidebar.tsx:providers": (
+        "The same withdrawal as `services` above, one nav item down: "
+        "`healthyProvidersCount || undefined`. No list, no badge. A rail saying nothing "
+        "about how many providers are configured is the rail every operator sees for the "
+        "first second of every page load."
+    ),
+    "components/layout/Sidebar.tsx:health": (
+        "The version string in the rail's footer, which is a `v` and the version when there "
+        "is one and an em dash when there is not. That dash is already what an older "
+        "backend sending no version gets, so a health check nobody could read renders as a "
+        "version nobody could read. The query this file did have to get right is the "
+        "certificate expiry beside it, and that one names `isSuccess` for the reason "
+        "written above it: a missing count was being drawn as nought, and a nought is a "
+        "measurement."
+    ),
+    "hooks/useFormat.ts:settings": (
+        "One key of the settings map, `settings?.timezone`, handed to `resolveTimeZone`, "
+        "which falls back to the browser's own zone for anything it cannot use -- absent, "
+        "empty, or not a zone `Intl` knows. Every date on every page is formatted through "
+        "this hook, so the alternative to a fallback is no date anywhere; and the fallback "
+        "is not a guess about the setting, it is the zone the reader is actually sitting "
+        "in."
+    ),
+    "pages/Dashboard.tsx:stats": (
+        "A counter cache in front of lists this page already reads properly. Each figure is "
+        "written `stats?.services ?? allServices.length`, `stats?.services_ok ?? "
+        "servicesOk`, `stats?.services_error ?? servicesInError`, and those lists come from "
+        "`['services']` and `['providers']`, both of which name `isError` and both of which "
+        "drive the failure banner. An absent `stats` is also half of `servicesUnknown`, so "
+        "a page holding neither the counters nor the list draws a dash and says as much, "
+        "never a nought."
+    ),
+    "pages/Monitoring.tsx:settings": (
+        "`settings?.check_interval`, read by `autoCheckCadence`, whose whole contract is "
+        "that anything unreadable answers a state of `unknown` and the header then says "
+        "nothing about the scheduler at all. That function documents why it is read from "
+        "the setting and never from a timestamp: `0` means the scheduler is off, and `0` is "
+        "exactly the value a `Number(x) || 5` swallowed, so a page whose checks were "
+        "disabled announced checks every five minutes. Silence is the only line here that "
+        "is never wrong."
+    ),
+    "pages/Services.tsx:providersQuery": (
+        "The logos beside each row. `ProviderLogos` resolves the service's provider ids "
+        "against this list and, with nothing to resolve against, prints the "
+        "`tunnel_provider_name`, `proxy_provider_name` and `dns_provider_name` the row "
+        "already carries -- three columns `GET /api/services` joins onto every service -- "
+        "so the row still names its providers, in text rather than in logos. The "
+        "`services.no_provider` line is reached only when all three are absent, which is a "
+        "service that genuinely has none. The read this page has to get right is the "
+        "services list, and it names `isPending`, `isError`, `error` and `isFetching`."
     ),
 }
 
@@ -537,6 +652,100 @@ def split_cache(ix: PanelIndex) -> tuple[int, list[str]]:
         split.append(f"{url}: {readers}")
     return paired, split
 
+def destructured(group: str) -> tuple[set[str], str | None]:
+    """The query properties a `{ ... }` binding names, and what it called `data`.
+
+    The names are the left of each `:`, which is where the query's own vocabulary is: in
+    `{ data: services, isError }` the query is asked for `data` and `isError`, and `services`
+    is this file's word for the answer. Reading both sides would let a binding that renames
+    something to `error` pass for one that asked for the error.
+    """
+    names: set[str] = set()
+    bound: str | None = None
+    for part in split_str(group, ",", angle=True):
+        part = part.strip()
+        if not part or part.startswith("..."):
+            continue
+        head, sep, tail = part.partition(":")
+        name = head.split("=")[0].strip()
+        if not name:
+            continue
+        names.add(name)
+        if name == "data":
+            local = tail.split("=")[0].strip() if sep else name
+            bound = local or name
+    return names, bound
+
+
+def blind(ix: PanelIndex) -> tuple[dict[str, int], dict[str, str], list[str]]:
+    """Reads that cannot tell a request that failed from one that answered with nothing.
+
+    The binding is what says which of a query's states a file means to look at, and it comes
+    in two spellings. Destructured, the names are written at the call. Named, they are
+    property accesses on the identifier below it -- and if that identifier is ever used as a
+    whole value, the object has left this file. A hook handing its query back to its callers
+    is read where it lands, and following it there is the guess this resolver does not make;
+    those are counted as escaping rather than blind, and so is a `return useQuery(...)`,
+    which is the same arrangement with no name at all.
+
+    Keyed by file and bound name, not by line, so an exemption survives the next edit above
+    it. Two reads in one file bound to the same name would share one key and one excuse,
+    which is why that collides rather than resolving.
+
+    The use scan reads the whole file rather than the binding's scope, so a second
+    declaration of the same word elsewhere in the file would lend its reads to the query
+    and could hide a blind one. No panel file declares a query binding's name twice today
+    -- the five words that do appear again are the shorthand of a hook returning its own
+    query, which is the whole-value use above and not a rebinding -- and the collision
+    check covers the query-against-query half of it outright.
+    """
+    stats = {"sites": 0, "named": 0, "escaping": 0}
+    found: dict[str, str] = {}
+    collisions: list[str] = []
+
+    def record(src: Source, pos: int, name: str) -> None:
+        key = f"{src.rel}:{name}"
+        at = f"{src.rel}:{src.line_of(pos)}"
+        if key in found:
+            collisions.append(f"{key}: bound at {found[key]} and again at {at}")
+            return
+        found[key] = at
+
+    for src in ix.sources:
+        for m in QUERY_DESTRUCTURE.finditer(src.code):
+            stats["sites"] += 1
+            names, bound = destructured(m.group(1))
+            if names & FAILURE_SIGNALS:
+                stats["named"] += 1
+                continue
+            record(src, m.start(), bound or (sorted(names)[0] if names else "data"))
+        for m in QUERY_BINDING.finditer(src.code):
+            stats["sites"] += 1
+            name = m.group(1)
+            uses = re.compile(r"(?<![\w$])" + re.escape(name) + r"(?![\w$])")
+            reads: set[str] = set()
+            whole = False
+            for u in uses.finditer(src.code):
+                if u.start() == m.start(1):
+                    continue
+                prop = PROPERTY_AT.match(src.code, u.end())
+                if prop is None:
+                    whole = True
+                else:
+                    reads.add(prop.group(1))
+            if reads & FAILURE_SIGNALS:
+                stats["named"] += 1
+            elif whole:
+                stats["escaping"] += 1
+            else:
+                record(src, m.start(), name)
+        for _m in QUERY_RETURNED.finditer(src.code):
+            stats["sites"] += 1
+            stats["escaping"] += 1
+
+    return stats, found, collisions
+
+
 def run(ix: PanelIndex):
     """Compare every group, and say what could not be compared."""
     groups = collect(ix)
@@ -595,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
     stats, conflicts, narrowed, unexplained, used = run(ix)
     shadows = shadowed(ix)
     paired, split = split_cache(ix)
+    b_stats, b_found, b_collisions = blind(ix)
 
     print(f"READ_GET_COUNT {stats['gets']}")
     print(f"READ_QUERY_COUNT {stats['queries']}")
@@ -607,6 +817,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"READ_SPLIT_COUNT {len(split)}")
     print(f"READ_EXEMPT_COUNT {len(used)}")
     print(f"READ_DIVERGENCE_COUNT {len(conflicts)}")
+    print(f"READ_QUERY_SITE_COUNT {b_stats['sites']}")
+    print(f"READ_SIGNAL_COUNT {b_stats['named']}")
+    print(f"READ_ESCAPING_COUNT {b_stats['escaping']}")
+    print(f"READ_BLIND_COUNT {len(b_found)}")
+    print(f"READ_BLIND_EXEMPT_COUNT {len(set(b_found) & set(BLIND_REASONS))}")
 
     if options.report:
         groups = collect(ix)
@@ -619,6 +834,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"      {o.at}  {o.expr}  -> {kind}")
         for name, key in narrowed:
             print(f"  narrowed: {name} does not read {key} everywhere")
+        for key in sorted(b_found):
+            note = "exempt" if key in BLIND_REASONS else "BLIND"
+            print(f"  {note}: {b_found[key]} reads no failure state ({key})")
         return 0
 
     if conflicts:
@@ -639,6 +857,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {line}")
         return 1
 
+    if b_collisions:
+        print("Two reads in one file bound to one name (R4 keys its exemptions by name):")
+        for line in b_collisions:
+            print(f"  {line}")
+        return 1
+
+    unread = sorted(k for k in b_found if k not in BLIND_REASONS)
+    if unread:
+        print("Reads that cannot tell a failure from an empty answer:")
+        for key in unread:
+            print(f"  {b_found[key]}: names none of {', '.join(sorted(FAILURE_SIGNALS))}")
+        print("  Name one of them, or say in BLIND_REASONS what the read withdraws into.")
+        return 1
+
     if unexplained:
         print("Groups this gate cannot compare (make them readable, or say why in REASONS):")
         for line in unexplained:
@@ -650,6 +882,13 @@ def main(argv: list[str] | None = None) -> int:
         print("REASONS entries that no longer explain anything (remove them):")
         for name in dead:
             print(f"  {name}")
+        return 1
+
+    dead_blind = sorted(set(BLIND_REASONS) - set(b_found))
+    if dead_blind:
+        print("BLIND_REASONS entries that no longer explain anything (remove them):")
+        for key in dead_blind:
+            print(f"  {key}")
         return 1
 
     return 0

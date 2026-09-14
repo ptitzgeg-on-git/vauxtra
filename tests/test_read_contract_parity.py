@@ -18,6 +18,13 @@ panel where expanding a utility type and then applying the interface's own membe
 a different answer from doing either alone. `Pick<AuthStatus, 'auth_mode'>` is the narrowing
 the gate has to allow rather than fail, kept here now that no panel module writes one. And `ProvidersHealthMap` is the shape it has to
 refuse: an alias for an index signature, which declares no key and can contradict nothing.
+
+The last class here is about a different question the same gate now asks. R4 compares no
+declarations at all: it reads which of a query's states each caller ever names, because a
+caller naming none of them cannot tell a request that failed from one that came back empty,
+and draws the fallback written beside the read either way. That rule keeps its own exemption
+list, and the cases for it are resolved the way the rest are, by hand and against ghost
+sources built for one test each.
 """
 
 import importlib.util
@@ -68,6 +75,21 @@ class _ReadCase(unittest.TestCase):
             sorted(k for k, (opt, _) in got[1].items() if not opt),
             sorted(k for k, (opt, _) in got[1].items() if opt),
         )
+
+    def ghost(self, *lines: str, rel: str = "__ghost.ts"):
+        """A source file that exists only for the length of one test.
+
+        `rel` is what the gates key their findings by, so a test needing two of these at
+        once has to name them apart, and one keyed by name needs them apart to say which
+        ghost it caught.
+        """
+        code = "\n".join(lines)
+        src = self.panel.Source(
+            rel=rel, raw=code, code=code, brackets=self.panel.bracket_map(code)
+        )
+        self.index.sources.append(src)
+        self.addCleanup(self.index.sources.remove, src)
+        return src
 
 
 
@@ -426,16 +448,6 @@ class OneAnswerHasOneCacheEntry(_ReadCase):
                     out.add((url, key))
         return out
 
-    def ghost(self, *lines: str):
-        """A source file that exists only for the length of one test."""
-        code = "\n".join(lines)
-        src = self.panel.Source(
-            rel="__ghost.ts", raw=code, code=code, brackets=self.panel.bracket_map(code)
-        )
-        self.index.sources.append(src)
-        self.addCleanup(self.index.sources.remove, src)
-        return src
-
 
 class TheGateComparesEnoughToBeWorthFailingABuild(_ReadCase):
     """A gate that quietly compares nothing is as green as one that works."""
@@ -463,6 +475,219 @@ class TheGateComparesEnoughToBeWorthFailingABuild(_ReadCase):
         self.assertGreaterEqual(self.stats["compared"], 200)
         self.assertLessEqual(self.stats["skipped"], self.stats["compared"] // 20)
 
+
+
+class AReadThatCanFailSaysSo(_ReadCase):
+    """R4, resolved by hand: which reads can tell a failure from an empty answer.
+
+    `useQuery` reports those as two different states, and a caller naming neither still
+    receives both, as an absent `data`. What gets drawn is then whatever sits beside it --
+    `?? []`, `?? 0`, `|| ''` -- so a list nobody could fetch renders as a list with nothing
+    in it. That is not a slower answer to the operator's question. It is a different answer,
+    given with the same confidence.
+
+    Eighteen commits before this rule each gave one panel read a way to say it had failed,
+    every one of them found by reading the file. The rule is what stops the nineteenth, so
+    the cases below are mostly about the two ways it could go quietly green: by matching
+    nothing, and by counting a read as answered when the file never asked.
+    """
+
+    #: The panels the seven most recent of those commits fixed, less the ones that make no
+    #: query of their own: several were fixed by handing them the state as a prop, and a
+    #: file with nothing to read cannot regress into reading it blind.
+    FIXED_PANELS = (
+        "components/features/settings/DnsTab.tsx",
+        "components/features/settings/TaxonomyTab.tsx",
+        "components/features/settings/data/DockerSection.tsx",
+        "components/features/templates/TemplateModal.tsx",
+        "components/features/expose/ExposeModal.tsx",
+        "components/layout/CommandPalette.tsx",
+        "hooks/useDockerDiscovery.ts",
+        "hooks/useDockerEndpoints.ts",
+        "pages/Templates.tsx",
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.stats, cls.found, cls.collisions = cls.gate.blind(cls.index)
+
+    def sites_in(self, src) -> int:
+        """Every spelling of a `useQuery` call in one file, counted the way the rule does."""
+        return (
+            len(self.gate.QUERY_DESTRUCTURE.findall(src.code))
+            + len(self.gate.QUERY_BINDING.findall(src.code))
+            + len(self.gate.QUERY_RETURNED.findall(src.code))
+        )
+
+    def test_every_read_that_states_nothing_is_written_down(self) -> None:
+        unread = sorted(k for k in self.found if k not in self.gate.BLIND_REASONS)
+        self.assertEqual(unread, [])
+
+    def test_no_excuse_outlives_the_read_it_was_written_for(self) -> None:
+        self.assertEqual(sorted(set(self.gate.BLIND_REASONS) - set(self.found)), [])
+
+    def test_each_excuse_names_what_the_read_withdraws_into(self) -> None:
+        """Naming the read is not a reason. What gets drawn instead of an answer is.
+
+        Every one of these has to come down to something that states nothing: a badge that
+        does not appear, a dash, a verdict of `unknown`, a fallback the row already carries.
+        An entry that only restated where the read lives would let the next one be waved
+        through the same way.
+        """
+        for key, why in sorted(self.gate.BLIND_REASONS.items()):
+            with self.subTest(read=key):
+                self.assertGreater(len(why.strip()), 80)
+
+    def test_no_two_reads_in_one_file_share_a_name(self) -> None:
+        self.assertEqual(self.collisions, [])
+
+    def test_the_census_accounts_for_every_site(self) -> None:
+        """Three outcomes and no fourth, with a floor under the walk that produces them.
+
+        A matcher that stopped seeing `useQuery` would pass this rule by finding nothing to
+        judge, which is how a gate regresses without ever going red. The equality says
+        nothing falls out of the walk; the floors say the walk still reaches most of the
+        panel.
+        """
+        self.assertEqual(
+            self.stats["sites"],
+            self.stats["named"] + self.stats["escaping"] + len(self.found),
+        )
+        self.assertGreaterEqual(self.stats["sites"], 60)
+        self.assertGreaterEqual(self.stats["named"], 45)
+        self.assertLessEqual(len(self.found), self.stats["sites"] // 5)
+
+    def test_the_panels_the_last_commits_fixed_still_name_a_signal(self) -> None:
+        """What the rule is actually holding, named one file at a time.
+
+        Each of these was a read that had answered for a server it never reached, and each
+        now says whether it failed. A revert, a refactor or a merge that drops the signal
+        again lands here instead of on an operator's screen.
+        """
+        by_rel = {src.rel: src for src in self.index.sources}
+        blind_files = {key.rsplit(":", 1)[0] for key in self.found}
+        for rel in self.FIXED_PANELS:
+            with self.subTest(panel=rel):
+                src = by_rel.get(rel)
+                self.assertIsNotNone(src, f"{rel} is no longer in the panel")
+                self.assertGreater(self.sites_in(src), 0, f"{rel} makes no query any more")
+                self.assertNotIn(rel, blind_files)
+
+    def test_the_rule_would_notice_a_new_one(self) -> None:
+        """A list read down to its `data`, with `?? []` written beside it."""
+        ghost = self.ghost(
+            "const { data: rows } = useQuery<Row[]>({queryKey: ['r']});",
+            "const shown = rows ?? [];",
+            rel="__ghost_blind.ts",
+        )
+        _, found, _ = self.gate.blind(self.index)
+        self.assertIn(ghost.rel + ":rows", found)
+
+    def test_naming_any_one_of_the_signals_is_enough(self) -> None:
+        """Five spellings of the same question, and the rule takes any of them.
+
+        A read that reaches `status` has the same three states available to it as one that
+        reaches `isError`, so demanding a particular spelling would only teach people to
+        destructure a name they never use.
+        """
+        for signal in sorted(self.gate.FAILURE_SIGNALS):
+            with self.subTest(signal=signal):
+                ghost = self.ghost(
+                    "const { data: rows, " + signal + " } = useQuery<Row[]>({queryKey: ['r']});",
+                    rel="__ghost_" + signal + ".ts",
+                )
+                _, found, _ = self.gate.blind(self.index)
+                self.assertEqual([k for k in found if k.startswith(ghost.rel)], [])
+
+    def test_a_request_still_in_flight_is_not_one_of_the_two_states(self) -> None:
+        """`isPending` and `isFetching` describe the third state, which is not the question.
+
+        A caller naming only those knows when the answer has not arrived yet, and still
+        cannot tell, once it has, whether it arrived empty or never arrived at all. They are
+        kept out of the accepted set for that reason, not by oversight.
+        """
+        for spelling in ("isPending", "isFetching", "isLoading", "refetch", "data"):
+            with self.subTest(named=spelling):
+                self.assertNotIn(spelling, self.gate.FAILURE_SIGNALS)
+        ghost = self.ghost(
+            "const { data: rows, isPending, isFetching } = useQuery<Row[]>({queryKey: ['r']});",
+            rel="__ghost_pending.ts",
+        )
+        _, found, _ = self.gate.blind(self.index)
+        self.assertIn(ghost.rel + ":rows", found)
+
+    def test_the_names_read_are_the_query_own_and_not_this_file_own(self) -> None:
+        """`{ data: error }` asks the query for `data`. It has not asked whether it failed.
+
+        The left of each colon is the query's own vocabulary and the right is this file's
+        word for the answer. Reading the right would let any binding that happens to call
+        its answer `error` pass for one that asked the query for its error.
+        """
+        ghost = self.ghost(
+            "const { data: error } = useQuery<string>({queryKey: ['e']});",
+            rel="__ghost_rename.ts",
+        )
+        _, found, _ = self.gate.blind(self.index)
+        self.assertIn(ghost.rel + ":error", found)
+
+    def test_a_query_handed_back_whole_is_read_where_it_lands(self) -> None:
+        """A hook returning its query decides nothing here, so it states nothing here.
+
+        Its states are read by whoever called it, in a file this walk is not holding, and
+        following it there is the guess the resolver declines to make. That is a real read
+        somewhere rather than an absent one, so it counts as escaping and not as blind.
+        """
+        before = self.gate.blind(self.index)[0]["escaping"]
+        ghost = self.ghost(
+            "export function useRows() { return useQuery<Row[]>({queryKey: ['r']}); }",
+            rel="__ghost_returned.ts",
+        )
+        stats, found, _ = self.gate.blind(self.index)
+        self.assertEqual(stats["escaping"], before + 1)
+        self.assertEqual([k for k in found if k.startswith(ghost.rel)], [])
+
+    def test_a_binding_used_as_a_whole_value_has_left_the_file(self) -> None:
+        """The same arrangement with a name on it, which is what `useDockerEndpoints` does.
+
+        Every other mention of the binding is a property access; this one hands the object
+        itself to a caller, and one such mention is enough to put its states out of reach.
+        """
+        before = self.gate.blind(self.index)[0]["escaping"]
+        ghost = self.ghost(
+            "const rowsQuery = useQuery<Row[]>({queryKey: ['r']});",
+            "return { rows: rowsQuery.data ?? [], rowsQuery };",
+            rel="__ghost_escapes.ts",
+        )
+        stats, found, _ = self.gate.blind(self.index)
+        self.assertEqual(stats["escaping"], before + 1)
+        self.assertEqual([k for k in found if k.startswith(ghost.rel)], [])
+
+    def test_a_binding_read_only_through_its_properties_is_judged_here(self) -> None:
+        """The same binding again, never handed anywhere: this file is where it is read."""
+        ghost = self.ghost(
+            "const rowsQuery = useQuery<Row[]>({queryKey: ['r']});",
+            "const rows = rowsQuery.data ?? [];",
+            rel="__ghost_property.ts",
+        )
+        _, found, _ = self.gate.blind(self.index)
+        self.assertIn(ghost.rel + ":rowsQuery", found)
+
+    def test_two_reads_bound_to_one_name_collide_rather_than_share_an_excuse(self) -> None:
+        """One key, one excuse, so two reads under it would let one cover for the other.
+
+        An exemption is keyed by file and name rather than by line, because a line number
+        goes stale on the next edit above it and an excuse that moves is an excuse nobody
+        rereads. What that costs is a name that has to stay unique inside its own file.
+        """
+        self.ghost(
+            "const { data: rows } = useQuery<Row[]>({queryKey: ['a']});",
+            "const { data: rows } = useQuery<Row[]>({queryKey: ['b']});",
+            rel="__ghost_twice.ts",
+        )
+        _, _, collisions = self.gate.blind(self.index)
+        self.assertEqual(len(collisions), 1, collisions)
+        self.assertIn("__ghost_twice.ts:rows", collisions[0])
 
 
 class NothingElseEverChecksAGetAnswer(unittest.TestCase):
