@@ -9,6 +9,54 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **The key with the fewest privileges that can do anything at all could erase the record of
+  everything it did.** `POST /api/logs/clear` carried `scope="write"`, presumably because the
+  verb changes rows. What it changes rows in is the one table that holds
+  `"Sign-in refused: wrong password"`, `"API key created: {name} (scopes: {scopes})"`,
+  `"API key revoked: {name}"`, `"Admin password changed, and every other session was signed
+  out"` and `"Backup restored (version {v})"`. `write` is the scope a deployment script, a CI
+  job or a home-automation flow is minted with: the keys that live in other people's config
+  files and get copied around. Any of them could empty the log — of its
+  own work, and of whoever was standing next to it guessing at the panel password. The audit
+  trail was erasable by the least trusted key in the system, and the erasure looked like an
+  ordinary write.
+
+  The route now requires `admin`, alongside the other operations that reach the whole instance
+  rather than one service: backup, restore, factory reset, the credentials, and the settings
+  keys that aim the scheduler at a host of the caller's choosing. That row of the scope table
+  in `docs/HOWTO.md` already called itself "credentials and the whole instance" and already
+  failed to list this route, so the documentation was describing the rule the code was
+  breaking. Scoping by reach rather than by verb is not new here — `write` cannot reach
+  `public_target_sources` either — it had simply never been applied to the log.
+
+  The half of the rule that survives the fix is the line the clear writes about itself. An
+  empty log and a cleared log are different states, and a test now pins the difference: after
+  the clear the log holds exactly one entry, saying it was cleared. An admin can empty the
+  record; an admin cannot empty the record of having emptied it.
+
+  Naming the new scope meant reading what `vauxtra_mcp/README.md` already claimed, and it
+  was wrong before this change. "`write` covers every tool except the admin ones
+  (`change_password`, backup/restore, factory reset, API key management)" is prose: it reads
+  well, it cannot be checked, and it had drifted twice. `mark_setup_complete` needs `admin`
+  and no category named it. `save_settings` needs `admin` when the body carries
+  `public_target_sources`, the setting that chooses a URL the server goes and fetches, and
+  none mentioned that either. Someone minting a key from that sentence got a 403 in the
+  middle of a restore, which is the worst moment to learn it.
+
+  The line now names all eleven tools outright, and a test walks the AST of `app/api/*.py`
+  for every route whose body asks `require_auth(..., scope="admin")`, maps them back through
+  the tools that call them, and compares the two sets in both directions. A tool missing from
+  the line fails the build; so does a tool invented in it, because a list that overstates the
+  scope gets keys minted with more reach than the work needs. A renamed heading reads as an
+  empty list, which disagrees with all eleven and therefore fails rather than passes. The
+  bridge README also now shows what a 403 looks like, next to the 400 it already showed:
+  the two need opposite responses, and only one of them is worth changing the arguments for.
+
+  **Upgrading:** an API key with `write` calling `POST /api/logs/clear` — or the `clear_logs`
+  MCP tool through such a key — now gets 403 and "Insufficient scope". Mint an `admin` key for
+  it, or clear the log from the panel, where a signed-in session has always been admin. Nothing
+  else about the route changed.
+
 - **A read-only API key could rewrite the state of any route, and a link preview could do it
   with nobody clicking anything.** `GET /api/services/{sid}/check` sat behind
   `require_auth(request)` with no scope, and unscoped means "any authenticated caller": a key

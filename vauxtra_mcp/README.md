@@ -7,7 +7,7 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 ## Prerequisites
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
-2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`; `write` covers every tool except the admin ones (`change_password`, backup/restore, factory reset, API key management).
+2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `clear_logs`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, and `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches.
 3. Python 3.12+ with dependencies installed:
 
 ```bash
@@ -232,7 +232,7 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 
 | Tool | Description |
 |---|---|
-| `clear_logs` | Delete every log entry |
+| `clear_logs` | Delete every log entry; needs `admin`, and records the clear |
 | `stream_logs_snapshot` | Read a bounded slice of the SSE log stream; a quiet instance answers `timed_out: true` with whatever it collected |
 
 **Backup and reset**
@@ -318,6 +318,17 @@ ApiError: POST /api/settings -> 400: Nothing was saved -- check_interval: must b
 `raise_for_status()` used to produce `Client error '400 Bad Request' for url ...`, which
 threw the `detail` away — and since 1.1 the detail is the useful part: which setting was
 refused and why, which provider still holds a service, that a hostname is already taken.
+
+A `403` is the one worth reading differently. It says nothing about the request: it says the
+key does not carry the scope the route asks for, and the detail names which one.
+
+```
+ApiError: POST /api/logs/clear -> 403: Insufficient scope: 'admin' required
+```
+
+Retrying will not help, and neither will changing the arguments. The tools that need `admin`
+are named under **Prerequisites** above; every other tool needs `write`. Ask for a key with the
+scope the detail names, or use the panel, where a signed-in session is always admin.
 
 ---
 

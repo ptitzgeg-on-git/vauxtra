@@ -936,7 +936,7 @@ no such capability, and 502 when the provider itself refuses.
 | `POST` | `/api/settings/test-webhook` | Send a test notification to every enabled webhook; answers `{ok, results[]}` with one entry per target |
 | `GET` | `/api/logs` | Get logs (supports `?level=` filter) |
 | `GET` | `/api/logs/stream` | SSE log stream |
-| `POST` | `/api/logs/clear` | Clear logs |
+| `POST` | `/api/logs/clear` | Clear logs (`admin`; the clear is itself logged) |
 | `GET` | `/api/stats` | Global counters |
 | `GET` | `/api/health` | System health check |
 | `POST` | `/api/reset` | Factory reset (⚠️ destructive) |
@@ -1036,7 +1036,7 @@ what it was created with. A request that falls short is refused with
 |---|---|
 | `read` | Every `GET` except the deprecated `GET /api/services/{sid}/check`, which writes and therefore needs `write` like its `POST`. Plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
 | `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/services/{sid}/check`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
-| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`. |
+| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`, `/api/logs/clear`. The log is in this row rather than in `write` because it is where failed sign-ins, key creations and password changes are written down: a `write` key that could empty it could erase the record of its own work. |
 
 Two things a `write` key may **not** do, because they choose a URL rather than a value,
 and the server is what goes and fetches it:
