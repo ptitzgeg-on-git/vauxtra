@@ -285,6 +285,7 @@
   "providers.status.degraded": "Verminderd",
   "providers.status.error": "Fout",
   "providers.status.disabled": "Uitgeschakeld",
+  "providers.status.unknown": "Onbekend",
   "common.version": "Versie",
   "common.save": "Opslaan",
   "common.cancel": "Annuleren",

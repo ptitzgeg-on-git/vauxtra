@@ -12,10 +12,19 @@
  * zero, the Issues filter hid the card, and the red badge existed only on the screen that
  * said nothing was wrong.
  *
+ *
+ * The same page had a second reading of the same shape, at the other end of the scale. A
+ * provider nothing has measured yet scores -1, and `getOperationalStatus` folded that into
+ * the branch for a score of 80 or more: no evidence and the best evidence there is were both
+ * painted a green "Active". That is every enabled provider between the list arriving and
+ * `GET /providers/health` answering, and every enabled provider for good when that request
+ * fails -- the page never reads its error. The dashboard does, and it raises "Integration
+ * health could not be checked" whose link points at this page.
  * These tests read all three answers for the same provider and require them to agree.
  */
 
 import { describe, expect, it } from 'vitest';
+import en from '@/locales/en.json';
 
 import type { Provider } from '@/types/api';
 
@@ -107,6 +116,67 @@ describe('a provider that is switched on', () => {
       const cardSaysIncident = health.severity === 'error' || health.severity === 'degraded';
       const pageSaysIncident = ['degraded', 'error'].includes(getProviderSeverity(p, health));
       expect(pageSaysIncident, name).toBe(cardSaysIncident);
+    }
+  });
+});
+
+describe('a provider nothing has measured yet', () => {
+  // Not a rare state. `GET /providers/health` covers every enabled provider, so this is the
+  // window between the list arriving and that request answering -- and it is where the page
+  // stays for good when the request fails, because nothing on the page reads that query's
+  // error. The dashboard does: it raises "Integration health could not be checked" and links
+  // here.
+  const subject = provider(true);
+  const health = getHealthScore(subject, SIGNALS.nothing_measured, t);
+
+  it('has no reading to report', () => {
+    expect(health.score).toBe(-1);
+    expect(health.severity).toBe('unknown');
+  });
+
+  it('is not announced as Active', () => {
+    // `score < 0` used to share a branch with `score >= 80`: no evidence and the best
+    // evidence there is were painted the same green word.
+    expect(getOperationalStatus(subject, health).labelKey).not.toBe('providers.status.active');
+    expect(getOperationalStatus(subject, health).tone).not.toBe('success');
+  });
+
+  it('gets the same answer from the chip, the filter and the badge', () => {
+    expect(getOperationalStatus(subject, health).labelKey).toBe('providers.status.unknown');
+    expect(getOperationalStatus(subject, health).tone).toBe('neutral');
+    expect(getProviderSeverity(subject, health)).toBe('unknown');
+    expect(healthTone[health.severity]).toBe('neutral');
+    expect(showsHealthBadge(subject, health)).toBe(false);
+  });
+});
+
+describe('the chip on the card and the counters above it', () => {
+  const CASES = [true, false].flatMap((enabled) =>
+    Object.entries(SIGNALS).map(([name, signals]) => ({ name: `${name} enabled=${enabled}`, enabled, signals })),
+  );
+
+  it('says Active exactly when the page counts the provider healthy', () => {
+    // The "Healthy" chip counts `getProviderSeverity(...) === 'healthy'` and its filter hides
+    // everything else; the card prints `getOperationalStatus(...).labelKey`. A card reading
+    // Active that the Healthy count leaves out is the page contradicting itself in one view.
+    for (const { name, enabled, signals } of CASES) {
+      const p = provider(enabled);
+      const health = getHealthScore(p, signals, t);
+      const chipSaysActive = getOperationalStatus(p, health).labelKey === 'providers.status.active';
+      const pageCountsHealthy = getProviderSeverity(p, health) === 'healthy';
+      expect(chipSaysActive, name).toBe(pageCountsHealthy);
+    }
+  });
+
+  it('never names a key the locale files do not carry', () => {
+    // These keys reach `t()` through a variable, one file away -- `{t(status.labelKey)}`.
+    // Both gates over this rule read literal `t()` calls only, until this landed, so a typo
+    // here printed the key itself into the chip, in all eight languages, with CI green.
+    const keys = Object.keys(en);
+    for (const { name, enabled, signals } of CASES) {
+      const p = provider(enabled);
+      const { labelKey } = getOperationalStatus(p, getHealthScore(p, signals, t));
+      expect(keys, `${name} -> ${labelKey}`).toContain(labelKey);
     }
   });
 });

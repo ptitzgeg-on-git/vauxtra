@@ -42,6 +42,24 @@ const CATEGORIES = ['zero', 'one', 'two', 'few', 'many', 'other'];
 const LITERAL_KEY = /\bt\(\s*(['"`])([^'"`\\$\n]*)\1/g;
 
 /**
+ * A `labelKey: '<key>'` field, which is a key spelt out by hand with no `t(` in front of it.
+ *
+ * Twenty-one keys reach the page this way and not one of them was checked here: every
+ * settings tab and group, the three theme buttons, and the operational chip on every
+ * integration card. The value is handed to `t()` one file away -- `{t(status.labelKey)}` --
+ * so a typo in one fails exactly as a typo in a `t()` call does, printing
+ * `providers.status.actve` into the chip in all eight languages while CI stays green. It is
+ * a literal and needs no guess, which is the only thing this gate asks of a key.
+ */
+const LABEL_KEY = /\blabelKey:\s*(['"`])([^'"`\\$\n]*)\1/g;
+
+/** Both ways a key is written out by hand, each with the shape a failure should quote. */
+const KEY_FORMS = [
+  { quote: (key) => `t('${key}')`, pattern: LITERAL_KEY },
+  { quote: (key) => `labelKey: '${key}'`, pattern: LABEL_KEY },
+];
+
+/**
  * A line that opens with `//`, `*` or `/*` is prose, and prose shows examples:
  * `ConfirmDialog.tsx` documents its own API with a `t('services.confirm.delete_title')` in a
  * JSDoc block. An illustrative key is not a call, and failing the build over one would teach
@@ -88,21 +106,23 @@ for (const file of files) {
     .map((line) => (COMMENT_LINE.test(line) ? '' : line))
     .join('\n');
 
-  for (const match of source.matchAll(LITERAL_KEY)) {
-    const key = match[2];
-    checked += 1;
-    if (known.has(key)) continue;
-    failed = true;
-    const line = source.slice(0, match.index).split('\n').length;
-    console.error(
-      `${shown}:${line}: t('${key}') names a key that is not in en.json ` +
-        `-- t() would print that name to the page.`,
-    );
+  for (const { quote, pattern } of KEY_FORMS) {
+    for (const match of source.matchAll(pattern)) {
+      const key = match[2];
+      checked += 1;
+      if (known.has(key)) continue;
+      failed = true;
+      const line = source.slice(0, match.index).split('\n').length;
+      console.error(
+        `${shown}:${line}: ${quote(key)} names a key that is not in en.json ` +
+          `-- t() would print that name to the page.`,
+      );
+    }
   }
 }
 
 if (!checked) {
-  console.error('No literal t() call was found at all; this check has lost its subject.');
+  console.error('No key spelt out by hand was found at all; this check has lost its subject.');
   process.exit(1);
 }
 
@@ -112,5 +132,5 @@ if (failed) {
 
 console.log(
   `Locale usage check passed for ${files.length} source files ` +
-    `(${checked} literal t() keys, all present in en.json).`,
+    `(${checked} keys spelt out by hand, all present in en.json).`,
 );

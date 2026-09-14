@@ -261,6 +261,7 @@
   "providers.status.degraded": "降级",
   "providers.status.error": "错误",
   "providers.status.disabled": "已禁用",
+  "providers.status.unknown": "未知",
   "common.version": "版本",
   "common.save": "保存",
   "common.cancel": "取消",

@@ -261,6 +261,7 @@
   "providers.status.degraded": "低下",
   "providers.status.error": "エラー",
   "providers.status.disabled": "無効",
+  "providers.status.unknown": "不明",
   "common.version": "バージョン",
   "common.save": "保存",
   "common.cancel": "キャンセル",

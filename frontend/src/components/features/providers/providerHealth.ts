@@ -149,7 +149,19 @@ export function getHealthScore(provider: Provider, signals: HealthSignals, t: Tr
 
 export function getOperationalStatus(provider: Provider, health: HealthScore): OperationalStatus {
   if (!provider.enabled) return { labelKey: 'providers.status.disabled', tone: 'neutral' };
-  if (health.score < 0 || health.score >= 80) return { labelKey: 'providers.status.active', tone: 'success' };
+  // `score < 0` means nothing has been measured, and it used to share this line with
+  // `score >= 80`: no evidence and the best evidence there is were painted the same green
+  // "Active". That is the state the page is in before `GET /providers/health` answers, and
+  // the state it stays in when that request fails, because the page never reads the query's
+  // error. Every other reader of the same cache entry already calls it unknown --
+  // `getProviderSeverity` returns `'unknown'`, so the "Healthy" count leaves the card out and
+  // the "Healthy" filter hides it; the dashboard's glance tile shows an "Unknown" chip; and
+  // the dashboard raises "Integration health could not be checked", whose link points here,
+  // at the one surface that was saying everything was fine. Neutral rather than the
+  // dashboard's amber: this is also the ordinary first-paint window, and an alarm that fires
+  // on every load is an alarm nobody reads.
+  if (health.score < 0) return { labelKey: 'providers.status.unknown', tone: 'neutral' };
+  if (health.score >= 80) return { labelKey: 'providers.status.active', tone: 'success' };
   if (health.score >= 50) return { labelKey: 'providers.status.degraded', tone: 'warning' };
   return { labelKey: 'providers.status.error', tone: 'danger' };
 }
