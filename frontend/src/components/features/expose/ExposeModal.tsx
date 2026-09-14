@@ -250,9 +250,14 @@ export function ExposeModal({
     Boolean(formData.dns_provider_id) &&
     selectedDnsSupportsAuto;
 
+  // `detect_server_public_ip` makes a real outbound call, so this read is both slow and
+  // failable. Without `isError` a lookup that never answered arrived as the same empty
+  // string as a proxy that genuinely has no public target, and the form then said the
+  // second out loud.
   const {
     data: targetSuggestion,
     isFetching: isFetchingTargetSuggestion,
+    isError: targetSuggestionError,
     refetch: refetchTargetSuggestion,
   } = useQuery<TargetSuggestion>({
     queryKey: ['public-target-suggest', formData.proxy_provider_id],
@@ -364,6 +369,12 @@ export function ExposeModal({
         }
       }
       if (effectivePublicTargetMode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
+        // Three states reach here as the same empty string: a lookup that failed, one still
+        // in flight, and one that answered with nothing. Only the last is a fact about the
+        // proxy -- the other two are facts about a question that has no answer yet, and
+        // saying "this proxy cannot" of them sends the operator to check the wrong thing.
+        if (targetSuggestionError) return t('expose.validation.auto_target_unread');
+        if (isFetchingTargetSuggestion) return t('expose.validation.auto_target_pending');
         return t('expose.validation.no_auto_target');
       }
     }
@@ -678,6 +689,7 @@ export function ExposeModal({
             providerTypeMap={providerTypeMap}
             targetSuggestion={targetSuggestion}
             isFetchingTargetSuggestion={isFetchingTargetSuggestion}
+            targetSuggestionError={targetSuggestionError}
             refetchTargetSuggestion={refetchTargetSuggestion}
             tags={tags}
             environments={environments}

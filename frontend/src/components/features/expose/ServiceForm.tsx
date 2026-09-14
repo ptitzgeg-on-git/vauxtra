@@ -56,6 +56,11 @@ interface ServiceFormProps {
   providerTypeMap: ProviderTypesResponse;
   targetSuggestion: TargetSuggestion | undefined;
   isFetchingTargetSuggestion: boolean;
+  /**
+   * The public-target lookup failed, rather than answering that there is no target. The
+   * suggestion itself cannot tell the two apart: both arrive as an absent `recommended`.
+   */
+  targetSuggestionError?: boolean;
   refetchTargetSuggestion: () => void;
   tags: Tag[];
   environments: Environment[];
@@ -226,6 +231,7 @@ export function ServiceForm({
   providerTypeMap,
   targetSuggestion,
   isFetchingTargetSuggestion,
+  targetSuggestionError,
   refetchTargetSuggestion,
   tags,
   environments,
@@ -239,6 +245,16 @@ export function ServiceForm({
   // refresh that fails over rows that already arrived leaves those rows in the selects, and
   // a list that is empty at that point is empty for a reason worth stating as its own.
   const providersUnread = providersError && providers.length === 0;
+
+  // The public-target lookup has three outcomes and the field showed only one of them. A
+  // suggestion that arrived proves the read succeeded, so nothing beyond `targetSuggestion`
+  // is needed to tell "answered with nothing" from "never answered"; the failure, though,
+  // is only knowable from the query, hence the prop.
+  const targetLookupFailed = Boolean(targetSuggestionError);
+  const targetLookupFoundNothing =
+    !targetSuggestionError &&
+    targetSuggestion !== undefined &&
+    !String(targetSuggestion.recommended || '').trim();
 
   const allProviders = providers.filter((p) => Boolean(p.enabled));
   const proxyProviders = allProviders.filter((p) => providerHasCapability(p, 'proxy', providerTypeMap));
@@ -878,6 +894,20 @@ export function ServiceForm({
                         )}
                       </div>
                     </Field>
+
+                    {/* The button above used to spin, stop, and change nothing. It stands in
+                        for the retry here, so neither of these carries one of its own. The
+                        failure stays on screen even once a target is typed by hand, because
+                        the automatic update switch below reads the same lookup; "nothing was
+                        detected" goes away, since a typed target settles that question. */}
+                    {isExternalDns && selectedDnsSupportsAuto && targetLookupFailed && (
+                      <InlineAlert tone="warning" title={t('expose.detect_unread')}>
+                        {t('expose.detect_unread_hint')}
+                      </InlineAlert>
+                    )}
+                    {isExternalDns && selectedDnsSupportsAuto && targetLookupFoundNothing && !formData.dns_ip && (
+                      <InlineAlert tone="info" title={t('expose.detect_none')} />
+                    )}
 
                     {/* Auto-update DNS — only for external DNS with auto capability */}
                     {isExternalDns && selectedDnsSupportsAuto && (
