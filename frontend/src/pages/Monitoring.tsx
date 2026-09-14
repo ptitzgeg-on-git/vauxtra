@@ -538,8 +538,10 @@ export function Monitoring() {
         service={selectedService}
         history={selectedHistory}
         historyError={historyQuery.isError}
+        historyLoading={historyQuery.isLoading}
         logs={selectedLogs}
         logsError={logsQuery.isError}
+        logsLoading={logsQuery.isLoading}
         probe={selectedService ? probes.probes[selectedService.id] : undefined}
         checking={probes.checkingId === selectedService?.id}
         onCheck={probes.check}

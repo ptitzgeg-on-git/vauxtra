@@ -12,7 +12,7 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { useDockerDiscovery, type DockerContainer } from '@/hooks/useDockerDiscovery';
 import { isDnsType, isProxyType } from '@/components/features/providers/providerConstants';
-import { Badge, Button, Checkbox, EmptyState, Field, IconButton, InlineAlert, Input, Select, useConfirmDialog, type Tone } from '@/components/ui';
+import { Badge, Button, Checkbox, EmptyState, Field, IconButton, InlineAlert, Input, Select, Skeleton, useConfirmDialog, type Tone } from '@/components/ui';
 import { translateApiError } from '@/lib/errors';
 import type { Provider } from '@/types/api';
 import { SectionEyebrow, SettingsSection } from '../SettingsSection';
@@ -143,7 +143,21 @@ export function DockerSection() {
         </form>
       )}
 
-      {docker.endpointsQuery.isError ? (
+      {docker.endpointsQuery.isLoading ? (
+        /* Until this list is read, `hasEndpoints` is false for the same reason it is false
+           on a fresh instance -- and the empty state below invites the operator to add an
+           endpoint they may already have. */
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Skeleton className="h-3.5 w-28" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+          <div className="space-y-2">
+            <Skeleton className="h-3.5 w-28" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        </div>
+      ) : docker.endpointsQuery.isError ? (
         <InlineAlert
           tone="danger"
           title={t('settings.docker.endpoints_load_failed')}

@@ -337,6 +337,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Three panels stated that an instance had nothing while the lists behind them were still in
+  flight.** The webhook tab, the Docker section of the data settings and the monitoring drawer
+  all read their rows off `data ?? []`, so what an operator sees on a cold load is the same
+  empty array an instance with nothing in it has. Each printed the second reading: "No webhooks
+  configured", "No Docker endpoint" with a button to add one, and — in the drawer opened by a
+  deep link — "No timeline data yet for this host" and "No recent logs linked to this
+  hostname". None of it is a flash: the panel's query client retries once, so a failing read
+  holds that sentence for the length of a backoff before the error alert replaces it. Four tabs
+  on the very same settings screen already paint a skeleton at that rung, and
+  `useDockerDiscovery` states the principle in its own comment — about the failure half, which
+  was the only half it guarded. The four missing rungs are now there, and the two requests the
+  drawer does not own are passed in by the page that already owns them.
 - **A filter nobody could name hid most of the routes while the control denied it was on.**
   The tag and environment filters live in the address bar, so `?tag=5` is applied before the
   tag list has been read, survives a reload, and outlives the tag itself. The rows are
