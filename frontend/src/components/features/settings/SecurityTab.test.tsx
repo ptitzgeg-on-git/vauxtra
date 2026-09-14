@@ -28,10 +28,14 @@ const ME = {
 };
 
 let keys: ApiKey[] = [];
+let keysFail = false;
 
 vi.mock('@/api/client', () => ({
   api: {
-    get: vi.fn((path: string) => Promise.resolve(path === '/auth/me' ? ME : keys)),
+    get: vi.fn((path: string) => {
+      if (path === '/auth/me') return Promise.resolve(ME);
+      return keysFail ? Promise.reject(new Error('down')) : Promise.resolve(keys);
+    }),
     post: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }));
@@ -54,10 +58,12 @@ const form = () => screen.findByText('settings.auth.change_password_desc');
 const sessions = () => screen.queryByText('settings.security.change_scope_sessions');
 const keysLine = () => screen.queryByText('settings.security.change_scope_keys');
 const links = () => screen.queryAllByText('settings.security.api_keys_cta');
+const unknownLine = () => screen.queryByText('settings.security.change_scope_keys_unknown');
 
 describe('SecurityTab, changing the password', () => {
   beforeEach(() => {
     keys = [];
+    keysFail = false;
     vi.clearAllMocks();
   });
 
@@ -91,6 +97,24 @@ describe('SecurityTab, changing the password', () => {
 
   it('puts a second one inside the warning, where the operator is reading', async () => {
     keys = [key(1)];
+    renderWithProviders(<SecurityTab />);
+    await form();
+    await waitFor(() => expect(links()).toHaveLength(2));
+  });
+
+  it('names the count it could not take, rather than reporting none', async () => {
+    // `keyCount` is `data?.length ?? 0`. A failed request and an empty instance were the
+    // same 0, so the one warning that says a password change leaves API keys working
+    // vanished exactly when nobody could confirm whether any existed.
+    keysFail = true;
+    renderWithProviders(<SecurityTab />);
+    await form();
+    await waitFor(() => expect(unknownLine()).not.toBeNull());
+    expect(keysLine()).toBeNull();
+  });
+
+  it('still offers the link, because the keys are what needs looking at', async () => {
+    keysFail = true;
     renderWithProviders(<SecurityTab />);
     await form();
     await waitFor(() => expect(links()).toHaveLength(2));

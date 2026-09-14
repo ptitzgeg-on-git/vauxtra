@@ -275,7 +275,7 @@ function ChangePasswordCard() {
           tone="info"
           title={t('settings.security.change_scope_title')}
           action={
-            keyCount > 0 ? (
+            keyCount > 0 || keysQuery.isError ? (
               <Link to="/settings?tab=apikeys" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
                 {t('settings.security.api_keys_cta')}
               </Link>
@@ -284,6 +284,14 @@ function ChangePasswordCard() {
         >
           <p>{t('settings.security.change_scope_sessions')}</p>
           {keyCount > 0 && <p className="mt-1">{t('settings.security.change_scope_keys', { count: keyCount })}</p>}
+          {/* `keyCount` is `data?.length ?? 0`, so a failed request and an empty list were
+              the same 0 -- and this warning, the only place the screen says a password
+              change leaves API keys working, disappeared exactly when it could not be
+              checked. The two are mutually exclusive: on an error there is no data to
+              count. */}
+          {keysQuery.isError && (
+            <p className="mt-1">{t('settings.security.change_scope_keys_unknown')}</p>
+          )}
         </InlineAlert>
         <Field
           label={t('settings.auth.current_password')}

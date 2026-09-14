@@ -33,6 +33,7 @@ import {
   Chip,
   ChipGroup,
   EmptyState,
+  InlineAlert,
   PageHeader,
   SectionHeading,
   SkeletonCard,
@@ -256,6 +257,9 @@ export function Providers() {
 
   const issueCount = providers.filter((p) => ['degraded', 'error'].includes(signalsById[Number(p.id)]?.severity)).length;
   const healthyCount = providers.filter((p) => signalsById[Number(p.id)]?.severity === 'healthy').length;
+  // A failed health request is not an all-clear. Both of these were unread, so the two
+  // counters below answered 0 whether nothing was wrong or nothing could be measured.
+  const healthUnavailable = allHealthQuery.isError || tunnelHealthQuery.isError;
 
   const matchesFocus = useCallback(
     (provider: Provider) => {
@@ -565,6 +569,39 @@ export function Providers() {
         />
       ) : (
         <>
+          {/* Neither health query's `isError` was read anywhere on this page. When they fail
+              every integration falls to `unknown`, which is the honest reading of a
+              measurement that did not happen -- but `unknown` is what neither filter counts,
+              so the bar below published `Issues - 0` and `Healthy - 0` over a full list and
+              the warning badge in the header went away. A page that cannot reach its checks
+              looked exactly like a page where every check passed. The dashboard already
+              links here saying the health check failed; the page it opens has to agree. */}
+          {healthUnavailable && (
+            <InlineAlert
+              tone="warning"
+              title={t('providers.health.load_failed')}
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={allHealthQuery.isFetching || tunnelHealthQuery.isFetching}
+                  onClick={() => {
+                    void allHealthQuery.refetch();
+                    void tunnelHealthQuery.refetch();
+                  }}
+                >
+                  {t('common.retry')}
+                </Button>
+              }
+            >
+              {translateApiError(
+                allHealthQuery.error ?? tunnelHealthQuery.error,
+                t,
+                t('providers.health.load_failed_hint'),
+              )}
+            </InlineAlert>
+          )}
+
           <ChipGroup label={t('providers.filter.label')}>
             <Chip size="sm" selected={focusFilter === 'all'} onClick={() => setFocusFilter('all')} count={total}>
               {t('providers.filter.all')}
