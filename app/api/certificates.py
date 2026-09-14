@@ -134,6 +134,11 @@ def certificate_expiry(request: Request):
         x["days_remaining"] if x["days_remaining"] is not None else 9999,
     ))
 
+    # One number for two states, deliberately: both need renewing, and a badge showing two
+    # figures where an operator wants one would be worse. Nothing is lost by the merge --
+    # `expired` and `expiring_soon` travel on every row -- but a reader that wants to say
+    # "already broken" rather than "due soon" has to count the rows, because this figure
+    # cannot. `certificateUrgency` on the frontend is the one that does.
     expiring_count = sum(1 for c in result if c["expiring_soon"] or c["expired"])
     return {
         "certificates": result,

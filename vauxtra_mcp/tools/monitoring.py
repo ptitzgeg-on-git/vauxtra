@@ -46,10 +46,15 @@ def get_certificate_expiry() -> dict[str, Any]:
     List all SSL certificates with their expiry dates and remaining days.
 
     Returns {"certificates": [...], "total": int, "expiring_soon_count": int,
-    "warn_threshold_days": int, "unreachable": [...]}. Certificates expiring within
-    `warn_threshold_days` are flagged. `unreachable` names the enabled certificate
-    providers this call could not read: the counts above cover only the rest, so a
-    non-empty `unreachable` means the answer is partial, not that nothing is expiring.
+    "warn_threshold_days": int, "unreachable": [...]}. `expiring_soon_count` is
+    everything that needs renewing: still valid but inside `warn_threshold_days`
+    *plus* already past expiry. Those two are not equally urgent -- a lapsed
+    certificate is serving an error to every client reaching that host right now --
+    and the figure alone cannot say which it is made of, so read each row's own
+    `expired` flag before reporting it as a deadline. `unreachable` names the enabled
+    certificate providers this call could not read: the counts above cover only the
+    rest, so a non-empty `unreachable` means the answer is partial, not that nothing
+    is expiring.
     """
     r = client.get("/certificates/expiry")
     client.check(r)

@@ -24,7 +24,11 @@ export interface StatRowProps {
   // nobody answered.
   services: { total: number; enabled?: number; ok: number; error: number; failed?: boolean };
   providers: { total: number; enabled: number; healthy: number; failed?: boolean };
-  certificates: { expiring: number; total: number; thresholdDays: number; failed?: boolean };
+  // `expired` is the half of `expiring` that is not a renewal falling due but a host already
+  // answering with a broken certificate. The route hands back one merged figure, so the tile
+  // used to draw both in the same amber under a hint that named the size of the estate and
+  // never said any of them had lapsed.
+  certificates: { expiring: number; expired: number; total: number; thresholdDays: number; failed?: boolean };
   logs: { today: number; todayCapped: boolean; total?: number; failed?: boolean };
 }
 
@@ -101,13 +105,21 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
         hint={
           certificates.failed
             ? t('dashboard.stats.certificates_unknown')
-            : t('dashboard.stats.certificates_hint', {
-                count: certificates.total,
-                days: formatNumber(certificates.thresholdDays),
-              })
+            : certificates.expired > 0
+              ? t('dashboard.stats.certificates_hint_expired', { count: certificates.expired })
+              : t('dashboard.stats.certificates_hint', {
+                  count: certificates.total,
+                  days: formatNumber(certificates.thresholdDays),
+                })
         }
         icon={<ShieldCheck />}
-        tone={certificates.failed || certificates.expiring > 0 ? 'warning' : 'neutral'}
+        tone={
+          certificates.expired > 0
+            ? 'danger'
+            : certificates.failed || certificates.expiring > 0
+              ? 'warning'
+              : 'neutral'
+        }
         loading={loading.certificates}
         onClick={() => navigate('/certificates')}
       />

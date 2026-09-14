@@ -6,6 +6,7 @@ import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { Button, InlineAlert, PageHeader } from '@/components/ui';
+import { certificateUrgency } from '@/components/features/certificates/certificates';
 import { ExposeModal } from '@/components/features/expose/ExposeModal';
 import { ProviderModal } from '@/components/features/ProviderModal';
 import { StatusPill } from '@/components/features/dashboard/StatusPill';
@@ -177,6 +178,17 @@ export function Dashboard() {
   const expiringCerts = certExpiry?.expiring_soon_count ?? 0;
   const totalCerts = certExpiry?.total ?? certExpiry?.certificates?.length ?? 0;
   const warnDays = certExpiry?.warn_threshold_days ?? 30;
+  /**
+   * Which half of that figure is a renewal falling due and which half has already lapsed.
+   * One triage row saying "3 certificates expire within 30 days" had to carry a hint
+   * admitting some of them already had -- an apology for a sentence that was not true of
+   * what it counted. Two rows say it instead, and the one about certificates that are
+   * already broken is drawn the way every other live failure on this page is drawn.
+   */
+  const certUrgency = useMemo(
+    () => certificateUrgency(certExpiry?.certificates, expiringCerts, Date.now(), warnDays),
+    [certExpiry?.certificates, expiringCerts, warnDays],
+  );
 
   const todayKey = formatDate(now, 'short');
   const todayItems = Array.isArray(todayLogsResp?.items) ? todayLogsResp.items : [];
@@ -250,18 +262,30 @@ export function Dashboard() {
       hint: t('dashboard.attention.certs_unknown_hint'),
       to: '/certificates',
     });
-  } else if (expiringCerts > 0) {
-    attentionItems.push({
-      id: 'certs-expiring',
-      tone: 'warning',
-      icon: <ShieldAlert />,
-      title: t('dashboard.attention.certs_expiring', {
-        count: expiringCerts,
-        days: formatNumber(warnDays),
-      }),
-      hint: t('dashboard.attention.certs_expiring_hint'),
-      to: '/certificates',
-    });
+  } else {
+    if (certUrgency.expired > 0) {
+      attentionItems.push({
+        id: 'certs-expired',
+        tone: 'danger',
+        icon: <ShieldAlert />,
+        title: t('dashboard.attention.certs_expired', { count: certUrgency.expired }),
+        hint: t('dashboard.attention.certs_expired_hint'),
+        to: '/certificates?status=expired',
+      });
+    }
+    if (certUrgency.soon > 0) {
+      attentionItems.push({
+        id: 'certs-expiring',
+        tone: 'warning',
+        icon: <ShieldAlert />,
+        title: t('dashboard.attention.certs_expiring', {
+          count: certUrgency.soon,
+          days: formatNumber(warnDays),
+        }),
+        hint: t('dashboard.attention.certs_expiring_hint'),
+        to: '/certificates',
+      });
+    }
   }
   if (authStatus?.auth_mode === 'open') {
     attentionItems.push({
@@ -348,6 +372,7 @@ export function Dashboard() {
         }}
         certificates={{
           expiring: expiringCerts,
+          expired: certUrgency.expired,
           total: totalCerts,
           thresholdDays: warnDays,
           failed: certExpiryFailed,

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
@@ -36,6 +36,7 @@ import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, toneClasses, type Tone } from '@/components/ui';
 import { isMacPlatform } from '@/components/ui/_internal';
+import { certificateUrgency } from '@/components/features/certificates/certificates';
 import { AUTH_STATUS_KEY, useAuthStatus } from '@/hooks/useAuthStatus';
 import type {
   CertificateExpiryResponse,
@@ -147,6 +148,21 @@ export function Sidebar({
   const errorServicesCount = services?.filter((s) => s.enabled && s.status === 'error').length ?? 0;
   const healthyProvidersCount = providers?.filter((p) => p.enabled).length ?? 0;
   const expiringSoonCount = certExpiryKnown ? (certExpiry?.expiring_soon_count ?? 0) : 0;
+  // Amber is the wrong colour for a certificate that lapsed three weeks ago: nothing is
+  // falling due there, the host is serving a certificate error to every client that reaches
+  // it. The Certificates page one click away has always drawn that row red. This badge drew
+  // the whole estate amber and, with no glyph beside it, said so in colour alone -- which
+  // this file's own `alert` field exists to stop.
+  const certUrgency = useMemo(
+    () =>
+      certificateUrgency(
+        certExpiryKnown ? certExpiry?.certificates : undefined,
+        expiringSoonCount,
+        Date.now(),
+        certExpiry?.warn_threshold_days,
+      ),
+    [certExpiryKnown, certExpiry?.certificates, certExpiry?.warn_threshold_days, expiringSoonCount],
+  );
 
   const settingsTab = new URLSearchParams(location.search).get('tab') || 'general';
 
@@ -188,7 +204,8 @@ export function Sidebar({
           label: t('nav.certificates'),
           href: '/certificates',
           badge: expiringSoonCount || undefined,
-          tone: expiringSoonCount > 0 ? 'warning' : 'neutral',
+          tone: certUrgency.tone,
+          alert: certUrgency.breached,
         },
       ],
     },
