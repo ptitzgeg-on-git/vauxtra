@@ -337,6 +337,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **One hung build could leave every later push unscanned, for six hours.** No job in any
+  workflow declared `timeout-minutes`, so the ceiling in force was GitHub's default of six
+  hours. That would concern only the run that hangs, except `Build & Publish` keeps
+  `cancel-in-progress: false` deliberately — two runs there would be two writers on the same
+  registry tag or the same release page — and it is the only place three of the five checks
+  `main` and `dev` require are ever produced on a push: `Dependency audit`,
+  `Image build & scan` and `Vulnerability scan (Trivy + Grype)` reach one through its gate
+  jobs and through nothing else. A queue behind a hung build is therefore a queue of
+  unscanned commits. `06a90ed` sat in `Build and push` for 48 minutes against a measured 402
+  seconds, with two pushes stacked behind it and neither of them scanned. Every job that
+  occupies a runner now declares a ceiling, each set far above its measured time so that a
+  slow but healthy run still passes, and a test fails the build if a new job arrives without
+  one.
 - **An integration nothing had measured was published as a green "Active", on the very page
   the dashboard sends you to when the health check fails.** `getOperationalStatus` answered
   `active` for `score < 0` and for `score >= 80` on one line, so no evidence and the best

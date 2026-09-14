@@ -39,6 +39,9 @@ jobs:
   backend:
     name: Backend (Python)
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 149s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 20
     steps:
       # The hygiene gate judges the identity of every commit in the history, and
       # `checkout` fetches exactly one by default. On that default the gate would read
@@ -105,6 +108,9 @@ jobs:
   frontend:
     name: Frontend (Node)
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 57s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

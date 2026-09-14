@@ -36,6 +36,9 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 46s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -104,6 +107,9 @@ jobs:
   image-scan:
     name: Image build & scan
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 70s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -150,6 +156,9 @@ jobs:
   vuln-scan:
     name: Vulnerability scan (Trivy + Grype)
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 109s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
