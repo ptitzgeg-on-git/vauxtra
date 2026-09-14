@@ -102,6 +102,14 @@ jobs:
       - name: Runtime parity gate
         run: python scripts/check_runtime_parity.py
 
+      # The panel asks "can this integration do X?" through one table that stands in for
+      # GET /providers/types whenever that read has not answered, and a capability the table
+      # never names reads as false rather than unknown. It had drifted from the backend in
+      # five cells, so a failed catalogue read told the expose form that Cloudflare cannot
+      # resolve a public target -- which silently dropped an operator's automatic DNS update.
+      - name: Capability parity gate
+        run: python scripts/check_capability_parity.py
+
       - name: Run tests
         run: python -m pytest tests/ -v
 
