@@ -10,7 +10,7 @@
  * sessionStorage). The keys it owns are listed once, in `SETUP_SESSION_KEYS`.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Monitor, Moon, Sun } from 'lucide-react';
@@ -153,7 +153,12 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   // Import
   const [importableServices, setImportableServices] = useState<ImportableService[]>([]);
-  const [loadingImportable, setLoadingImportable] = useState(false);
+  /**
+   * True from the moment the wizard lands on the import step until a scan has answered —
+   * not from the moment the request goes out. Those two are a paint apart, and the rung
+   * that paint used to land on is a green tick reading "No services found to import".
+   */
+  const [loadingImportable, setLoadingImportable] = useState(true);
   /**
    * The scan came back with nothing because it failed. Without this, it came back with
    * nothing exactly like a provider that has nothing to import — and the wizard drew a
@@ -192,6 +197,8 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     setImportScanFailed(false);
     if (providers.length === 0) {
       setImportableServices([]);
+      //: Nothing to scan is an answer, and the flag above starts life waiting for one.
+      setLoadingImportable(false);
       return;
     }
     setLoadingImportable(true);
@@ -249,6 +256,46 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
       setLoadingImportable(false);
     }
   }, [providers.length, providerTypeById, t]);
+
+  /**
+   * The scan is what the import step is, so it follows the step. It used to be fired by the
+   * one transition that leads there, and `step` is session-persisted: a reload on that
+   * screen replayed no transition, so nothing scanned, and the ladder in `ImportStep` fell
+   * through to its last rung -- a green tick reading "No services found to import", on the
+   * screen whose primary button ends setup. That is the claim the file already refuses to
+   * make for a scan that failed; a scan that never ran has no more right to it.
+   *
+   * The gate is `isSuccess` rather than "data is no longer undefined", because the scan is
+   * skipped when there is no provider to scan and a list still being read is not a list
+   * that came back empty. Leaving the step arms it again, so walking back and forward
+   * rescans exactly as the transition used to.
+   */
+  const importScanRun = useRef(false);
+  useEffect(() => {
+    if (step !== 'import') {
+      importScanRun.current = false;
+      return;
+    }
+    if (!providersQuery.isSuccess || importScanRun.current) return;
+    importScanRun.current = true;
+    void loadImportableServices();
+  }, [step, providersQuery.isSuccess, loadImportableServices]);
+
+  /** The one retry on that screen answers for two reads; rerun whichever of them failed. */
+  const retryImport = () => {
+    if (providersQuery.isError) {
+      importScanRun.current = false;
+      void providersQuery.refetch();
+      return;
+    }
+    void loadImportableServices();
+  };
+
+  //: The operator has one question about that list -- empty because there is nothing to
+  //: import, or empty because a read failed -- so one verdict covers both reads behind it.
+  //: `isFetching` keeps the failure off the screen while a retry is still in the air.
+  const importReadFailed = importScanFailed || (providersQuery.isError && !providersQuery.isFetching);
+  const importBusy = loadingImportable || providersQuery.isFetching;
 
   const handleImportAndFinish = async () => {
     const selected = importableServices.filter((s) => s.selected);
@@ -518,7 +565,9 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
             {step === 'docker' && (
               <DockerStep
                 onBack={() => setStep('notifications')}
-                onContinue={() => { setStep('import'); void loadImportableServices(); }}
+                // The effect above owns the scan now. This only says the list on screen is
+                // the previous visit's, so the step does not paint it as this visit's.
+                onContinue={() => { setLoadingImportable(true); setStep('import'); }}
               />
             )}
 
@@ -526,13 +575,13 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
               <ImportStep
                 providers={providers}
                 importableServices={importableServices}
-                loadingImportable={loadingImportable}
-                scanFailed={importScanFailed}
+                loadingImportable={importBusy}
+                scanFailed={importReadFailed}
                 importing={importing}
                 onToggle={(idx) => setImportableServices((prev) => prev.map((svc, i) => (i === idx ? { ...svc, selected: !svc.selected } : svc)))}
                 onSelectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: true })))}
                 onDeselectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: false })))}
-                onRetry={() => void loadImportableServices()}
+                onRetry={retryImport}
                 onImportAndFinish={() => void handleImportAndFinish()}
                 onBack={() => setStep('docker')}
               />

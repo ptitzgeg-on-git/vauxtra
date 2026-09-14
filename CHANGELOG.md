@@ -337,6 +337,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The wizard's last screen ticked "No services found to import" over a scan it never ran.**
+  The step an operator stopped on is kept in the session; the scan that fills that screen was
+  not. It was fired by the single transition that leads there, so a reload landed on the import
+  step with nothing in flight and nothing ever scanned, and the screen's ladder fell through to
+  its last rung — a green tick reading "No services found to import" — on the one screen
+  whose primary button ends setup. That is the exact claim this file already refuses to make
+  for a scan that failed, and a scan that never ran has no more right to it. The same rung
+  answered for a provider list that could not be read, too: a failed read leaves the list
+  empty, so the screen said "No providers configured", a statement about what is configured
+  made by a screen that had just failed to find out. The scan follows the step now rather than
+  the transition that used to lead to it, the screen tells a read still in flight from one that
+  failed, and the single retry it offers reruns whichever of the two reads was the one to fail.
+  No new wording was needed: `setup.import.scan_failed_hint` already says Vauxtra could not read
+  your integrations and asks for a retry before finishing.
+
 - **A reload on the wizard's integration step came back to "No integration yet", for good.**
   The setup wizard is meant to survive a refresh: the step it stopped on is session-persisted,
   and the file's own docblock calls that load-bearing. The list of integrations was not. It

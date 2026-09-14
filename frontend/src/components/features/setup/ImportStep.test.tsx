@@ -5,6 +5,12 @@
  * was gone in a few seconds. What stayed was "No services found to import", under a tick, on
  * the one screen whose next button ends setup -- so the wizard finished having told the
  * operator there was nothing to bring in.
+ *
+ * Nor over a scan that never ran, nor over a provider list it could not read. The scan used
+ * to be fired by the one transition that leads here, and `step` is session-persisted: a
+ * reload replayed no transition, so nothing scanned. A provider list that failed leaves
+ * `providers` empty, which the ladder used to answer with "No providers configured." Both
+ * fell to the same tick, so `scanFailed` now stands for either read.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -73,8 +79,20 @@ describe('ImportStep', () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
-  it('still puts "no providers" first, since there was nothing to scan', () => {
+  it('says a read failed, rather than that no provider is configured', () => {
+    // This asserted the opposite, and was right to while `scanFailed` meant the scan alone.
+    // It stands for the provider list as well now, and a list that could not be read leaves
+    // `providers` empty -- so "No providers configured." would be a statement about what is
+    // configured, made by a screen that had just failed to find out. `Setup` lowers the flag
+    // before it early-returns on an empty list, so the pair below only ever means a failure.
     renderWithProviders(<ImportStep {...BASE} providers={[]} scanFailed />);
+
+    expect(screen.getByText('setup.import.scan_failed')).toBeInTheDocument();
+    expect(screen.queryByText('setup.import.no_providers')).not.toBeInTheDocument();
+  });
+
+  it('still says no provider is configured when the list really came back empty', () => {
+    renderWithProviders(<ImportStep {...BASE} providers={[]} />);
 
     expect(screen.getByText('setup.import.no_providers')).toBeInTheDocument();
     expect(screen.queryByText('setup.import.scan_failed')).not.toBeInTheDocument();
@@ -86,5 +104,17 @@ describe('ImportStep', () => {
     expect(screen.getByText('api.example.com')).toBeInTheDocument();
     expect(screen.queryByText('setup.import.scan_failed')).not.toBeInTheDocument();
     expect(screen.queryByText('setup.import.none_found')).not.toBeInTheDocument();
+  });
+
+  it('answers for neither read while one of them is still in flight', () => {
+    // The busy rung sits below the failure one on purpose: a read that failed never settles,
+    // so nothing would ever lift a skeleton off it. The rows here are `animate-pulse`, this
+    // screen's own marker rather than the shared shimmer, so the line above them is what
+    // there is to hold on to.
+    renderWithProviders(<ImportStep {...BASE} loadingImportable />);
+
+    expect(screen.getByText('setup.import.scanning')).toBeInTheDocument();
+    expect(screen.queryByText('setup.import.none_found')).not.toBeInTheDocument();
+    expect(screen.queryByText('setup.import.no_providers')).not.toBeInTheDocument();
   });
 });
