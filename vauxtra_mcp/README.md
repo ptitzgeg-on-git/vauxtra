@@ -283,6 +283,20 @@ The empty domain came back as a 422, but port 80 did not, because 80 is a valid 
 call that named no port, against a template that sets none, created a service pointing at a
 port nobody had chosen, and reported success.
 
+Labels are set on a service, not added to it. `create_service`, `update_service`,
+`create_template` and `update_template` all take `tag_ids` and `environment_ids`, and
+`PUT /api/services` replaces both lists rather than merging: `tag_ids=[3]` on a service
+carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]` strips every label. To add
+one, read the service back with `get_service` and send its ids plus the new one; omitting
+the argument keeps what is already there. An id that names no row is refused with 400, and
+the route names it, so a typo creates nothing rather than a service missing a label.
+
+Neither parameter used to exist. `create_service` sent an empty list it declared no way to
+fill and `update_service` declared neither at all, so every service the bridge created was
+unlabelled and nothing could label it afterwards: the eight tools for building tags and
+environments had nowhere to put one except a template, and `apply_template` froze whatever
+the template carried at the moment it was applied.
+
 One rule no parameter schema can carry: `expose_mode: tunnel` also needs a
 `tunnel_provider_id`. That is a rule about a pair of fields, and a schema describes one
 field at a time, so the route is still what decides.
