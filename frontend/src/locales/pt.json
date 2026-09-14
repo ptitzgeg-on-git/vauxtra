@@ -1631,6 +1631,8 @@
   "setup.providers.continue": "Continuar",
   "setup.providers.empty_body": "Adicione pelo menos uma para que o Vauxtra possa ler suas rotas. Você também pode fazer isso depois.",
   "setup.providers.empty_title": "Nenhuma integração ainda",
+  "setup.providers.load_failed": "Não foi possível carregar as integrações",
+  "setup.providers.load_failed_hint": "A lista está vazia porque a requisição falhou, não porque nada esteja conectado. Tente novamente antes de adicionar uma integração que você talvez já tenha.",
   "setup.providers.skip": "Pular por enquanto",
   "setup.providers.subtitle": "Proxies reversos, túneis e provedores de DNS com que o Vauxtra deve conversar.",
   "setup.providers.title": "Conecte suas integrações",

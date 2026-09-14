@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Monitor, Moon, Sun } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/api/client';
@@ -124,8 +124,28 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   // Password step
   const [skipPassword, setSkipPassword] = useSessionState<boolean | null>('skipPassword', null);
 
-  // Providers step
-  const [providers, setProviders] = useState<ProviderItem[]>([]);
+  /**
+   * Providers step.
+   *
+   * Nine screens read this list through the shared cache; this one used to keep its own
+   * `useState([])` filled by an imperative fetch on the password → providers transition, and
+   * two things followed. The wizard survives a reload by design (`useSessionState`) but the
+   * list did not and nothing refetched it, so an operator who had just connected three
+   * integrations came back to "No integration yet", a footer reading "Skip for now", an import
+   * screen that skipped the scan on `providers.length === 0`, and a closing summary counting
+   * zero of them. And the `['providers']` invalidation every provider write already fires
+   * reached every screen except this one, which had to refetch by hand to keep up.
+   *
+   * `GET /api/providers` is `require_auth_or_setup`, like the types query two lines below, so
+   * reading it from the first screen of the wizard asks nothing new of the caller.
+   */
+  const providersQuery = useQuery<ProviderItem[]>({
+    queryKey: ['providers'],
+    queryFn: () => api.get<ProviderItem[]>('/providers'),
+  });
+  //: `data` is undefined until the first answer, and a fresh [] on every render would
+  //: re-run the two memos below with it.
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const [formData, setFormData] = useSessionState<ProviderFormState>('formData', emptyForm, withoutProviderSecrets);
   const [wizardMode, setWizardMode] = useSessionState<'guided' | 'expert' | null>('wizardMode', null);
   const [guidedStepIndex, setGuidedStepIndex] = useSessionState('guidedStepIndex', 0);
@@ -148,16 +168,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   /* ─────────────────── API Calls ─────────────────── */
 
-  const refreshProviders = useCallback(async () => {
-    try {
-      setProviders(await api.get<ProviderItem[]>('/providers'));
-    } catch { /* ignore */ }
-  }, []);
-
-  const goToProviders = () => {
-    setStep('providers');
-    void refreshProviders();
-  };
+  const goToProviders = () => setStep('providers');
 
   const handleSetPassword = async (password: string) => {
     try {
@@ -320,8 +331,13 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     formData,
     setValidationResult,
     {
-      onCreated: async () => { await refreshProviders(); resetProviderForm(); setStep('providers'); },
-      onDeleted: () => { void refreshProviders(); },
+      // The mutation has already invalidated `['providers']`; this waits for the answer so the
+      // list the operator lands back on is the one that now holds what they just added.
+      onCreated: async () => {
+        await queryClient.refetchQueries({ queryKey: ['providers'], type: 'active' });
+        resetProviderForm();
+        setStep('providers');
+      },
     },
   );
 
@@ -462,6 +478,9 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
               <ProvidersStep
                 providers={providers}
                 providerTypes={providerTypes}
+                loading={providersQuery.isLoading}
+                loadFailed={providersQuery.isError}
+                onRetry={() => void providersQuery.refetch()}
                 onAdd={() => { resetProviderForm(); setStep('provider-form'); }}
                 onDelete={(id) => void handleDeleteProvider(id)}
                 deleteIsPending={deleteProviderMutation.isPending}

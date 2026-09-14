@@ -1513,6 +1513,8 @@
   "setup.providers.continue": "次へ",
   "setup.providers.empty_body": "1つ以上追加すると Vauxtra がルートを読み取れます。後から追加することもできます。",
   "setup.providers.empty_title": "統合がまだありません",
+  "setup.providers.load_failed": "統合を読み込めませんでした",
+  "setup.providers.load_failed_hint": "一覧が空なのはリクエストが失敗したためで、何も接続されていないからではありません。すでにある統合を重複して追加しないよう、再試行してください。",
   "setup.providers.skip": "後で設定する",
   "setup.providers.subtitle": "Vauxtra が連携するリバースプロキシ、トンネル、DNSプロバイダー。",
   "setup.providers.title": "統合を接続する",

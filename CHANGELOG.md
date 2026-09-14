@@ -337,6 +337,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A reload on the wizard's integration step came back to "No integration yet", for good.**
+  The setup wizard is meant to survive a refresh: the step it stopped on is session-persisted,
+  and the file's own docblock calls that load-bearing. The list of integrations was not. It
+  was a `useState([])` filled by one imperative fetch on the password → providers
+  transition, and nothing read it again on mount, so a reload restored the step without the
+  list. An operator who had just connected three integrations came back to a screen saying
+  there were none, and it did not stop at the sentence: the footer button turns into "Skip for
+  now", the import step skips its scan on an empty list and reports "No providers configured",
+  and the closing summary counts zero of them. This was also the last of ten call sites not
+  reading `['providers']` through the shared cache, which is why the three invalidations this
+  file already fires reached every screen except its own. It reads the cache now, and the step
+  tells apart a list still being read, one that could not be read, and an instance that really
+  has none of them — only the third of those is allowed to say "Skip for now".
+
 - **Three panels stated that an instance had nothing while the lists behind them were still in
   flight.** The webhook tab, the Docker section of the data settings and the monitoring drawer
   all read their rows off `data ?? []`, so what an operator sees on a cold load is the same
