@@ -859,7 +859,7 @@ class TestZoraxyCertificates(unittest.TestCase):
     def test_get_certificates_expires_on_is_parsed_by_the_certificates_route(self):
         self.z.session.get = MagicMock(return_value=_response(200, self._CERTS))
         raw = self.z.get_certificates()[0]["expires_on"]
-        self.assertEqual(certificates_api._parse_expiry(raw), datetime.datetime(2027, 1, 1, 12, 30))
+        self.assertEqual(certificates_api.parse_expiry(raw), datetime.datetime(2027, 1, 1, 12, 30))
 
     def test_get_certificates_drops_a_countdown_with_no_date_behind_it(self):
         """`RemainingDays` with no `ExpireDate` behind it is a sentinel, not a count.

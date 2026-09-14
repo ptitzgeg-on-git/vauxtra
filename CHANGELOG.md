@@ -337,6 +337,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A certificate expiring tomorrow could be counted by nobody.** A proxy hands back
+  `expires_on` as whatever its own storage layer formats, and three things in Vauxtra read
+  that one string: the `/api/certificates/expiry` route, whose `expiring_soon_count` is the
+  sidebar badge, the dashboard tile and the "needs attention" entry; the scheduler's expiry
+  scan, which chooses between a CRITICAL and a WARNING line in the activity log; and the
+  certificates page, which draws the countdown. The route accepted three spellings of a
+  date. The other two accept ISO 8601 in essentially any shape. So a certificate whose date
+  arrived as `2027-01-01T00:00:00+00:00` — what `datetime.isoformat()` writes and what RFC
+  3339 asks for — or with a space instead of the `T`, was read by the log and by the page
+  and by nothing else: the badge stayed dark and the dashboard reported a clean estate while
+  the journal filled with CRITICAL lines about it. All three now read it through
+  `app.expiry.parse_expiry`, one rule in one place.
+- **One certificate stamped with a negative UTC offset ended the expiry scan for the whole
+  estate.** The scan stripped a `+` offset but not a `-` one, so `fromisoformat` handed back
+  an aware datetime and the subtraction that followed — outside the per-certificate guard —
+  raised `TypeError`. The scan's outer handler caught it, which meant every remaining
+  provider and every remaining certificate went unchecked, on every run, and the only trace
+  was one `[CertExpiry] Check failed` line. Offsets are now converted rather than stripped,
+  so the instant survives and the comparison stays naive UTC.
+- The route answered a `500` for the whole page when a provider sent something that was not
+  a string at all: `strptime` raises `TypeError`, not `ValueError`, so the format loop's
+  `except ValueError` did not catch it. One unreadable date is now one unknown row.
+- That failure handler wrote its own traceback through a second database connection while
+  the scan could still be holding an uncommitted write on the first, so the record of why
+  the scan stopped could itself fail on `database is locked`. It logs on the connection it
+  was given.
 - **The alert about a certificate that had already expired said it "expires in -47 days".**
   The scheduler's expiry scan writes one line per certificate into the activity log, and
   every line was built from `expires in {plural(days_left, 'day')}`. Past the expiry date

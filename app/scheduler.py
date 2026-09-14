@@ -6,6 +6,7 @@ import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.expiry import parse_expiry
 from app.models import add_log, get_db
 from app.providers.factory import certificate_provider_types, create_provider
 from app.public_target import (
@@ -574,15 +575,8 @@ def _run_cert_expiry_alerts(conn) -> None:
                 if cert_id is None:
                     continue
 
-                expires_raw = (cert.get("expires_on") or "").strip()
-                if not expires_raw:
-                    continue
-
-                try:
-                    # Strip timezone info for naïve comparison with utcnow()
-                    normalized = expires_raw.replace("Z", "").split("+")[0].split(".")[0]
-                    expires = _dt.datetime.fromisoformat(normalized)
-                except Exception:
+                expires = parse_expiry(cert.get("expires_on"))
+                if expires is None:
                     continue
 
                 days_left = (expires - now_utc).days
@@ -626,7 +620,13 @@ def _run_cert_expiry_alerts(conn) -> None:
 
     except Exception:
         import traceback
-        add_log("error", f"[CertExpiry] Check failed: {traceback.format_exc()}")
+        # On this connection, not on a new one. The alerts above are written through
+        # `conn` and committed once per provider, so when this handler runs there may
+        # be an uncommitted write of ours holding the database's write lock. Opening a
+        # second connection to record the failure then waits on the first and raises
+        # "database is locked" from inside the handler, which loses the traceback it
+        # came here to write and takes the rest of the maintenance round with it.
+        add_log("error", f"[CertExpiry] Check failed: {traceback.format_exc()}", conn)
 
 
 # ── Webhook retry ─────────────────────────────────────────────────────────
