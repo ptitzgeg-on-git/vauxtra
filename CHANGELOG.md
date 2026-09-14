@@ -112,6 +112,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **A capability parity gate**, `scripts/check_capability_parity.py`, run in the backend job
+  beside the runtime parity gate. It reads `PROVIDER_TYPES` out of `app/providers/factory.py`
+  as a syntax tree, `CAPABILITY_FALLBACK` out of `frontend/src/lib/providers.ts`, and the
+  `ProviderCapability` union out of `frontend/src/types/api.ts`, and requires the table to
+  give the backend's own answer for every type the backend ships. A type it does not ship is
+  left alone, since standing in for those is the whole reason the table exists. Two rules
+  come free from reading both files: a fallback naming a type this build cannot create, and
+  a capability the backend declares that the union does not name — the second matters because
+  the first rule iterates the union, so an unnamed capability would be skipped in silence.
+
 - **A read contract gate**, `scripts/check_read_contract.py`, run in the backend job beside
   the panel contract gate. That one holds what the panel sends; this one holds what it
   believes it gets back, which was held to nothing at either end. Not one route in `app/`
@@ -336,6 +346,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `python -m pytest tests/` catches the next such bump even with the CI step removed.
 
 ### Fixed
+
+- **A capability table that stood in for the backend had drifted from it in five places,
+  and one of them silently revoked an operator's setting.** Every screen that asks whether
+  an integration can do something goes through `metaHasCapability`, which reads the
+  `capabilities` map from `GET /api/providers/types` first and a hardcoded table,
+  `CAPABILITY_FALLBACK`, last. That table is the only answer before the query resolves and
+  for as long as it fails, and it cannot say "unknown": a capability it does not name reads
+  as `false` for every type, which is a definite answer the panel acts on. It named four of
+  the six values in `ProviderCapability` and had never been compared with `PROVIDER_TYPES`.
+
+  `certificates` was absent, so `npm` and `zoraxy` read as holding no certificates. `proxy`
+  did not list `cloudflare_tunnel`, so the tunnel option left the expose form, which derives
+  its tunnel list by filtering the proxy list. Worst was `supports_auto_public_target`, also
+  absent, which made Cloudflare and deSEC read as unable to resolve a public target on their
+  own. The form hides the "update the DNS record automatically" switch when that is false —
+  and rewrites `public_target_mode` to `manual` with `auto_update_dns: false` in the payload
+  it sends, and writes both into the form state the moment the DNS provider is selected. So
+  reopening a route that had automatic updates on while this read was failing, changing a
+  port, and pressing save revoked the setting in the database. The switch was never on the
+  screen, no error was either, and the rest of the section looked right, because
+  `public_dns` did have an entry and Cloudflare was still treated as external DNS.
+
+  The table now agrees with `app/providers/factory.py` in all fifty-two declarations.
 
 - **The integrations page hid a failed catalogue read behind the names it fell back to.**
   `GET /providers/types` is the catalogue that turns a stored slug into a name — `npm` is
