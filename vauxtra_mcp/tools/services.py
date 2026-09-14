@@ -66,12 +66,23 @@ def create_service(
     dns_ip: str = "",
     websocket: bool = False,
     enabled: bool = True,
+    tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """
     Create a new service (DNS + proxy route).
 
     expose_mode: 'proxy_dns' for NPM/Traefik + DNS, 'tunnel' for Cloudflare Tunnel.
     public_target_mode: 'manual' (use dns_ip) or 'auto' (detect WAN IP).
+
+    tag_ids and environment_ids attach labels. Both default to none, and every id has to
+    name a row that exists: `list_tags` and `list_environments` are where they come from,
+    and the route refuses the whole call with 400 naming the id it could not find, so a
+    wrong id creates nothing rather than a service missing the label it was asked for.
+
+    The bridge used to send `tag_ids: []` here with no parameter to fill it, and
+    `update_service` had none either. Eight tools could build a taxonomy that nothing
+    could then apply, and a service an agent created stayed unlabelled for good.
 
     The three `Literal` sets repeat, by hand, the values `ServiceIn` validates. Nothing
     derives them: FastMCP builds the schema from this signature, and a normal install
@@ -94,8 +105,8 @@ def create_service(
         "dns_ip": dns_ip,
         "websocket": websocket,
         "enabled": enabled,
-        "tag_ids": [],
-        "environment_ids": [],
+        "tag_ids": tag_ids or [],
+        "environment_ids": environment_ids or [],
         "icon_url": "",
         "extra_proxy_provider_ids": [],
         "extra_dns_provider_ids": [],
@@ -118,12 +129,20 @@ def update_service(
     websocket: bool | None = None,
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
+    tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """
     Update specific fields of an existing service.
 
     Only provided (non-None) fields are changed; omitted fields keep their current values.
     The current service state is fetched first and merged with your overrides.
+
+    tag_ids and environment_ids follow that rule with one edge worth naming: omitted, the
+    service keeps the labels it has; a list replaces them all, because `PUT /api/services`
+    replaces rather than merges. So `tag_ids=[3]` on a service carrying 1 and 2 leaves it
+    carrying 3 alone, and `tag_ids=[]` strips every label. Read the service back with
+    `get_service` and send its ids plus the new one to add rather than replace.
 
     `forward_scheme` carries the same `Literal` as `create_service`: the route validates
     the merged body with `ServiceIn`, so an override it refuses fails the whole update,
@@ -143,6 +162,8 @@ def update_service(
         "websocket": websocket,
         "proxy_provider_id": proxy_provider_id,
         "dns_provider_id": dns_provider_id,
+        "tag_ids": tag_ids,
+        "environment_ids": environment_ids,
     }.items():
         if value is not None:
             payload[key] = value

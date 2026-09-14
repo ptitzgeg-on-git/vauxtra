@@ -35,6 +35,7 @@ build failure.
 """
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -66,6 +67,7 @@ from vauxtra_mcp.tools.admin import create_tag as bridge_create_tag
 from vauxtra_mcp.tools.providers import create_provider as bridge_create_provider
 from vauxtra_mcp.tools.services import bulk_service_action as bridge_bulk_service_action
 from vauxtra_mcp.tools.services import create_service as bridge_create_service
+from vauxtra_mcp.tools.services import update_service as bridge_update_service
 from vauxtra_mcp.tools.templates import apply_template as bridge_apply_template
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -118,6 +120,8 @@ class _FakeResponse:
 class _BridgeCase(unittest.IsolatedAsyncioTestCase):
     """Runs a tool the way the server does, and records every request it makes."""
 
+    # What every GET in this file answers with. Named for the first tool that needed one;
+    # `update_service` reads a service back through the same seam.
     template_defaults: dict = TEMPLATE_DEFAULTS
 
     def setUp(self) -> None:
@@ -131,9 +135,14 @@ class _BridgeCase(unittest.IsolatedAsyncioTestCase):
             self.sent.append({"method": "POST", "path": path, "json": json})
             return _FakeResponse({"id": 11, **(json or {})})
 
+        def _put(path, json=None, **_kwargs):
+            self.sent.append({"method": "PUT", "path": path, "json": json})
+            return _FakeResponse({"id": 11, **(json or {})})
+
         self._patchers = [
             patch.object(mcp_client, "get", _get),
             patch.object(mcp_client, "post", _post),
+            patch.object(mcp_client, "put", _put),
             patch.object(mcp_client, "check", lambda response: response),
         ]
         for p in self._patchers:
@@ -146,6 +155,10 @@ class _BridgeCase(unittest.IsolatedAsyncioTestCase):
     @property
     def posted(self) -> list[dict]:
         return [call["json"] for call in self.sent if call["method"] == "POST"]
+
+    @property
+    def put_bodies(self) -> list[dict]:
+        return [call["json"] for call in self.sent if call["method"] == "PUT"]
 
 
 class ATemplateWithNoPortNoLongerInventsOne(_BridgeCase):
@@ -393,6 +406,198 @@ class TheGateReadsWhatPydanticEnforces(unittest.TestCase):
         _findings, stats = self.gate.contract_findings(REPO_ROOT)
         self.assertGreaterEqual(stats["compared"], 20)
         self.assertEqual(stats["dict_body"], len(stats["unmodelled_routes"]))
+
+
+# What `GET /api/services/{id}` answers with. `_service_to_payload` reads the relations out
+# of `tags`/`environments` -- objects, not ids -- which is the shape that used to erase every
+# label when a GET body was fed straight back to the PUT.
+SERVICE_ROW = {
+    "id": 11,
+    "subdomain": "vault",
+    "domain": "example.com",
+    "target_ip": "10.0.0.9",
+    "target_port": 8200,
+    "forward_scheme": "https",
+    "websocket": False,
+    "enabled": True,
+    "dns_provider_id": 3,
+    "proxy_provider_id": 2,
+    "tunnel_provider_id": None,
+    "expose_mode": "proxy_dns",
+    "public_target_mode": "manual",
+    "auto_update_dns": False,
+    "tunnel_hostname": "",
+    "dns_ip": "203.0.113.9",
+    "icon_url": "",
+    "extra_proxy_provider_ids": [],
+    "extra_dns_provider_ids": [],
+    "tags": [{"id": 1, "name": "prod"}, {"id": 2, "name": "web"}],
+    "environments": [{"id": 5, "name": "home"}],
+}
+
+
+class LabelsReachTheServiceOnCreate(_BridgeCase):
+    """`create_service` sent `tag_ids: []` and declared no parameter to fill it.
+
+    The bridge publishes eight tools for building tags and environments -- create, update,
+    delete and list, twice over -- and, until these two parameters existed, nowhere to put
+    one. A call naming a tag was refused by the schema before the body ran, which is how
+    this was found: not by reading the signature, but by an agent trying to use it.
+
+    `update_service` declared neither either, so the service could not be labelled
+    afterwards. The only labelled service the bridge could produce came from
+    `apply_template`, wearing whatever the template carried when it was applied.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tool = Tool.from_function(bridge_create_service)
+
+    async def test_the_ids_asked_for_are_the_ids_sent(self):
+        await self.tool.run(
+            {"subdomain": "vault", "domain": "example.com", "target_ip": "10.0.0.9",
+             "target_port": 8200, "tag_ids": [4, 7], "environment_ids": [2]}
+        )
+        self.assertEqual(len(self.posted), 1)
+        self.assertEqual(self.posted[0]["tag_ids"], [4, 7])
+        self.assertEqual(self.posted[0]["environment_ids"], [2])
+
+    async def test_a_service_created_without_them_still_carries_no_label(self):
+        """Positive witness: the default is unchanged, so nothing gains a label by accident."""
+        await self.tool.run(
+            {"subdomain": "vault", "domain": "example.com", "target_ip": "10.0.0.9",
+             "target_port": 8200}
+        )
+        self.assertEqual(self.posted[0]["tag_ids"], [])
+        self.assertEqual(self.posted[0]["environment_ids"], [])
+
+
+class LabelsAreReplacedNotMergedOnUpdate(_BridgeCase):
+    """`PUT /api/services` replaces both lists; `set_tags` opens with a DELETE.
+
+    So the overlay rule `update_service` states -- omitted fields keep their current value --
+    has an edge worth pinning. Omitted, the labels survive because `_service_to_payload`
+    reads them back off the GET. Named, they are the whole new set, and an empty list is a
+    valid answer meaning none.
+    """
+
+    template_defaults = SERVICE_ROW
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tool = Tool.from_function(bridge_update_service)
+
+    async def test_omitting_them_keeps_the_labels_the_service_has(self):
+        """The guarantee `_service_to_payload` already carried, now with a way past it."""
+        await self.tool.run({"service_id": 11, "target_port": 9000})
+        self.assertEqual(len(self.put_bodies), 1)
+        self.assertEqual(self.put_bodies[0]["tag_ids"], [1, 2])
+        self.assertEqual(self.put_bodies[0]["environment_ids"], [5])
+        self.assertEqual(self.put_bodies[0]["target_port"], 9000, "the override was lost")
+
+    async def test_a_list_replaces_every_label(self):
+        await self.tool.run({"service_id": 11, "tag_ids": [3]})
+        self.assertEqual(self.put_bodies[0]["tag_ids"], [3])
+        self.assertEqual(self.put_bodies[0]["environment_ids"], [5], "environments moved too")
+
+    async def test_an_empty_list_strips_them(self):
+        await self.tool.run({"service_id": 11, "tag_ids": [], "environment_ids": []})
+        self.assertEqual(self.put_bodies[0]["tag_ids"], [])
+        self.assertEqual(self.put_bodies[0]["environment_ids"], [])
+
+    async def test_environments_are_replaced_on_their_own(self):
+        await self.tool.run({"service_id": 11, "environment_ids": [8, 9]})
+        self.assertEqual(self.put_bodies[0]["environment_ids"], [8, 9])
+        self.assertEqual(self.put_bodies[0]["tag_ids"], [1, 2], "tags moved with environments")
+
+
+class EveryBodyFieldIsReachableOrExplained(unittest.TestCase):
+    """The gate that would have caught this, and a witness that it can.
+
+    The contract half next to it asks whether a tool declares what its route *requires*, and
+    `ServiceIn` gives `tag_ids` and `environment_ids` a default. Nothing was required, so
+    nothing was reported, for a field no caller could set. The pass below asks a different
+    question: which keys does a write tool spell as a bare literal, where no argument can
+    reach them.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.gate = _load_parity_gate()
+
+    def _collect_from(self, source: str) -> list[tuple[str, str, str]]:
+        """Run the collector over a throwaway tools module rather than the real bridge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Path(tmp) / "vauxtra_mcp" / "tools"
+            tools.mkdir(parents=True)
+            (tools / "sample.py").write_text(source, encoding="utf-8")
+            return self.gate.collect_unreachable_fields(Path(tmp))
+
+    def test_no_body_field_is_unreachable_without_a_written_reason(self):
+        unreachable = self.gate.collect_unreachable_fields(REPO_ROOT)
+        unexplained = [
+            f"{tool}.{name} is always {literal}"
+            for tool, name, literal in unreachable
+            if (tool, name) not in self.gate.ALLOWED_UNREACHABLE_FIELDS
+        ]
+        self.assertEqual(unexplained, [])
+
+    def test_no_exemption_outlives_the_field_it_was_written_for(self):
+        observed = {row[:2] for row in self.gate.collect_unreachable_fields(REPO_ROOT)}
+        stale = sorted(set(self.gate.ALLOWED_UNREACHABLE_FIELDS) - observed)
+        self.assertEqual(stale, [], "exemptions that no longer match anything")
+
+    def test_the_pass_reads_something(self):
+        """A collector that finds nothing passes as green as one that works."""
+        self.assertGreaterEqual(len(self.gate.collect_unreachable_fields(REPO_ROOT)), 11)
+
+    def test_the_two_fields_this_was_written_for_are_reachable_now(self):
+        unreachable = {row[:2] for row in self.gate.collect_unreachable_fields(REPO_ROOT)}
+        for tool in ("create_service", "update_service"):
+            for name in ("tag_ids", "environment_ids"):
+                self.assertNotIn((tool, name), unreachable)
+                self.assertNotIn(
+                    (tool, name),
+                    self.gate.ALLOWED_UNREACHABLE_FIELDS,
+                    "reachable fields do not need an exemption",
+                )
+
+    def test_a_hardcoded_key_with_no_parameter_is_reported(self):
+        found = self._collect_from(
+            "@mcp.tool()\n"
+            "def make_thing(name: str):\n"
+            '    payload = {"name": name, "tag_ids": []}\n'
+            '    return client.post("/things", json=payload)\n'
+        )
+        self.assertEqual(found, [("make_thing", "tag_ids", "[]")])
+
+    def test_a_key_a_parameter_feeds_is_not_reported(self):
+        """Positive witness: the reporting is about reachability, not about the value."""
+        found = self._collect_from(
+            "@mcp.tool()\n"
+            "def make_thing(name: str, tag_ids: list[int] | None = None):\n"
+            '    payload = {"name": name, "tag_ids": tag_ids or []}\n'
+            '    return client.post("/things", json=payload)\n'
+        )
+        self.assertEqual(found, [])
+
+    def test_a_dict_that_is_not_a_body_is_not_reported(self):
+        """A tool is free to build dicts for itself; only what it sends is a contract."""
+        found = self._collect_from(
+            "@mcp.tool()\n"
+            "def make_thing(name: str):\n"
+            '    labels = {"tag_ids": [], "environment_ids": []}\n'
+            '    return client.post("/things", json={"name": name, "count": len(labels)})\n'
+        )
+        self.assertEqual(found, [])
+
+    def test_a_tool_that_only_reads_is_not_reported(self):
+        found = self._collect_from(
+            "@mcp.tool()\n"
+            "def list_things():\n"
+            '    return client.get("/things", params={"tag_ids": []})\n'
+        )
+        self.assertEqual(found, [])
 
 
 if __name__ == "__main__":

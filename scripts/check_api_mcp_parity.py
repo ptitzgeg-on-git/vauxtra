@@ -50,6 +50,20 @@ comparison would otherwise be meaningless rather than merely noisy:
 Anything else that is deliberate needs an entry in ALLOWED_CONTRACT_DIVERGENCES, with the
 reason written next to it, and an entry that stops matching fails the build like a stale
 route exemption does.
+
+The contract half asks whether a tool declares what the route *requires*, and that is the
+fourth gap. `ServiceIn` gives `tag_ids` and `environment_ids` a default, so neither field is
+required, so nothing above had anything to say while `create_service` sent `tag_ids: []`
+with no parameter to fill it and `update_service` declared neither at all. The bridge
+published eight tools for building tags and environments and no way to put one on a service:
+the only labelled service it could make came from `apply_template`, wearing whatever the
+template carried, and no tool could change it afterwards.
+
+So a last pass reads the body every write tool sends and reports each key fixed to a bare
+literal. Such a key is not a default a caller may override -- it is the only value that route
+will ever see from that tool. Eleven are deliberate and carry their reason in
+ALLOWED_UNREACHABLE_FIELDS, on the same terms as the tables above: an entry that stops
+matching fails the build.
 """
 import argparse
 import ast
@@ -109,6 +123,42 @@ ALLOWED_CONTRACT_DIVERGENCES = {
         "merged from the template, and refused outright when neither side carries one",
 }
 
+# A field a write tool fills with a constant is a field no caller can reach. `create_service`
+# sent `tag_ids: []` and declared no parameter for it, and `update_service` declared none
+# either, so the bridge published eight tools for building tags and environments and nowhere
+# to put one: a service an agent created was unlabelled, and stayed that way. The contract
+# half above did not see it, and could not -- `ServiceIn` gives both fields a default, so
+# neither is required, and requiredness is the only thing that half asks about.
+#
+# Each entry names why the field is not a gap. Held to the same rule as the tables above: an
+# entry whose tool no longer exists, or whose field stopped being a constant, fails the build.
+ALLOWED_UNREACHABLE_FIELDS = {
+    # `POST /api/services/preflight` answers and stores nothing, and `_run_preflight` reads
+    # fourteen fields of the body it is handed. These five are not among them. They are in
+    # the payload because `ServicePreflightIn` is `ServiceIn` plus `service_id` and the model
+    # wants the whole shape, not because a check consults them.
+    ("run_preflight", "tag_ids"): "no check reads it; the route stores nothing",
+    ("run_preflight", "environment_ids"): "no check reads it; the route stores nothing",
+    ("run_preflight", "icon_url"): "no check reads it; the route stores nothing",
+    ("run_preflight", "enabled"): "no check reads it; the route stores nothing",
+    ("run_preflight", "websocket"): "no check reads it; the route stores nothing",
+    # Multi-sync push targets, the second proxy and the second DNS server. The bridge offers
+    # them nowhere, which is the same position it already takes on the six per-provider
+    # record routes in ALLOWED_API_ONLY: a service is its unit of work, and reaching several
+    # providers at once is where drift comes from. Preflight would check these two -- it is
+    # the one place that reads them -- and has nothing to check while no tool can set them.
+    ("create_service", "extra_proxy_provider_ids"): "multi-sync targets are not offered",
+    ("create_service", "extra_dns_provider_ids"): "multi-sync targets are not offered",
+    ("run_preflight", "extra_proxy_provider_ids"): "multi-sync targets are not offered",
+    ("run_preflight", "extra_dns_provider_ids"): "multi-sync targets are not offered",
+    # A URL the panel's icon picker produces, and an agent has nothing to derive one from.
+    # The service shows the default glyph until someone chooses another in the panel.
+    ("create_service", "icon_url"): "cosmetic, and no agent has a URL to give",
+    # A template is applied in order to publish something. `toggle_service` turns the result
+    # off in one call, so this costs a round trip rather than being out of reach.
+    ("apply_template", "enabled"): "applied to publish; toggle_service turns it off",
+}
+
 _CONTAINER_TYPES = {"list", "dict", "set", "tuple", "frozenset"}
 
 # Filled by `collect_api_contracts`: helper name -> the bounds it enforces. A validator
@@ -151,6 +201,72 @@ def collect_mcp_tools(repo_root: Path) -> set[str]:
             if _is_tool(node):
                 tools.add(node.name)
     return tools
+
+
+_WRITE_METHODS = {"post", "put", "patch"}
+
+
+def _tool_writes(fn: ast.FunctionDef) -> list[ast.Dict]:
+    """Every dict literal this tool sends as a request body, or an empty list if it sends none.
+
+    Only bodies: a tool is free to build dicts for its own bookkeeping, and a key in one of
+    those says nothing about what a caller can reach. Both shapes the bridge uses are read --
+    `json={...}` written inline, and a `payload` built above and passed by name.
+    """
+    inline: list[ast.Dict] = []
+    by_name: set[str] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _WRITE_METHODS:
+            continue
+        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "client"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "json":
+                continue
+            if isinstance(keyword.value, ast.Dict):
+                inline.append(keyword.value)
+            elif isinstance(keyword.value, ast.Name):
+                by_name.add(keyword.value.id)
+
+    bodies = list(inline)
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        named = any(isinstance(t, ast.Name) and t.id in by_name for t in targets)
+        if named and isinstance(node.value, ast.Dict):
+            bodies.append(node.value)
+    return bodies
+
+
+def collect_unreachable_fields(repo_root: Path) -> list[tuple[str, str, str]]:
+    """(tool, field, literal) for every body key fixed to a constant with no parameter to set it.
+
+    A key whose value comes from a parameter, or from anything computed -- a `.get` off a
+    template, a merge, a conditional -- is reachable and not reported. A key spelt as a bare
+    literal is the whole of what that route will ever receive from this tool.
+    """
+    unreachable: list[tuple[str, str, str]] = []
+    for file_path in sorted((repo_root / "vauxtra_mcp" / "tools").glob("*.py")):
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef) or not _is_tool(fn):
+                continue
+            parameters = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
+            for body in _tool_writes(fn):
+                for key, value in zip(body.keys, body.values, strict=True):
+                    if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                        continue
+                    if key.value in parameters:
+                        continue
+                    if isinstance(value, (ast.Constant, ast.List, ast.Dict, ast.Tuple)):
+                        unreachable.append((fn.name, key.value, ast.unparse(value)))
+    return sorted(unreachable)
 
 
 def collect_documented_tools(repo_root: Path) -> set[str]:
@@ -1182,6 +1298,26 @@ def main(argv: list[str] | None = None) -> int:
         print("Contract exemptions that no longer match anything (remove them):")
         for tool, target, kind in stale_exemptions:
             print(f"  {tool}.{target}: {kind}")
+        return 1
+
+    unreachable = collect_unreachable_fields(repo_root)
+    print(f"UNREACHABLE_FIELD_COUNT {len(unreachable)}")
+
+    unexplained = [row for row in unreachable if row[:2] not in ALLOWED_UNREACHABLE_FIELDS]
+    if unexplained:
+        print("Body fields no caller can reach (give each a parameter, or a reason):")
+        for tool, field_name, literal in unexplained:
+            print(f"  {tool}.{field_name} is always {literal}")
+        return 1
+
+    observed_fields = {row[:2] for row in unreachable}
+    stale_fields = sorted(set(ALLOWED_UNREACHABLE_FIELDS) - observed_fields)
+    if stale_fields:
+        # Same reasoning as every other stale exemption here: an allowance nobody is watching
+        # is one the next signature inherits without having argued for it.
+        print("Unreachable-field exemptions that no longer match anything (remove them):")
+        for tool, field_name in stale_fields:
+            print(f"  {tool}.{field_name}")
         return 1
 
     return 0

@@ -347,6 +347,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The bridge could build a taxonomy and had nowhere to put it: every service an agent
+  created was unlabelled, for good.** `create_service` sent `tag_ids: []` and
+  `environment_ids: []` in its body and declared no parameter for either, so a call naming a
+  tag was refused by the tool's own schema before the body ran — `2 validation errors for
+  call[create_service]`, `unexpected keyword argument`. `update_service` declared neither
+  either, so the service could not be labelled afterwards. Meanwhile the bridge publishes
+  eight tools for building tags and environments: create, update, delete and list, twice
+  over, with the fourteen colours validated on the way in. The only labelled service it
+  could produce came from `apply_template`, wearing whatever the template carried at the
+  moment it was applied, with no way to change it later.
+
+  Both tools now take `tag_ids` and `environment_ids`, the shape `create_template` and
+  `update_template` already had. On the update the two follow the overlay rule the tool
+  documents, with the edge it implies written out: omitted, the labels survive, because the
+  payload is built from a GET; named, they are the whole new set, because
+  `PUT /api/services` replaces rather than merges and `set_tags` opens with a DELETE. So
+  `tag_ids=[3]` on a service carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]`
+  strips every label. An id naming no row is refused with 400 that names it, so a typo
+  creates nothing rather than a service quietly missing a label.
+
+  `scripts/check_api_mcp_parity.py` compares tool signatures with the models their routes
+  enforce and could not see this, because it asks whether a tool declares what a route
+  *requires* and `ServiceIn` gives both fields a default. Nothing was required, so nothing
+  was reported, for a field no caller could reach. A fourth pass now reads the body every
+  write tool sends and reports each key spelt as a bare literal: that key is not a default
+  a caller may override, it is the only value that route will ever see from that tool.
+  Eleven are deliberate and carry their reason in `ALLOWED_UNREACHABLE_FIELDS` — seven on
+  `run_preflight`, whose route stores nothing and whose checks read fourteen fields of the
+  body and none of those; the multi-sync push targets, which the bridge offers nowhere, on
+  the same grounds as the per-provider record routes it already declines to expose; the
+  icon URL, which no agent has anything to derive; and the `enabled: True` of
+  `apply_template`, a template being applied in order to publish. An entry that stops
+  matching fails the build, as the three exemption tables beside it already do.
+
+  Fourteen tests, all of them in `tests/test_mcp_contract_parity.py` alongside the rest of
+  the bridge's contract coverage. Witness: with the previous `services.py` in place six
+  fail and eight still pass, the eight being the positive controls — the default that
+  attaches no label, the labels the overlay preserves when nothing is passed, and the four
+  synthetic tools that show the new pass reports a hardcoded key, stays quiet for one a
+  parameter feeds, ignores a dict that is not a request body, and ignores a read.
+
 - **A capability table that stood in for the backend had drifted from it in five places,
   and one of them silently revoked an operator's setting.** Every screen that asks whether
   an integration can do something goes through `metaHasCapability`, which reads the
