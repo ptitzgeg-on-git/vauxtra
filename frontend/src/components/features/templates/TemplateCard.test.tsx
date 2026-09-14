@@ -17,6 +17,16 @@ import { TemplateCard } from './TemplateCard';
 
 const TAG: Tag = { id: 1, name: 'prod', color: 'blue' };
 const ENVIRONMENT: Environment = { id: 1, name: 'prod', color: 'blue' };
+const PROVIDER: Provider = {
+  id: 7,
+  name: 'npm-home',
+  type: 'npm',
+  url: 'https://proxy.example.test',
+  username: 'admin',
+  enabled: true,
+  extra: {},
+  created_at: '2026-01-01T00:00:00Z',
+};
 
 function template(over: Partial<Template> = {}): Template {
   return {
@@ -43,6 +53,8 @@ function template(over: Partial<Template> = {}): Template {
 
 interface CardOverrides {
   template?: Template;
+  providers?: Provider[];
+  providersUnread?: boolean;
   tags?: Tag[];
   environments?: Environment[];
   activeTagIds?: number[];
@@ -56,7 +68,8 @@ function renderCard(over: CardOverrides = {}) {
   const view = renderWithProviders(
     <TemplateCard
       template={over.template ?? template()}
-      providersById={new Map<number, Provider>()}
+      providersById={byId(over.providers ?? [])}
+      providersUnread={over.providersUnread ?? false}
       tagsById={byId(over.tags ?? [TAG])}
       environmentsById={byId(over.environments ?? [ENVIRONMENT])}
       activeTagIds={over.activeTagIds ?? []}
@@ -178,5 +191,94 @@ describe('what the row does with a label it cannot name', () => {
     renderCard({ template: stored as Template });
     expect(within(labelRow() as HTMLElement).getAllByRole('button')).toHaveLength(1);
     expect(tagChip()).toHaveTextContent('prod');
+  });
+});
+
+describe('what the card says about the integration a template names', () => {
+  /**
+   * The card is handed a map of providers and an id out of the template, and until now an id
+   * the map did not hold meant one thing: the integration was deleted. The map is empty for
+   * a second reason as well, and it is the common one -- `/providers` is still in flight, or
+   * it failed -- and the card then printed "Provider removed" in warning colour about an
+   * integration nobody had touched. `providersUnread` is the card being told which of the
+   * two an empty map is.
+   */
+  it('names the integration when the catalogue holds it', () => {
+    renderCard({
+      template: template({ proxy_provider_id: 7 }),
+      providers: [PROVIDER],
+    });
+    expect(screen.getByText('npm-home')).toBeInTheDocument();
+    expect(screen.queryByText('templates.card.provider_missing')).toBeNull();
+    expect(screen.queryByText('templates.card.provider_unread')).toBeNull();
+  });
+
+  it('says the integration was removed when the catalogue came back without it', () => {
+    // The control. A catalogue that answered and does not hold id 7 is the one case where
+    // "removed" is a measurement and not a guess, and it must keep its warning colour.
+    renderCard({
+      template: template({ proxy_provider_id: 7 }),
+      providers: [],
+      providersUnread: false,
+    });
+    const removed = screen.getByText('templates.card.provider_missing');
+    expect(removed).toBeInTheDocument();
+    expect(removed).toHaveClass('text-warning');
+  });
+
+  it('says the list is unread instead of removed when the catalogue never answered', () => {
+    renderCard({
+      template: template({ proxy_provider_id: 7 }),
+      providers: [],
+      providersUnread: true,
+    });
+    expect(screen.getByText('templates.card.provider_unread')).toBeInTheDocument();
+    expect(screen.queryByText('templates.card.provider_missing')).toBeNull();
+  });
+
+  it('leaves the unread line in the muted colour the card uses for what it does not know', () => {
+    renderCard({
+      template: template({ proxy_provider_id: 7 }),
+      providers: [],
+      providersUnread: true,
+    });
+    expect(screen.getByText('templates.card.provider_unread')).not.toHaveClass('text-warning');
+  });
+
+  it('says it once per line a template names, proxy and DNS alike', () => {
+    renderCard({
+      template: template({ proxy_provider_id: 7, dns_provider_id: 8 }),
+      providers: [],
+      providersUnread: true,
+    });
+    expect(screen.getAllByText('templates.card.provider_unread')).toHaveLength(2);
+  });
+
+  it('says it of the tunnel line too, the only one a tunnel template draws', () => {
+    renderCard({
+      template: template({ expose_mode: 'tunnel', tunnel_provider_id: 7 }),
+      providers: [],
+      providersUnread: true,
+    });
+    expect(screen.getByText('templates.card.provider_unread')).toBeInTheDocument();
+    expect(screen.queryByText('templates.card.proxy')).toBeNull();
+  });
+
+  it('draws no line at all for a template that names no integration', () => {
+    // An unread catalogue must not invent a line either: the template holds no id, so there
+    // is nothing to be unsure about.
+    renderCard({ providers: [], providersUnread: true });
+    expect(screen.queryByText('templates.card.provider_unread')).toBeNull();
+    expect(screen.queryByText('templates.card.provider_missing')).toBeNull();
+  });
+
+  it('still names the ones it holds while the id it does not stays unread', () => {
+    renderCard({
+      template: template({ proxy_provider_id: 7, dns_provider_id: 8 }),
+      providers: [PROVIDER],
+      providersUnread: true,
+    });
+    expect(screen.getByText('npm-home')).toBeInTheDocument();
+    expect(screen.getAllByText('templates.card.provider_unread')).toHaveLength(1);
   });
 });

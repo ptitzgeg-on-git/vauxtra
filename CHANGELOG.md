@@ -347,6 +347,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Every card on the templates page said "Provider removed", in warning colour, whenever
+  `/providers` had not answered.** A template stores ids, and nothing on that page is a
+  template on its own: the integration line under every card, the label chips on it and the
+  whole filter row above them are `/providers`, `/tags` and `/environments` resolved against
+  ids the template holds. All three were read as `const { data = [] } = useQuery(...)`, so a
+  request that failed and a request still in flight both arrived as an empty map, and every
+  lookup in an empty map is a miss. The card had one sentence written for a miss — the
+  integration was deleted — and printed it about integrations nobody had touched, which
+  invites the operator to go and re-create what is still there. The two label reads were
+  quieter and no better: the chips came off cards that carry labels and the filter row
+  vanished outright, with nothing said in place of either.
+
+  The card is now told whether the map it was handed is an answer at all, and says
+  "Provider list unread", in the muted colour it uses for what it does not know, instead of
+  accusing a live integration. A miss in a catalogue that did come back still says
+  "Provider removed" in warning colour, because there it is a measurement. The page states
+  the failure once, with the reason the read gave and a retry that refetches only the reads
+  that failed; the filter row comes back with it. That retry reports itself busy for those
+  reads alone, because the busy state also disables the button it is on, and a sibling read
+  that never answers would otherwise hold it shut for good. The id-based filtering never
+  depended on these maps and is unchanged.
+
+  `frontend/src/pages/Templates.test.tsx` is new and covers the page: the warning for each
+  of the three reads, the single warning when all three fail, the filter row leaving and
+  returning, the retry touching only what failed, and the retry staying usable while a
+  sibling read is still in flight. `TemplateCard.test.tsx` covers the card, including the
+  control that a genuinely deleted integration is still named as one.
+
 - **The count beside a domain and the question deleting it asks were both read out of a
   query nobody checked, so a read that failed looked exactly like an empty answer.** `DnsTab`
   and the two editors of `TaxonomyTab` build the map of what a row is holding from

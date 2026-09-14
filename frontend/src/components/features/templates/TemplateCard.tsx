@@ -12,6 +12,12 @@ export interface TemplateCardProps {
   template: Template;
   /** Every provider, by id — a template stores ids, the card shows names. */
   providersById: Map<number, Provider>;
+  /**
+   * Whether that map is an answer at all. An id the map does not hold means the integration
+   * was deleted, which is worth a warning; it means nothing of the sort when the catalogue
+   * itself failed to load or has not arrived, and the card must not say it did.
+   */
+  providersUnread?: boolean;
   /** Every tag, by id, same reason. */
   tagsById: Map<number, Tag>;
   /** Every environment, by id, same reason again. */
@@ -56,6 +62,7 @@ function Detail({ icon, label, children, mono = false }: DetailProps) {
 export const TemplateCard = memo(function TemplateCard({
   template,
   providersById,
+  providersUnread = false,
   tagsById,
   environmentsById,
   activeTagIds,
@@ -90,6 +97,12 @@ export const TemplateCard = memo(function TemplateCard({
   const providerLabel = (id: number | null | undefined): { text: string; missing: boolean } | null => {
     if (id === null || id === undefined) return null;
     const provider = providersById.get(id);
+    // An empty map is not a catalogue saying the integration is gone. `/providers` failing,
+    // or not having answered yet, arrived here as a miss like any other and put "integration
+    // deleted" in warning colour on every card naming one -- a stated fact about a row the
+    // operator never touched, and one that invites them to go and re-create what is still
+    // there. Unread is said in the muted colour the card uses for what it does not know.
+    if (!provider && providersUnread) return { text: t('templates.card.provider_unread'), missing: false };
     if (!provider) return { text: t('templates.card.provider_missing'), missing: true };
     return { text: provider.name, missing: false };
   };
