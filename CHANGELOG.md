@@ -337,6 +337,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The certificates page blamed an empty table on integrations it had never read.**
+  An empty table explains itself by naming the integrations it queried, and two reads stand
+  behind that sentence: `GET /providers` for the names and `GET /providers/types` for which of
+  them expose a certificate store at all. Neither was checked. A failed types read left the
+  capability list `null`, the last rung defended against that with `?? []`, and the plural rule
+  picks the "many" form for zero — so the page printed "These integrations were queried and
+  returned nothing: .", a plural naming nobody, a dangling colon, and a claim that a query had
+  happened. A failed providers read left that same list empty instead, which the rung above
+  reads as "No integration exposes a certificate store": a statement about what is configured,
+  made by a page that had just failed to find out. The page now says what it knows — that it
+  could not look — and its retry re-reads the capability map, which the refresh never did, so
+  the one failure it offered to clear was the one failure it had no way of clearing. A table
+  with rows is never held back for either read: a row carries its own integration name, and
+  the provider list behind it only prettifies that name.
+
 - **The wizard's last screen ticked "No services found to import" over a scan it never ran.**
   The step an operator stopped on is kept in the session; the scan that fills that screen was
   not. It was fired by the single transition that leads there, so a reload landed on the import

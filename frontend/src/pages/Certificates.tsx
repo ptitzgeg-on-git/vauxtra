@@ -189,9 +189,22 @@ export function Certificates() {
     const result = await expiryQuery.refetch();
     if (result.isError) await listQuery.refetch();
     void providersQuery.refetch();
+    //: The capability map too. It is served by Vauxtra rather than by an integration, so
+    //: it costs no round-trip out there — and without it the retry below could be offered
+    //: for a failure it had no way of clearing.
+    void providerTypesQuery.refetch();
   };
 
   const loading = usingFallback ? listQuery.isPending : expiryQuery.isPending;
+  /**
+   * An empty table explains itself by naming the integrations behind it, so it may not
+   * paint before those two reads are in. The sentence it printed in the meantime was
+   * "These integrations were queried and returned nothing: ." — a plural naming nobody, a
+   * dangling colon, and a claim that a query happened. A table with rows never waits for
+   * them: a row carries its own provider name and `sources` only prettifies it.
+   */
+  const explainPending =
+    certificates.length === 0 && (providersQuery.isFetching || providerTypesQuery.isFetching);
   const refreshing = expiryQuery.isFetching || listQuery.isFetching;
   // Only a real dead end: the expiry route failed *and* the flat list could not stand in.
   const failed = expiryQuery.isError && listQuery.isError;
@@ -221,7 +234,25 @@ export function Certificates() {
         ),
       };
     }
-    if (capableProviders !== null && capableProviders.length === 0) {
+    //: Both rungs below speak about the integrations behind the table, and neither
+    //: sentence can be said without having read them. A failed read leaves the list empty,
+    //: which is how "No integration exposes a certificate store" came to be a statement
+    //: about what is configured, made by a page that had just failed to find out; and a
+    //: capability map that never arrived left the count at zero, which is how the other
+    //: one came to name nobody. Either way the page says what it knows, which is that it
+    //: could not look.
+    if (!providersQuery.isSuccess || capableProviders === null) {
+      return {
+        title: t('certificates.empty.none'),
+        description: t('certificates.empty.none_unread_hint'),
+        action: (
+          <Button variant="outline" size="sm" onClick={() => void refresh()}>
+            {t('common.retry')}
+          </Button>
+        ),
+      };
+    }
+    if (capableProviders.length === 0) {
       return {
         title: t('certificates.empty.no_integration'),
         description: t('certificates.empty.no_integration_hint'),
@@ -235,8 +266,8 @@ export function Certificates() {
     return {
       title: t('certificates.empty.none'),
       description: t('certificates.empty.none_hint', {
-        count: (capableProviders ?? []).length,
-        providers: (capableProviders ?? []).map((provider) => provider.name).join(', '),
+        count: capableProviders.length,
+        providers: capableProviders.map((provider) => provider.name).join(', '),
       }),
       action: (
         <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
@@ -401,7 +432,7 @@ export function Certificates() {
             sources={sources}
             warnDays={warnDays}
             now={now}
-            loading={loading}
+            loading={loading || explainPending}
             empty={emptyState}
           />
         </CardContent>

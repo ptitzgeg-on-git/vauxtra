@@ -340,6 +340,7 @@
   "certificates.empty.none": "Geen certificaat gevonden",
   "certificates.empty.none_hint_one": "Deze integratie is bevraagd en gaf niets terug: {providers}. Certificaten verschijnen hier zodra deze er een beheert.",
   "certificates.empty.none_hint_other": "Deze integraties zijn bevraagd en gaven niets terug: {providers}. Certificaten verschijnen hier zodra een van hen er een beheert.",
+  "certificates.empty.none_unread_hint": "De integraties achter deze pagina konden niet worden uitgelezen, dus kan ze niet zeggen welke zijn bevraagd. Probeer het opnieuw om te zien of een ervan er een beheert.",
   "certificates.empty.open_providers": "Integraties openen",
   "certificates.expired_ago": "{days} geleden verlopen",
   "certificates.fallback": "Terugval",

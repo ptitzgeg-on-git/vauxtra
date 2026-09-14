@@ -314,6 +314,7 @@
   "certificates.empty.no_integration_hint": "Nginx Proxy Manager と Zoraxy は保持している証明書を公開しており、Vauxtra はそれをここで読み取ります。Traefik は ACME を内部で管理しストアを公開しないため、その証明書は一覧に表示できません。",
   "certificates.empty.none": "証明書が見つかりません",
   "certificates.empty.none_hint_other": "次の統合に問い合わせましたが、何も返されませんでした：{providers}。いずれかが証明書を保持すると、ここに表示されます。",
+  "certificates.empty.none_unread_hint": "このページの背後にある統合を読み取れなかったため、どれに問い合わせたかを示せません。いずれかが証明書を保持しているか確認するには、再試行してください。",
   "certificates.empty.open_providers": "統合を開く",
   "certificates.expired_ago": "{days}日前に失効",
   "certificates.fallback": "フォールバック",

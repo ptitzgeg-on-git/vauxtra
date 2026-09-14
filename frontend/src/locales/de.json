@@ -340,6 +340,7 @@
   "certificates.empty.none": "Kein Zertifikat gefunden",
   "certificates.empty.none_hint_one": "Diese Integration wurde abgefragt und lieferte nichts zurück: {providers}. Zertifikate erscheinen hier, sobald sie ein Zertifikat hält.",
   "certificates.empty.none_hint_other": "Diese Integrationen wurden abgefragt und lieferten nichts zurück: {providers}. Zertifikate erscheinen hier, sobald eine davon ein Zertifikat hält.",
+  "certificates.empty.none_unread_hint": "Die Integrationen hinter dieser Seite konnten nicht gelesen werden; sie kann daher nicht sagen, welche davon abgefragt wurden. Versuchen Sie es erneut, um zu erfahren, ob eine davon ein Zertifikat hält.",
   "certificates.empty.open_providers": "Integrationen öffnen",
   "certificates.expired_ago": "Vor {days} abgelaufen",
   "certificates.fallback": "Ersatzanzeige",
