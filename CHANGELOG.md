@@ -337,6 +337,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A provider you switch off was published as "Failing", on a card that already said
+  "Disabled" one chip to the left.** `getHealthScore` clamped the score of a disabled
+  provider to 30, which lands in the `error` band, so `ProviderCard` drew a red
+  "Failing · 30" badge beside the neutral "Disabled" chip on the same row. The clamp had no
+  other reader: `getOperationalStatus` and `getProviderSeverity` both answer on `enabled`
+  before they ever look at the score, so painting that badge red was the only thing the line
+  did. It also made the badge unreachable — the Integrations page counts issues and filters
+  on `getProviderSeverity`, which calls the same provider `disabled`, so the counter said
+  zero and the Issues filter hid the card. The red verdict existed only on the screen that
+  said nothing was wrong. A provider that is off now reports `unknown`: whatever the last
+  signals said, they were gathered while the switch was on, and there is no live reading of
+  something that is off. The card's own render decision moved into a shared
+  `showsHealthBadge`, and a new test file reads all three answers for the same provider and
+  requires them to agree, in both switch positions.
 - **Every warning Vauxtra has ever logged read as zero on the only surface an operator can
   alert on.** `add_log` folds the older spelling `warn` into `warning` before the insert, so
   the column holds `warning` — and `/metrics` asked SQLite for `warn`. The bucket those rows
