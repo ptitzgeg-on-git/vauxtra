@@ -21,6 +21,30 @@ def plural(n: int, singular: str, many: str | None = None) -> str:
     return f"{n} {singular if n == 1 else (many or singular + 's')}"
 
 
+def time_to_expiry(days_left: int, days_overdue: int) -> str:
+    """`expires in 3 days`, `expires in less than a day`, `expired 47 days ago`.
+
+    Two counts, not one signed count. `timedelta.days` floors, which is the right
+    direction ahead of expiry -- three and a half days left is stated as three, and an
+    operator is never told they have longer than they do -- but the same floor run the
+    other way turns three and a half days overdue into -4, which overstates. So each
+    side is measured by its own subtraction and arrives here already floored the way
+    that side needs, and this function only picks the sentence.
+
+    The sentence matters because a lapsed certificate is the one state that is not a
+    countdown at all. Negating the count and leaving the verb alone produced "expires
+    in -47 days" in the activity log, about a certificate the certificates page was at
+    the same moment describing, correctly, as expired 47 days ago.
+    """
+    if days_left < 0:
+        if days_overdue < 1:
+            return "expired less than a day ago"
+        return f"expired {plural(days_overdue, 'day')} ago"
+    if days_left == 0:
+        return "expires in less than a day"
+    return f"expires in {plural(days_left, 'day')}"
+
+
 def verb(n: int, singular: str, plural_form: str) -> str:
     """The verb that agrees with `plural(n, ...)`: `uses` / `use`, `has` / `have`.
 

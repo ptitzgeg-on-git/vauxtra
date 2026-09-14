@@ -14,7 +14,7 @@ from app.public_target import (
     resolve_public_target,
 )
 from app.security import mask_secret_url
-from app.text import plural
+from app.text import plural, time_to_expiry
 
 _scheduler = BackgroundScheduler(daemon=True)
 _lock      = threading.Lock()
@@ -586,6 +586,11 @@ def _run_cert_expiry_alerts(conn) -> None:
                     continue
 
                 days_left = (expires - now_utc).days
+                # Measured by its own subtraction rather than by negating `days_left`:
+                # `timedelta.days` floors, so the countdown above never overstates the
+                # time left, and that same floor applied to a lapsed certificate would
+                # overstate how long it has been down. See `time_to_expiry`.
+                days_overdue = (now_utc - expires).days if days_left < 0 else 0
                 key = (provider_id, cert_id)
                 seen_keys.add(key)
 
@@ -593,13 +598,13 @@ def _run_cert_expiry_alerts(conn) -> None:
                     level = "error"
                     msg = (
                         f"[CertExpiry] CRITICAL: '{cert.get('nice_name')}' (ID {cert_id}) "
-                        f"expires in {plural(days_left, 'day')}"
+                        f"{time_to_expiry(days_left, days_overdue)}"
                     )
                 elif days_left < 30:
                     level = "warn"
                     msg = (
                         f"[CertExpiry] WARNING: '{cert.get('nice_name')}' (ID {cert_id}) "
-                        f"expires in {plural(days_left, 'day')}"
+                        f"{time_to_expiry(days_left, days_overdue)}"
                     )
                 else:
                     _cert_alert_state.pop(key, None)
