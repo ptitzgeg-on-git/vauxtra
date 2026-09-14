@@ -112,6 +112,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **`vauxtra_mcp/README.md` now has a "When a call half-succeeds" section**, and a test that
+  keeps its table true. The docstrings say what each key means at call time; this is what
+  somebody reads before writing the integration, and it carries the rule none of them can
+  state alone: the status code and `ok` are both unreliable signals of a partial failure, so
+  the list is the result. `POST /api/services` is the only route in the product that marks it
+  in the status at all, answering 207, and `check()` passes a 207 through as a normal answer
+  because the call did do something. The two deletion routes then disagree about the flag —
+  `DELETE /api/services/{id}` answers `ok: true` with records still live, since the service is
+  gone from Vauxtra and a false `ok` would only invite a retry that can answer nothing but
+  404, while `DELETE /api/providers/{id}` answers `ok: false` in the same situation. A caller
+  reading either flag as "it worked" is wrong about one of them.
+
+  The table names all fourteen pairs across eleven tools, one row per key, and separates the
+  two that read like failures and are not: a `skipped` line is a name Vauxtra already tracks,
+  an `ignored` line is a read-only key handed back untouched, and folding either in with
+  `errors` invents work that does not exist while burying work that does.
+
+  A hand-written list of fourteen pairs is correct the day it is written and quietly wrong two
+  routes later, so `TheHalfSucceedsTableNamesWhatTheCodeAnswers` parses that table and compares
+  it to what the routes actually answer, in both directions — a pair the README omits is a
+  partial failure nobody was warned about, a pair it invents sends a reader looking for a key
+  that is not there. The parser is scoped to the one section and reads only its first two
+  columns, and a heading that gets renamed reads as an empty table, which disagrees with every
+  pair the code answers and so fails the build rather than passing it.
+
 - **A capability parity gate**, `scripts/check_capability_parity.py`, run in the backend job
   beside the runtime parity gate. It reads `PROVIDER_TYPES` out of `app/providers/factory.py`
   as a syntax tree, `CAPABILITY_FALLBACK` out of `frontend/src/lib/providers.ts`, and the

@@ -845,5 +845,109 @@ class EveryPartialFailureKeyIsNamedByItsTool(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+def _half_succeeds_table(readme_text: str) -> set[tuple[str, str]]:
+    """(tool, key) pairs out of the README's "When a call half-succeeds" table.
+
+    Read line by line and scoped to that one section, so the tool names in "Available
+    tools" are not swept in and the prose around it is free to say `errors` without
+    counting as a row. Only the first two columns are read: the third says what a
+    non-empty one means, and a tool named there is a sentence, not a claim.
+
+    A heading that is renamed reads as an empty table rather than as an error, which is
+    why the comparison below is made in both directions: an empty table disagrees with
+    every pair the code answers, so the rename fails the build instead of passing it.
+    """
+    rows: set[tuple[str, str]] = set()
+    inside = False
+    for line in readme_text.splitlines():
+        if line.startswith("## "):
+            inside = line.startswith("## When a call half-succeeds")
+            continue
+        if not inside or not line.startswith("| `"):
+            continue
+        cells = line.split("|")
+        keys = [part for i, part in enumerate(cells[1].split("`")) if i % 2]
+        tools = [part for i, part in enumerate(cells[2].split("`")) if i % 2]
+        for key in keys:
+            for tool in tools:
+                rows.add((tool, key))
+    return rows
+
+
+class TheHalfSucceedsTableNamesWhatTheCodeAnswers(unittest.TestCase):
+    """The README's table of partial-failure keys, against the keys the routes answer with.
+
+    `EveryPartialFailureKeyIsNamedByItsTool` pins the docstrings, which is what an agent
+    reads at call time. The README is what a person reads before writing the integration,
+    and it carries the same fourteen pairs written out by hand -- the kind of list that is
+    correct on the day it is written and quietly wrong two routes later. So it is compared
+    to the code rather than trusted, in both directions: a pair the README omits is a
+    partial failure nobody was warned about, and a pair it invents sends a reader looking
+    for a key that is not there.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.gate = _load_parity_gate()
+
+    def _documented(self) -> set[tuple[str, str]]:
+        readme = (REPO_ROOT / "vauxtra_mcp" / "README.md").read_text(encoding="utf-8")
+        return _half_succeeds_table(readme)
+
+    def _answered(self) -> set[tuple[str, str]]:
+        answers = self.gate.collect_route_answers(REPO_ROOT)
+        pairs: set[tuple[str, str]] = set()
+        for name, tool in self.gate.collect_mcp_contracts(REPO_ROOT).items():
+            for call in tool.calls:
+                for key in answers.get((call.method, call.path), set()):
+                    if key in self.gate.PARTIAL_FAILURE_KEYS:
+                        pairs.add((name, key))
+        return pairs
+
+    def test_the_table_lists_every_pair_and_invents_none(self):
+        documented, answered = self._documented(), self._answered()
+        self.assertEqual(
+            sorted(answered - documented), [], "answered by a route, missing from the README"
+        )
+        self.assertEqual(
+            sorted(documented - answered), [], "in the README, answered by no route"
+        )
+
+    def test_the_parser_reads_something(self):
+        """An equality of two empty sets is as green as an equality of the right ones."""
+        self.assertIn(("create_service", "errors"), self._documented())
+
+    def test_the_parser_reads_only_its_own_section(self):
+        readme = """## Available tools
+
+| Tool | What it does |
+| --- | --- |
+| `sync_services_from_providers` | reads the providers |
+
+## When a call half-succeeds
+
+| Key | Answered by | What a non-empty one means |
+| --- | --- | --- |
+| `errors` | `delete_service`, `delete_provider` | still live on their provider |
+
+## Example prompts
+
+Ask for `errors` and it will not become a row.
+"""
+        self.assertEqual(
+            _half_succeeds_table(readme),
+            {("delete_service", "errors"), ("delete_provider", "errors")},
+        )
+
+    def test_a_renamed_section_reads_as_empty_rather_than_as_agreement(self):
+        readme = """## When a call goes half well
+
+| Key | Answered by | What a non-empty one means |
+| --- | --- | --- |
+| `errors` | `delete_service` | still live on its provider |
+"""
+        self.assertEqual(_half_succeeds_table(readme), set())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
