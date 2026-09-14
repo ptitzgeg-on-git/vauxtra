@@ -337,6 +337,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A page that could not reach its health checks looked like a page where all was well.**
+  The integrations page reads two health endpoints, and neither query's failure was ever
+  looked at. When they fail every integration is `unknown` — the honest verdict for a
+  measurement that did not happen — but `unknown` is what neither filter counts, so a full
+  list published `Issues 0` and `Healthy 0`, and the warning badge in the header went away.
+  Anyone arriving by the dashboard's own "Integration health could not be checked" link
+  landed on the one page that contradicted it. The failure is now stated above the filters
+  whose zeros it explains, with a Retry that takes both readings again.
+- **The change-password screen dropped its API-key warning when it could not count them.**
+  The count was `data?.length ?? 0`, so a failed request and an instance holding no keys
+  were the same zero — and the only sentence saying that a password change leaves existing
+  API keys working, together with the link to go and revoke them, disappeared exactly when
+  nobody could confirm whether any existed. It now reports that the list could not be
+  loaded, and keeps the link.
 - **One hung build could leave every later push unscanned, for six hours.** No job in any
   workflow declared `timeout-minutes`, so the ceiling in force was GitHub's default of six
   hours. That would concern only the run that hangs, except `Build & Publish` keeps
