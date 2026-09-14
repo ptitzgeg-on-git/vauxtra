@@ -321,6 +321,49 @@ refused and why, which provider still holds a service, that a hostname is alread
 
 ---
 
+## When a call half-succeeds
+
+Some calls do part of what they were asked and answer success anyway. Storing a service
+and publishing it are separate steps, and so are writing a setting and handing it to the
+running scheduler: the first can succeed while the second is refused. The answer says so
+— but not in its status code, and not reliably in `ok`. It says so in a list.
+
+`POST /api/services` is the only route that marks it in the status at all, answering 207
+instead of 201 when the row was stored but the tunnel route, the proxy host or the DNS
+record was refused. `check()` passes a 207 through as a normal answer, which is right —
+the call did do something — so a caller that reads only the id and the fqdn reports a
+service created and reachable while nothing routes to that hostname. No other route gives
+any sign in its status code.
+
+`ok` is no better as a signal, because the two deletion routes mean opposite things by it.
+`DELETE /api/services/{id}` answers `ok: true` even when a provider refused, since the
+service really is gone from Vauxtra and a false `ok` would only invite a retry that can
+now answer nothing but 404. `DELETE /api/providers/{id}` answers `ok: false` in the same
+situation, since the provider row is deleted either way and a false `ok` there means
+"deleted, but something is still published". Read the list, not the flag.
+
+Fourteen answers across eleven tools carry one:
+
+| Key | Answered by | What a non-empty one means |
+| --- | --- | --- |
+| `errors` | `create_service`, `apply_template`, `update_service`, `toggle_service`, `delete_service`, `bulk_service_action`, `delete_provider`, `import_docker_containers`, `import_services_from_sync` | A record Vauxtra could not publish, or could not withdraw. After a deletion those are still live on their provider, still resolving, with nothing left in Vauxtra pointing at them. |
+| `not_applied` | `save_settings` | The value is in the database and the settings page reads it back, but the running scheduler never received it: the checks go on at the old cadence until Vauxtra restarts. |
+| `unreachable` | `get_certificate_expiry` | Enabled providers this call could not read. The counts cover only the rest, so the answer is partial rather than reassuring. |
+| `skipped` | `import_docker_containers`, `import_services_from_sync` | Nothing to do: a name Vauxtra already tracks, or the 2nd..Nth hostname of a proxy host that answers for several. The normal result of re-importing a scan. |
+| `ignored` | `save_settings` | Read-only keys handed back untouched, `schema_version` and `setup_completed`. Never a refusal. |
+
+Those last two rows are the distinction worth keeping. A `skipped` line needs no action, an
+`errors` line names something a person has to go and fix, and folding them together into
+"some failed" is wrong in both directions: it invents work that does not exist and it
+buries work that does.
+
+All of this is written on the tools themselves, because FastMCP publishes the signature
+and the docstring and nothing else — there is no other place an agent can read it.
+`scripts/check_api_mcp_parity.py` fails the build when a route can answer with one of
+these keys and a tool serving that route never names it.
+
+---
+
 ## Example prompts
 
 Once connected to Claude Desktop or Cursor:
