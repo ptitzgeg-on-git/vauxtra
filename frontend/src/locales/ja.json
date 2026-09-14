@@ -905,6 +905,8 @@
   "providers.card.read_only": "読み取り専用",
   "providers.card.toggle": "{name} を有効にする",
   "providers.card.version": "バージョン {value}",
+  "providers.catalog.load_failed": "統合カタログを読み込めませんでした",
+  "providers.catalog.load_failed_hint": "このリストが読み込まれるまで、下の各カードは保存された種別名に戻り、読み取り専用の統合はその旨を表示しなくなります。",
   "providers.delete.dep_dark_tag": "公開されなくなる",
   "providers.delete.dep_kept_tag": "公開は継続",
   "providers.delete.deps_dark_other": "うち {count} 件には他の配信先がありません。公開アドレスは残りますが、どこからも公開されなくなります。",

@@ -964,6 +964,8 @@
   "providers.card.read_only": "Alleen-lezen",
   "providers.card.toggle": "{name} inschakelen",
   "providers.card.version": "Versie {value}",
+  "providers.catalog.load_failed": "De integratiecatalogus kon niet worden geladen",
+  "providers.catalog.load_failed_hint": "Elke kaart hieronder valt terug op de opgeslagen typenaam, en een alleen-lezen integratie vermeldt dat niet meer, totdat deze lijst is geladen.",
   "providers.delete.dep_dark_tag": "niet meer gepubliceerd",
   "providers.delete.dep_kept_tag": "nog gepubliceerd",
   "providers.delete.deps_dark_one": "{count} daarvan heeft geen ander doel: deze behoudt zijn publieke adres en niets publiceert het nog.",

@@ -905,6 +905,8 @@
   "providers.card.read_only": "只读",
   "providers.card.toggle": "启用 {name}",
   "providers.card.version": "版本 {value}",
+  "providers.catalog.load_failed": "无法加载集成目录",
+  "providers.catalog.load_failed_hint": "在此列表加载完成前，下方每张卡片将回退到已保存的类型名称，只读集成也不再标注其只读状态。",
   "providers.delete.dep_dark_tag": "不再发布",
   "providers.delete.dep_kept_tag": "仍在发布",
   "providers.delete.deps_dark_other": "其中 {count} 个没有其他目标：它们保留公网地址，但不再由任何一方发布。",

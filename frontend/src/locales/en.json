@@ -964,6 +964,8 @@
   "providers.card.read_only": "Read-only",
   "providers.card.toggle": "Enable {name}",
   "providers.card.version": "Version {value}",
+  "providers.catalog.load_failed": "The integration catalogue could not be loaded",
+  "providers.catalog.load_failed_hint": "Each card below falls back to its stored type name, and a read-only integration stops saying so, until this list loads.",
   "providers.delete.dep_dark_tag": "no longer published",
   "providers.delete.dep_kept_tag": "still published",
   "providers.delete.deps_dark_one": "{count} of them has no other target: it keeps its public address and nothing publishes it any more.",
