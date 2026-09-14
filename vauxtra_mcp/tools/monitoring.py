@@ -22,7 +22,10 @@ def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dic
     """
     Retrieve recent operational logs.
 
-    level: filter by 'ok', 'info', 'warn', or 'error'.
+    level: filter by 'info', 'ok', 'warning' or 'error'. 'warn' is accepted and means
+    'warning' -- the two spellings were both written for a while and the second is the one
+    stored, so rows come back reading 'warning' whichever you asked for. Filtering by
+    'warning' finds the old 'warn' rows too, so there is no spelling that loses entries.
     """
     params: dict[str, Any] = {"page": page, "per_page": per_page}
     if level:

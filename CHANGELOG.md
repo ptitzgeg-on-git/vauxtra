@@ -337,6 +337,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Every warning Vauxtra has ever logged read as zero on the only surface an operator can
+  alert on.** `add_log` folds the older spelling `warn` into `warning` before the insert, so
+  the column holds `warning` — and `/metrics` asked SQLite for `warn`. The bucket those rows
+  were in was published as `vauxtra_logs_24h{level="warn"} 0`, and `level="warning"` was
+  never emitted at all, so a rule watching for warnings watched a line that could only ever
+  read flat. `GET /api/logs` has folded both spellings since the normalisation landed; this
+  was the reader that had not. The vocabulary is no longer written out a second time in this
+  file either: what the column holds is what gets counted, folded through the same function
+  the insert uses, so a level nothing in the product writes is reported instead of dropped.
+  The four known levels are zero-filled on top of that, because an absent series and a count
+  of zero are the same picture to a person and opposite answers to `absent()`.
+- **One family on `/metrics` carried neither `HELP` nor `TYPE`, and two were interleaved.**
+  `vauxtra_providers_total` and `vauxtra_providers_enabled` were emitted from a single loop,
+  one sample of each per row, which scatters every family's samples through another family's
+  — out of spec for the text exposition format, rejected outright by OpenMetrics, and the
+  reason `vauxtra_providers_enabled` ended up the only family in the file with no `HELP` and
+  no `TYPE` line at all. They are now two passes over the same rows, each behind its own
+  header.
+- **A label value from the database could end the label set early.** `_gauge` wrote every
+  value in quotes without escaping it. Nothing reached it but literals from this file, so it
+  never mattered — until log levels started being read out of the column, which is the point
+  of the fix above. One unescaped `"` does not spoil its own line: it closes the label set
+  and leaves the rest of the scrape unparseable. Backslashes, quotes and newlines are now
+  escaped the way the format asks.
+- **The metrics table in `docs/HOWTO.md` was wrong in nine places, and nothing could say
+  so.** It gave `vauxtra_providers_total` a `state` label it has never had; named a family
+  `vauxtra_webhook_deliveries_total` where the code says `delivery`; gave
+  `vauxtra_uptime_events_24h` a label called `event` carrying `up` and `down` where the body
+  says `status` with `ok` and `error`; offered log levels `warn` and `debug` and neither `ok`
+  nor `warning`; described webhooks as `enabled`/`disabled` where the two members are `all`
+  and `enabled`; omitted `vauxtra_services_enabled` and `vauxtra_providers_enabled`
+  entirely; said nothing about the `status="all"` roll-up sitting inside its own family, so
+  `sum()` over that family answers with exactly twice the truth; and printed an example
+  scrape carrying a line the endpoint has never emitted. The alerting example was named
+  `VauxtraCertExpiringSoon` and annotated "certificate may be expiring" over an expression
+  counting every error line in the journal, so a failed NPM call fired an alert about
+  certificates — and there is no certificate series to point it at, because reading one
+  means calling each provider over the network and a scrape must never wait on a third
+  party. The page is rewritten from a measured body, the absence is stated rather than
+  implied, and a test now parses that table and compares it to the endpoint in both
+  directions: every family published must be documented, every family documented must be
+  published, the label names must match, and a closed list of label values must be exactly
+  the set that appears.
 - **The dashboard drew a lapsed certificate in the same amber as one falling due next
   month.** `expiring_soon_count` is one figure built from two states — still valid but
   inside the warning window, and already past expiry — because both need renewing. Three

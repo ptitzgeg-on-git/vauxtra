@@ -1,16 +1,35 @@
-"""Prometheus-compatible /metrics endpoint."""
+"""Prometheus-compatible /metrics endpoint.
+
+Two families here carry a roll-up member beside the parts it already contains:
+`vauxtra_services_total{status="all"}` and `vauxtra_webhooks_total{state="all"}`. Their
+HELP text says so, because `sum()` over either family answers with twice the truth. Read
+the `all` series on its own, or add up the parts, but never the whole family at once.
+"""
 
 from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
-from app.models import get_db
+from app.models import LOG_LEVELS, get_db, normalise_log_level
 
 router = APIRouter()
 
 
+def _escape(value: str) -> str:
+    """A label value as the text exposition format wants it.
+
+    Every label written below used to be a literal from this file, so nothing needed
+    quoting and nothing was quoted. The log levels are now read out of the column instead
+    of from a tuple written above them -- which is the point of that change, a level this
+    file has never heard of is reported rather than dropped -- and a value arriving from a
+    table is a value that can hold a quote. One unescaped quote does not spoil its own
+    line: it closes the label set early and leaves the rest of the scrape unparseable.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _gauge(name: str, value, labels: dict | None = None) -> str:
     if labels:
-        label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+        label_str = ",".join(f'{k}="{_escape(str(v))}"' for k, v in labels.items())
         return f"{name}{{{label_str}}} {value}"
     return f"{name} {value}"
 
@@ -32,7 +51,9 @@ def prometheus_metrics() -> str:
         svc_counts = {r["status"]: r["n"] for r in svc_rows}
         total_svcs = conn.execute("SELECT COUNT(*) FROM services").fetchone()[0]
 
-        lines.append("# HELP vauxtra_services_total Total services grouped by status")
+        lines.append(
+            '# HELP vauxtra_services_total Services by status; status="all" repeats their sum'
+        )
         lines.append("# TYPE vauxtra_services_total gauge")
         for status in ("ok", "error", "unknown"):
             lines.append(_gauge("vauxtra_services_total", svc_counts.get(status, 0), {"status": status}))
@@ -46,16 +67,36 @@ def prometheus_metrics() -> str:
         lines.append(_gauge("vauxtra_services_enabled", disabled_svcs, {"state": "disabled"}))
 
         # ── Providers ────────────────────────────────────────────────────────
-        lines.append("# HELP vauxtra_providers_total Total providers grouped by type")
-        lines.append("# TYPE vauxtra_providers_total gauge")
+        # Two passes over the same rows rather than one pass emitting both families. The
+        # text exposition format asks for every sample of a family in a single group behind
+        # its own HELP and TYPE, and OpenMetrics refuses interleaving outright; alternating
+        # them also left `vauxtra_providers_enabled` with no HELP and no TYPE at all, the
+        # only family in this file without them and a lint failure under `promtool`.
         prov_rows = conn.execute(
             "SELECT type, COUNT(*) as n, SUM(enabled) as en FROM providers GROUP BY type"
         ).fetchall()
+        lines.append("# HELP vauxtra_providers_total Total providers grouped by type")
+        lines.append("# TYPE vauxtra_providers_total gauge")
         for r in prov_rows:
             lines.append(_gauge("vauxtra_providers_total", r["n"], {"type": r["type"]}))
+        lines.append("# HELP vauxtra_providers_enabled Enabled providers grouped by type")
+        lines.append("# TYPE vauxtra_providers_enabled gauge")
+        for r in prov_rows:
             lines.append(_gauge("vauxtra_providers_enabled", r["en"] or 0, {"type": r["type"]}))
 
         # ── Logs (last 24 h) ──────────────────────────────────────────────────
+        # `add_log` folds "warn" into "warning" before the insert, so the column holds
+        # "warning" and this loop asked for a spelling nothing writes. Two warnings in the
+        # database were reported here as `level="warn" 0`, and the bucket that held them was
+        # never emitted at all: alerting on warnings off this endpoint watched a line that
+        # could only ever read flat. `GET /api/logs` has folded the two spellings together
+        # since the normalisation landed -- this was the reader that had not.
+        #
+        # The vocabulary is no longer written out a second time here, either. What the column
+        # holds is what gets counted, folded through the same function the insert uses, so a
+        # level this file has never heard of is reported instead of dropped. `LOG_LEVELS` is
+        # zero-filled on top of that: a quiet hour has to read 0 rather than go absent, or an
+        # `absent()` alarm fires on a healthy instance.
         lines.append("# HELP vauxtra_logs_24h Log entries in the last 24 hours grouped by level")
         lines.append("# TYPE vauxtra_logs_24h gauge")
         log_rows = conn.execute(
@@ -63,9 +104,15 @@ def prometheus_metrics() -> str:
                WHERE created_at > datetime('now', '-24 hours')
                GROUP BY level"""
         ).fetchall()
-        log_counts = {r["level"]: r["n"] for r in log_rows}
-        for level in ("info", "ok", "warn", "error"):
-            lines.append(_gauge("vauxtra_logs_24h", log_counts.get(level, 0), {"level": level}))
+        log_counts: dict[str, int] = dict.fromkeys(LOG_LEVELS, 0)
+        for r in log_rows:
+            # A row with no level would otherwise be published as `level=""`, and Prometheus
+            # reads an empty label value as the label not being there at all -- the count
+            # would land on a series with no `level`, beside the ones that have one.
+            level = normalise_log_level(r["level"]) or "unspecified"
+            log_counts[level] = log_counts.get(level, 0) + r["n"]
+        for level in sorted(log_counts):
+            lines.append(_gauge("vauxtra_logs_24h", log_counts[level], {"level": level}))
 
         # ── Uptime events (last 24 h) ─────────────────────────────────────────
         lines.append("# HELP vauxtra_uptime_events_24h Uptime check results in the last 24 hours")
@@ -82,7 +129,9 @@ def prometheus_metrics() -> str:
         # ── Webhooks ──────────────────────────────────────────────────────────
         wh_total = conn.execute("SELECT COUNT(*) FROM webhooks").fetchone()[0]
         wh_enabled = conn.execute("SELECT COUNT(*) FROM webhooks WHERE enabled=1").fetchone()[0]
-        lines.append("# HELP vauxtra_webhooks_total Total configured webhooks")
+        lines.append(
+            '# HELP vauxtra_webhooks_total Webhooks; state="enabled" is a subset of state="all"'
+        )
         lines.append("# TYPE vauxtra_webhooks_total gauge")
         lines.append(_gauge("vauxtra_webhooks_total", wh_total, {"state": "all"}))
         lines.append(_gauge("vauxtra_webhooks_total", wh_enabled, {"state": "enabled"}))

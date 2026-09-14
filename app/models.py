@@ -549,6 +549,13 @@ def is_setup_done() -> bool:
 #: filter on "warning" is not silently missing rows.
 _LEVEL_ALIASES = {"warn": "warning"}
 
+#: The spellings a reader may assume exist even when the last 24 hours produced none of
+#: them, in the order a human reads them. `/metrics` zero-fills these so a quiet instance
+#: reports `0` rather than dropping the series: an absent series and a count of zero are
+#: the same picture to a person and opposite answers to `absent()`. This is the stored
+#: vocabulary, after the fold above -- `warn` is not a member, it is an alias of one.
+LOG_LEVELS = ("info", "ok", "warning", "error")
+
 
 def normalise_log_level(level: str) -> str:
     """The spelling stored for `level`: lowercased, trimmed, `warn` folded into `warning`."""

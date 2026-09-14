@@ -720,28 +720,71 @@ No `Authorization` header required. Response is `text/plain` in Prometheus text 
 
 | Metric | Labels | Description |
 |---|---|---|
-| `vauxtra_services_total` | `status` (`ok`, `error`, `unknown`) | Services by health status |
-| `vauxtra_providers_total` | `type`, `state` (`enabled`, `disabled`) | Providers by type and enabled state |
-| `vauxtra_logs_24h` | `level` (`info`, `warn`, `error`, `debug`) | Log entries in the last 24 hours |
-| `vauxtra_uptime_events_24h` | `event` (`up`, `down`) | Service uptime events in the last 24 hours |
-| `vauxtra_webhooks_total` | `state` (`enabled`, `disabled`) | Configured webhooks |
-| `vauxtra_webhook_deliveries_total` | `status` (`pending`, `delivered`, `failed`) | Webhook delivery log entries |
+| `vauxtra_services_total` | `status` (`ok`, `error`, `unknown`, `all`) | Services by health status. `all` is the sum of the other three and sits in the same family — read `all`, or add up the parts, but never `sum()` the family |
+| `vauxtra_services_enabled` | `state` (`enabled`, `disabled`) | Services by enabled state. These two do partition the estate, so their sum is the total |
+| `vauxtra_providers_total` | `type` | Providers by type |
+| `vauxtra_providers_enabled` | `type` | Enabled providers by type, a subset of the family above |
+| `vauxtra_logs_24h` | `level` (`info`, `ok`, `warning`, `error`, …) | Log entries in the last 24 hours. Those four are always published, at `0` on a quiet instance; any other level the table holds appears beside them rather than being dropped |
+| `vauxtra_uptime_events_24h` | `status` (`ok`, `error`) | Service uptime check results in the last 24 hours |
+| `vauxtra_webhooks_total` | `state` (`all`, `enabled`) | Configured webhooks. `enabled` is a subset of `all`, in the same family — the same caution as `vauxtra_services_total` |
+| `vauxtra_webhook_delivery_total` | `status` (`pending`, `delivered`, `failed`) | Webhook delivery log entries. Absent entirely until a first delivery has been attempted |
 | `vauxtra_templates_total` | *(none)* | Number of service templates |
 | `vauxtra_schema_version` | *(none)* | Current database schema version |
+
+The stored spelling of a log level is `warning`. Older code wrote `warn`, and `add_log` folds
+that into `warning` before the insert, so there is no `warn` series — asking for one is asking
+for a bucket nothing writes to.
+
+Certificate expiry is deliberately **not** here. Reading it means calling each proxy provider
+over the network, and a scrape must never wait on a third party. Use `GET /api/certificates`,
+the dashboard, or the `get_certificate_expiry` MCP tool for that.
 
 ### Example output
 
 ```
-# HELP vauxtra_services_total Services by status
+# HELP vauxtra_services_total Services by status; status="all" repeats their sum
 # TYPE vauxtra_services_total gauge
 vauxtra_services_total{status="ok"} 5
 vauxtra_services_total{status="error"} 1
 vauxtra_services_total{status="unknown"} 2
-# HELP vauxtra_providers_total Providers by type and state
+vauxtra_services_total{status="all"} 8
+# HELP vauxtra_services_enabled Services split by enabled/disabled state
+# TYPE vauxtra_services_enabled gauge
+vauxtra_services_enabled{state="enabled"} 6
+vauxtra_services_enabled{state="disabled"} 2
+# HELP vauxtra_providers_total Total providers grouped by type
 # TYPE vauxtra_providers_total gauge
-vauxtra_providers_total{type="npm",state="enabled"} 1
-vauxtra_providers_total{type="cloudflare",state="enabled"} 1
-vauxtra_schema_version 10
+vauxtra_providers_total{type="cloudflare"} 2
+vauxtra_providers_total{type="npm"} 1
+# HELP vauxtra_providers_enabled Enabled providers grouped by type
+# TYPE vauxtra_providers_enabled gauge
+vauxtra_providers_enabled{type="cloudflare"} 1
+vauxtra_providers_enabled{type="npm"} 1
+# HELP vauxtra_logs_24h Log entries in the last 24 hours grouped by level
+# TYPE vauxtra_logs_24h gauge
+vauxtra_logs_24h{level="error"} 1
+vauxtra_logs_24h{level="info"} 42
+vauxtra_logs_24h{level="ok"} 7
+vauxtra_logs_24h{level="warning"} 3
+# HELP vauxtra_uptime_events_24h Uptime check results in the last 24 hours
+# TYPE vauxtra_uptime_events_24h gauge
+vauxtra_uptime_events_24h{status="ok"} 120
+vauxtra_uptime_events_24h{status="error"} 4
+# HELP vauxtra_webhooks_total Webhooks; state="enabled" is a subset of state="all"
+# TYPE vauxtra_webhooks_total gauge
+vauxtra_webhooks_total{state="all"} 2
+vauxtra_webhooks_total{state="enabled"} 1
+# HELP vauxtra_webhook_delivery_total Webhook delivery log entries by status
+# TYPE vauxtra_webhook_delivery_total gauge
+vauxtra_webhook_delivery_total{status="delivered"} 58
+vauxtra_webhook_delivery_total{status="failed"} 2
+vauxtra_webhook_delivery_total{status="pending"} 1
+# HELP vauxtra_templates_total Total service templates
+# TYPE vauxtra_templates_total gauge
+vauxtra_templates_total 0
+# HELP vauxtra_schema_version Current DB schema version
+# TYPE vauxtra_schema_version gauge
+vauxtra_schema_version 11
 ```
 
 ### Prometheus scrape config
@@ -768,12 +811,28 @@ groups:
         for: 5m
         annotations:
           summary: "{{ $value }} service(s) in error state"
-      - alert: VauxtraCertExpiringSoon
+      - alert: VauxtraErrorsLogged
         expr: vauxtra_logs_24h{level="error"} > 0
         for: 1m
         annotations:
-          summary: "Check Vauxtra logs — certificate may be expiring"
+          summary: "{{ $value }} error(s) written to the Vauxtra journal in 24 h"
+      - alert: VauxtraWarningsLogged
+        expr: vauxtra_logs_24h{level="warning"} > 0
+        for: 15m
+        annotations:
+          summary: "{{ $value }} warning(s) written to the Vauxtra journal in 24 h"
+      - alert: VauxtraWebhookDeliveriesFailing
+        expr: vauxtra_webhook_delivery_total{status="failed"} > 0
+        for: 10m
+        annotations:
+          summary: "{{ $value }} webhook delivery(ies) failed"
 ```
+
+`VauxtraErrorsLogged` is named after what it measures. An earlier version of this file called
+the same rule `VauxtraCertExpiringSoon` and annotated it "certificate may be expiring", which
+it could not know: the expression counts every error line in the journal, so a failed NPM call
+or an unreachable tunnel fired an alert about certificates. There is no certificate series to
+point it at — see the note under the table.
 
 ---
 
