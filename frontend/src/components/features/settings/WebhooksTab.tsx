@@ -19,6 +19,7 @@ import {
   Input,
   SearchInput,
   Select,
+  SkeletonRow,
   Switch,
   useConfirmDialog,
 } from '@/components/ui';
@@ -475,7 +476,17 @@ export function WebhooksTab() {
           <SearchInput value={search} onChange={setSearch} placeholder={t('settings.webhooks.search_placeholder')} />
         )}
 
-        {webhooksQuery.isError ? (
+        {webhooksQuery.isLoading ? (
+          /* The four other tabs on this screen paint this rung; this one skipped it, so an
+             unread list and an instance with no webhook were the same sentence. */
+          <ul className="space-y-3">
+            {Array.from({ length: 3 }, (_, i) => (
+              <li key={i} className="rounded-xl border border-border bg-card">
+                <SkeletonRow columns={3} />
+              </li>
+            ))}
+          </ul>
+        ) : webhooksQuery.isError ? (
           <InlineAlert
             tone="danger"
             title={t('settings.webhooks.load_failed')}

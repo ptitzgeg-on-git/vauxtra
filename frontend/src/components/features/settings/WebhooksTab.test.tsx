@@ -13,6 +13,10 @@
  * on every single load of the page, which is worse than the silence it replaced. So the
  * claim is gated on `isSuccess`, and the loading case is a test of its own below.
  *
+ * The fourth block below is about the list itself rather than one row's scope. `webhooks` is
+ * `data ?? []`, so until the request answers it is the same empty array an instance with no
+ * webhook has -- and this tab stated "No webhooks configured" from it on every cold load.
+ *
  * `t()` gives back the key here -- `renderWithProviders` leaves out `I18nProvider` on
  * purpose -- so these assertions survive any rewording in the eight locale files.
  */
@@ -31,11 +35,18 @@ let providersPending = false;
 let providersFail = false;
 let servicesPending = false;
 let servicesFail = false;
+/** The list this whole tab is made of, in flight. It is the first paint of every load. */
+let webhooksPending = false;
+let webhooksFail = false;
 
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn((path: string) => {
-      if (path === '/webhooks') return Promise.resolve(webhookRows);
+      if (path === '/webhooks') {
+        if (webhooksPending) return new Promise(() => {});
+        if (webhooksFail) return Promise.reject(new Error('webhooks unavailable'));
+        return Promise.resolve(webhookRows);
+      }
       if (path === '/services') {
         if (servicesPending) return new Promise(() => {});
         if (servicesFail) return Promise.reject(new Error('services unavailable'));
@@ -120,6 +131,8 @@ describe('WebhooksTab, a scope whose target is gone', () => {
     webhookRows = [webhook()];
     providerRows = [PROVIDER];
     serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
     providersPending = false;
     providersFail = false;
     servicesPending = false;
@@ -162,6 +175,8 @@ describe('WebhooksTab, what is not a deleted target', () => {
     webhookRows = [webhook()];
     providerRows = [PROVIDER];
     serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
     providersPending = false;
     providersFail = false;
     servicesPending = false;
@@ -211,6 +226,8 @@ describe('WebhooksTab, a scope with nothing to point at', () => {
     webhookRows = [webhook()];
     providerRows = [PROVIDER];
     serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
     providersPending = false;
     providersFail = false;
     servicesPending = false;
@@ -282,5 +299,50 @@ describe('WebhooksTab, a scope with nothing to point at', () => {
     fireEvent.change(select, { target: { value: 'provider' } });
 
     expect(select.value).toBe('all');
+  });
+});
+
+describe('WebhooksTab, the list itself before it has been read', () => {
+  beforeEach(() => {
+    webhookRows = [webhook()];
+    providerRows = [PROVIDER];
+    serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
+    providersPending = false;
+    providersFail = false;
+    servicesPending = false;
+    servicesFail = false;
+    vi.clearAllMocks();
+  });
+
+  it('does not say the instance has no webhook while the list is in flight', async () => {
+    // The four sibling tabs on this screen paint a skeleton at this rung. This one went
+    // straight from the header to the empty state, so the sentence an operator read first
+    // on every cold load was a statement about an instance nobody had asked yet.
+    webhooksPending = true;
+    renderWithProviders(<WebhooksTab />);
+    await screen.findByText('settings.webhooks.title');
+
+    expect(screen.queryByText('settings.webhooks.empty')).toBeNull();
+    // And not by rendering nothing either: something has to hold the place of the list.
+    expect(document.querySelectorAll('.animate-shimmer').length).toBeGreaterThan(0);
+  });
+
+  it('still says it once the list has come back with nothing in it', async () => {
+    // The claim is not withdrawn, only postponed until there is an answer behind it.
+    webhookRows = [];
+    renderWithProviders(<WebhooksTab />);
+
+    expect(await screen.findByText('settings.webhooks.empty')).toBeInTheDocument();
+    expect(document.querySelectorAll('.animate-shimmer')).toHaveLength(0);
+  });
+
+  it('says the request failed rather than that there is nothing to show', async () => {
+    webhooksFail = true;
+    renderWithProviders(<WebhooksTab />);
+
+    expect(await screen.findByText('settings.webhooks.load_failed')).toBeInTheDocument();
+    expect(screen.queryByText('settings.webhooks.empty')).toBeNull();
   });
 });
