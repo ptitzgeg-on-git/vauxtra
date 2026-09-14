@@ -211,3 +211,57 @@ export function providerConsoleUrl(source: CertificateSource | undefined): strin
   if ((source?.type || '').toLowerCase() === 'npm') return `${base}/nginx/certificates`;
   return base;
 }
+
+/**
+ * What the sidebar badge and the dashboard tile are allowed to say about the estate.
+ *
+ * `expiring_soon_count` is one number answering two questions. The route builds it as
+ * "still valid but inside the warning window" *plus* "already past expiry", which is the
+ * right figure for a badge -- both need the same action -- but it cannot say which kind it
+ * is made of, and the two are not equally urgent. A certificate that lapsed three weeks ago
+ * is not a renewal due this month: every client reaching that host over HTTPS is being shown
+ * a certificate error right now. The Certificates page has always drawn that row red, under
+ * its own `expired` bucket. The badge and the tile drew the same estate amber, the tile's
+ * hint named the size of the whole estate under a figure that was not about the estate, and
+ * the triage row said those certificates "expire within 30 days" -- then bolted on a hint
+ * admitting some of them already had.
+ *
+ * The split is read off the rows, which is the only place it exists, and the total stays the
+ * route's own: two readers of one payload that disagreed on the headline figure is the
+ * defect this exists to avoid, not one to introduce. `soon` is therefore what the route
+ * counted minus what the rows show as gone, clamped -- it is a subtraction between two
+ * halves of a single response and cannot go negative, and a clamp is cheaper than a card
+ * that prints a minus sign if it ever does.
+ */
+export interface CertificateUrgency {
+  /** Past expiry. Not a renewal due soon -- a host answering with a broken certificate. */
+  expired: number;
+  /** Still valid, inside the warning window. */
+  soon: number;
+  /** What the badge and the tile show: everything that needs renewing. */
+  needRenewal: number;
+  /** True once anything has actually lapsed, which is what raises the tone to danger. */
+  breached: boolean;
+  tone: Tone;
+}
+
+export function certificateUrgency(
+  certs: CertificateRow[] | undefined,
+  needRenewal: number,
+  now: number,
+  warnDays = WARN_DAYS,
+): CertificateUrgency {
+  const expired = (certs ?? []).reduce(
+    (count, cert) => (certBucket(certDays(cert, now), warnDays) === 'expired' ? count + 1 : count),
+    0,
+  );
+  const soon = Math.max(0, needRenewal - expired);
+  const breached = expired > 0;
+  return {
+    expired,
+    soon,
+    needRenewal,
+    breached,
+    tone: breached ? 'danger' : needRenewal > 0 ? 'warning' : 'neutral',
+  };
+}

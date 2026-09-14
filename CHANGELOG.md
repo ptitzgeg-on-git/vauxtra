@@ -337,6 +337,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The dashboard drew a lapsed certificate in the same amber as one falling due next
+  month.** `expiring_soon_count` is one figure built from two states — still valid but
+  inside the warning window, and already past expiry — because both need renewing. Three
+  surfaces read it and all three presented it as the first. The sidebar badge went amber
+  with no glyph beside it, which states an incident in colour alone. The dashboard tile
+  went amber under a hint naming the size of the whole estate, below a value that was not
+  about the estate. The "needs attention" row said "3 certificates expire within 30 days"
+  and then carried a hint admitting some of them already had. The certificates page one
+  click away has always drawn those rows red, so an estate with two hosts serving a
+  certificate error to every client read calmer on the dashboard than a single failing
+  probe. All three now split the figure through one reader, `certificateUrgency`, built on
+  the same buckets the certificates page uses: the total stays the route's own, what has
+  lapsed is counted off the rows, the tile and the badge turn red, and triage shows two
+  rows instead of one sentence and an apology. The MCP tool description says the same, so
+  an agent reading `get_certificate_expiry` no longer reports the merged figure as a
+  deadline.
 - **A certificate expiring tomorrow could be counted by nobody.** A proxy hands back
   `expires_on` as whatever its own storage layer formats, and three things in Vauxtra read
   that one string: the `/api/certificates/expiry` route, whose `expiring_soon_count` is the

@@ -916,6 +916,9 @@ export interface UnreachableCertificateSource {
 export interface CertificateExpiryResponse {
   certificates: CertificateExpiry[];
   total: number;
+  //: Everything that needs renewing: inside the warning window *plus* already past expiry.
+  //: Which of the two a certificate is in lives on its row, never here -- `certificateUrgency`
+  //: is what splits the figure apart again for a badge that has to choose a colour.
   expiring_soon_count: number;
   warn_threshold_days: number;
   //: Empty on a complete answer. Non-empty means every count above is partial.

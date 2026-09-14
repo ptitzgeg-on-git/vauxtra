@@ -25,6 +25,7 @@ import {
   certExpiry,
   certLabel,
   certSourceNames,
+  certificateUrgency,
   countBuckets,
   isWildcard,
   matchesSearch,
@@ -301,5 +302,68 @@ describe('naming the certificate stores this call could not read', () => {
   it('names a store once, however many times the route repeats it', () => {
     const raw = [{ id: 1, name: 'npm-a', type: 'npm' }, { id: 1, name: 'npm-a', type: 'npm' }];
     expect(certSourceNames(raw)).toEqual(['npm-a']);
+  });
+});
+
+describe('certificateUrgency separates a renewal due from a certificate already gone', () => {
+  /** Two lapsed weeks ago, one falls due inside the window, one is fine, one has no date. */
+  const ESTATE = [
+    row({ id: 'gone-a', days_remaining: -47, expires_on: '2025-11-15T00:00:00Z' }),
+    row({ id: 'gone-b', days_remaining: -3, expires_on: '2025-12-29T00:00:00Z' }),
+    row({ id: 'due', days_remaining: 12, expires_on: '2026-01-13T00:00:00Z' }),
+    row({ id: 'fine', days_remaining: 200, expires_on: '2026-07-20T00:00:00Z' }),
+    row({ id: 'undated', remaining_days: -1, expires_on: '' }),
+  ];
+
+  it('leaves the headline figure exactly as the route counted it', () => {
+    //: The route counts `expiring_soon || expired` and the page must not arrive at a second
+    //: opinion of the same number. Three: two gone, one due. The undated row is in neither.
+    expect(certificateUrgency(ESTATE, 3, NOW).needRenewal).toBe(3);
+  });
+
+  it('splits that figure into what has lapsed and what has not, and they add up', () => {
+    const urgency = certificateUrgency(ESTATE, 3, NOW);
+    expect(urgency.expired).toBe(2);
+    expect(urgency.soon).toBe(1);
+    expect(urgency.expired + urgency.soon).toBe(urgency.needRenewal);
+  });
+
+  it('is danger while anything has lapsed, whatever else the window holds', () => {
+    //: An expired certificate is not a renewal due this month: the host is answering with a
+    //: broken certificate now. Amber for that is the same colour as a reminder.
+    expect(certificateUrgency(ESTATE, 3, NOW).tone).toBe('danger');
+    expect(certificateUrgency(ESTATE, 3, NOW).breached).toBe(true);
+  });
+
+  it('stays a warning when the window is full but nothing has actually lapsed yet', () => {
+    const due = [row({ id: 'due', days_remaining: 12 }), row({ id: 'soon', days_remaining: 2 })];
+    const urgency = certificateUrgency(due, 2, NOW);
+    expect(urgency.expired).toBe(0);
+    expect(urgency.soon).toBe(2);
+    expect(urgency.breached).toBe(false);
+    expect(urgency.tone).toBe('warning');
+  });
+
+  it('says nothing needs renewing rather than drawing an empty badge in a colour', () => {
+    const urgency = certificateUrgency([row({ id: 'fine', days_remaining: 200 })], 0, NOW);
+    expect(urgency).toMatchObject({ expired: 0, soon: 0, needRenewal: 0, breached: false, tone: 'neutral' });
+  });
+
+  it('counts nothing rather than guessing when the certificate list never arrived', () => {
+    //: The two readers of this route leave the count at zero when the request failed, so a
+    //: missing list is a missing list -- never a zero that reads as an estate in good health.
+    expect(certificateUrgency(undefined, 0, NOW)).toMatchObject({ expired: 0, soon: 0, tone: 'neutral' });
+  });
+
+  it('never prints a negative half if the two sides of one payload ever disagree', () => {
+    expect(certificateUrgency(ESTATE, 1, NOW).soon).toBe(0);
+  });
+
+  it('reads the warning window the route stated, not the page default', () => {
+    //: `days_remaining` is the backend's own count, so the bucket boundary is the only thing
+    //: left for the caller to get wrong -- and `warn_threshold_days` is configurable.
+    const estate = [row({ id: 'day-60', days_remaining: 60 })];
+    expect(certificateUrgency(estate, 1, NOW, 90).expired).toBe(0);
+    expect(certificateUrgency(estate, 1, NOW, 90).soon).toBe(1);
   });
 });
