@@ -103,23 +103,49 @@ export function Templates() {
     queryKey: ['templates'],
     queryFn: () => api.get<Template[]>('/templates'),
   });
-  const { data: providers = [] } = useQuery<Provider[]>({
+  // The three reads beside the templates, all of them destructured as `data = []` until
+  // now. Nothing on this page is a template on its own: the chips, the filter row and the
+  // provider line under every card are these three resolved against ids the template
+  // stores, and an empty map answered every one of those lookups with a miss. The filter
+  // row vanished without a word, the chips came off cards that carry labels, and the
+  // provider line went further than silence -- it said "integration deleted", in warning
+  // colour, about integrations that were never touched.
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
   });
-  const { data: tags = [] } = useQuery<Tag[]>({
+  const tagsQuery = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
   });
-  const { data: environments = [] } = useQuery<Environment[]>({
+  const environmentsQuery = useQuery<Environment[]>({
     queryKey: ['environments'],
     queryFn: () => api.get<Environment[]>('/environments'),
   });
 
   const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
+  const tags = useMemo(() => tagsQuery.data ?? [], [tagsQuery.data]);
+  const environments = useMemo(() => environmentsQuery.data ?? [], [environmentsQuery.data]);
   const providersById = useMemo(() => new Map(providers.map((p) => [p.id, p])), [providers]);
   const tagsById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
   const environmentsById = useMemo(() => new Map(environments.map((env) => [env.id, env])), [environments]);
+
+  // Pending counts as unread: these three start at the same moment `/templates` does, and
+  // the cards are painted the instant it answers, which is not the instant they do.
+  const providersUnread = providersQuery.isPending || providersQuery.isError;
+  const contextQueries = [providersQuery, tagsQuery, environmentsQuery];
+  const contextFailed = contextQueries.some((query) => query.isError);
+  const contextError = contextQueries.find((query) => query.isError)?.error;
+  // Only the failed ones count as refreshing. `loading` disables the button it is on,
+  // so reading `isFetching` off all three would have let a sibling that never answers
+  // hold the retry of the one that did fail shut.
+  const contextRefreshing = contextQueries.some((query) => query.isError && query.isFetching);
+  const retryContext = () => {
+    for (const query of contextQueries) {
+      if (query.isError) void query.refetch();
+    }
+  };
 
   // --- filtering ----------------------------------------------------------
   // Both halves of the label control filter, and they filter separately: a chip row per
@@ -306,6 +332,26 @@ export function Templates() {
         </InlineAlert>
       )}
 
+      {contextFailed && (
+        <InlineAlert
+          tone="warning"
+          title={t('templates.context_failed')}
+          action={
+            <Button
+              size="sm"
+              variant="outline"
+              leftIcon={<RefreshCw />}
+              loading={contextRefreshing}
+              onClick={retryContext}
+            >
+              {t('templates.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(contextError, t, t('templates.context_failed_hint'))}
+        </InlineAlert>
+      )}
+
       {isLoading && (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-busy="true">
           {Array.from({ length: 6 }, (_, i) => (
@@ -420,6 +466,7 @@ export function Templates() {
                   key={template.id}
                   template={template}
                   providersById={providersById}
+                  providersUnread={providersUnread}
                   tagsById={tagsById}
                   environmentsById={environmentsById}
                   activeTagIds={activeTagIds}
