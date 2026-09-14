@@ -79,7 +79,16 @@ def check_all_services() -> dict[str, Any]:
 
 @mcp.tool()
 def get_stats() -> dict[str, Any]:
-    """Return global counters: number of services, providers, and log entries."""
+    """Return the global counters the dashboard is built on.
+
+    `services`, `providers`, `logs` and `tags` are sizes of the estate and count
+    everything. `services_ok` and `services_error` are health, and health is only
+    counted over services that are enabled: the scheduler checks those alone, and a
+    service keeps its last `status` after being disabled, so a disabled failure is a
+    frozen reading rather than a live fault. `services_ok + services_error` is
+    therefore at most the number of enabled services, and usually less -- a service
+    that has never been checked yet is in neither counter.
+    """
     r = client.get("/stats")
     client.check(r)
     return r.json()

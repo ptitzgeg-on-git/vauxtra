@@ -238,7 +238,12 @@ BLIND_REASONS = {
         "`['services']` and `['providers']`, both of which name `isError` and both of which "
         "drive the failure banner. An absent `stats` is also half of `servicesUnknown`, so "
         "a page holding neither the counters nor the list draws a dash and says as much, "
-        "never a nought."
+        "never a nought. The fallback is only sound because both sides count the same "
+        "population: `/api/stats` scopes `services_ok` and `services_error` to enabled "
+        "services, which is what `enabledServices.filter(...)` counts here and what "
+        "`serviceStatus()` calls neither ok nor error. Were they to drift apart again the "
+        "tile would print one number while the route answered and another while it did "
+        "not, and tests/test_stats_health_counts.py would go red."
     ),
     "pages/Monitoring.tsx:settings": (
         "`settings?.check_interval`, read by `autoCheckCadence`, whose whole contract is "
