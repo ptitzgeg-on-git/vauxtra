@@ -128,8 +128,19 @@ export function getHealthScore(provider: Provider, signals: HealthSignals, t: Tr
     }
   }
 
-  if (!provider.enabled) score = Math.min(score, 30);
   score = Math.max(0, Math.min(100, score));
+
+  // A provider that is switched off is not a provider that is failing. This used to clamp
+  // the score to 30, which lands in the `error` band, and the card published a red
+  // "Failing · 30" beside the neutral "Disabled" chip on the same row. Nothing else read
+  // the clamped number: `getOperationalStatus` and `getProviderSeverity` both answer on
+  // `enabled` before they look at the score, so painting that badge red was the only thing
+  // the line did -- while the page's issue counter and its Issues filter, which read the
+  // latter, call the same provider `disabled` and leave it out. The red badge was therefore
+  // unreachable from every filter on the screen that drew it. Whatever the last signals
+  // said, they were gathered while the switch was on; there is no live reading of something
+  // that is off, and `unknown` is what this file already calls that.
+  if (!provider.enabled) return { score, severity: 'unknown' };
 
   if (score >= 80) return { score, severity: 'ok' };
   if (score >= 50) return { score, severity: 'degraded', reason };
@@ -149,6 +160,17 @@ export function getProviderSeverity(provider: Provider, health: HealthScore): Pr
   if (health.score >= 80) return 'healthy';
   if (health.score >= 50) return 'degraded';
   return 'error';
+}
+
+/**
+ * Whether the card publishes a health verdict beside the operational chip.
+ *
+ * Two states have none to publish: nothing has been measured yet, which is what a score of
+ * -1 means, and the provider is switched off, where the chip already says so and a second
+ * badge could only describe a reading taken before the switch moved.
+ */
+export function showsHealthBadge(provider: Provider, health: HealthScore): boolean {
+  return Boolean(provider.enabled) && health.score >= 0;
 }
 
 export const healthTone: Record<HealthScore['severity'], Tone> = {

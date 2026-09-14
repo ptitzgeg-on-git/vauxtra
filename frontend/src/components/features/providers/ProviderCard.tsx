@@ -11,6 +11,7 @@ import {
   type ProviderDiagnostics,
   checkDetailText,
   healthTone,
+  showsHealthBadge,
   tunnelReasonLabel,
   tunnelStatusKey,
   tunnelTone,
@@ -165,7 +166,7 @@ export const ProviderCard = memo(function ProviderCard({
           <Badge tone={status.tone} dot size="sm">
             {t(status.labelKey)}
           </Badge>
-          {health.score >= 0 && (
+          {showsHealthBadge(provider, health) && (
             <Tooltip content={health.reason || t('providers.health.score', { score: health.score })}>
               <Badge tone={healthTone[health.severity]} size="sm" className="tabular-nums">
                 {t(`providers.health.${health.severity}`)} · {health.score}
