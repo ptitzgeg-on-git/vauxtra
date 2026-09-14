@@ -54,6 +54,9 @@ jobs:
   cleanup:
     name: Delete orphaned container versions
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. This one is not on the push path, so the ceiling is simply a backstop.
+    timeout-minutes: 20
     permissions:
       packages: write
 

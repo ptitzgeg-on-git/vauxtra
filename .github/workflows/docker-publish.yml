@@ -54,6 +54,17 @@ jobs:
     name: Build & Push Docker Image
     needs: [tests, security]
     runs-on: ubuntu-latest
+    # A wedged build here does not stall one run, it stalls the branch. This workflow keeps
+    # `cancel-in-progress: false` for the reason written above, and it is the only producer
+    # of three of the five checks `main` and `dev` require -- `Dependency audit`,
+    # `Image build & scan` and `Vulnerability scan (Trivy + Grype)` all reach a push through
+    # the gate jobs above and through nothing else. So every later push queues behind this
+    # job, unscanned, for as long as it runs. With no ceiling declared that is GitHub's
+    # default of six hours: `06a90ed` sat in `Build and push` for 48 minutes against a
+    # measured 402 seconds, with two runs stacked behind it, and would have held the queue
+    # until morning. The number is deliberately far above the measurement -- a ceiling that
+    # trips on a slow-but-healthy run costs more than it saves.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
