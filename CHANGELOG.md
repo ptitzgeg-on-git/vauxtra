@@ -347,6 +347,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **"This proxy cannot detect its public target" was printed over a lookup that never
+  answered.** `GET /api/services/public-target/suggest` reaches `detect_server_public_ip`,
+  which makes a real outbound call, so the read is both slow and failable — and it was
+  destructured down to its data, its fetching flag and its refetch, with no failure state.
+  Its answer carries an empty `recommended` when nothing replies, so a lookup that failed
+  and a proxy that genuinely has no public address arrived in the same shape.
+
+  Two things followed. The Detect button spun, stopped, and changed nothing on screen, with
+  no way to tell a timeout from a proxy that had nothing to report. And `validate()` refused
+  to continue with a sentence naming the proxy as the thing that cannot do it — a verdict
+  passed on a subject the app had learnt nothing about, sending the operator to check
+  provider credentials over a request that had merely timed out.
+
+  The lookup now says which of its three outcomes happened. A failure raises a warning
+  beside the field, and stays up even once a target is typed by hand, because the automatic
+  DNS update switch below reads the same lookup. A lookup that answered with nothing says
+  so plainly, and goes away as soon as a target is typed, which settles that question. And
+  the refusal to continue splits three ways: the lookup could not be made, the lookup is
+  still running, or — only now with an answer behind it — this proxy cannot detect its
+  public target. Nine tests cover the modal, which had none; six fail on the old code.
+
 - **The command palette answered "No matches." for an endpoint that exists.** `['services']`
   and `['providers']` are the only place the box learns what the estate holds, and both were
   destructured down to their data with no failure state — the same shape `useDockerEndpoints`
