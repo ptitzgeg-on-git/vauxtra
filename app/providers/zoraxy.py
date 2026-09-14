@@ -81,10 +81,11 @@ def _split_origin(origin: str, scheme: str) -> tuple[str, int]:
 def _iso_expiry(raw) -> str:
     """Zoraxy's `2006-01-02 15:04:05` expiry as the ISO form Vauxtra parses, or "".
 
-    Both consumers of `expires_on` are strict: `certificates._parse_expiry` accepts only
-    `%Y-%m-%dT%H:%M:%SZ` (and the fractional and date-only variants), and the scheduler
-    strips a trailing `Z` before `fromisoformat`. The trailing `Z` is honest as well as
-    convenient, since Go formats `NotAfter` in UTC. Zoraxy writes "Unknown" when the
+    `app.expiry.parse_expiry` reads the whole ISO 8601 range, so neither the `T` nor the
+    trailing `Z` is what makes this parseable any more: Zoraxy's own space-separated form
+    would be read correctly. They stay because the `Z` is honest -- Go formats `NotAfter`
+    in UTC -- and a stamp that says which zone it is in cannot be misread as local time by
+    anything downstream less forgiving than we are. Zoraxy writes "Unknown" when the
     certificate did not parse; that and anything unexpected become "" so the callers skip
     the entry rather than choke on it.
     """

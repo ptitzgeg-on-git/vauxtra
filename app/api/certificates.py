@@ -11,6 +11,7 @@ import datetime
 from fastapi import APIRouter, Request
 
 from app.auth import require_auth
+from app.expiry import parse_expiry
 from app.models import add_log, get_db_ctx
 from app.providers.factory import certificate_provider_types, create_provider
 
@@ -42,18 +43,6 @@ def _with_domain_names(cert: dict) -> dict:
     if "domain_names" not in cert:
         cert["domain_names"] = list(cert.get("domains") or [])
     return cert
-
-
-def _parse_expiry(raw: str | None) -> datetime.datetime | None:
-    """Parse a certificate expiry string into a datetime, or return None."""
-    if not raw:
-        return None
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
-        try:
-            return datetime.datetime.strptime(raw, fmt)
-        except ValueError:
-            continue
-    return None
 
 
 @router.get("/api/certificates")
@@ -115,7 +104,7 @@ def certificate_expiry(request: Request):
 
         for c in certs:
             expiry_raw = c.get("expiry_date") or c.get("expires_on") or c.get("valid_to")
-            expiry_dt  = _parse_expiry(expiry_raw)
+            expiry_dt  = parse_expiry(expiry_raw)
             days_remaining: int | None = None
             expiring_soon = False
             expired       = False
