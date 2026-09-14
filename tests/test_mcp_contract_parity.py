@@ -35,6 +35,7 @@ build failure.
 """
 
 import importlib.util
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,6 +72,32 @@ from vauxtra_mcp.tools.services import update_service as bridge_update_service
 from vauxtra_mcp.tools.templates import apply_template as bridge_apply_template
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Two throwaway routes the witnesses below are measured against. A parameter and a response
+# key, each written the way the real ones are, so a change that stops the collectors seeing
+# them shows up here rather than as a gate that quietly reports nothing.
+ROUTE_WITH_WITHDRAW = '''@router.delete("/api/things/{tid}")
+def drop_thing(tid: int, withdraw: bool = False):
+    return {}
+'''
+ROUTE_WITH_ERRORS = '''@router.post("/api/things")
+def make_thing():
+    return {"ok": True, "errors": []}
+'''
+
+# The same answer, wrapped the way a route says 207 rather than 200. `POST /api/services`
+# is written exactly like this, and the wrapper alone kept it out of the pass below.
+# A tool whose docstring names nothing it receives, for the witnesses below.
+TOOL_SILENT_ABOUT_ERRORS = '''@mcp.tool()
+def make_thing():
+    """Make a thing."""
+    return client.post("/things")
+'''
+
+ROUTE_WITH_WRAPPED_ERRORS = '''@router.post("/api/things")
+def make_thing():
+    return JSONResponse({"id": 1, "errors": errors}, status_code=201 if not errors else 207)
+'''
 
 # What `GET /api/templates/{id}/apply` answers, minus the two fields under test. A template
 # is allowed to carry neither a domain nor a port; that is what lets one template serve
@@ -596,6 +623,224 @@ class EveryBodyFieldIsReachableOrExplained(unittest.TestCase):
             "@mcp.tool()\n"
             "def list_things():\n"
             '    return client.get("/things", params={"tag_ids": []})\n'
+        )
+        self.assertEqual(found, [])
+
+
+def _sample_repo(tmp: str, route_source: str = "", tool_source: str = "") -> Path:
+    """A throwaway repo carrying the two halves the query and answer passes read."""
+    root = Path(tmp)
+    api = root / "app" / "api"
+    tools = root / "vauxtra_mcp" / "tools"
+    api.mkdir(parents=True)
+    tools.mkdir(parents=True)
+    (api / "sample.py").write_text(route_source, encoding="utf-8")
+    (tools / "sample.py").write_text(tool_source, encoding="utf-8")
+    return root
+
+
+class EveryQueryParameterIsReachableOrExplained(unittest.TestCase):
+    """The direction nothing was asking, and the parameter that hid in it.
+
+    `compare_contract` reports a query key a tool *sends* that its route does not read. The
+    reverse question -- a parameter the route reads that no tool can send -- was never put,
+    and a parameter no tool sends is invisible to a check that only reads what tools send.
+    `DELETE /api/providers/{pid}` takes `withdraw`, which decides whether the provider's
+    proxy hosts and DNS records come down before it is forgotten or stay live on a provider
+    Vauxtra no longer knows about. The panel offers it as a checkbox and the API tests cover
+    both branches; the bridge could reach neither, so an agent's only possible provider
+    deletion was the one that leaves published records behind.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.gate = _load_parity_gate()
+
+    def _collect_from(self, route_source: str, tool_source: str) -> list:
+        with tempfile.TemporaryDirectory() as tmp:
+            return self.gate.collect_unreachable_query(
+                _sample_repo(tmp, route_source, tool_source)
+            )
+
+    def test_no_query_parameter_is_unreachable_without_a_written_reason(self):
+        unreachable = self.gate.collect_unreachable_query(REPO_ROOT)
+        unexplained = [
+            f"{method} {path} ?{name}"
+            for method, path, name, _servers in unreachable
+            if (method, path, name) not in self.gate.ALLOWED_UNREACHABLE_QUERY
+        ]
+        self.assertEqual(unexplained, [])
+
+    def test_no_exemption_outlives_the_parameter_it_was_written_for(self):
+        observed = {row[:3] for row in self.gate.collect_unreachable_query(REPO_ROOT)}
+        stale = sorted(set(self.gate.ALLOWED_UNREACHABLE_QUERY) - observed)
+        self.assertEqual(stale, [], "exemptions that no longer match anything")
+
+    def test_the_parameter_this_was_written_for_is_reachable_now(self):
+        """`withdraw` specifically, read off the tool rather than off the gate."""
+        from vauxtra_mcp.tools.providers import delete_provider
+
+        self.assertIn("withdraw", inspect.signature(delete_provider).parameters)
+        self.assertIn('params["withdraw"] = "true"', inspect.getsource(delete_provider))
+
+    def test_a_parameter_no_serving_tool_mentions_is_reported(self):
+        found = self._collect_from(
+            ROUTE_WITH_WITHDRAW,
+            "@mcp.tool()\ndef drop_thing(thing_id: int):\n"
+            '    return client.delete(f"/things/{thing_id}")\n',
+        )
+        self.assertEqual(
+            [(m, p, n) for m, p, n, _ in found],
+            [("DELETE", "/api/things/{}", "withdraw")],
+        )
+
+    def test_a_parameter_the_tool_can_send_is_not_reported(self):
+        """The check is about reachability, not about how the tool spells the send.
+
+        The shape below is the one the bridge actually uses, and it is not an inline literal
+        dict: reading the call would miss it. That is why the collector looks for the name
+        anywhere in the tool's source instead, which errs towards calling a parameter
+        reachable rather than crying wolf over one that is.
+        """
+        found = self._collect_from(
+            ROUTE_WITH_WITHDRAW,
+            "@mcp.tool()\ndef drop_thing(thing_id: int, withdraw: bool = False):\n"
+            "    params = {}\n"
+            "    if withdraw:\n"
+            '        params["withdraw"] = "true"\n'
+            '    return client.delete(f"/things/{thing_id}", params=params or None)\n',
+        )
+        self.assertEqual(found, [])
+
+    def test_a_route_no_tool_serves_is_left_to_the_api_only_table(self):
+        """An unserved route is a coverage question, and it has its own table and reason."""
+        found = self._collect_from(
+            '@router.get("/api/things")\ndef list_things(q: str = ""):\n    return []\n',
+            '@mcp.tool()\ndef unrelated():\n    return client.get("/other")\n',
+        )
+        self.assertEqual(found, [])
+
+
+class EveryPartialFailureKeyIsNamedByItsTool(unittest.TestCase):
+    """What the tool says about the half of the work that did not happen.
+
+    FastMCP publishes the signature and the docstring, and nothing else: for an agent, the
+    docstring is the whole description of the answer. Several routes here answer a partial
+    success -- `{"ok": true, "errors": [...]}` from a service deletion whose provider
+    records are still live, `not_applied` from a settings save the running scheduler never
+    received -- and nine tools returned one of those keys without naming it, ten pairs of
+    tool and key in all. Four such pairs, across three tools, already named theirs, which
+    makes this drift from a house rule rather than a convention nobody had adopted.
+
+    Two of the nine were found only after this pass learnt to read through a `JSONResponse`
+    wrapper. `POST /api/services` answers `{"id", "fqdn", "errors"}` with a 207 when the row
+    was stored but the proxy host, the DNS record or the tunnel route was not published, and
+    `create_service` -- the most-used write tool in the bridge -- described that answer as
+    "the created service record". An agent reading it reported a service created and
+    reachable when nothing routed to its hostname.
+
+    `not_applied` is the clearest of them. Every other consumer reads it: the route builds
+    it, `tests/test_settings_applied.py` pins it, `frontend/src/types/api.ts` declares it,
+    `GeneralTab.tsx` renders it and all eight locales translate the sentence. The bridge
+    alone was silent, on the one surface with no human reading the screen.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.gate = _load_parity_gate()
+
+    def _collect_from(self, route_source: str, tool_source: str) -> list:
+        with tempfile.TemporaryDirectory() as tmp:
+            return self.gate.collect_silent_partials(
+                _sample_repo(tmp, route_source, tool_source)
+            )
+
+    def test_no_tool_stays_silent_about_one_without_a_written_reason(self):
+        silent = self.gate.collect_silent_partials(REPO_ROOT)
+        unexplained = [
+            f"{tool} says nothing about `{key}` from {method} {path}"
+            for tool, key, method, path in silent
+            if (tool, key) not in self.gate.ALLOWED_SILENT_PARTIALS
+        ]
+        self.assertEqual(unexplained, [])
+
+    def test_no_exemption_outlives_the_silence_it_was_written_for(self):
+        observed = {row[:2] for row in self.gate.collect_silent_partials(REPO_ROOT)}
+        stale = sorted(set(self.gate.ALLOWED_SILENT_PARTIALS) - observed)
+        self.assertEqual(stale, [], "exemptions that no longer match anything")
+
+    def test_the_pass_reads_something(self):
+        """A collector that reads no route answers passes as green as one that works."""
+        answers = self.gate.collect_route_answers(REPO_ROOT)
+        self.assertIn("not_applied", answers[("POST", "/api/settings")])
+        self.assertIn("errors", answers[("DELETE", "/api/services/{}")])
+        self.assertIn("skipped", answers[("POST", "/api/docker/import")])
+        # And the wrapped shape, which is the one this pass was blind to at first.
+        self.assertIn("errors", answers[("POST", "/api/services")])
+
+    def test_the_nine_this_was_written_for_name_their_keys_now(self):
+        from vauxtra_mcp.tools.admin import save_settings
+        from vauxtra_mcp.tools.providers import delete_provider
+        from vauxtra_mcp.tools.services import (
+            bulk_service_action,
+            create_service,
+            delete_service,
+            import_docker_containers,
+            toggle_service,
+            update_service,
+        )
+        from vauxtra_mcp.tools.templates import apply_template
+
+        expected = [
+            (save_settings, ["not_applied"]),
+            (delete_service, ["errors"]),
+            (bulk_service_action, ["errors"]),
+            (toggle_service, ["errors"]),
+            (update_service, ["errors"]),
+            (delete_provider, ["errors"]),
+            (import_docker_containers, ["errors", "skipped"]),
+            (create_service, ["errors"]),
+            (apply_template, ["errors"]),
+        ]
+        for tool, keys in expected:
+            doc = inspect.getdoc(tool) or ""
+            for key in keys:
+                self.assertIn(key, doc, f"{tool.__name__} says nothing about {key}")
+
+    def test_a_key_the_docstring_never_names_is_reported(self):
+        found = self._collect_from(
+            ROUTE_WITH_ERRORS,
+            '@mcp.tool()\ndef make_thing():\n    """Make a thing."""\n'
+            '    return client.post("/things")\n',
+        )
+        self.assertEqual(found, [("make_thing", "errors", "POST", "/api/things")])
+
+    def test_a_key_inside_a_jsonresponse_wrapper_is_reported(self):
+        """The shape that hid two of the nine: the dict is an argument, not the return value.
+
+        Reading only `return {...}` saw nothing here, and a pass that reads nothing is as
+        green as one that works. This is the witness for that, so the wrapper cannot go
+        unread again.
+        """
+        found = self._collect_from(ROUTE_WITH_WRAPPED_ERRORS, TOOL_SILENT_ABOUT_ERRORS)
+        self.assertEqual(found, [("make_thing", "errors", "POST", "/api/things")])
+
+    def test_a_key_the_docstring_names_is_not_reported(self):
+        found = self._collect_from(
+            ROUTE_WITH_ERRORS,
+            "@mcp.tool()\ndef make_thing():\n"
+            '    """Make a thing. `errors` holds what could not be published."""\n'
+            '    return client.post("/things")\n',
+        )
+        self.assertEqual(found, [])
+
+    def test_an_ordinary_key_is_not_a_partial_failure(self):
+        """The vocabulary is the point: a tool need not recite every field it returns."""
+        found = self._collect_from(
+            '@router.post("/api/things")\ndef make_thing():\n'
+            '    return {"id": 1, "name": "x"}\n',
+            '@mcp.tool()\ndef make_thing():\n    """Make a thing."""\n'
+            '    return client.post("/things")\n',
         )
         self.assertEqual(found, [])
 

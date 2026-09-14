@@ -886,7 +886,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/tunnels/health` | Tunnel providers health |
 | `POST` | `/api/providers/validate-draft` | Validate before saving |
 | `PUT` | `/api/providers/{pid}` | Update a provider |
-| `DELETE` | `/api/providers/{pid}` | Delete a provider |
+| `DELETE` | `/api/providers/{pid}` | Delete a provider. `?force=true` unlinks the services still using it; add `?withdraw=true` to take its proxy hosts and DNS records down first, without it they stay published on a provider Vauxtra no longer knows about |
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |

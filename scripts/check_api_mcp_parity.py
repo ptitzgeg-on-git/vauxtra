@@ -64,6 +64,37 @@ literal. Such a key is not a default a caller may override -- it is the only val
 will ever see from that tool. Eleven are deliberate and carry their reason in
 ALLOWED_UNREACHABLE_FIELDS, on the same terms as the tables above: an entry that stops
 matching fails the build.
+
+That pass asks its question of body fields, and asking it of query parameters is the fifth
+gap. The contract half does compare query parameters, but only in the direction a tool
+sends: a key in `call.query_keys` the route does not read is reported, and a parameter the
+route reads that no tool names is not, because nothing was looking at the route's side.
+`DELETE /api/providers/{pid}` takes `withdraw`, which decides whether the provider's proxy
+hosts and DNS records are taken down before it is forgotten or left live on a provider
+Vauxtra no longer knows about. The panel has offered that as a checkbox since it was
+written. The bridge had no way to send it, so the only provider deletion an agent could
+perform was the one that orphans published records -- and the check that exists to catch
+exactly this could not see it. Both directions are now compared, and a parameter left out
+on purpose needs an entry in ALLOWED_UNREACHABLE_QUERY.
+
+The sixth is not about what a tool can send but about what it says. FastMCP publishes the
+signature and the docstring, and nothing else: the docstring *is* the whole description of
+the answer, for every agent, forever. Several routes here answer a partial success --
+`{"ok": true, "errors": [...]}` from a service deletion whose provider records are still
+live, `not_applied` from a settings save the running scheduler never received, `skipped`
+against `errors` from a Docker import where the two mean opposite things. Four pairs of tool
+and key spelt those out and ten did not, so an agent reading `ok: true` reported work done
+while the list beside it held what had not happened. The last pass reads the keys each route
+returns, keeps the ones whose job is to name a failure, and requires the tool's docstring to
+mention them by name. Silence that is deliberate goes in ALLOWED_SILENT_PARTIALS, on the
+same terms as everything above.
+
+Two of those ten were invisible at first for a reason worth recording: the pass read only
+`return {...}`, and a route answering a partial success with a 207 writes
+`return JSONResponse({...}, status_code=...)`. `POST /api/services` is written that way, so
+the answer `create_service` and `apply_template` both hand an agent went unread by the very
+check meant to read it. `collect_route_answers` now reads the dict through that wrapper, and
+`tests/test_mcp_contract_parity.py` fails if it stops.
 """
 import argparse
 import ast
@@ -158,6 +189,40 @@ ALLOWED_UNREACHABLE_FIELDS = {
     # off in one call, so this costs a round trip rather than being out of reach.
     ("apply_template", "enabled"): "applied to publish; toggle_service turns it off",
 }
+
+# The same question as ALLOWED_UNREACHABLE_FIELDS, asked of query parameters instead of body
+# fields, and asked in the direction nothing was asking it. `compare_contract` reports a
+# query parameter a tool *sends* that its route does not read; nothing reported a parameter
+# the route *reads* that no tool can send, and a parameter no tool sends is invisible to a
+# check that only reads what tools send. `DELETE /api/providers/{pid}` takes `withdraw`,
+# which decides whether the provider's records come down before it is forgotten or stay live
+# on a provider Vauxtra no longer knows about. The panel has offered that choice as a
+# checkbox since it was written; the bridge could not make it, so an agent's only possible
+# provider deletion was the one that leaves published records behind.
+#
+# Routes no tool serves at all are not this table's business -- that is what ALLOWED_API_ONLY
+# answers, above. Each entry here names why the parameter is not a gap, and an entry that
+# stops matching fails the build like every other exemption in this file.
+ALLOWED_UNREACHABLE_QUERY: dict[tuple[str, str, str], str] = {}
+
+# Keys whose whole job is to name the part of the work that did not happen. A route that
+# answers with one is reporting a partial success, and the tool's docstring is the only
+# description of that answer an agent ever reads: FastMCP publishes the signature and the
+# docstring, and nothing else. An agent told "delete a service and remove its routes from all
+# configured providers" reads `ok: true` and reports the deletion done, while `errors` holds
+# the records still live on their providers with nothing in Vauxtra pointing at them.
+#
+# Six such keys were unnamed across five tools -- `not_applied`, and `errors` or `skipped` on
+# four more -- while four others were already spelt out, which is why this is drift rather
+# than a convention nobody had adopted.
+PARTIAL_FAILURE_KEYS = (
+    "not_applied", "ignored", "unreachable", "refused",
+    "skipped", "failed", "errors", "conflicts", "rejected", "warnings",
+)
+
+# A tool that deliberately says nothing about one of those keys, with the reason. Same terms
+# as the tables above: an entry that stops matching fails the build.
+ALLOWED_SILENT_PARTIALS: dict[tuple[str, str], str] = {}
 
 _CONTAINER_TYPES = {"list", "dict", "set", "tuple", "frozenset"}
 
@@ -1173,6 +1238,133 @@ def contract_findings(repo_root: Path) -> tuple[list[Finding], dict[str, int]]:
     return findings, stats
 
 
+def collect_route_answers(repo_root: Path) -> dict[tuple[str, str], set[str]]:
+    """Every key each route returns in a literal dict, by (method, path).
+
+    Two shapes count as a literal answer: `return {...}`, and `return JSONResponse({...},
+    status_code=...)`, which is how a route answers a partial success with 207 instead of
+    200. Reading only the bare dict missed precisely that case. `POST /api/services` answers
+    `{"id", "fqdn", "errors"}` with a 207 when the service was stored but its proxy host or
+    DNS record was not published, and the wrapper alone hid it from this pass.
+
+    A route whose answer is built elsewhere and returned by name still contributes nothing,
+    which is the honest outcome: this cannot say what such a route answers, so it does not
+    guess. Nor does it descend into nested dicts -- `warnings` inside a validation report is
+    the report, not a write that half happened. Both limits under-report, which is the right
+    direction for a check that fails a build.
+    """
+    answers: dict[tuple[str, str], set[str]] = {}
+    for file_path in sorted((repo_root / "app" / "api").glob("*.py")):
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not (isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute)):
+                    continue
+                if not (isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "router"):
+                    continue
+                if not decorator.args or not isinstance(decorator.args[0], ast.Constant):
+                    continue
+                key = (decorator.func.attr.upper(), normalize(decorator.args[0].value))
+                keys = answers.setdefault(key, set())
+                for inner in ast.walk(node):
+                    if not isinstance(inner, ast.Return):
+                        continue
+                    answered = inner.value
+                    if isinstance(answered, ast.Call) and answered.args:
+                        answered = answered.args[0]
+                    if not isinstance(answered, ast.Dict):
+                        continue
+                    for name in answered.keys:
+                        if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                            keys.add(name.value)
+    return answers
+
+
+def collect_tool_prose(repo_root: Path) -> dict[str, tuple[str, str]]:
+    """Each tool's docstring and its whole source text.
+
+    The source is read as text on purpose. Asking whether a tool can send a query parameter
+    by parsing the call reaches only `params={"force": "true"}` written inline, and misses
+    `params=params` built above it and `params={...} if force else None` -- both of which are
+    in use here. Matching the name anywhere in the function is cruder and errs the safe way:
+    it can call a parameter reachable that is not, never out of reach when it is, so this
+    under-reports rather than crying wolf.
+    """
+    prose: dict[str, tuple[str, str]] = {}
+    for file_path in sorted((repo_root / "vauxtra_mcp" / "tools").glob("*.py")):
+        text = file_path.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not any(
+                isinstance(decorator, ast.Call) and getattr(decorator.func, "attr", "") == "tool"
+                for decorator in node.decorator_list
+            ):
+                continue
+            prose[node.name] = (
+                ast.get_docstring(node) or "",
+                ast.get_source_segment(text, node) or "",
+            )
+    return prose
+
+
+def tools_by_route(tools: dict) -> dict[tuple[str, str], list[str]]:
+    """Which tools call each route."""
+    serving: dict[tuple[str, str], list[str]] = {}
+    for name, tool in sorted(tools.items()):
+        for call in tool.calls:
+            serving.setdefault((call.method, call.path), []).append(name)
+    return serving
+
+
+def collect_unreachable_query(repo_root: Path) -> list[tuple[str, str, str, list[str]]]:
+    """Query parameters a route reads that no tool serving it can send.
+
+    Routes no tool serves at all are out of scope: an unserved route is an unserved route,
+    which ALLOWED_API_ONLY answers with a reason. This asks the narrower question -- the
+    bridge reaches this route, and still cannot ask it for one of the things it does.
+    """
+    _models, routes = collect_api_contracts(repo_root)
+    prose = collect_tool_prose(repo_root)
+    serving = tools_by_route(collect_mcp_contracts(repo_root))
+
+    unreachable: list[tuple[str, str, str, list[str]]] = []
+    for (method, path), servers in sorted(serving.items()):
+        route = routes.get((method, path))
+        if route is None:
+            continue
+        for name in sorted(route.query_params):
+            if any(name in prose.get(tool, ("", ""))[1] for tool in servers):
+                continue
+            unreachable.append((method, path, name, servers))
+    return unreachable
+
+
+def collect_silent_partials(repo_root: Path) -> list[tuple[str, str, str, str]]:
+    """Partial-failure keys a route answers with that the calling tool never names.
+
+    Matching the key anywhere in the docstring is deliberately loose. The question is
+    whether an agent reading the tool is told the key exists at all; how well it is
+    explained is a matter for review, and a check that tried to judge that would report
+    everything and be turned off.
+    """
+    answers = collect_route_answers(repo_root)
+    prose = collect_tool_prose(repo_root)
+
+    silent: list[tuple[str, str, str, str]] = []
+    for name, tool in sorted(collect_mcp_contracts(repo_root).items()):
+        docstring = prose.get(name, ("", ""))[0]
+        for call in tool.calls:
+            for key in sorted(answers.get((call.method, call.path), set())):
+                if key not in PARTIAL_FAILURE_KEYS or key in docstring:
+                    continue
+                silent.append((name, key, call.method, call.path))
+    return silent
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1318,6 +1510,44 @@ def main(argv: list[str] | None = None) -> int:
         print("Unreachable-field exemptions that no longer match anything (remove them):")
         for tool, field_name in stale_fields:
             print(f"  {tool}.{field_name}")
+        return 1
+
+    unreachable_query = collect_unreachable_query(repo_root)
+    print(f"UNREACHABLE_QUERY_COUNT {len(unreachable_query)}")
+
+    unexplained_query = [
+        row for row in unreachable_query if (row[0], row[1], row[2]) not in ALLOWED_UNREACHABLE_QUERY
+    ]
+    if unexplained_query:
+        print("Query parameters the route reads that no tool serving it can send:")
+        for method, path, name, servers in unexplained_query:
+            print(f"  {method} {path} ?{name} -- served by {', '.join(servers)}")
+        return 1
+
+    observed_query = {(m, p, n) for m, p, n, _ in unreachable_query}
+    stale_query = sorted(set(ALLOWED_UNREACHABLE_QUERY) - observed_query)
+    if stale_query:
+        print("Unreachable-query exemptions that no longer match anything (remove them):")
+        for method, path, name in stale_query:
+            print(f"  {method} {path} ?{name}")
+        return 1
+
+    silent = collect_silent_partials(repo_root)
+    print(f"SILENT_PARTIAL_COUNT {len(silent)}")
+
+    unexplained_silent = [row for row in silent if row[:2] not in ALLOWED_SILENT_PARTIALS]
+    if unexplained_silent:
+        print("Partial-failure keys the route answers with that the tool never mentions:")
+        for tool_name, key, method, path in unexplained_silent:
+            print(f"  {tool_name} says nothing about `{key}` from {method} {path}")
+        return 1
+
+    observed_silent = {row[:2] for row in silent}
+    stale_silent = sorted(set(ALLOWED_SILENT_PARTIALS) - observed_silent)
+    if stale_silent:
+        print("Silent-partial exemptions that no longer match anything (remove them):")
+        for tool_name, key in stale_silent:
+            print(f"  {tool_name}.{key}")
         return 1
 
     return 0

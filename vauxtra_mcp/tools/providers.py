@@ -109,15 +109,36 @@ def update_provider(
 
 
 @mcp.tool()
-def delete_provider(provider_id: int, force: bool = False) -> dict[str, Any]:
+def delete_provider(
+    provider_id: int, force: bool = False, withdraw: bool = False
+) -> dict[str, Any]:
     """Delete a provider by ID.
 
     Refuses with 409 while services still reference it, and the error carries the list
     (`detail.services`, each with `id`, `fqdn` and the `roles` it fills). Call again with
-    `force=True` to delete anyway: those services keep their public hostname but lose the
-    link, so nothing is pushed for them until another provider is chosen.
+    `force=True` to delete anyway.
+
+    `withdraw` decides what happens to the records the provider is still serving, and it is
+    the whole question. Without it those services keep their public hostname and lose only
+    the link, which means the proxy host and the DNS record stay live on a provider Vauxtra
+    no longer knows about -- reachable, pointing wherever they pointed, and no longer
+    managed by anything. With `withdraw=True` the route takes this provider's own records
+    down first, touching only its own: the other targets of a multi-sync service are not
+    this deletion's business.
+
+    The answer says what became of each part. `unlinked_services`, `unlinked_templates` and
+    `orphaned_webhooks` are the ids left holding a reference to a provider that is gone;
+    `withdrawn` is whether the records were actually taken down; `errors` names each record
+    that could not be, one sentence per record, and those are still live. `ok` is false when
+    `errors` is non-empty -- the provider row is deleted either way, so a false `ok` here
+    means "deleted, but something is still published", not "nothing happened".
     """
-    r = client.delete(f"/providers/{provider_id}", params={"force": "true"} if force else None)
+    params: dict[str, str] = {}
+    if force:
+        params["force"] = "true"
+    if withdraw:
+        params["withdraw"] = "true"
+    r = client.delete(f"/providers/{provider_id}", params=params or None)
     client.check(r)
     return r.json()
 
