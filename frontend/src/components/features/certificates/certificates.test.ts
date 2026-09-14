@@ -24,6 +24,7 @@ import {
   certDomains,
   certExpiry,
   certLabel,
+  certSourceNames,
   countBuckets,
   isWildcard,
   matchesSearch,
@@ -271,5 +272,34 @@ describe('a filter that stops being one of the choices stops filtering', () => {
   it('leaves all alone, including on a page where nothing is offered yet', () => {
     expect(resolveProviderFilter('all', [])).toBe('all');
     expect(resolveProviderFilter('all', ['1'])).toBe('all');
+  });
+});
+
+describe('naming the certificate stores this call could not read', () => {
+  it('keeps them in the order the route named them', () => {
+    const raw = [
+      { id: 2, name: 'zoraxy-a', type: 'zoraxy' },
+      { id: 1, name: 'npm-a', type: 'npm' },
+    ];
+    expect(certSourceNames(raw)).toEqual(['zoraxy-a', 'npm-a']);
+  });
+
+  it('says nothing on a route that carries no such field', () => {
+    // The fallback list has none, and the stub every page test runs against answers `{}`.
+    expect(certSourceNames(undefined)).toEqual([]);
+    expect(certSourceNames(null)).toEqual([]);
+    expect(certSourceNames({})).toEqual([]);
+    expect(certSourceNames('zoraxy-a')).toEqual([]);
+  });
+
+  it('drops an entry with no usable name instead of drawing a blank one', () => {
+    const raw = [{ id: 1, name: '   ', type: 'npm' }, { id: 2, type: 'zoraxy' }, null,
+                 { id: 3, name: '  zoraxy-a  ', type: 'zoraxy' }];
+    expect(certSourceNames(raw)).toEqual(['zoraxy-a']);
+  });
+
+  it('names a store once, however many times the route repeats it', () => {
+    const raw = [{ id: 1, name: 'npm-a', type: 'npm' }, { id: 1, name: 'npm-a', type: 'npm' }];
+    expect(certSourceNames(raw)).toEqual(['npm-a']);
   });
 });

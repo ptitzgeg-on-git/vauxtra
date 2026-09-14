@@ -354,6 +354,8 @@
   "certificates.table.remaining": "残り",
   "certificates.table.source": "ソース",
   "certificates.unknown_provider": "不明な統合",
+  "certificates.unreachable_hint_other": "今回の呼び出しで読み取れなかった統合：{providers}。そこに保持されている証明書は下のカウンターと表に含まれていないため、このページは全体を示していません。エラーは最近のアクティビティに記録されています。",
+  "certificates.unreachable_other": "{count} 件の統合を読み取れませんでした",
   "certificates.wildcard": "ワイルドカード",
   "common.retry": "再試行",
   "dashboard.actions.route_service": "新しいサービスを公開",
