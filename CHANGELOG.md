@@ -337,6 +337,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A filter nobody could name hid most of the routes while the control denied it was on.**
+  The tag and environment filters live in the address bar, so `?tag=5` is applied before the
+  tag list has been read, survives a reload, and outlives the tag itself. The rows are
+  filtered on the id and do not care, but the `<select>` needs an option carrying that value
+  to display it, and had none — so it fell back to its first option, "All tags". Measured
+  with `/tags` failing and `?tag=5` set: every route hidden, the counter at 0, and the one
+  control that could have accounted for it saying no filter was applied. The page read as an
+  instance with nothing in it. An applied filter now always has an option of its own, and it
+  says which of the two things happened, by the same rule the webhook scope field already
+  keeps: an id missing from a list that came back is "Tag #5 (deleted)"; an id missing from a
+  list that never came back is "Tag #5", which names nothing it has not read.
 - **A settings tab announced that the instance had no integrations before it had asked.**
   The webhook scope field closes "Specific provider" when there is nothing to point at, and
   said why: "No enabled integration to point at yet." It read that off an empty list, which

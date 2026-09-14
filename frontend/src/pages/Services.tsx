@@ -343,6 +343,37 @@ export function Services() {
   );
 
   const hasFilters = Boolean(search.trim()) || Boolean(tagFilter) || Boolean(envFilter) || Boolean(statusFilter) || modeFilter !== 'all';
+
+  /**
+   * Both filters live in the URL, so each is set before its list has been read, survives a
+   * reload, and outlives whatever it points at. When the id is not in the list the `<Select>`
+   * has no option to select and falls back to the first one -- "All tags" -- while the rows
+   * below stay filtered. Measured with `/tags` failing and `?tag=5` in the address bar: every
+   * service hidden, the header counter at 0, and the one control that could account for it
+   * denying that any filter was applied. The page read as an instance with nothing in it.
+   *
+   * So an applied filter always gets an option of its own, and which one follows the rule the
+   * webhook scope field already keeps: an id missing from a list that came back is a tag that
+   * was deleted; an id missing from a list that has not come back is a name nobody has read.
+   */
+  const orphanTagOption =
+    tagFilter !== null && !tags.some((tag) => tag.id === tagFilter)
+      ? {
+          value: String(tagFilter),
+          label: tagsQuery.isSuccess
+            ? t('services.filter.tag_gone', { id: tagFilter })
+            : t('services.filter.tag_unread', { id: tagFilter }),
+        }
+      : null;
+  const orphanEnvironmentOption =
+    envFilter !== null && !environments.some((env) => env.id === envFilter)
+      ? {
+          value: String(envFilter),
+          label: environmentsQuery.isSuccess
+            ? t('services.filter.environment_gone', { id: envFilter })
+            : t('services.filter.environment_unread', { id: envFilter }),
+        }
+      : null;
   const clearFilters = useCallback(() => {
     setSearch('');
     setModeFilter('all');
@@ -893,6 +924,9 @@ export function Services() {
               wrapperClassName="w-40"
             >
               <option value="">{t('services.filter.all_tags')}</option>
+              {orphanTagOption && (
+                <option value={orphanTagOption.value}>{orphanTagOption.label}</option>
+              )}
               {tags.map((tag) => (
                 <option key={tag.id} value={tag.id}>
                   {tag.name}
@@ -906,6 +940,9 @@ export function Services() {
               wrapperClassName="w-40"
             >
               <option value="">{t('services.filter.all_environments')}</option>
+              {orphanEnvironmentOption && (
+                <option value={orphanEnvironmentOption.value}>{orphanEnvironmentOption.label}</option>
+              )}
               {environments.map((env) => (
                 <option key={env.id} value={env.id}>
                   {env.name}
