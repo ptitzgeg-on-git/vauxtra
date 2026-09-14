@@ -340,6 +340,7 @@
   "certificates.empty.none": "Nenhum certificado encontrado",
   "certificates.empty.none_hint_one": "Esta integração foi consultada e não retornou nada: {providers}. Os certificados aparecem aqui assim que ela armazenar um certificado.",
   "certificates.empty.none_hint_other": "Estas integrações foram consultadas e não retornaram nada: {providers}. Os certificados aparecem aqui assim que uma delas armazenar um certificado.",
+  "certificates.empty.none_unread_hint": "Não foi possível ler as integrações por trás desta página, então ela não pode dizer quais foram consultadas. Tente novamente para saber se alguma delas armazena um certificado.",
   "certificates.empty.open_providers": "Abrir integrações",
   "certificates.expired_ago": "Expirou há {days}",
   "certificates.fallback": "Fallback",

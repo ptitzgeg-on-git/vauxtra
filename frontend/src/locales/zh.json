@@ -314,6 +314,7 @@
   "certificates.empty.no_integration_hint": "Nginx Proxy Manager 和 Zoraxy 会公开它们持有的证书，Vauxtra 在此读取。Traefik 在内部管理 ACME，不提供证书存储，因此无法列出其证书。",
   "certificates.empty.none": "未找到证书",
   "certificates.empty.none_hint_other": "已查询以下集成，但均无返回：{providers}。只要其中之一持有证书，就会显示在这里。",
+  "certificates.empty.none_unread_hint": "无法读取此页面背后的集成，因此无法说明查询了哪些集成。请重试以确认其中是否有集成持有证书。",
   "certificates.empty.open_providers": "打开集成",
   "certificates.expired_ago": "已于 {days} 前过期",
   "certificates.fallback": "回退",

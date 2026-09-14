@@ -340,6 +340,7 @@
   "certificates.empty.none": "No certificate found",
   "certificates.empty.none_hint_one": "This integration was queried and returned nothing: {providers}. Certificates appear here as soon as it holds a certificate.",
   "certificates.empty.none_hint_other": "These integrations were queried and returned nothing: {providers}. Certificates appear here as soon as one of them holds a certificate.",
+  "certificates.empty.none_unread_hint": "The integrations behind this page could not be read, so it cannot say which ones were queried. Retry to find out whether one of them holds a certificate.",
   "certificates.empty.open_providers": "Open integrations",
   "certificates.expired_ago": "Expired {days} ago",
   "certificates.fallback": "Fallback",

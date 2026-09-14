@@ -340,6 +340,7 @@
   "certificates.empty.none": "Aucun certificat trouvé",
   "certificates.empty.none_hint_one": "Cette intégration a été interrogée et n'a rien renvoyé : {providers}. Les certificats apparaîtront ici dès qu'elle en détiendra un.",
   "certificates.empty.none_hint_other": "Ces intégrations ont été interrogées et n'ont rien renvoyé : {providers}. Les certificats apparaîtront ici dès que l'une d'elles en détiendra un.",
+  "certificates.empty.none_unread_hint": "Les intégrations derrière cette page n'ont pas pu être lues : elle ne peut donc pas dire lesquelles ont été interrogées. Réessayez pour savoir si l'une d'elles en détient un.",
   "certificates.empty.open_providers": "Ouvrir les intégrations",
   "certificates.expired_ago": "Expiré il y a {days}",
   "certificates.fallback": "Repli",
