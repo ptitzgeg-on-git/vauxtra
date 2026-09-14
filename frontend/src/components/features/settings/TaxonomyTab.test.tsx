@@ -33,13 +33,31 @@ let envRows: Environment[] = [];
 let serviceRows: Service[] = [];
 let templateRows: Template[] = [];
 
+/**
+ * How one of the two usage reads answers: with its rows, with a failure, or never -- a
+ * request still in flight. Both are states the tab used to be unable to tell from an empty
+ * list, which is the whole subject of the last describe block below.
+ */
+type Answer = 'rows' | 'fails' | 'never';
+let servicesAnswer: Answer = 'rows';
+let templatesAnswer: Answer = 'rows';
+
+/** A request that never comes back, so `isPending` stays true for the whole test. */
+const NEVER: Promise<never> = new Promise(() => {});
+
+function answer<T>(mode: Answer, rows: T): Promise<T> {
+  if (mode === 'fails') return Promise.reject(new Error('read refused'));
+  if (mode === 'never') return NEVER;
+  return Promise.resolve(rows);
+}
+
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn((path: string) => {
       if (path === '/tags') return Promise.resolve(tagRows);
       if (path === '/environments') return Promise.resolve(envRows);
-      if (path === '/services') return Promise.resolve(serviceRows);
-      if (path === '/templates') return Promise.resolve(templateRows);
+      if (path === '/services') return answer(servicesAnswer, serviceRows);
+      if (path === '/templates') return answer(templatesAnswer, templateRows);
       return Promise.resolve([]);
     }),
     post: vi.fn(() => Promise.resolve({ ok: true })),
@@ -124,10 +142,14 @@ function holders(kind: Kind, ...hosts: string[]): Service[] {
  * `makeQueryClient` holds them fresh for ever, and the chip only appears once the list query
  * the mock answers has resolved, which is after both of these are already in place.
  */
-function show(): void {
+function show(seeded = true): void {
   const queryClient = makeQueryClient();
-  queryClient.setQueryData(['services'], serviceRows);
-  queryClient.setQueryData(['templates'], templateRows);
+  // `seeded: false` leaves both keys to the mock, which is the only way to watch the tab
+  // answer a read that failed or that has not come back.
+  if (seeded) {
+    queryClient.setQueryData(['services'], serviceRows);
+    queryClient.setQueryData(['templates'], templateRows);
+  }
   renderWithProviders(<TaxonomyTab />, { queryClient });
 }
 
@@ -153,6 +175,8 @@ describe('TaxonomyTab, what a label is holding', () => {
     envRows = [ENV];
     serviceRows = [];
     templateRows = [];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
     vi.clearAllMocks();
   });
 
@@ -193,6 +217,8 @@ describe('TaxonomyTab, which question deleting a label asks', () => {
     envRows = [ENV];
     serviceRows = [];
     templateRows = [];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
     vi.clearAllMocks();
   });
 
@@ -296,6 +322,151 @@ describe('TaxonomyTab, which question deleting a label asks', () => {
 
     // The witness. A dialog that counted correctly and then asked the wrong route, or asked
     // nothing at all, would satisfy every assertion above it.
+    expect(api.delete).toHaveBeenCalledWith(`/tags/${TAG.id}`);
+  });
+});
+
+/**
+ * The chip's number and the question the X asks both read `dependents`, and `dependents` was
+ * built from two queries destructured as `data = []`: nothing in either editor could tell a
+ * label nothing carries from a `/services` that failed, or that had simply not come back yet.
+ * The long question was then never asked, and `DELETE /api/tags/{id}` takes `service_tags`
+ * with it -- the route reads the holders only to journal them, and refuses nothing.
+ */
+describe('TaxonomyTab, a usage read that has not answered', () => {
+  beforeEach(() => {
+    tagRows = [TAG];
+    envRows = [ENV];
+    serviceRows = [];
+    templateRows = [];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
+    vi.clearAllMocks();
+  });
+
+  /**
+   * Opens the question over a tab whose usage reads answer the mock, once the tab has said
+   * out loud that one of them failed. Waiting for that sentence is what makes the assertion
+   * about a failure rather than about a request still in flight.
+   */
+  async function askOverAFailedRead(kind: Kind): Promise<HTMLElement> {
+    show(false);
+    await screen.findAllByText('settings.taxonomy.usage_failed');
+    const chip = await chipOf(kind);
+    await userEvent.click(within(chip).getByLabelText(`settings.${kind}.delete_aria`));
+    return screen.findByRole('dialog');
+  }
+
+  it('asks the unknown question, not the plain one, when the services read failed', async () => {
+    servicesAnswer = 'fails';
+    serviceRows = holders('tags', 'git.example.test');
+    const dialog = await askOverAFailedRead('tags');
+
+    // The whole defect in one assertion: two services carried this tag, the read that would
+    // have said so failed, and the question asked was the one written for a label nothing
+    // holds -- a sentence promising that nothing else changes.
+    expect(within(dialog).getByText('settings.taxonomy.unknown_message')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.taxonomy.delete_message')).toBeNull();
+    expect(within(dialog).queryByText('settings.taxonomy.in_use_carried')).toBeNull();
+  });
+
+  it('asks it for the templates read as readily as for the services read', async () => {
+    // Two reads build one map, so either one missing leaves the same hole. The environment
+    // half is the one that was never counted over templates at all before `environment_ids`.
+    templatesAnswer = 'fails';
+    templateRows = [template({ id: 4, name: 'Reverse proxy', environment_ids: [ENV.id] })];
+    const dialog = await askOverAFailedRead('env');
+
+    expect(within(dialog).getByText('settings.taxonomy.unknown_message')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.taxonomy.delete_message')).toBeNull();
+  });
+
+  it('asks the unknown question while a read is still in flight', async () => {
+    // Not a failure: a request that has not come back. The chips render as soon as `/tags`
+    // answers, so the X is clickable a good deal earlier than the count behind it is known.
+    servicesAnswer = 'never';
+    show(false);
+    const chip = await chipOf('tags');
+    await userEvent.click(within(chip).getByLabelText('settings.tags.delete_aria'));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText('settings.taxonomy.unknown_message')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.taxonomy.delete_message')).toBeNull();
+  });
+
+  it('says so out loud once per list, each with its own retry', async () => {
+    // Two editors are rendered side by side off the same two queries, and a warning on the
+    // tags list only would leave the environment list counting from the same unread rows
+    // with nothing said over it.
+    servicesAnswer = 'fails';
+    show(false);
+
+    expect(await screen.findAllByText('settings.taxonomy.usage_failed')).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'ui.error.retry' })).toHaveLength(2);
+    // The read's own words, not a generic failure: `translateApiError` gives back the
+    // message of a plain thrown Error.
+    expect(screen.getAllByText('read refused')).toHaveLength(2);
+  });
+
+  it('still asks the plain question once both reads have answered nothing', async () => {
+    // The control. Unseeded, answered, and empty is the one case where "nothing carries it"
+    // is a fact, and the unknown branch sitting first in the chain must not swallow it.
+    show(false);
+    const chip = await chipOf('tags');
+    await userEvent.click(within(chip).getByLabelText('settings.tags.delete_aria'));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText('settings.taxonomy.delete_message')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.taxonomy.unknown_message')).toBeNull();
+    expect(screen.queryAllByText('settings.taxonomy.usage_failed')).toHaveLength(0);
+  });
+
+  it('counts again once the retry answers', async () => {
+    servicesAnswer = 'fails';
+    serviceRows = holders('tags', 'git.example.test', 'api.example.test');
+    show(false);
+    await screen.findAllByText('settings.taxonomy.usage_failed');
+    expect(usageBadge(await chipOf('tags'))).toBeNull();
+
+    servicesAnswer = 'rows';
+    await userEvent.click(screen.getAllByRole('button', { name: 'ui.error.retry' })[0]);
+
+    // One retry, one recovery on both lists: the two editors share the query keys, so the
+    // button on either of them is the button for both.
+    expect(await screen.findByText('settings.taxonomy.usage_count')).toBeInTheDocument();
+    expect(screen.queryAllByText('settings.taxonomy.usage_failed')).toHaveLength(0);
+  });
+
+  it('asks the carried question, not the unknown one, after the retry', async () => {
+    servicesAnswer = 'fails';
+    serviceRows = holders('tags', 'git.example.test', 'api.example.test');
+    show(false);
+    await screen.findAllByText('settings.taxonomy.usage_failed');
+
+    servicesAnswer = 'rows';
+    await userEvent.click(screen.getAllByRole('button', { name: 'ui.error.retry' })[0]);
+    await screen.findByText('settings.taxonomy.usage_count');
+
+    const chip = await chipOf('tags');
+    await userEvent.click(within(chip).getByLabelText('settings.tags.delete_aria'));
+    const dialog = await screen.findByRole('dialog');
+
+    // The rows that were unreadable a moment ago are named now, which is the point of
+    // keeping the warning retryable rather than asking the operator to reload the page.
+    expect(within(dialog).getByText('settings.taxonomy.in_use_carried')).toBeInTheDocument();
+    expect(within(dialog).getByText('git.example.test')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.taxonomy.unknown_message')).toBeNull();
+  });
+
+  it('still deletes the label once the unknown question is confirmed', async () => {
+    // An unreadable count must not strand the tab: the deletion stays available, it is only
+    // asked differently. A branch that disabled the X would trade one wrong answer for a
+    // list that cannot be edited until a read nobody controls comes back.
+    servicesAnswer = 'fails';
+    const dialog = await askOverAFailedRead('tags');
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'common.delete' }));
+
     expect(api.delete).toHaveBeenCalledWith(`/tags/${TAG.id}`);
   });
 });

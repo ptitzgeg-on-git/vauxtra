@@ -1332,6 +1332,8 @@
   "settings.dns.empty_desc": "Fügen Sie die Domains hinzu, unter denen Sie Dienste bereitstellen; sie speisen jede Subdomain-Auswahl.",
   "settings.dns.invalid": "Geben Sie einen gültigen Domainnamen ein",
   "settings.dns.load_failed": "Die Domains konnten nicht geladen werden",
+  "settings.dns.usage_failed": "Es konnte nicht geprüft werden, was diese Domains tragen",
+  "settings.dns.usage_unknown": "Verwendung unbekannt",
   "settings.dns.no_match": "Keine Domain entspricht dieser Suche",
   "settings.dns.search_placeholder": "Domain suchen",
   "settings.docker.add_endpoint": "Endpunkt hinzufügen",
@@ -1522,6 +1524,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} Dienstvorlagen nennen „{name}“.",
   "settings.taxonomy.in_use_templates_drop_tag": "Der Tag wird beim nächsten Lesen aus jeder dieser Vorlagen entfernt, ein daraus erstellter Dienst startet also ohne ihn.",
   "settings.taxonomy.in_use_templates_drop_env": "Die Umgebung wird beim nächsten Lesen aus jeder dieser Vorlagen entfernt, ein daraus erstellter Dienst startet also ohne sie.",
+  "settings.taxonomy.unknown_title": "Verwendung nicht prüfbar",
+  "settings.taxonomy.unknown_message": "Die Dienste und die Vorlagen konnten nicht gelesen werden, daher ist unbekannt, wie viele „{name}“ tragen. Das Löschen entfernt die Bezeichnung von jedem von ihnen: jeder behält seinen Hostnamen und bleibt unverändert veröffentlicht.",
+  "settings.taxonomy.usage_failed": "Es konnte nicht geprüft werden, wovon diese Bezeichnungen getragen werden",
   "settings.taxonomy.usage_count_one": "{count} Dienst",
   "settings.taxonomy.usage_count_other": "{count} Dienste",
   "settings.taxonomy.delete_title": "Diese Bezeichnung löschen?",
@@ -2112,5 +2117,7 @@
   "settings.dns.confirm.in_use_more_other": "… und {count} weitere",
   "settings.dns.confirm.in_use_effect": "Das Löschen der Domain ändert daran nichts: zur Laufzeit liest nichts die Domainliste, jede Zeile oben behält ihren Hostnamen und bleibt unverändert veröffentlicht.",
   "settings.dns.confirm.in_use_pickers": "Was sich ändert, sind die Auswahllisten — „{domain}“ wird beim Anlegen eines Dienstes oder einer Vorlage nicht mehr angeboten.",
-  "settings.dns.confirm.in_use_returns": "Und „{domain}“ kann von selbst zurückkehren: ein Docker-Scan oder ein Anbieterimport trägt die Root-Domain jedes übernommenen Dienstes erneut ein."
+  "settings.dns.confirm.in_use_returns": "Und „{domain}“ kann von selbst zurückkehren: ein Docker-Scan oder ein Anbieterimport trägt die Root-Domain jedes übernommenen Dienstes erneut ein.",
+  "settings.dns.confirm.unknown_title": "Verwendung nicht prüfbar",
+  "settings.dns.confirm.unknown_message": "Die Dienste und die Vorlagen konnten nicht gelesen werden, daher ist unbekannt, was „{domain}“ noch trägt. Das Löschen ändert zur Laufzeit nichts: nichts liest die Domainliste, und jede darauf aufgebaute Route behält ihren Hostnamen. Die Domain wird lediglich beim Anlegen eines Dienstes oder einer Vorlage nicht mehr angeboten."
 }

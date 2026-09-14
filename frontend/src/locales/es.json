@@ -1332,6 +1332,8 @@
   "settings.dns.empty_desc": "Añade los dominios bajo los que expones servicios; alimentan todos los selectores de subdominio.",
   "settings.dns.invalid": "Introduce un nombre de dominio válido",
   "settings.dns.load_failed": "No se pudieron cargar los dominios",
+  "settings.dns.usage_failed": "No se pudo comprobar qué sostienen estos dominios",
+  "settings.dns.usage_unknown": "Uso desconocido",
   "settings.dns.no_match": "Ningún dominio coincide con esta búsqueda",
   "settings.dns.search_placeholder": "Buscar un dominio",
   "settings.docker.add_endpoint": "Añadir endpoint",
@@ -1522,6 +1524,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} plantillas de servicio mencionan \"{name}\".",
   "settings.taxonomy.in_use_templates_drop_tag": "La etiqueta se quita de cada una la próxima vez que se lee la plantilla, así que un servicio creado a partir de una de ellas empieza sin ella.",
   "settings.taxonomy.in_use_templates_drop_env": "El entorno se quita de cada una la próxima vez que se lee la plantilla, así que un servicio creado a partir de una de ellas empieza sin él.",
+  "settings.taxonomy.unknown_title": "No se pudo comprobar el uso",
+  "settings.taxonomy.unknown_message": "No se pudieron leer los servicios ni las plantillas, así que se desconoce cuántos llevan \"{name}\". Eliminarla quita la etiqueta de todos ellos: cada uno conserva su nombre de host y sigue publicándose igual.",
+  "settings.taxonomy.usage_failed": "No se pudo comprobar qué lleva estas etiquetas",
   "settings.taxonomy.usage_count_one": "{count} servicio",
   "settings.taxonomy.usage_count_other": "{count} servicios",
   "settings.taxonomy.delete_title": "¿Eliminar esta etiqueta?",
@@ -2112,5 +2117,7 @@
   "settings.dns.confirm.in_use_more_other": "… y {count} más",
   "settings.dns.confirm.in_use_effect": "Eliminar el dominio no cambia nada de eso: en ejecución nada lee la lista de dominios, cada fila anterior conserva su nombre de host y sigue publicándose igual.",
   "settings.dns.confirm.in_use_pickers": "Lo que cambia son las listas de selección: \"{domain}\" deja de ofrecerse al crear un servicio o una plantilla.",
-  "settings.dns.confirm.in_use_returns": "Y \"{domain}\" puede volver por su cuenta: un análisis de Docker o una importación de proveedor vuelve a añadir el dominio raíz de cada servicio que incorpora."
+  "settings.dns.confirm.in_use_returns": "Y \"{domain}\" puede volver por su cuenta: un análisis de Docker o una importación de proveedor vuelve a añadir el dominio raíz de cada servicio que incorpora.",
+  "settings.dns.confirm.unknown_title": "No se pudo comprobar el uso",
+  "settings.dns.confirm.unknown_message": "No se pudieron leer los servicios ni las plantillas, así que se desconoce qué sostiene todavía \"{domain}\". Eliminarlo no cambia nada en ejecución: nada lee la lista de dominios y cada ruta construida sobre él conserva su nombre de host. Solo deja de ofrecerse al crear un servicio o una plantilla."
 }

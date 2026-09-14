@@ -100,7 +100,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
   // `environments` in full, and `GET /api/templates` carries `tag_ids` and
   // `environment_ids`. Both keys are the ones `DnsTab` reads for the same purpose, so the
   // two tabs share one cache entry each.
-  const { data: services = [] } = useQuery<Service[]>({
+  const servicesQuery = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
@@ -108,10 +108,28 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
   // `frontend/src/types/api.ts`), so both editors have the same question to ask. This used
   // to be fetched for tags only, and correctly: the environment half had nowhere to be
   // stored, so there was nothing to count.
-  const { data: templates = [] } = useQuery<Template[]>({
+  const templatesQuery = useQuery<Template[]>({
     queryKey: ['templates'],
     queryFn: () => api.get<Template[]>('/templates'),
   });
+
+  const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
+  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+
+  // Both reads were `data = []` with nothing destructured to notice a failure. An empty
+  // `dependents` is what the plain "Delete this label?" question is for, so a `/services`
+  // that failed, or had simply not landed yet, asked that question over a label seven
+  // services carried, and `DELETE /api/tags/{id}` takes `service_tags` with it: the label
+  // reads the holders only to journal them, and refuses nothing. Neither is the count beside
+  // each chip a reading of the labels -- it is a reading of the services -- so it went quiet
+  // on the same emptiness.
+  const usageUnknown =
+    servicesQuery.isPending ||
+    servicesQuery.isError ||
+    templatesQuery.isPending ||
+    templatesQuery.isError;
+  const usageFailed = servicesQuery.isError || templatesQuery.isError;
+  const usageError = servicesQuery.error ?? templatesQuery.error;
 
   const dependents = useMemo(() => {
     const byId = new Map<number, Dependents>();
@@ -201,7 +219,17 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
     const held = dependents.get(item.id) ?? NO_DEPENDENTS;
     const inUse = held.services.length + held.templates.length > 0;
     const ok = await confirm(
-      inUse
+      usageUnknown
+        ? {
+            // Not "nothing carries it": nobody knows. The deletion stays available -- this
+            // tab must not be stranded on a read it may never get -- but it stops being
+            // asked as though the answer had come back empty.
+            title: t('settings.taxonomy.unknown_title'),
+            message: t('settings.taxonomy.unknown_message', { name: item.name }),
+            confirmLabel: t('common.delete'),
+            variant: 'danger',
+          }
+        : inUse
         ? {
             title: t('settings.taxonomy.in_use_title'),
             message: (
@@ -271,6 +299,28 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
 
       {items.length > SEARCH_THRESHOLD && (
         <SearchInput value={search} onChange={setSearch} placeholder={t('settings.taxonomy.search_placeholder')} />
+      )}
+
+      {usageFailed && (
+        <InlineAlert
+          tone="warning"
+          title={t('settings.taxonomy.usage_failed')}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              loading={servicesQuery.isFetching || templatesQuery.isFetching}
+              onClick={() => {
+                void servicesQuery.refetch();
+                void templatesQuery.refetch();
+              }}
+            >
+              {t('ui.error.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(usageError, t, t('common.error'))}
+        </InlineAlert>
       )}
 
       {listQuery.isLoading ? (

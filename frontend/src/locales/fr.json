@@ -1332,6 +1332,8 @@
   "settings.dns.empty_desc": "Ajoutez les domaines sous lesquels vous exposez vos services ; ils alimentent tous les sélecteurs de sous-domaine.",
   "settings.dns.invalid": "Saisissez un nom de domaine valide",
   "settings.dns.load_failed": "Impossible de charger les domaines",
+  "settings.dns.usage_failed": "Impossible de vérifier ce que portent ces domaines",
+  "settings.dns.usage_unknown": "Utilisation inconnue",
   "settings.dns.no_match": "Aucun domaine ne correspond à cette recherche",
   "settings.dns.search_placeholder": "Rechercher un domaine",
   "settings.docker.add_endpoint": "Ajouter un point d'accès",
@@ -1522,6 +1524,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} modèles de service désignent \"{name}\".",
   "settings.taxonomy.in_use_templates_drop_tag": "L'étiquette est retirée de chacun d'eux à la prochaine lecture du modèle : un service créé à partir de l'un d'eux démarrera sans elle.",
   "settings.taxonomy.in_use_templates_drop_env": "L'environnement est retiré de chacun d'eux à la prochaine lecture du modèle : un service créé à partir de l'un d'eux démarrera sans lui.",
+  "settings.taxonomy.unknown_title": "Utilisation non vérifiée",
+  "settings.taxonomy.unknown_message": "Les services et les modèles n'ont pas pu être lus : le nombre de ceux qui portent \"{name}\" est inconnu. La suppression retire le libellé de chacun d'eux ; chacun garde son nom d'hôte et reste publié tel quel.",
+  "settings.taxonomy.usage_failed": "Impossible de vérifier ce qui porte ces libellés",
   "settings.taxonomy.usage_count_one": "{count} service",
   "settings.taxonomy.usage_count_other": "{count} services",
   "settings.taxonomy.delete_title": "Supprimer ce libellé ?",
@@ -2112,5 +2117,7 @@
   "settings.dns.confirm.in_use_more_other": "… et {count} de plus",
   "settings.dns.confirm.in_use_effect": "La suppression du domaine n'y change rien : aucun traitement ne lit la liste des domaines, chaque ligne ci-dessus garde son nom d'hôte et reste publiée telle quelle.",
   "settings.dns.confirm.in_use_pickers": "Ce qui change, ce sont les suggestions : \"{domain}\" ne sera plus proposé à la création d'un service ou d'un modèle.",
-  "settings.dns.confirm.in_use_returns": "Et \"{domain}\" peut revenir tout seul : une analyse Docker ou un import de fournisseur réinscrit le domaine racine de chaque service qu'il rapporte."
+  "settings.dns.confirm.in_use_returns": "Et \"{domain}\" peut revenir tout seul : une analyse Docker ou un import de fournisseur réinscrit le domaine racine de chaque service qu'il rapporte.",
+  "settings.dns.confirm.unknown_title": "Utilisation non vérifiée",
+  "settings.dns.confirm.unknown_message": "Les services et les modèles n'ont pas pu être lus : ce que \"{domain}\" porte encore est inconnu. La suppression ne change rien à l'exécution, aucun traitement ne lit la liste des domaines et chaque route bâtie dessus garde son nom d'hôte. Le domaine cesse simplement d'être proposé à la création d'un service ou d'un modèle."
 }
