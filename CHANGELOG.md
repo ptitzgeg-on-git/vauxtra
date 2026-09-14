@@ -379,6 +379,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The dashboard counted a service nobody was watching as a fault, and the same card said
+  two different things about the same estate.** `GET /api/stats` answered `services_ok` and
+  `services_error` over every row in `services`, enabled or not. Nothing else in the product
+  reads health that way: `serviceStatus()` opens with `if (!service.enabled) return
+  'disabled'` — a state of its own, in neither bucket — and the dashboard's own fallback
+  counts `enabledServices.filter(...)`. The tile is written `stats?.services_ok ??
+  servicesOk`, so the route's figure wins whenever it answers and the list's figure appears
+  only when it does not, and the operator read one number or the other depending on which.
+  Four disabled services and one live one made a card that read "2 enabled, 2 ok, 2 error".
+
+  The column made it permanent rather than momentary. The scheduler probes `WHERE enabled=1`,
+  and the only writer of the flag is `UPDATE services SET enabled=?`, which never touches
+  `status`. A service disabled while failing therefore keeps `status` `'error'` for as long as
+  it exists: the tile stayed red, with a count, and the triage list directly beneath it —
+  read off the enabled-only list — had nothing to show. Clicking the count opened
+  `/monitoring?status=ok`, which filters on `serviceStatus`, so the list that opened
+  disagreed with the number that opened it.
+
+  Both counters are now scoped to enabled services, which is the definition the rest of the
+  product already used. Eight tests pin it: the 2x2 of enabled against status measured
+  through the route, an invariant that health can never outrun what is watched, and text
+  pins on the four other files that hold a piece of the rule, so a second definition of it
+  turns red here.
+
 - **"This proxy cannot detect its public target" was printed over a lookup that never
   answered.** `GET /api/services/public-target/suggest` reaches `detect_server_public_ip`,
   which makes a real outbound call, so the read is both slow and failable — and it was

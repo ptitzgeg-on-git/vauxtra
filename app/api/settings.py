@@ -318,12 +318,25 @@ def save_settings(request: Request, body: dict):
 def get_stats(request: Request):
     require_auth(request)
     conn  = get_db()
+    # `services`, `providers`, `logs` and `tags` are sizes of the estate and count everything.
+    # `services_ok` and `services_error` are health, and health is only measured on services
+    # the scheduler actually checks: it reads `WHERE enabled=1` (app/scheduler.py), and
+    # disabling a service never clears its `status` column -- the only writer is
+    # `UPDATE services SET enabled=?`. So a service disabled while failing keeps `status`
+    # 'error' for good, and counting it here reported a fault nobody was watching and nobody
+    # could clear. `serviceStatus()` in frontend/src/components/features/monitoring/uptime.ts
+    # is where the product answers this question -- `if (!service.enabled) return 'disabled'`,
+    # a state of its own, neither ok nor error -- and these two counters now answer it the
+    # same way. The Dashboard reads them in front of its own list
+    # (`stats?.services_ok ?? servicesOk`), and that list counts enabled services only, so
+    # before this the same tile showed a different number depending on whether this route had
+    # answered, and could read "2 enabled, 2 ok, 2 error".
     stats = {
         "services":       conn.execute("SELECT COUNT(*) FROM services").fetchone()[0],
         "providers":      conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0],
         "logs":           conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0],
-        "services_ok":    conn.execute("SELECT COUNT(*) FROM services WHERE status='ok'").fetchone()[0],
-        "services_error": conn.execute("SELECT COUNT(*) FROM services WHERE status='error'").fetchone()[0],
+        "services_ok":    conn.execute("SELECT COUNT(*) FROM services WHERE status='ok' AND enabled=1").fetchone()[0],
+        "services_error": conn.execute("SELECT COUNT(*) FROM services WHERE status='error' AND enabled=1").fetchone()[0],
         "tags":           conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
     }
     conn.close()
