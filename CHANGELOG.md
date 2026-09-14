@@ -337,6 +337,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A settings tab announced that the instance had no integrations before it had asked.**
+  The webhook scope field closes "Specific provider" when there is nothing to point at, and
+  said why: "No enabled integration to point at yet." It read that off an empty list, which
+  is also what every first paint holds and what a failed request leaves behind. So the tab
+  stated it as a fact about the instance on every single load, and went on stating it for
+  good once the list could not be read. The rule was already written down and obeyed a
+  hundred lines below in the same file, where a webhook's target is only called deleted once
+  `isSuccess` says the list is the answer. The option still closes in all three cases —
+  every one of them leaves nothing to save, and saving would mute the rule — but the three
+  no longer share one sentence.
 - **A page that could not reach its health checks looked like a page where all was well.**
   The integrations page reads two health endpoints, and neither query's failure was ever
   looked at. When they fail every integration is `unknown` — the honest verdict for a

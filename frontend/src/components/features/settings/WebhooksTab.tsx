@@ -112,14 +112,35 @@ export function WebhooksTab() {
    * A scope with nothing to point at is a dead end: `firstRefFor` returns null, the rule is
    * saved with `scope_ref_id: null`, and the webhook matches nothing instead of matching one
    * provider. So the option is disabled and the field says why.
+   *
+   * Disabling it is right in all three states -- none enabled, not fetched yet, fetch failed
+   * -- because all three leave `firstRefFor` nothing to return. Saying *why* is not. An empty
+   * list is also the first paint of every load, so the hint announced that this instance has
+   * no enabled integration before anyone had asked it, and went on saying so for good if the
+   * request failed. `scopeSummary` below already writes this rule down and obeys it; up here
+   * it was written and not obeyed. `isSuccess` is what makes an empty list a fact about the
+   * instance rather than a fact about the request.
    */
   const noProviders = enabledProviders.length === 0;
   const noServices = enabledServices.length === 0;
+  const providersUnread = noProviders && !providersQuery.isSuccess;
+  const servicesUnread = noServices && !servicesQuery.isSuccess;
   const scopeUnavailable = (type: ScopeType) =>
     (type === 'provider' && noProviders) || (type === 'service' && noServices);
+  /** Why a scope is closed -- kept in one place so the hint and the toast cannot disagree. */
+  const scopeBlockedReason = (type: ScopeType): string => {
+    if (type === 'provider') {
+      return providersUnread
+        ? t('settings.webhooks.scope_providers_unknown')
+        : t('settings.webhooks.scope_no_providers');
+    }
+    return servicesUnread
+      ? t('settings.webhooks.scope_services_unknown')
+      : t('settings.webhooks.scope_no_services');
+  };
   const scopeHints = [
-    noProviders ? t('settings.webhooks.scope_no_providers') : null,
-    noServices ? t('settings.webhooks.scope_no_services') : null,
+    noProviders ? scopeBlockedReason('provider') : null,
+    noServices ? scopeBlockedReason('service') : null,
   ].filter((line): line is string => line !== null);
   const scopeHint = scopeHints.length > 0 ? scopeHints.join(' ') : undefined;
 
@@ -170,11 +191,7 @@ export function WebhooksTab() {
     if (patch.scope_type !== undefined && patch.scope_type !== current.scope_type) {
       // Nothing to point at: saving would blank the target and quietly mute the webhook.
       if (scopeUnavailable(patch.scope_type)) {
-        toast.error(
-          patch.scope_type === 'provider'
-            ? t('settings.webhooks.scope_no_providers')
-            : t('settings.webhooks.scope_no_services'),
-        );
+        toast.error(scopeBlockedReason(patch.scope_type));
         return;
       }
       next.scope_ref_id = firstRefFor(patch.scope_type);

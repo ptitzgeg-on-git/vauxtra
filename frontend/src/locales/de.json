@@ -2004,6 +2004,8 @@
   "settings.backup.passphrase_distinct": "Verwenden Sie mindestens {count} verschiedene Zeichen.",
   "settings.webhooks.scope_no_providers": "Noch keine aktive Integration, auf die verwiesen werden könnte.",
   "settings.webhooks.scope_no_services": "Noch kein aktiver Endpunkt, auf den verwiesen werden könnte.",
+  "settings.webhooks.scope_providers_unknown": "Die Liste der Integrationen wurde nicht geladen, dieser Bereich lässt sich noch nicht festlegen.",
+  "settings.webhooks.scope_services_unknown": "Die Liste der Endpunkte wurde nicht geladen, dieser Bereich lässt sich noch nicht festlegen.",
   "expose.preflight.detail.dns_failed": "Der Verbindungstest zu {name} ist fehlgeschlagen.",
   "expose.preflight.detail.dns_ok": "Die Verbindung zu {name} ist in Ordnung.",
   "expose.preflight.detail.dns_resolved": "Öffentliches DNS-Ziel: {target} ({source})",
