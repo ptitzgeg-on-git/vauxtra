@@ -347,6 +347,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The command palette answered "No matches." for an endpoint that exists.** `['services']`
+  and `['providers']` are the only place the box learns what the estate holds, and both were
+  destructured down to their data with no failure state — the same shape `useDockerEndpoints`
+  carried until the wizard's three screens paid for it. A read that failed and an instance
+  with nothing registered arrived as the same `undefined`: the two groups went missing from
+  the list, and the sentence underneath stated flatly that nothing matched. That sentence is
+  a claim about the estate, and it was being made from a list nobody had read.
+
+  The in-flight case reads the same and is the likelier one. The palette answers Ctrl/⌘ K
+  over any page, mounts fresh each time, and its two reads carry a thirty-second staleness
+  window; open it from Settings, Monitoring or Certificates — none of which read either list
+  — and the first keystrokes land while both requests are still open. An operator who types
+  a hostname, reads "No matches." and concludes the endpoint was deleted is reading a report
+  on a question that had not been answered yet.
+
+  The palette now states the failure in a banner above the results, with a retry that asks
+  again only for the list that failed, and keeps that banner up while the pages and commands
+  it can still search go on matching — a partial answer is the case where the missing groups
+  are hardest to notice. "No matches." is now printed only once both lists have actually
+  answered; until then the box says it is still reading, and says so in the footer too when
+  results are already on screen. Six tests cover the palette, which had none.
+
 - **Two of the wizard's optional steps hid the list they were built around, and the screen
   that congratulates the operator counted from both.** `useDockerEndpoints` handed its rows
   out with no failure state at all, the way `useWebhookActions` used to before the comment
