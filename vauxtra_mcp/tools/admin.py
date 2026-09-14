@@ -373,7 +373,17 @@ def revoke_api_key(key_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def clear_logs() -> dict[str, Any]:
-    """Delete all logs."""
+    """Delete every entry in the activity log. Needs an `admin` key, not a `write` one.
+
+    The log is where a failed sign-in, an API key created and the scopes it carries, a key
+    revoked and a password change are written down, so emptying it sits with backup,
+    restore and factory reset rather than with the tools that change services. A `write`
+    key is refused with 403 and the message names the scope.
+
+    The clear is itself logged, so the answer is an empty log plus one line saying it was
+    emptied. Report that line rather than an empty log: it is the only record that the
+    entries before it existed.
+    """
     r = client.post("/logs/clear")
     client.check(r)
     return r.json()

@@ -385,7 +385,18 @@ def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = "
 
 @router.post("/api/logs/clear")
 def clear_logs(request: Request):
-    require_auth(request, scope="write")
+    """Empty the activity log. `admin`, and the emptying is itself recorded."""
+    # Not `write`, though the verb says so. This table is where a failed sign-in, an API
+    # key created and the scopes it was given, a key revoked and a password change are
+    # written down; `write` is the scope a deployment script or a home-automation job
+    # carries, and at `write` such a key could erase the record of its own work and of
+    # somebody guessing at the panel password. Every other operation that reaches the whole
+    # instance rather than one service is already `admin` -- backup, restore, factory reset,
+    # the credentials, and the settings keys that aim the scheduler at a host of the caller's
+    # choosing -- and the scope table in docs/HOWTO.md calls that row "credentials and the
+    # whole instance". The log is both. The line below means an admin cannot erase the fact
+    # of having erased.
+    require_auth(request, scope="admin")
     conn = get_db()
     conn.execute("DELETE FROM logs")
     conn.commit()

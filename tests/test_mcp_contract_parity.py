@@ -34,6 +34,7 @@ real models do when handed a value, which is the only thing that makes its verdi
 build failure.
 """
 
+import ast
 import importlib.util
 import inspect
 import tempfile
@@ -947,6 +948,111 @@ Ask for `errors` and it will not become a row.
 | `errors` | `delete_service` | still live on its provider |
 """
         self.assertEqual(_half_succeeds_table(readme), set())
+
+
+def _routes_needing_admin(repo_root: Path, normalize) -> set[tuple[str, str]]:
+    """Every (verb, path) whose body asks `require_auth(request, scope="admin")`.
+
+    Read off the AST rather than off the router. FastAPI knows the verb and the path; only
+    the source knows what the body will demand of the caller, because the scope is an
+    argument to a call inside it. A route may ask twice -- `save_settings` asks for `write`
+    and then for `admin` when the body carries a setting that chooses a URL the server goes
+    and fetches -- and that counts: a `write` key cannot make that call in full.
+    """
+    found: set[tuple[str, str]] = set()
+    for path in sorted((repo_root / "app" / "api").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            routes = []
+            for dec in node.decorator_list:
+                if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
+                    continue
+                if getattr(dec.func.value, "id", "") != "router":
+                    continue
+                if dec.args and isinstance(dec.args[0], ast.Constant):
+                    routes.append((dec.func.attr.upper(), normalize(dec.args[0].value)))
+            if not routes:
+                continue
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.Call):
+                    continue
+                if getattr(inner.func, "id", "") not in ("require_auth", "require_auth_or_setup"):
+                    continue
+                for kw in inner.keywords:
+                    if (
+                        kw.arg == "scope"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value == "admin"
+                    ):
+                        found.update(routes)
+    return found
+
+
+def _admin_tool_list(readme_text: str, tool_names: set[str]) -> set[str]:
+    """The tool names on the Prerequisites line that says which tools need `admin`."""
+    for line in readme_text.splitlines():
+        if not line.startswith("2. An API key"):
+            continue
+        backticked = [part for i, part in enumerate(line.split("`")) if i % 2]
+        return {name for name in backticked if name in tool_names}
+    return set()
+
+
+class TheAdminToolListNamesEveryToolThatNeedsAdmin(unittest.TestCase):
+    """The README's list of tools a `write` key cannot use, against the routes they call.
+
+    This is the first thing a reader does before minting a key, and getting it wrong costs
+    them in the direction that hurts: a tool the list forgets is one they find out about
+    when a 403 lands in the middle of a restore, and a scope named too low is a key handed
+    out with less reach than the work needs. It was written as prose -- "backup/restore,
+    factory reset, API key management" -- which reads well and cannot be checked, and it had
+    already drifted: `mark_setup_complete` asks for `admin` and no category named it, and
+    `save_settings` asks for it on one body shape and none mentioned that either.
+
+    So the list names every tool outright and is compared to the routes in both directions.
+    A tool missing from it is a 403 nobody was warned about; a tool invented in it is a key
+    minted stronger than the work needed.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.gate = _load_parity_gate()
+
+    def _needing(self) -> set[str]:
+        admin = _routes_needing_admin(REPO_ROOT, self.gate.normalize)
+        return {
+            name
+            for name, tool in self.gate.collect_mcp_contracts(REPO_ROOT).items()
+            if any((call.method, call.path) in admin for call in tool.calls)
+        }
+
+    def test_the_list_names_every_tool_and_invents_none(self):
+        readme = (REPO_ROOT / "vauxtra_mcp" / "README.md").read_text(encoding="utf-8")
+        named = _admin_tool_list(readme, self.gate.collect_mcp_tools(REPO_ROOT))
+        self.assertEqual(named, self._needing())
+
+    def test_both_halves_read_something(self):
+        """A collector that finds nothing agrees with a list that names nothing."""
+        admin = _routes_needing_admin(REPO_ROOT, self.gate.normalize)
+        self.assertIn(("POST", "/api/logs/clear"), admin)
+        self.assertIn(("POST", "/api/auth/change-password"), admin)
+        self.assertIn(("POST", "/api/reset"), admin)
+        self.assertGreater(len(self._needing()), 5)
+
+    def test_a_tool_named_in_prose_rather_than_in_backticks_does_not_count(self):
+        """The shape this replaced. "API key management" covers three tools and names none."""
+        line = "2. An API key -- scopes are `read`, `write` and `admin`; the admin ones are "
+        line += "`change_password`, backup/restore, factory reset, API key management."
+        named = _admin_tool_list(line, self.gate.collect_mcp_tools(REPO_ROOT))
+        self.assertEqual(named, {"change_password"})
+
+    def test_a_renamed_item_reads_as_empty_rather_than_as_agreement(self):
+        """Losing the line must fail the build, not pass it for want of anything to compare."""
+        readme = (REPO_ROOT / "vauxtra_mcp" / "README.md").read_text(encoding="utf-8")
+        moved = readme.replace("2. An API key", "2. An API token")
+        self.assertEqual(_admin_tool_list(moved, self.gate.collect_mcp_tools(REPO_ROOT)), set())
 
 
 if __name__ == "__main__":

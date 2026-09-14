@@ -109,6 +109,40 @@ class ApiKeyScopeTests(unittest.TestCase):
         allowed = self.client.post("/api/auth/change-password", json=body, headers=self._headers("adm"))
         self.assertNotEqual(allowed.status_code, 403, allowed.text)
 
+    def test_clearing_the_log_needs_the_admin_scope(self):
+        """The table that records who tried the password must not be erasable by a `write` key.
+
+        Until 1.5.0 this route carried `write`, which is the scope a deployment script or a
+        home-automation job is minted with. That is the least trusted key that can do anything
+        at all, and it could empty the one table holding "Sign-in refused: wrong password",
+        the name and scopes of every key created, every key revoked and every password change.
+        A key could therefore erase the record of its own work, and of whoever was guessing at
+        the panel password alongside it.
+
+        The last two assertions are the other half of the rule: the clear writes its own line,
+        so an admin cannot erase the fact of having erased. An empty log and a cleared log are
+        different states, and only the second one says so.
+        """
+        models.add_log("warning", "Sign-in refused: wrong password")
+        models.add_log("info", "API key created: deploy (scopes: write)")
+
+        refused = self.client.post("/api/logs/clear", headers=self._headers("rw"))
+        self.assertEqual(refused.status_code, 403, refused.text)
+        self.assertIn("Insufficient scope", refused.json().get("detail", ""))
+
+        survived = self.client.get("/api/logs", headers=self._headers("ro")).json()
+        self.assertIn(
+            "Sign-in refused: wrong password",
+            [row["message"] for row in survived["items"]],
+        )
+
+        allowed = self.client.post("/api/logs/clear", headers=self._headers("adm"))
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+
+        after = self.client.get("/api/logs", headers=self._headers("ro")).json()
+        self.assertEqual([row["message"] for row in after["items"]], ["Logs cleared"])
+        self.assertEqual(after["total"], 1)
+
     def test_the_read_only_diagnostics_stay_open_to_a_read_key(self):
         resp = self.client.post("/api/services/1/push/dry-run", headers=self._headers("ro"))
         self.assertNotEqual(resp.status_code, 403, resp.text)
