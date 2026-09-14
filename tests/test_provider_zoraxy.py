@@ -1075,6 +1075,39 @@ class TestCertificatesRouteCoversZoraxy(unittest.TestCase):
             self.assertEqual(cert["domain_names"], ["*.example.com"])
             self.assertEqual(cert["domains"], ["*.example.com"])
 
+    def test_a_store_that_could_not_be_read_is_named_rather_than_dropped(self):
+        """A provider that raises used to leave a page that looked complete.
+
+        Every counter, the total and the integration filter are built from the rows the
+        route returned, so an estate whose only expiring certificate sits behind the
+        integration that was down read exactly like an estate with nothing to renew.
+        """
+        def _provider(row):
+            if row["type"] == "zoraxy":
+                raise RuntimeError("Zoraxy login failed: 401")
+            return _FakeCertProvider(row["type"])
+
+        with patch.object(certificates_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(certificates_api, "create_provider", _provider):
+            result = certificates_api.certificate_expiry(_request("GET", "/api/certificates/expiry"))
+
+        self.assertEqual([c["provider_name"] for c in result["certificates"]], ["npm-a"])
+        self.assertEqual(result["unreachable"], [{"id": 2, "name": "zoraxy-a", "type": "zoraxy"}])
+        # `zoraxy-off` is disabled, so it was never queried and is not reported as missing.
+        self.assertEqual(len(result["unreachable"]), 1)
+        # The reason stays in the journal: a provider error carries the URL and sometimes
+        # the credential that failed, and neither should reach the page.
+        with models.get_db_ctx() as conn:
+            journal = [r["message"] for r in conn.execute(
+                "SELECT message FROM logs WHERE level='error'").fetchall()]
+        self.assertTrue(any("zoraxy-a" in m and "401" in m for m in journal), journal)
+
+    def test_an_answer_read_from_every_store_says_so_with_an_empty_list(self):
+        with patch.object(certificates_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(certificates_api, "create_provider", lambda row: _FakeCertProvider(row["type"])):
+            result = certificates_api.certificate_expiry(_request("GET", "/api/certificates/expiry"))
+        self.assertEqual(result["unreachable"], [])
+
 
 class TestSchedulerCertExpiryAlertsCoverZoraxy(unittest.TestCase):
     """The scheduler's expiry scan runs on the provider's real `expires_on`, end to end."""

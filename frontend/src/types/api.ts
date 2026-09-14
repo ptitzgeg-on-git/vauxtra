@@ -900,11 +900,26 @@ export interface CertificateRow extends Certificate {
   expiry_date_raw?: string | null;
 }
 
+/**
+ * An enabled certificate store the route could not read on this call.
+ *
+ * Only the identity travels. The error itself is written to the journal rather than sent
+ * here, because a provider error string routinely carries the console URL and sometimes
+ * the credential that failed, and neither belongs on a page.
+ */
+export interface UnreachableCertificateSource {
+  id: number;
+  name: string;
+  type: string;
+}
+
 export interface CertificateExpiryResponse {
   certificates: CertificateExpiry[];
   total: number;
   expiring_soon_count: number;
   warn_threshold_days: number;
+  //: Empty on a complete answer. Non-empty means every count above is partial.
+  unreachable: UnreachableCertificateSource[];
 }
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,12 @@
 
 import type { Tone } from '@/components/ui';
 import { parseBackendTimestamp } from '@/lib/format';
-import type { Certificate, CertificateExpiryResponse, CertificateRow } from '@/types/api';
+import type {
+  Certificate,
+  CertificateExpiryResponse,
+  CertificateRow,
+  UnreachableCertificateSource,
+} from '@/types/api';
 
 //: These three used to be declared here instead, each one wider than the route it reads:
 //: the row said every key was optional and added an `issuer` and a `provider` that no
@@ -167,6 +172,24 @@ export function matchesSearch(cert: CertificateRow, search: string): boolean {
   if (!needle) return true;
   const haystack = [...certDomains(cert), cert.nice_name || '', cert.provider_name || ''];
   return haystack.some((value) => value.toLowerCase().includes(needle));
+}
+
+/**
+ * The names of the certificate stores the route could not read, in the order it named
+ * them. Anything that is not a usable name is dropped rather than drawn: the alert exists
+ * to tell the operator which integration to go and look at, and a blank entry or a bare
+ * `undefined` in that sentence tells them nothing while making the page look broken. The
+ * argument is typed `unknown` on purpose -- on the fallback route there is no payload at
+ * all, and in the tests every stubbed response field is missing.
+ */
+export function certSourceNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const entry of raw as UnreachableCertificateSource[]) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 /** A provider row, reduced to what a certificate link needs. */

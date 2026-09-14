@@ -86,13 +86,17 @@ def certificate_expiry(request: Request):
       - ``days_remaining``: integer days until expiry (negative = already expired)
       - ``expiring_soon``: true if <= 30 days remaining
       - ``expired``: true if already past expiry
+
+    ``unreachable`` names the enabled certificate providers this call could not read,
+    so a partial answer cannot be mistaken for a complete one.
     """
     require_auth(request)
     with get_db_ctx() as conn:
         cert_providers = _certificate_provider_rows(conn)
 
-    now    = datetime.datetime.utcnow()
-    result = []
+    now         = datetime.datetime.utcnow()
+    result      = []
+    unreachable = []
 
     for p in cert_providers:
         try:
@@ -100,6 +104,13 @@ def certificate_expiry(request: Request):
             certs    = provider.get_certificates()
         except Exception as e:
             add_log("error", f"Certificate expiry check {p['name']}: {e}")
+            # A store that did not answer is not a store holding nothing. Dropping it here
+            # and saying nothing left the page with a total, five counters and a provider
+            # filter drawn entirely from whoever did answer: an estate with one certificate
+            # expiring tomorrow behind an unreachable proxy read exactly like a clean one.
+            # The identity travels so the page can say which store is missing; the error
+            # stays in the journal, where it cannot put a URL or a credential on screen.
+            unreachable.append({"id": p["id"], "name": p["name"], "type": p["type"]})
             continue
 
         for c in certs:
@@ -140,4 +151,5 @@ def certificate_expiry(request: Request):
         "total": len(result),
         "expiring_soon_count": expiring_count,
         "warn_threshold_days": _EXPIRY_WARN_DAYS,
+        "unreachable": unreachable,
     }

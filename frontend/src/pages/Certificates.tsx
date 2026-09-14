@@ -29,6 +29,7 @@ import {
   WARN_DAYS,
   certBucket,
   certDays,
+  certSourceNames,
   countBuckets,
   matchesSearch,
   resolveProviderFilter,
@@ -96,6 +97,16 @@ export function Certificates() {
     const rows = usingFallback ? listQuery.data : expiryQuery.data?.certificates;
     return Array.isArray(rows) ? rows : [];
   }, [usingFallback, listQuery.data, expiryQuery.data]);
+
+  /**
+   * The certificate stores this call could not read, named so a partial page cannot pass
+   * for a complete one. Primary route only: the fallback list carries no such field, and
+   * it already draws its own banner saying the countdowns came from the browser.
+   */
+  const unreachable = useMemo(
+    () => (usingFallback ? [] : certSourceNames(expiryQuery.data?.unreachable)),
+    [usingFallback, expiryQuery.data],
+  );
 
   const providers = useMemo(
     () => (Array.isArray(providersQuery.data) ? providersQuery.data : []),
@@ -271,6 +282,23 @@ export function Certificates() {
       {usingFallback && !failed && (
         <InlineAlert tone="warning" title={t('certificates.fallback_notice')}>
           {t('certificates.fallback_notice_hint')}
+        </InlineAlert>
+      )}
+
+      {unreachable.length > 0 && (
+        <InlineAlert
+          tone="warning"
+          title={t('certificates.unreachable', { count: unreachable.length })}
+          action={
+            <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              {t('certificates.empty.open_providers')}
+            </Link>
+          }
+        >
+          {t('certificates.unreachable_hint', {
+            count: unreachable.length,
+            providers: unreachable.join(', '),
+          })}
         </InlineAlert>
       )}
 

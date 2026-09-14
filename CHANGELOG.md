@@ -337,6 +337,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A certificate store that could not be read vanished from the page without a word.**
+  `GET /api/certificates/expiry` contacts every enabled integration that keeps a certificate
+  store, and wrapped each one in a `try/except` that logged the failure and moved on. The
+  page is built entirely from the rows that came back: the total, the five counters, the
+  table and the integration filter. So a proxy that was down, unauthenticated or simply slow
+  to answer produced a page that looked complete and was not — an estate whose only
+  certificate expiring this week sat behind that proxy read exactly like an estate with
+  nothing to renew, and the only trace was one line in the activity feed nobody had a reason
+  to go and look at.
+
+  The route now answers with `unreachable`, naming the stores it could not read, and the page
+  draws a warning above the counters saying the numbers below cover only the rest. Only the
+  integration's id, name and type travel: a provider error routinely carries the console URL
+  and sometimes the credential that failed, so the error itself stays in the journal. The
+  fallback route `GET /api/certificates` is unchanged — it returns a bare list with nowhere
+  to put the field, and the page already tells the operator it is running degraded whenever
+  that route is the one answering.
+
 - **Two filters on the certificates page could hide every row without showing they were on.**
   The integration filter is component state holding a provider id, and the list it chooses
   from is rebuilt from whichever integrations answered. When the one it names stops

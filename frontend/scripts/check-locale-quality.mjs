@@ -97,6 +97,7 @@ const DECLARED = new Map(
     // one placeholder, and these are the ones it does not reach.
     'certificates.empty.none_hint': { providers: 'the integration names, joined into one string' },
     'certificates.meta': { days: 'the certificate warning window, a constant, never 1' },
+    'certificates.unreachable_hint': { providers: 'the integration names, joined into one string' },
     'dashboard.attention.certs_expiring': { days: 'the same window constant' },
     'dashboard.stats.certificates_hint': { days: 'the same window constant' },
     'monitoring.check_summary': {

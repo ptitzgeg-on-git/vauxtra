@@ -354,6 +354,8 @@
   "certificates.table.remaining": "剩余时间",
   "certificates.table.source": "来源",
   "certificates.unknown_provider": "未知集成",
+  "certificates.unreachable_hint_other": "本次调用未能读取：{providers}。其中保存的证书未计入下方的计数和表格，因此本页并未显示全部资产。错误已记录在近期活动中。",
+  "certificates.unreachable_other": "{count} 个集成无法读取",
   "certificates.wildcard": "通配符",
   "common.retry": "重试",
   "dashboard.actions.route_service": "路由新服务",
