@@ -139,7 +139,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `get_provider_types` | Supported provider types, their capabilities and required fields |
 | `create_provider` | Add a provider integration |
 | `update_provider` | Update a provider; only the fields you send are changed |
-| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them) |
+| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them, `withdraw=True` also takes their records down at the provider first) |
 | `test_provider` | Test a provider's connection and validate its credentials |
 | `test_provider_connection` | Same test, returning structured diagnostics |
 | `validate_provider_draft` | Validate a provider's settings before creating it (no DB write) |

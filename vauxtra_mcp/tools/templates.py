@@ -169,7 +169,7 @@ def apply_template(
 
     Fetches the template defaults, merges them with the provided subdomain / target_ip /
     target_port / domain (an argument wins over the template), then creates the service.
-    Returns the created service record.
+    Returns what `POST /api/services` answers: the id, the fqdn and an `errors` list.
 
     `POST /api/services` requires a domain and a port, and a template is allowed to carry
     neither -- that is what lets one template serve several domains. So both stay optional
@@ -178,6 +178,13 @@ def apply_template(
     domain came back as a 422 ("a domain is required"), but 80 did not, because 80 is a
     valid port. Every call that named no port, against a template that sets none, created a
     service pointing at a port nobody had chosen -- and reported success.
+
+    That `errors` list is the part to read. The route publishes the tunnel route, the proxy
+    host and the DNS record first, collects every refusal into the list, and stores the row
+    either way, answering 207 rather than 201 when the list is not empty. A template carries
+    its own provider ids, so one pointing at a provider that has since been deleted or is
+    unreachable produces exactly that: a service with an id and an fqdn that nothing routes
+    to. Name the step that failed instead of reporting the template applied.
     """
     r = client.get(f"/templates/{template_id}/apply")
     client.check(r)

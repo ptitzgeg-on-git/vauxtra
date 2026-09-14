@@ -33,17 +33,19 @@ Claude Desktop config (~/.config/claude/claude_desktop_config.json):
 import os
 import sys
 
+# Register every tool module: the @mcp.tool decorators fire at import time, and nothing
+# imports these names, which is what the noqa marks. isort orders them and no order is
+# required -- each module imports the shared instance from vauxtra_mcp.app itself rather
+# than taking it from this file.
 import vauxtra_mcp.tools.admin  # noqa: F401
 import vauxtra_mcp.tools.monitoring  # noqa: F401
 import vauxtra_mcp.tools.operations  # noqa: F401
 import vauxtra_mcp.tools.providers  # noqa: F401
-
-# Register all tool modules (decorators fire at import time)
 import vauxtra_mcp.tools.services  # noqa: F401
 import vauxtra_mcp.tools.templates  # noqa: F401
 
-# Import the shared mcp instance first
-from vauxtra_mcp.app import mcp  # noqa: F401
+# The instance main() runs below, carrying every tool the imports above registered on it.
+from vauxtra_mcp.app import mcp
 
 # Loopback, not 0.0.0.0. The HTTP transport carries no authentication of its own while
 # holding an API key that can reach every Vauxtra route: binding every interface handed

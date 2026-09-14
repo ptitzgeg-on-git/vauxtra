@@ -90,6 +90,15 @@ def create_service(
     let a caller spend a round trip discovering that 'ftp' is not a forward scheme --
     and this schema is the only place an agent can learn the answer before calling.
     `scripts/check_api_mcp_parity.py` fails the build if these sets drift from the model.
+
+    The answer carries an `errors` list, and an empty one is the only thing that means the
+    service is actually reachable. Storing the row and publishing it are separate steps: the
+    route creates the tunnel route, the proxy host and the DNS record first, collects every
+    refusal into `errors`, and inserts the row regardless, answering 207 instead of 201 when
+    the list is not empty. So a service can come back with an id and an fqdn while nothing
+    routes to that fqdn -- no proxy host, or no DNS record, or a tunnel provider that was not
+    found. Report a non-empty `errors` as a service that exists in Vauxtra but was never
+    published, and name what failed; `push_service` is what retries the publication.
     """
     payload: dict[str, Any] = {
         "subdomain": subdomain,
@@ -147,6 +156,13 @@ def update_service(
     `forward_scheme` carries the same `Literal` as `create_service`: the route validates
     the merged body with `ServiceIn`, so an override it refuses fails the whole update,
     including the fields that were valid.
+
+    The service comes back with an extra `errors` key. Vauxtra's own row is saved before the
+    providers are touched, so the fields you sent are stored whatever that list holds; each
+    sentence in it is a proxy host, DNS record or tunnel rule that could not be brought in
+    line with what was just saved. That leaves the two out of step -- Vauxtra describing the
+    service one way and the provider still publishing it another -- so report the list
+    rather than the saved row alone.
     """
     current = client.get(f"/services/{service_id}")
     client.check(current)
@@ -174,7 +190,14 @@ def update_service(
 
 @mcp.tool()
 def delete_service(service_id: int) -> dict[str, Any]:
-    """Delete a service and remove its routes from all configured providers."""
+    """Delete a service and take its routes down from every provider that held one.
+
+    `ok` is true whenever the service is gone from Vauxtra, which it is even when a provider
+    refused -- answering false would only push a caller into retrying a delete that can now
+    answer nothing but 404. So `ok` is not the result: `errors` is. Each sentence in it is a
+    record this call could not withdraw, and every one of those is still live on its
+    provider, still resolving, with nothing in Vauxtra left pointing at it. Report them.
+    """
     r = client.delete(f"/services/{service_id}")
     client.check(r)
     return r.json()
@@ -182,7 +205,17 @@ def delete_service(service_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def toggle_service(service_id: int, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a service without removing its provider routes."""
+    """Enable or disable a service without removing its configuration.
+
+    The answer carries an `errors` list, and on this tool it is the part that matters most.
+    Disabling a service does not only flip a flag: a tunnel-mode service is exposed by its
+    ingress rule alone, so the route withdraws that rule, and a proxy-mode one has its host
+    updated at the provider. The database row is written either way. If the provider refused
+    or was unreachable, the sentence lands in `errors` and nowhere else -- Vauxtra shows the
+    service as disabled while its public hostname is still live and still serving traffic.
+    A non-empty `errors` after disabling means the service is off in Vauxtra and still
+    reachable from the internet; say so rather than reporting the toggle done.
+    """
     current = client.get(f"/services/{service_id}")
     client.check(current)
     payload: dict[str, Any] = {**_service_to_payload(current.json()), "enabled": enabled}
@@ -272,6 +305,15 @@ def import_docker_containers(
     proxy_provider_id: optional reverse proxy provider
     dns_provider_id: optional DNS provider
     dns_ip: public IP for DNS records (optional)
+
+    The answer says what became of each container, and the count alone will mislead you:
+    `imported` is how many became services, `skipped` names the ones already tracked under
+    that name -- the nominal result of selecting a whole page -- and `errors` names the ones
+    this route refused, for want of a reachable address or a port. Those two are separate
+    lists of sentences precisely because they call for opposite responses: a `skipped` line
+    is nothing to do, an `errors` line is a container that will never be imported until
+    somebody fixes it. An import of six that answers `imported: 1` has five sentences to
+    report, not a number.
     """
     payload = {
         "domain": domain,
@@ -324,6 +366,14 @@ def bulk_service_action(
     words, so every other value reached the API and came back a 400 -- after the request
     had been sent, and with no list of what would have worked. The `Literal` refuses it
     here, before the call, and publishes the three words in the tool's schema.
+
+    The answer carries `affected` and `errors`, and they count different things. `affected`
+    is how many service rows Vauxtra changed; it is written before the provider work starts,
+    so it says nothing about whether the providers followed. `errors` is where that is
+    recorded, one sentence per service and provider that refused. A bulk disable reporting
+    `affected: 12` with two sentences in `errors` has twelve services marked disabled in
+    Vauxtra and two hostnames still publicly served -- which is the outcome that matters, so
+    read `errors` before reporting the action done.
     """
     r = client.post("/services/bulk", json={"ids": service_ids, "action": action})
     client.check(r)

@@ -83,6 +83,14 @@ def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     refuses fails the whole call with 400 and writes nothing -- notably `webhook_url` and
     `webhook_enabled`, which are retired: notifications are configured with
     `create_webhook`, which is what alert delivery reads.
+
+    `not_applied` is the third list and the one that changes what you report. A key lands
+    there when the value was written to the database but could not be handed to the running
+    scheduler: it is stored, the settings page reads it back, and the health checks go on at
+    the old cadence until Vauxtra restarts. `ok` is true and the key is in `saved`, because
+    saving is what happened -- so a caller reading only those two reports a new check
+    interval that is not running. If `not_applied` is non-empty, say the setting is saved
+    but needs a restart to take effect.
     """
     r = client.post("/settings", json=settings)
     client.check(r)

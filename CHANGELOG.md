@@ -379,6 +379,54 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **An agent could delete a provider only in the way that leaves its records published, and
+  nine tools reported partial failures as success.** Two holes in the same surface, both of
+  them in what the MCP bridge lets an agent do and say.
+
+  `DELETE /api/providers/{pid}` takes `withdraw`, which decides whether the provider's proxy
+  hosts and DNS records are taken down before it is forgotten or left live on a provider
+  Vauxtra no longer knows about. The panel has offered that choice as a checkbox since it was
+  written and the API tests cover both branches; the bridge declared no such parameter, so the
+  only provider deletion an agent could perform was the one that orphans published records —
+  a hostname still resolving and still proxying, with nothing in Vauxtra pointing at it.
+  `check_api_mcp_parity.py` exists to catch exactly this and could not: it compared query
+  parameters in one direction only, reporting a key a tool *sends* that its route does not
+  read, and never the reverse. A parameter no tool sends is invisible to a check that only
+  reads what tools send.
+
+  The second hole is what the tools say. FastMCP publishes the signature and the docstring and
+  nothing else, so for an agent the docstring is the entire description of the answer. Several
+  routes here answer a partial success: `delete_service` returns `{"ok": true, "errors":
+  [...]}` where `ok` means the service is gone from Vauxtra and `errors` holds the records
+  still live on their providers; `save_settings` returns `not_applied` for a setting written
+  to the database but never handed to the running scheduler; `import_docker_containers`
+  returns `skipped` and `errors` for two opposite outcomes. Nine tools returned one of those
+  keys without naming it, ten pairs of tool and key in all, while four such pairs across three
+  tools spelt theirs out — drift from a house rule, not a missing convention. An agent reading
+  `ok: true` reported the work done, and the list beside it holding what had not happened went
+  unread. `not_applied` is the clearest case: the route builds it, the tests pin it, `api.ts`
+  declares it, `GeneralTab.tsx` renders it and all eight locales translate "Saved, but not
+  running yet". The bridge alone was silent, on the one surface with no human reading the
+  screen.
+
+  Two of the nine surfaced only once the new pass learnt to read a dict through the
+  `JSONResponse(...)` wrapper a route uses to answer 207 rather than 200. `POST /api/services`
+  is written that way: it publishes the tunnel route, the proxy host and the DNS record,
+  collects every refusal into `errors`, stores the row regardless and answers 207 when the
+  list is not empty. Both tools that call it — `create_service`, the most-used write tool in
+  the bridge, and `apply_template` — described that answer as "the created service record".
+  An agent creating a service whose proxy host was refused got back an id, an fqdn, and a
+  reason it had been given no word for, and reported a service created and reachable when
+  nothing routed to its hostname.
+
+  `withdraw` is now a parameter, and the nine tools name their keys and say what to do about
+  them. The gate gained the two missing directions in the shape the others already have — a
+  table whose entries each carry a written reason, and a stale entry that fails the build —
+  so `UNREACHABLE_QUERY_COUNT` and `SILENT_PARTIAL_COUNT` are now printed alongside the rest
+  and both read 0. Fourteen tests pin them, including witnesses on a throwaway repository that
+  prove each collector can tell a hole from a fix rather than merely reporting nothing, and one
+  that fails if the answer reader stops seeing through the wrapper.
+
 - **The dashboard counted a service nobody was watching as a fault, and the same card said
   two different things about the same estate.** `GET /api/stats` answered `services_ok` and
   `services_error` over every row in `services`, enabled or not. Nothing else in the product
