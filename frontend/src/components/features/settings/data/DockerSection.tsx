@@ -30,12 +30,34 @@ export function DockerSection() {
   const docker = useDockerDiscovery();
   const [showAddEndpoint, setShowAddEndpoint] = useState(false);
 
-  const { data: providers = [] } = useQuery<Provider[]>({
+  // Whole, like the two lists in `useDockerDiscovery`. These two selects are the only place
+  // an import is told which integration the routes it writes belong to, and an empty list
+  // narrows both of them to "None" without a word. The import then goes through and writes
+  // one route per container with nothing attached: a decision the operator never made, on
+  // as many rows as they had selected.
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
   });
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const proxyProviders = useMemo(() => providers.filter((p) => isProxyType(p.type)), [providers]);
   const dnsProviders = useMemo(() => providers.filter((p) => isDnsType(p.type)), [providers]);
+
+  // The two lists an import is configured from, as opposed to the endpoint list, which only
+  // says where to look. Pending counts as unread: both start with the endpoint read and the
+  // form is drawn the moment that one answers.
+  const domainsQuery = docker.domainsQuery;
+  const providersUnread = providersQuery.isPending || providersQuery.isError;
+  const domainsUnread = domainsQuery.isPending || domainsQuery.isError;
+  const importLists = [providersQuery, domainsQuery];
+  const importListsFailed = importLists.some((query) => query.isError);
+  const importListsError = importLists.find((query) => query.isError)?.error;
+  const importListsRefreshing = importLists.some((query) => query.isError && query.isFetching);
+  const retryImportLists = () => {
+    for (const query of importLists) {
+      if (query.isError) void query.refetch();
+    }
+  };
 
   const canAddEndpoint =
     docker.newDockerEndpointName.trim() !== '' && DOCKER_HOST_RE.test(docker.newDockerEndpointHost.trim());
@@ -69,11 +91,22 @@ export function DockerSection() {
 
   const requestImport = async () => {
     if (selected.length === 0) return;
+    // The last place this can be said before the write. A narrowed list is only a problem
+    // because the import is about to act on it, and "None" reads as a choice here rather
+    // than as the absence of one.
+    const blindToProviders =
+      providersUnread && !docker.dockerProxyProviderId && !docker.dockerDnsProviderId;
+    const message = t('settings.docker.import_message', {
+      count: selected.length,
+      domain: docker.effectiveDomain || '—',
+    });
     const ok = await confirm({
       title: t('settings.docker.import_title'),
-      message: t('settings.docker.import_message', { count: selected.length, domain: docker.effectiveDomain || '—' }),
+      message: blindToProviders
+        ? `${message} ${t('settings.docker.import_without_provider')}`
+        : message,
       confirmLabel: t('settings.migration.import'),
-      variant: 'info',
+      variant: blindToProviders ? 'danger' : 'info',
     });
     if (ok) docker.importMutation.mutate();
   };
@@ -188,6 +221,25 @@ export function DockerSection() {
         />
       ) : (
         <>
+          {importListsFailed && (
+            <InlineAlert
+              tone="warning"
+              title={t('settings.docker.import_lists_failed')}
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leftIcon={<RefreshCw />}
+                  loading={importListsRefreshing}
+                  onClick={retryImportLists}
+                >
+                  {t('common.retry')}
+                </Button>
+              }
+            >
+              {translateApiError(importListsError, t, t('settings.docker.import_lists_failed_hint'))}
+            </InlineAlert>
+          )}
           <div className="grid gap-4 md:grid-cols-2">
             <Field
               label={t('settings.docker.endpoint_label')}
@@ -244,7 +296,13 @@ export function DockerSection() {
             </Field>
             <Field label={t('settings.docker.domain_label')} required hint={t('settings.docker.domain_hint')}>
               <Select value={docker.effectiveDomain} onChange={(e) => docker.setDockerDomain(e.target.value)}>
-                {docker.domains.length === 0 && <option value="">{t('settings.docker.domain_none')}</option>}
+                {/* "No domain configured" is a claim about the instance. Only a list that
+                    came back can make it. */}
+                {docker.domains.length === 0 && (
+                  <option value="">
+                    {domainsUnread ? t('settings.docker.domain_unread') : t('settings.docker.domain_none')}
+                  </option>
+                )}
                 {docker.domains.map((d) => (
                   <option key={d} value={d}>
                     {d}
@@ -254,7 +312,10 @@ export function DockerSection() {
             </Field>
           </div>
           <div className="grid gap-4 md:grid-cols-3">
-            <Field label={t('settings.docker.proxy_provider_label')}>
+            <Field
+              label={t('settings.docker.proxy_provider_label')}
+              hint={providersUnread ? t('settings.docker.provider_list_unread') : undefined}
+            >
               <Select value={docker.dockerProxyProviderId} onChange={(e) => docker.setDockerProxyProviderId(e.target.value)}>
                 <option value="">{t('settings.docker.provider_none')}</option>
                 {proxyProviders.map((p) => (
@@ -264,7 +325,10 @@ export function DockerSection() {
                 ))}
               </Select>
             </Field>
-            <Field label={t('settings.docker.dns_provider_label')}>
+            <Field
+              label={t('settings.docker.dns_provider_label')}
+              hint={providersUnread ? t('settings.docker.provider_list_unread') : undefined}
+            >
               <Select value={docker.dockerDnsProviderId} onChange={(e) => docker.setDockerDnsProviderId(e.target.value)}>
                 <option value="">{t('settings.docker.provider_none')}</option>
                 {dnsProviders.map((p) => (

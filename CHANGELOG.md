@@ -347,6 +347,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The Docker import wrote one route per container with no integration attached, from a
+  list nobody had read, while telling the operator the instance had no domain.** The panel
+  is configured from two reads it never checked: `/providers`, which fills both the proxy
+  and the DNS select, and `/domains`, which fills the domain select. Both were taken as
+  `data ?? []`, so a request that failed and a request still in flight both arrived as an
+  empty list. An empty provider list narrows both selects to a single "None" option, which
+  reads as a choice rather than as the absence of one, and the import then goes through and
+  writes one route per selected container with nothing attached — a decision the operator
+  never made, on as many rows as they had selected. An empty domain list said two things at
+  once, neither of them measured: the select states "No domain configured", which is a claim
+  about the instance, and the same empty list empties `effectiveDomain`, which is what the
+  import button reads to disable itself. The button went dead with no reason given.
+
+  Both lists are now read whole. The panel states the failure once, with the reason the read
+  gave and a retry that refetches only the read that failed; that retry reports itself busy
+  for that read alone, because the busy state also disables the button it is on. The domain
+  select offers "Domain list unread" instead of "No domain configured" until a list has come
+  back, and a list that does come back empty still says the instance has no domain. Both
+  integration selects carry a hint saying the choice offered is incomplete while the list is
+  unread. And because the import is the point of no return, the confirmation in front of it
+  says in as many words that nothing will be attached, and opens on Cancel, whenever the
+  provider list is unread and neither select holds a value.
+
+  `DockerSection.test.tsx` gains the panel's two configuration reads: the warning for each of
+  them, the single warning when both fail, the domain offered as unread rather than as absent
+  with the control that a list which did come back empty still says so, the hint on both
+  integration selects, the retry touching only what failed and staying usable while a sibling
+  read is still in flight, and both shapes of the confirmation in front of the write.
+
 - **Every card on the templates page said "Provider removed", in warning colour, whenever
   `/providers` had not answered.** A template stores ids, and nothing on that page is a
   template on its own: the integration line under every card, the label chips on it and the

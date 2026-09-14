@@ -30,10 +30,15 @@ export function useDockerDiscovery() {
   });
   const dockerEndpoints = endpointsQuery.data ?? [];
 
-  const { data: domains = [] } = useQuery<string[]>({
+  // Whole, for the same reason as the endpoints above. An empty list is the sentence
+  // "this instance has no domain", and it is also what sends `effectiveDomain` to '',
+  // which is what the import button reads to disable itself. A read that failed said both
+  // of those without being either.
+  const domainsQuery = useQuery<string[]>({
     queryKey: ['domains'],
     queryFn: () => api.get<string[]>('/domains'),
   });
+  const domains = domainsQuery.data ?? [];
 
   const effectiveEndpointId =
     dockerEndpointId || (dockerEndpoints[0] ? String(dockerEndpoints[0].id) : '');
@@ -187,6 +192,7 @@ export function useDockerDiscovery() {
     dockerEndpoints,
     endpointsQuery,
     domains,
+    domainsQuery,
     effectiveEndpointId,
     selectedEndpoint,
     effectiveDomain,
