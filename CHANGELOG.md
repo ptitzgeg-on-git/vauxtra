@@ -337,6 +337,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The alert about a certificate that had already expired said it "expires in -47 days".**
+  The scheduler's expiry scan writes one line per certificate into the activity log, and
+  every line was built from `expires in {plural(days_left, 'day')}`. Past the expiry date
+  `days_left` is negative, so the CRITICAL alert about the one state that is not a
+  countdown — a certificate serving a browser warning to every visitor right now — came out
+  as `expires in -47 days`, and the one that lapsed yesterday came out as `expires in -1
+  days`: wrong tense, wrong sign and wrong agreement in the same six words. The certificates
+  page, reading that same certificate, was at the same moment describing it correctly as
+  `Expired 47 days ago`, so the two halves of the product disagreed in writing about the
+  most urgent thing either of them had to say.
+- The count was overstated as well as negated. `timedelta.days` floors, which is the right
+  direction ahead of expiry — three and a half days left is stated as three, and nobody is
+  told they have longer than they do — but the same floor run backwards turns a certificate
+  that lapsed 47 days and two hours ago into `-48`. Each side is now measured by its own
+  subtraction, and `app.text.time_to_expiry` picks the sentence: `expired 47 days ago`,
+  `expired 1 day ago`, `expired less than a day ago`, `expires in less than a day`,
+  `expires in 3 days`. The sub-day phrasings are new; `expires in 0 days` was the previous
+  answer for a certificate with twenty hours left, and it states the opposite of the urgency
+  the alert is raising. Nothing parses these lines, so only the reading changes.
+
 - **A certificate store that could not be read vanished from the page without a word.**
   `GET /api/certificates/expiry` contacts every enabled integration that keeps a certificate
   store, and wrapped each one in a `try/except` that logged the failure and moved on. The

@@ -15,7 +15,7 @@ import re
 import unittest
 from pathlib import Path
 
-from app.text import plural, verb
+from app.text import plural, time_to_expiry, verb
 
 _ROOT = Path(__file__).resolve().parent.parent
 _APP = _ROOT / "app"
@@ -54,6 +54,53 @@ class PluralTests(unittest.TestCase):
         self.assertEqual(verb(1, "uses", "use"), "uses")
         self.assertEqual(verb(0, "uses", "use"), "use")
         self.assertEqual(verb(3, "uses", "use"), "use")
+
+
+class TimeToExpiryTests(unittest.TestCase):
+    """The one countdown that is not a countdown: a certificate already past its date.
+
+    The scheduler wrote `expires in {plural(days_left, 'day')}` for every alert. Past
+    expiry `days_left` is negative, so the CRITICAL line about a certificate serving a
+    browser warning right now read `expires in -47 days`, and the one that lapsed
+    yesterday read `expires in -1 days` -- wrong tense, wrong sign, and wrong agreement
+    in the same six words. The certificates page, reading the same certificate, said
+    `Expired 47 days ago`, so the two halves of the product disagreed in writing.
+    """
+
+    def test_a_lapsed_certificate_is_past_tense_not_a_negative_countdown(self):
+        self.assertEqual(time_to_expiry(-47, 47), "expired 47 days ago")
+
+    def test_one_day_overdue_agrees_with_itself(self):
+        self.assertEqual(time_to_expiry(-1, 1), "expired 1 day ago")
+
+    def test_hours_overdue_are_not_rounded_up_to_a_day(self):
+        # `timedelta.days` floors, so 23 hours overdue arrives as 0 whole days. "expired
+        # 0 days ago" is not a sentence, and "1 day" would overstate how long it is down.
+        self.assertEqual(time_to_expiry(-1, 0), "expired less than a day ago")
+
+    def test_hours_left_are_not_rounded_down_to_nothing(self):
+        # The same floor ahead of expiry: anything under 24 hours arrives as 0, and
+        # "expires in 0 days" reads as a certificate with no deadline at all.
+        self.assertEqual(time_to_expiry(0, 0), "expires in less than a day")
+
+    def test_a_whole_day_left_agrees_with_itself(self):
+        self.assertEqual(time_to_expiry(1, 0), "expires in 1 day")
+
+    def test_more_than_one_day_left_reads_as_it_always_did(self):
+        self.assertEqual(time_to_expiry(5, 0), "expires in 5 days")
+        self.assertEqual(time_to_expiry(29, 0), "expires in 29 days")
+
+    def test_no_phrase_it_can_produce_carries_a_minus_sign(self):
+        """The guard. The defect was a sign leaking into prose, not one bad sentence."""
+        for days_left in range(-60, 61):
+            days_overdue = max(0, -days_left - 1) if days_left < 0 else 0
+            with self.subTest(days_left=days_left):
+                phrase = time_to_expiry(days_left, days_overdue)
+                self.assertNotIn("-", phrase, phrase)
+                self.assertTrue(
+                    phrase.startswith("expired ") or phrase.startswith("expires in "),
+                    phrase,
+                )
 
 
 class DependentsSentenceTests(unittest.TestCase):

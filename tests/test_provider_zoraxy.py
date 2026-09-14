@@ -1170,6 +1170,57 @@ class TestSchedulerCertExpiryAlertsCoverZoraxy(unittest.TestCase):
             rows = self._cert_expiry_logs(conn)
         self.assertEqual(rows, [])
 
+    def _zoraxy_with_cert_that_lapsed(self, days_ago: int, hours_ago: int = 0) -> ZoraxyProvider:
+        """A store holding one certificate whose date is already behind us."""
+        expire = datetime.datetime.utcnow() - datetime.timedelta(days=days_ago, hours=hours_ago)
+        z = ZoraxyProvider("http://zoraxy:8000", "vauxtra", "secret")
+        z._ensure_auth = MagicMock(return_value=True)
+        z.session.get = MagicMock(return_value=_response(200, [
+            {"Domain": "*.example.com", "Filename": "_.example.com",
+             "LastModifiedDate": "2026-08-01 10:00:00",
+             "ExpireDate": expire.strftime("%Y-%m-%d %H:%M:%S"),
+             "RemainingDays": -1, "UseDNS": True, "IsFallback": False},
+        ]))
+        return z
+
+    def test_a_lapsed_certificate_is_not_announced_as_a_negative_countdown(self):
+        """The alert about the worst state a certificate can be in was the broken one.
+
+        A certificate 47 days past its date is not expiring, it has expired: it is
+        serving a browser warning to every visitor right now. The line said `expires in
+        -47 days`, while the certificates page described the same certificate, in the
+        same session, as `Expired 47 days ago`.
+        """
+        with patch.object(scheduler, "create_provider",
+                          lambda _row: self._zoraxy_with_cert_that_lapsed(47, hours_ago=2)),              models.get_db_ctx() as conn:
+            scheduler._run_cert_expiry_alerts(conn)
+            conn.commit()
+            rows = self._cert_expiry_logs(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["level"], "error")
+        self.assertIn("expired 47 days ago", rows[0]["message"])
+        self.assertNotIn("-", rows[0]["message"].split("(ID _.example.com)")[1])
+
+    def test_a_certificate_that_lapsed_within_the_day_is_not_called_a_whole_day_down(self):
+        with patch.object(scheduler, "create_provider",
+                          lambda _row: self._zoraxy_with_cert_that_lapsed(0, hours_ago=3)),              models.get_db_ctx() as conn:
+            scheduler._run_cert_expiry_alerts(conn)
+            conn.commit()
+            rows = self._cert_expiry_logs(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("expired less than a day ago", rows[0]["message"])
+
+    def test_a_certificate_with_hours_left_is_not_called_a_certificate_with_no_deadline(self):
+        # `timedelta.days` floors, so 20 hours left arrived as 0 and the alert read
+        # "expires in 0 days" -- which states the opposite of the urgency it is raising.
+        with patch.object(scheduler, "create_provider",
+                          lambda _row: self._zoraxy_with_cert_that_lapsed(0, hours_ago=-20)),              models.get_db_ctx() as conn:
+            scheduler._run_cert_expiry_alerts(conn)
+            conn.commit()
+            rows = self._cert_expiry_logs(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("expires in less than a day", rows[0]["message"])
+
 
 class _HostnameKeyedProvider:
     """A proxy whose host ids are hostnames, the way Zoraxy's and Cloudflare Tunnel's are.
