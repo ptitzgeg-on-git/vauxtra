@@ -19,6 +19,7 @@ import {
   ChipGroup,
   Field,
   FieldHint,
+  InlineAlert,
   Input,
   SectionHeading,
   Select,
@@ -40,13 +41,17 @@ interface ServiceFormProps {
   domains: string[];
   /**
    * A list below came back empty because its request failed, not because it is empty. One
-   * flag each: they are three separate requests, and the one that answered must not be made
+   * flag each: they are four separate requests, and the one that answered must not be made
    * to apologise for the one that did not.
    */
+  providersError?: boolean;
   domainsError?: boolean;
   tagsError?: boolean;
   environmentsError?: boolean;
   isLoadingProviders: boolean;
+  /** Narrowed to the failed read: the busy state also disables the button it sits on. */
+  isRefetchingProviders?: boolean;
+  refetchProviders?: () => void;
   isLoadingDomains: boolean;
   providerTypeMap: ProviderTypesResponse;
   targetSuggestion: TargetSuggestion | undefined;
@@ -210,10 +215,13 @@ export function ServiceForm({
   setFormData,
   providers,
   domains,
+  providersError = false,
   domainsError = false,
   tagsError = false,
   environmentsError = false,
   isLoadingProviders,
+  isRefetchingProviders = false,
+  refetchProviders,
   isLoadingDomains,
   providerTypeMap,
   targetSuggestion,
@@ -226,6 +234,11 @@ export function ServiceForm({
   const t = useT();
   const modeGroupName = useId();
   const domainListId = useId();
+
+  // A list below is empty because the read failed, not because there is nothing in it. A
+  // refresh that fails over rows that already arrived leaves those rows in the selects, and
+  // a list that is empty at that point is empty for a reason worth stating as its own.
+  const providersUnread = providersError && providers.length === 0;
 
   const allProviders = providers.filter((p) => Boolean(p.enabled));
   const proxyProviders = allProviders.filter((p) => providerHasCapability(p, 'proxy', providerTypeMap));
@@ -615,6 +628,27 @@ export function ServiceForm({
           title={t('expose.section.providers.title')}
           description={t('expose.section.providers.description')}
         />
+        {providersUnread && (
+          <InlineAlert
+            tone="warning"
+            title={t('expose.providers.unread')}
+            action={
+              refetchProviders && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leftIcon={<RefreshCw />}
+                  loading={isRefetchingProviders}
+                  onClick={refetchProviders}
+                >
+                  {t('common.retry')}
+                </Button>
+              )
+            }
+          >
+            {t('expose.providers.unread_hint')}
+          </InlineAlert>
+        )}
         {isLoadingProviders ? (
           <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4" aria-busy="true" aria-label={t('expose.providers.loading')}>
             <Skeleton className="h-4 w-40" />
@@ -673,7 +707,7 @@ export function ServiceForm({
                   providers={standardProxyProviders}
                   selectedIds={formData.extra_proxy_provider_ids}
                   onToggle={(id, checked) => toggleExtra('proxy', id, checked)}
-                  emptyText={t('expose.field.extra_proxies_empty')}
+                  emptyText={providersUnread ? t('ui.error.list_unavailable') : t('expose.field.extra_proxies_empty')}
                 />
               </>
             )}
@@ -765,7 +799,7 @@ export function ServiceForm({
                       providers={extraProxyCandidates}
                       selectedIds={formData.extra_proxy_provider_ids}
                       onToggle={(id, checked) => toggleExtra('proxy', id, checked)}
-                      emptyText={t('expose.field.extra_proxies_empty')}
+                      emptyText={providersUnread ? t('ui.error.list_unavailable') : t('expose.field.extra_proxies_empty')}
                     />
                   )}
                   <ExtraProviderList
@@ -773,7 +807,7 @@ export function ServiceForm({
                     providers={extraDnsCandidates}
                     selectedIds={formData.extra_dns_provider_ids}
                     onToggle={(id, checked) => toggleExtra('dns', id, checked)}
-                    emptyText={t('expose.field.extra_dns_empty')}
+                    emptyText={providersUnread ? t('ui.error.list_unavailable') : t('expose.field.extra_dns_empty')}
                   />
                 </div>
 

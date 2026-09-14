@@ -347,6 +347,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Both dialogs that create a route blamed the operator's setup for an integration list
+  they had never read.** The exposure wizard destructured `/providers` as `data = []` with
+  only an `isLoading` beside it, while the three reads under it — domains, tags,
+  environments — each carried an `isError` the form already knew how to say. A request that
+  failed is not loading, so the skeleton gave way to a form drawn from an empty list, and
+  that form spoke: no reverse proxy is configured yet, no other proxy provider available, no
+  DNS provider. `validate()` then refused to continue, correctly, and named the reason as
+  the operator's own setup — "choose at least a proxy or a DNS provider" — for a list
+  nobody had read. The only way out it implied was the Providers page, to create
+  integrations that were already there.
+
+  The template form did the same with two reads instead of one, `/providers` and `/domains`,
+  and said it more plainly: an integration field whose list is empty replaces its select
+  with a notice stating that no reverse proxy, or no DNS provider, or no tunnel provider is
+  configured yet, and offers a link to go and create one. That notice is a claim about the
+  instance; it was being made from an unchecked read, and the link closes the half-filled
+  form on the way out.
+
+  Both lists are now read whole. Each dialog states the failure once, with a retry that
+  refetches only the read that failed and reports itself busy for that read alone, because
+  the busy state also disables the button it is on. In the wizard the two "no other provider
+  available" lines say the list could not be loaded instead, and only while the list is
+  genuinely unread: a refresh that fails over rows that already arrived leaves those rows in
+  the selects, and a list that is empty at that point is empty for a real reason. In the
+  template form the invitation to go and create an integration is withdrawn until a list has
+  come back — pending counts as unread, since nothing has answered yet — and each
+  integration field says instead that the choice offered is incomplete. A list that does
+  come back empty still says the instance has none, and still invites.
+
+  `ServiceForm.test.tsx` gains the wizard's provider read: the warning, the two withdrawn
+  lines, the retry and its busy state, and the two controls that keep the honest empty state
+  honest — an instance that really has no provider, and a refresh that failed over rows
+  already in hand. `TemplateModal.test.tsx` is new and covers the template form's two reads:
+  both integrations and the domain named when they answer, the warning for each read and the
+  single warning when both fail, the hint on both integration fields while the list is
+  unread or still in flight, the retry touching only what failed, and the control that a
+  list which did come back empty still invites.
+
+  Two suite-wide budgets are stated rather than defaulted while that new file goes in.
+  `asyncUtilTimeout` governs every `findBy*` and every bare `waitFor` here and defaults to
+  1000 ms, a figure meant for a DOM assertion; these components mount a query client and
+  wait on reads, and the first test in a file also pays the run's one-off warm-up. The
+  heaviest of them — the template form's happy path, which waits for both reads to land —
+  measures 573 ms in first position and 241 ms anywhere else on an idle eight-core machine,
+  against 60 to 170 ms for every other test in its file: 1.7 times its own cost in headroom
+  where everything around it had ten. It went red under the full suite on a busy machine,
+  and the same-shaped first test of `Templates.test.tsx` went with it; CI runs on a runner
+  with half the cores those figures came from. Under the load that produced both failures
+  the suite now passes whole, the two tests taking 3.3 s and 4.8 s. A budget only elapses on
+  a test that is failing anyway, so the longer one costs nothing on green.
+
 - **The Docker import wrote one route per container with no integration attached, from a
   list nobody had read, while telling the operator the instance had no domain.** The panel
   is configured from two reads it never checked: `/providers`, which fills both the proxy

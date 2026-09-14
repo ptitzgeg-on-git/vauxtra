@@ -170,7 +170,17 @@ export function ExposeModal({
   const [templateDraftName, setTemplateDraftName] = useState('');
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
 
-  const { data: providers = [], isLoading: isLoadingProviders } = useQuery<Provider[]>({
+  // Whole, like the three reads under it. This is the list the proxy, the DNS provider and
+  // the tunnel are each picked from, and the form is what writes the route: a read that
+  // failed arrived here as an empty array and the section below said, in its own words,
+  // that this instance has no proxy at all.
+  const {
+    data: providers = [],
+    isLoading: isLoadingProviders,
+    isError: providersError,
+    isFetching: isFetchingProviders,
+    refetch: refetchProviders,
+  } = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     enabled: isOpen,
@@ -657,6 +667,9 @@ export function ExposeModal({
             setFormData={setFormData}
             providers={providers}
             domains={domains}
+            providersError={providersError}
+            isRefetchingProviders={providersError && isFetchingProviders}
+            refetchProviders={() => void refetchProviders()}
             domainsError={domainsError}
             tagsError={tagsError}
             environmentsError={environmentsError}

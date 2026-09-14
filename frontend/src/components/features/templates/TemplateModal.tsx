@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type FormEvent, type ReactNode } from '
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Cable, Globe, LayoutTemplate, Plug, Server } from 'lucide-react';
+import { Cable, Globe, LayoutTemplate, Plug, RefreshCw, Server } from 'lucide-react';
 import { api } from '@/api/client';
 import {
   Button,
@@ -191,15 +191,30 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
   );
 
   // --- reference data -----------------------------------------------------
-  const { data: providers = [] } = useQuery<Provider[]>({
+  // Both whole, like the two taxonomy reads under them. These fill the three integration
+  // selects and the domain menu, and an empty list here is not a quiet one: the field says
+  // in as many words that no reverse proxy is configured yet, and offers a link to go and
+  // create one. That is a claim about the instance, and a read that failed made it too.
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
   });
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const { data: providerTypes = {} } = useProviderTypes();
-  const { data: domains = [] } = useQuery<string[]>({
+  const domainsQuery = useQuery<string[]>({
     queryKey: ['domains'],
     queryFn: () => api.get<string[]>('/domains'),
   });
+  const domains = useMemo(() => domainsQuery.data ?? [], [domainsQuery.data]);
+  const providersUnread = providersQuery.isPending || providersQuery.isError;
+  const referenceLists = [providersQuery, domainsQuery];
+  const referenceListsFailed = referenceLists.some((query) => query.isError);
+  const referenceListsRefreshing = referenceLists.some((q) => q.isError && q.isFetching);
+  const retryReferenceLists = () => {
+    for (const query of referenceLists) {
+      if (query.isError) void query.refetch();
+    }
+  };
   const { data: tags = [], isError: tagsError } = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
@@ -271,8 +286,8 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
     onChange: (value: string) => void,
     emptyMessage: string,
   ) => (
-    <Field label={label} hint={hint}>
-      {list.length === 0 && !value ? (
+    <Field label={label} hint={providersUnread ? t('templates.form.provider_list_unread') : hint}>
+      {list.length === 0 && !value && !providersUnread ? (
         <InlineAlert tone="info" icon={icon}>
           <div className="flex flex-wrap items-center gap-2">
             <span>{emptyMessage}</span>
@@ -410,6 +425,27 @@ function TemplateModalBody({ onClose, template }: Omit<TemplateModalProps, 'open
         {/* --- exposure ---------------------------------------------------- */}
         <section className="space-y-4">
           <SectionHeading as="h3" size="sm" title={t('templates.form.section_exposure')} />
+
+          {referenceListsFailed && (
+            <InlineAlert
+              tone="warning"
+              title={t('templates.form.lists_unread')}
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  leftIcon={<RefreshCw />}
+                  loading={referenceListsRefreshing}
+                  onClick={retryReferenceLists}
+                >
+                  {t('common.retry')}
+                </Button>
+              }
+            >
+              {t('templates.form.lists_unread_hint')}
+            </InlineAlert>
+          )}
 
           <Field label={t('templates.form.expose_mode')} hint={t('templates.form.expose_hint')}>
             <Select

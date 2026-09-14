@@ -21,6 +21,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
 import type { Provider } from '@/types/api';
 import type { FormState } from './types';
@@ -57,13 +58,23 @@ const editing = (dnsProviderId: string): FormState => ({
   auto_update_dns: true,
 });
 
-const renderForm = (formData: FormState, providers: Provider[]) =>
+/** Everything the provider read can say beyond its rows, defaulted to "it answered". */
+interface ReadState {
+  providersError?: boolean;
+  isRefetchingProviders?: boolean;
+  refetchProviders?: () => void;
+}
+
+const renderForm = (formData: FormState, providers: Provider[], read: ReadState = {}) =>
   renderWithProviders(
     <ServiceForm
       formData={formData}
       setFormData={vi.fn()}
       providers={providers}
       domains={['example.test']}
+      providersError={read.providersError ?? false}
+      isRefetchingProviders={read.isRefetchingProviders ?? false}
+      refetchProviders={read.refetchProviders}
       isLoadingProviders={false}
       isLoadingDomains={false}
       providerTypeMap={{}}
@@ -98,5 +109,71 @@ describe('ServiceForm, with the type catalogue unread', () => {
     renderForm(editing('1'), [CLOUDFLARE]);
     const toggle = screen.getByRole('switch', { name: 'expose.field.auto_update_dns' });
     expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+});
+
+/**
+ * The second half of the same omission, one file over.
+ *
+ * `ExposeModal` read `/providers` as `data ?? []` and destructured only `isLoading`, while
+ * the three reads under it -- domains, tags, environments -- each carried an `isError` the
+ * form already knew how to say. A request that failed is not loading, so the skeleton gave
+ * way to a form drawn from an empty list, and that form made claims: no reverse proxy is
+ * configured yet, no other proxy provider available, no DNS provider. `validate()` then
+ * refused to continue, correctly, and named the operator's setup as the reason -- "choose at
+ * least a proxy or a DNS provider" -- for a list nobody had read. The way out it implied was
+ * the Providers page, to create integrations that were already there.
+ */
+describe('ServiceForm, with the provider list unread', () => {
+  const empty: FormState = { ...initialForm, domain: 'example.test', target_ip: '10.0.0.1' };
+  const alert = () => screen.queryByText('expose.providers.unread');
+  const unavailable = () => screen.queryAllByText('ui.error.list_unavailable');
+
+  it('says the list could not be read rather than letting the form speak for it', () => {
+    renderForm(empty, [], { providersError: true });
+    expect(alert()).not.toBeNull();
+  });
+
+  it('says nothing of the sort when the instance really has no provider', () => {
+    renderForm(empty, []);
+    expect(alert()).toBeNull();
+    expect(screen.queryByText('expose.field.extra_proxies_empty')).not.toBeNull();
+    expect(screen.queryByText('expose.field.extra_dns_empty')).not.toBeNull();
+  });
+
+  it('stays quiet when the failure was a refresh over rows that had already arrived', () => {
+    // Those rows are in the selects below, so the lists are no longer speaking for a read.
+    renderForm(empty, [CLOUDFLARE], { providersError: true });
+    expect(alert()).toBeNull();
+  });
+
+  it('withdraws both "you have none of these" lines while the list is unread', () => {
+    renderForm(empty, [], { providersError: true });
+    expect(unavailable()).toHaveLength(2);
+    expect(screen.queryByText('expose.field.extra_proxies_empty')).toBeNull();
+    expect(screen.queryByText('expose.field.extra_dns_empty')).toBeNull();
+  });
+
+  it('offers a retry that refetches the list', async () => {
+    const refetchProviders = vi.fn();
+    renderForm(empty, [], { providersError: true, refetchProviders });
+    await userEvent.click(screen.getByRole('button', { name: 'common.retry' }));
+    expect(refetchProviders).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports that retry busy while the refetch is in flight', () => {
+    renderForm(empty, [], {
+      providersError: true,
+      isRefetchingProviders: true,
+      refetchProviders: vi.fn(),
+    });
+    // The busy state also disables the button it is on, so it must mean this read alone.
+    // A loading Button puts its spinner's label in front of its own, hence the pattern.
+    expect(screen.getByRole('button', { name: /common\.retry/ })).toBeDisabled();
+  });
+
+  it('leaves that retry usable when nothing is in flight', () => {
+    renderForm(empty, [], { providersError: true, refetchProviders: vi.fn() });
+    expect(screen.getByRole('button', { name: 'common.retry' })).toBeEnabled();
   });
 });

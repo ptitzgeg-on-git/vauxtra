@@ -22,6 +22,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    // Raised with `asyncUtilTimeout` in `src/test/setup.ts`, which carries the measurement:
+    // a test that waits three times in a row has to be allowed to spend three of those.
+    testTimeout: 20_000,
     restoreMocks: true,
   },
 });
