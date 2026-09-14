@@ -1238,6 +1238,8 @@
   "settings.dns.empty_desc": "サービスを公開するドメインを追加してください。すべてのサブドメイン選択欄で使用されます。",
   "settings.dns.invalid": "有効なドメイン名を入力してください",
   "settings.dns.load_failed": "ドメインを読み込めませんでした",
+  "settings.dns.usage_failed": "これらのドメインが何を支えているか確認できませんでした",
+  "settings.dns.usage_unknown": "使用状況不明",
   "settings.dns.no_match": "この検索に一致するドメインはありません",
   "settings.dns.search_placeholder": "ドメインを検索",
   "settings.docker.add_endpoint": "エンドポイントを追加",
@@ -1408,6 +1410,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} 件のサービステンプレートが「{name}」を指定しています。",
   "settings.taxonomy.in_use_templates_drop_tag": "このタグは次にテンプレートが読み込まれた時点で各テンプレートから取り除かれるため、そこから作成したサービスはタグなしで始まります。",
   "settings.taxonomy.in_use_templates_drop_env": "この環境は次にテンプレートが読み込まれた時点で各テンプレートから取り除かれるため、そこから作成したサービスは環境なしで始まります。",
+  "settings.taxonomy.unknown_title": "使用状況を確認できませんでした",
+  "settings.taxonomy.unknown_message": "サービスとテンプレートを読み込めなかったため、「{name}」が付いている数は不明です。削除すると、そのすべてからラベルが取り除かれます。各行はホスト名を保ち、これまでどおり公開され続けます。",
+  "settings.taxonomy.usage_failed": "これらのラベルが何に付いているか確認できませんでした",
   "settings.taxonomy.usage_count_other": "{count} 件のサービス",
   "settings.taxonomy.delete_title": "このラベルを削除しますか？",
   "settings.taxonomy.edit_form_aria": "{name} を編集",
@@ -1975,5 +1980,7 @@
   "settings.dns.confirm.in_use_more_other": "…他{count}件",
   "settings.dns.confirm.in_use_effect": "ドメインを削除してもその点は変わりません。実行時にドメイン一覧を読む処理はなく、上記の各行はホスト名を保ち、これまでどおり公開され続けます。",
   "settings.dns.confirm.in_use_pickers": "変わるのは選択リストです。サービスやテンプレートの作成時に「{domain}」は提示されなくなります。",
-  "settings.dns.confirm.in_use_returns": "また「{domain}」は自動的に戻ることがあります。Docker のスキャンやプロバイダーの取り込みは、取り込んだ各サービスのルートドメインを再登録します。"
+  "settings.dns.confirm.in_use_returns": "また「{domain}」は自動的に戻ることがあります。Docker のスキャンやプロバイダーの取り込みは、取り込んだ各サービスのルートドメインを再登録します。",
+  "settings.dns.confirm.unknown_title": "使用状況を確認できませんでした",
+  "settings.dns.confirm.unknown_message": "サービスとテンプレートを読み込めなかったため、「{domain}」がまだ何を支えているかは不明です。削除しても実行時には何も変わりません。ドメイン一覧を読む処理はなく、その上に構築された各ルートはホスト名を保ちます。サービスやテンプレートの作成時に提示されなくなるだけです。"
 }

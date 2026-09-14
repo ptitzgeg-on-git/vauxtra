@@ -50,19 +50,36 @@ export function DnsTab() {
     queryKey: ['domains'],
     queryFn: () => api.get<string[]>('/domains'),
   });
-  const { data: services = [] } = useQuery<Service[]>({
+  const servicesQuery = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
   // Templates name a root domain in exactly the same bare TEXT column services do, and this
   // tab used to read only the services. A domain no service used but a template did showed
   // the neutral "0 services" badge and the plain "Delete domain?" question.
-  const { data: templates = [] } = useQuery<Template[]>({
+  const templatesQuery = useQuery<Template[]>({
     queryKey: ['templates'],
     queryFn: () => api.get<Template[]>('/templates'),
   });
 
   const domains = useMemo(() => domainsQuery.data ?? [], [domainsQuery.data]);
+  const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
+  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+
+  // Those two reads were `data = []` with nothing destructured to notice a failure, beside a
+  // `domainsQuery` that has a skeleton, an error with a retry and an empty state. So a
+  // `/services` that failed, or had simply not landed yet, painted "0 services" on every row
+  // -- a stated count, not a blank -- and sent `requestDelete` down the branch written for a
+  // domain nothing is built on. Nothing refuses that deletion on the way through:
+  // `DELETE /api/domains` looks the holders up only to journal them. This dialog is the whole
+  // guard, and what decided which one to ask was the emptiness of a read nobody checked.
+  const usageUnknown =
+    servicesQuery.isPending ||
+    servicesQuery.isError ||
+    templatesQuery.isPending ||
+    templatesQuery.isError;
+  const usageFailed = servicesQuery.isError || templatesQuery.isError;
+  const usageError = servicesQuery.error ?? templatesQuery.error;
   const dependents = useMemo(() => {
     const byDomain = new Map<string, Dependents>();
     const slot = (name: string) => {
@@ -124,7 +141,17 @@ export function DnsTab() {
     const held = dependents.get(domain) ?? NO_DEPENDENTS;
     const inUse = held.services.length + held.templates.length > 0;
     const ok = await confirm(
-      inUse
+      usageUnknown
+        ? {
+            // Not "nothing is built on it": nobody knows. The operator keeps the deletion --
+            // withholding it would strand the tab on a read it may never get -- and is told
+            // the list under it is missing rather than empty.
+            title: t('settings.dns.confirm.unknown_title'),
+            message: t('settings.dns.confirm.unknown_message', { domain }),
+            confirmLabel: t('common.delete'),
+            variant: 'danger',
+          }
+        : inUse
         ? {
             title: t('settings.dns.confirm.in_use_title'),
             message: <DomainDeleteBody domain={domain} services={held.services} templates={held.templates} />,
@@ -187,6 +214,28 @@ export function DnsTab() {
           <SearchInput value={search} onChange={setSearch} placeholder={t('settings.dns.search_placeholder')} />
         )}
 
+        {usageFailed && (
+          <InlineAlert
+            tone="warning"
+            title={t('settings.dns.usage_failed')}
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                loading={servicesQuery.isFetching || templatesQuery.isFetching}
+                onClick={() => {
+                  void servicesQuery.refetch();
+                  void templatesQuery.refetch();
+                }}
+              >
+                {t('ui.error.retry')}
+              </Button>
+            }
+          >
+            {translateApiError(usageError, t, t('common.error'))}
+          </InlineAlert>
+        )}
+
         {domainsQuery.isLoading ? (
           <div className="divide-y divide-border rounded-xl border border-border">
             <SkeletonRow columns={3} />
@@ -222,13 +271,19 @@ export function DnsTab() {
                     <Globe className="h-4 w-4" />
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">{domain}</span>
-                  <Badge tone={held.services.length > 0 ? 'info' : 'neutral'} className="tabular-nums">
-                    {t('settings.dns.service_count', { count: held.services.length })}
-                  </Badge>
-                  {held.templates.length > 0 && (
-                    <Badge tone="info" className="tabular-nums">
-                      {t('settings.dns.template_count', { count: held.templates.length })}
-                    </Badge>
+                  {usageUnknown ? (
+                    <Badge tone="warning">{t('settings.dns.usage_unknown')}</Badge>
+                  ) : (
+                    <>
+                      <Badge tone={held.services.length > 0 ? 'info' : 'neutral'} className="tabular-nums">
+                        {t('settings.dns.service_count', { count: held.services.length })}
+                      </Badge>
+                      {held.templates.length > 0 && (
+                        <Badge tone="info" className="tabular-nums">
+                          {t('settings.dns.template_count', { count: held.templates.length })}
+                        </Badge>
+                      )}
+                    </>
                   )}
                   <IconButton
                     label={t('settings.dns.delete_aria', { domain })}

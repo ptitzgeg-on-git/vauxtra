@@ -347,6 +347,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The count beside a domain and the question deleting it asks were both read out of a
+  query nobody checked, so a read that failed looked exactly like an empty answer.** `DnsTab`
+  and the two editors of `TaxonomyTab` build the map of what a row is holding from
+  `/services` and `/templates`, and took both as `const { data = [] } = useQuery(...)`:
+  neither `isError` nor `isPending` came out, so a request that failed, and a request that
+  had simply not landed yet, were an empty list. On the DNS tab that was stated rather than
+  left blank — every row painted a literal "0 services" over a read that had answered
+  nothing — and on both tabs the deletion then asked the question written for
+  something nothing is built on, the one whose whole content is that nothing else changes.
+
+  Nothing further down refuses it. `DELETE /api/domains/{name}` looks the holders up only to
+  journal them, and `DELETE /api/tags/{id}` takes `service_tags` with it by cascade. The
+  dialog is the entire guard, and what decided which one to ask was the emptiness of a read
+  nobody had checked.
+
+  Both tabs now separate "nothing holds this" from "nobody knows". A third branch, first in
+  the chain, asks a question that says the services and the templates could not be read and
+  that the count is therefore unknown; the deletion stays available, because a tab must not
+  be stranded on a read it may never get. The DNS rows swap the false zero for a "usage
+  unknown" badge, and each tab carries one warning with a retry that refetches both reads at
+  once. The taxonomy chips keep showing no number, deliberately: an absent count there is
+  not a statement, where "0 services" on a domain row is.
+
+  Seven keys in the eight locales. Sixteen tests across `DnsTab.test.tsx` and
+  `TaxonomyTab.test.tsx`, whose mock now answers a read with rows, with a failure, or never.
+  Witness: with the previous two components in place fourteen fail and two pass, the two
+  being the positive controls — a deletion that still goes through once the unknown question
+  is confirmed, and the plain question still asked over a label two answered reads agree
+  nothing carries.
+
 - **The bridge could build a taxonomy and had nowhere to put it: every service an agent
   created was unlabelled, for good.** `create_service` sent `tag_ids: []` and
   `environment_ids: []` in its body and declared no parameter for either, so a call naming a

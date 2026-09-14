@@ -1332,6 +1332,8 @@
   "settings.dns.empty_desc": "Adicione os domínios sob os quais você expõe serviços; eles alimentam todos os seletores de subdomínio.",
   "settings.dns.invalid": "Informe um nome de domínio válido",
   "settings.dns.load_failed": "Não foi possível carregar os domínios",
+  "settings.dns.usage_failed": "Não foi possível verificar o que estes domínios sustentam",
+  "settings.dns.usage_unknown": "Uso desconhecido",
   "settings.dns.no_match": "Nenhum domínio corresponde a esta pesquisa",
   "settings.dns.search_placeholder": "Pesquisar um domínio",
   "settings.docker.add_endpoint": "Adicionar endpoint",
@@ -1522,6 +1524,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} modelos de serviço mencionam \"{name}\".",
   "settings.taxonomy.in_use_templates_drop_tag": "A etiqueta é removida de cada um deles na próxima leitura do modelo, então um serviço criado a partir de um deles começa sem ela.",
   "settings.taxonomy.in_use_templates_drop_env": "O ambiente é removido de cada um deles na próxima leitura do modelo, então um serviço criado a partir de um deles começa sem ele.",
+  "settings.taxonomy.unknown_title": "Não foi possível verificar o uso",
+  "settings.taxonomy.unknown_message": "Os serviços e os modelos não puderam ser lidos, portanto não se sabe quantos carregam \"{name}\". Excluí-lo remove o rótulo de todos eles: cada um mantém seu nome de host e continua publicado exatamente como está.",
+  "settings.taxonomy.usage_failed": "Não foi possível verificar o que carrega estes rótulos",
   "settings.taxonomy.usage_count_one": "{count} serviço",
   "settings.taxonomy.usage_count_other": "{count} serviços",
   "settings.taxonomy.delete_title": "Excluir este rótulo?",
@@ -2112,5 +2117,7 @@
   "settings.dns.confirm.in_use_more_other": "… e mais {count}",
   "settings.dns.confirm.in_use_effect": "Excluir o domínio não muda nada disso: em execução nada lê a lista de domínios, cada linha acima mantém seu nome de host e continua publicada exatamente como está.",
   "settings.dns.confirm.in_use_pickers": "O que muda são as listas de seleção — \"{domain}\" deixa de ser oferecido ao criar um serviço ou um modelo.",
-  "settings.dns.confirm.in_use_returns": "E \"{domain}\" pode voltar sozinho: uma varredura do Docker ou uma importação de provedor recadastra o domínio raiz de cada serviço que traz."
+  "settings.dns.confirm.in_use_returns": "E \"{domain}\" pode voltar sozinho: uma varredura do Docker ou uma importação de provedor recadastra o domínio raiz de cada serviço que traz.",
+  "settings.dns.confirm.unknown_title": "Não foi possível verificar o uso",
+  "settings.dns.confirm.unknown_message": "Os serviços e os modelos não puderam ser lidos, portanto não se sabe o que \"{domain}\" ainda sustenta. Excluí-lo não muda nada em execução: nada lê a lista de domínios e cada rota construída sobre ele mantém seu nome de host. Ele apenas deixa de ser oferecido ao criar um serviço ou um modelo."
 }

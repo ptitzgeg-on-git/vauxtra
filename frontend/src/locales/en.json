@@ -1332,6 +1332,8 @@
   "settings.dns.empty_desc": "Add the domains you expose services under; they feed every subdomain picker.",
   "settings.dns.invalid": "Enter a valid domain name",
   "settings.dns.load_failed": "Could not load the domains",
+  "settings.dns.usage_failed": "Could not check what these domains are holding",
+  "settings.dns.usage_unknown": "Usage unknown",
   "settings.dns.no_match": "No domain matches this search",
   "settings.dns.search_placeholder": "Search a domain",
   "settings.docker.add_endpoint": "Add endpoint",
@@ -1522,6 +1524,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} service templates name \"{name}\".",
   "settings.taxonomy.in_use_templates_drop_tag": "The tag is dropped from each of them the next time the template is read, so a service created from one starts without it.",
   "settings.taxonomy.in_use_templates_drop_env": "The environment is dropped from each of them the next time the template is read, so a service created from one starts without it.",
+  "settings.taxonomy.unknown_title": "Usage could not be checked",
+  "settings.taxonomy.unknown_message": "The services and the templates could not be read, so how many carry \"{name}\" is unknown. Deleting it removes the label from every one of them; each keeps its hostname and stays published exactly as it is.",
+  "settings.taxonomy.usage_failed": "Could not check what these labels are carried by",
   "settings.taxonomy.usage_count_one": "{count} service",
   "settings.taxonomy.usage_count_other": "{count} services",
   "settings.taxonomy.delete_title": "Delete this label?",
@@ -2112,5 +2117,7 @@
   "settings.dns.confirm.in_use_more_other": "… and {count} more",
   "settings.dns.confirm.in_use_effect": "Deleting the domain changes none of that: nothing at runtime reads the domain list, so every row above keeps its hostname and stays published exactly as it is.",
   "settings.dns.confirm.in_use_pickers": "The pickers do change — \"{domain}\" stops being offered when a service or a template is created.",
-  "settings.dns.confirm.in_use_returns": "And \"{domain}\" can come back on its own: a Docker scan or a provider import re-adds the root domain of every service it brings in."
+  "settings.dns.confirm.in_use_returns": "And \"{domain}\" can come back on its own: a Docker scan or a provider import re-adds the root domain of every service it brings in.",
+  "settings.dns.confirm.unknown_title": "Usage could not be checked",
+  "settings.dns.confirm.unknown_message": "The services and the templates could not be read, so what \"{domain}\" is still holding is unknown. Deleting it changes nothing at runtime: nothing reads the domain list, and every route built on it keeps its hostname. It simply stops being offered when a service or a template is created."
 }

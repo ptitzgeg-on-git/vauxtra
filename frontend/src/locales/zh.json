@@ -1238,6 +1238,8 @@
   "settings.dns.empty_desc": "添加用于暴露服务的域名，它们会出现在所有子域名选择器中。",
   "settings.dns.invalid": "请输入有效的域名",
   "settings.dns.load_failed": "无法加载域名",
+  "settings.dns.usage_failed": "无法确认这些域名承载了什么",
+  "settings.dns.usage_unknown": "使用情况未知",
   "settings.dns.no_match": "没有符合此搜索的域名",
   "settings.dns.search_placeholder": "搜索域名",
   "settings.docker.add_endpoint": "添加端点",
@@ -1408,6 +1410,9 @@
   "settings.taxonomy.in_use_templates_other": "有 {count} 个服务模板引用了 \"{name}\"。",
   "settings.taxonomy.in_use_templates_drop_tag": "下次读取模板时，该标签会从每个模板中移除，因此由其创建的服务将不带该标签。",
   "settings.taxonomy.in_use_templates_drop_env": "下次读取模板时，该环境会从每个模板中移除，因此由其创建的服务将不带该环境。",
+  "settings.taxonomy.unknown_title": "无法确认使用情况",
+  "settings.taxonomy.unknown_message": "无法读取服务和模板，因此不清楚有多少带有 \"{name}\"。删除它会从所有这些项中移除该标签；每一项都保留其主机名，并继续按原样发布。",
+  "settings.taxonomy.usage_failed": "无法确认这些标签由什么承载",
   "settings.taxonomy.usage_count_other": "{count} 个服务",
   "settings.taxonomy.delete_title": "删除该标签？",
   "settings.taxonomy.edit_form_aria": "编辑 {name}",
@@ -1975,5 +1980,7 @@
   "settings.dns.confirm.in_use_more_other": "…还有 {count} 个",
   "settings.dns.confirm.in_use_effect": "删除域名不会改变这一点：运行时没有任何环节读取域名列表，上面每一行都保留其主机名，并继续按原样发布。",
   "settings.dns.confirm.in_use_pickers": "改变的是选择列表 — 创建服务或模板时不再提供 \"{domain}\"。",
-  "settings.dns.confirm.in_use_returns": "而且 \"{domain}\" 可能自行回来：Docker 扫描或提供商导入会重新添加其引入的每个服务的根域名。"
+  "settings.dns.confirm.in_use_returns": "而且 \"{domain}\" 可能自行回来：Docker 扫描或提供商导入会重新添加其引入的每个服务的根域名。",
+  "settings.dns.confirm.unknown_title": "无法确认使用情况",
+  "settings.dns.confirm.unknown_message": "无法读取服务和模板，因此不清楚 \"{domain}\" 还承载着什么。删除它不会改变运行时的任何内容：没有任何环节读取域名列表，基于它构建的每条路由都保留其主机名。它只是在创建服务或模板时不再被提供。"
 }

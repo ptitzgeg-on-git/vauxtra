@@ -1332,6 +1332,8 @@
   "settings.dns.empty_desc": "Voeg de domeinen toe waaronder je services aanbiedt; ze voeden elke subdomeinkeuze.",
   "settings.dns.invalid": "Voer een geldige domeinnaam in",
   "settings.dns.load_failed": "Kan de domeinen niet laden",
+  "settings.dns.usage_failed": "Kan niet controleren wat deze domeinen dragen",
+  "settings.dns.usage_unknown": "Gebruik onbekend",
   "settings.dns.no_match": "Geen domein komt overeen met deze zoekopdracht",
   "settings.dns.search_placeholder": "Zoek een domein",
   "settings.docker.add_endpoint": "Endpoint toevoegen",
@@ -1522,6 +1524,9 @@
   "settings.taxonomy.in_use_templates_other": "{count} dienstsjablonen noemen \"{name}\".",
   "settings.taxonomy.in_use_templates_drop_tag": "De tag wordt bij de volgende keer lezen uit elk van die sjablonen verwijderd, dus een dienst die eruit wordt aangemaakt begint zonder de tag.",
   "settings.taxonomy.in_use_templates_drop_env": "De omgeving wordt bij de volgende keer lezen uit elk van die sjablonen verwijderd, dus een dienst die eruit wordt aangemaakt begint zonder de omgeving.",
+  "settings.taxonomy.unknown_title": "Gebruik kon niet worden gecontroleerd",
+  "settings.taxonomy.unknown_message": "De diensten en de sjablonen konden niet worden gelezen, dus is onbekend hoeveel er \"{name}\" dragen. Verwijderen haalt het label bij elk daarvan weg: elk behoudt zijn hostnaam en blijft precies zo gepubliceerd.",
+  "settings.taxonomy.usage_failed": "Kan niet controleren waardoor deze labels worden gedragen",
   "settings.taxonomy.usage_count_one": "{count} dienst",
   "settings.taxonomy.usage_count_other": "{count} diensten",
   "settings.taxonomy.delete_title": "Dit label verwijderen?",
@@ -2112,5 +2117,7 @@
   "settings.dns.confirm.in_use_more_other": "… en nog {count}",
   "settings.dns.confirm.in_use_effect": "Het domein verwijderen verandert daar niets aan: tijdens de uitvoering leest niets de domeinlijst, elke regel hierboven behoudt zijn hostnaam en blijft precies zo gepubliceerd.",
   "settings.dns.confirm.in_use_pickers": "Wat verandert zijn de keuzelijsten — \"{domain}\" wordt niet meer aangeboden bij het aanmaken van een dienst of een sjabloon.",
-  "settings.dns.confirm.in_use_returns": "En \"{domain}\" kan vanzelf terugkomen: een Docker-scan of een providerimport voegt het hoofddomein van elke binnengehaalde dienst opnieuw toe."
+  "settings.dns.confirm.in_use_returns": "En \"{domain}\" kan vanzelf terugkomen: een Docker-scan of een providerimport voegt het hoofddomein van elke binnengehaalde dienst opnieuw toe.",
+  "settings.dns.confirm.unknown_title": "Gebruik kon niet worden gecontroleerd",
+  "settings.dns.confirm.unknown_message": "De diensten en de sjablonen konden niet worden gelezen, dus is onbekend wat \"{domain}\" nog draagt. Verwijderen verandert tijdens de uitvoering niets: niets leest de domeinlijst, en elke route die erop is gebouwd behoudt zijn hostnaam. Het wordt alleen niet meer aangeboden bij het aanmaken van een dienst of een sjabloon."
 }

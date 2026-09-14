@@ -29,12 +29,30 @@ let domainRows: string[] = [];
 let serviceRows: Service[] = [];
 let templateRows: Template[] = [];
 
+/**
+ * How one of the two usage reads answers: with its rows, with a failure, or never -- a
+ * request still in flight. Both are states the tab used to be unable to tell from an empty
+ * list, which is the whole subject of the last describe block below.
+ */
+type Answer = 'rows' | 'fails' | 'never';
+let servicesAnswer: Answer = 'rows';
+let templatesAnswer: Answer = 'rows';
+
+/** A request that never comes back, so `isPending` stays true for the whole test. */
+const NEVER: Promise<never> = new Promise(() => {});
+
+function answer<T>(mode: Answer, rows: T): Promise<T> {
+  if (mode === 'fails') return Promise.reject(new Error('read refused'));
+  if (mode === 'never') return NEVER;
+  return Promise.resolve(rows);
+}
+
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn((path: string) => {
       if (path === '/domains') return Promise.resolve(domainRows);
-      if (path === '/services') return Promise.resolve(serviceRows);
-      if (path === '/templates') return Promise.resolve(templateRows);
+      if (path === '/services') return answer(servicesAnswer, serviceRows);
+      if (path === '/templates') return answer(templatesAnswer, templateRows);
       return Promise.resolve([]);
     }),
     post: vi.fn(() => Promise.resolve({ ok: true })),
@@ -115,6 +133,8 @@ describe('DnsTab, what a root domain is holding', () => {
     domainRows = ['example.test'];
     serviceRows = [];
     templateRows = [];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
     vi.clearAllMocks();
   });
 
@@ -170,6 +190,8 @@ describe('DnsTab, which question deleting a domain asks', () => {
     domainRows = ['example.test'];
     serviceRows = [];
     templateRows = [];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
     vi.clearAllMocks();
   });
 
@@ -216,6 +238,8 @@ describe('DnsTab, how the in-use body names what it found', () => {
     domainRows = ['example.test'];
     serviceRows = [];
     templateRows = [];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
     vi.clearAllMocks();
   });
 
@@ -253,6 +277,8 @@ describe('DnsTab, what the answer to the question does', () => {
     domainRows = ['example.test'];
     serviceRows = [service()];
     templateRows = [template()];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
     vi.clearAllMocks();
   });
 
@@ -269,5 +295,99 @@ describe('DnsTab, what the answer to the question does', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'common.cancel' }));
 
     expect(vi.mocked(api.delete)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The badge and the question both read `dependents`, and `dependents` was built from two
+ * queries destructured as `data = []`: nothing in the component could tell a domain nothing
+ * is built on from a `/services` that failed, or that had simply not come back yet. The
+ * badge then stated "0 services" -- a count, not a blank -- and the deletion asked the
+ * question written for an unused domain. Nothing refuses it further down:
+ * `DELETE /api/domains/{name}` looks the holders up only to journal them.
+ */
+describe('DnsTab, a usage read that has not answered', () => {
+  beforeEach(() => {
+    domainRows = ['example.test'];
+    serviceRows = [service()];
+    templateRows = [template()];
+    servicesAnswer = 'rows';
+    templatesAnswer = 'rows';
+    vi.clearAllMocks();
+  });
+
+  it('says the usage is unknown rather than counting zero while a read is in flight', async () => {
+    servicesAnswer = 'never';
+    renderWithProviders(<DnsTab />);
+
+    const row = await rowFor('example.test');
+    expect(within(row).queryByText('settings.dns.service_count')).toBeNull();
+    expect(within(row).getByText('settings.dns.usage_unknown')).toBeInTheDocument();
+  });
+
+  it('says the usage is unknown when the services read failed', async () => {
+    servicesAnswer = 'fails';
+    renderWithProviders(<DnsTab />);
+    await screen.findByText('settings.dns.usage_failed');
+
+    const row = await rowFor('example.test');
+    expect(within(row).queryByText('settings.dns.service_count')).toBeNull();
+    expect(within(row).getByText('settings.dns.usage_unknown')).toBeInTheDocument();
+  });
+
+  it('says so out loud, with a retry, and not only on the rows', async () => {
+    templatesAnswer = 'fails';
+    renderWithProviders(<DnsTab />);
+
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('settings.dns.usage_failed')).toBeInTheDocument();
+    expect(within(alert).getByRole('button', { name: 'ui.error.retry' })).toBeInTheDocument();
+  });
+
+  it('counts again once the retry answers', async () => {
+    servicesAnswer = 'fails';
+    renderWithProviders(<DnsTab />);
+    const alert = await screen.findByRole('alert');
+
+    servicesAnswer = 'rows';
+    await userEvent.click(within(alert).getByRole('button', { name: 'ui.error.retry' }));
+
+    expect(await screen.findByText('settings.dns.service_count')).toBeInTheDocument();
+    expect(screen.queryByText('settings.dns.usage_unknown')).toBeNull();
+  });
+
+  it('asks the unknown question, not the plain one, when a read failed', async () => {
+    // One service and one template are built on this domain. The reads that would have said
+    // so never answered, and an empty `dependents` is exactly what the plain question is for.
+    servicesAnswer = 'fails';
+    const dialog = await askToDelete('example.test');
+
+    expect(within(dialog).getByText('settings.dns.confirm.unknown_title')).toBeInTheDocument();
+    expect(within(dialog).queryByText('settings.dns.confirm.delete_title')).toBeNull();
+    expect(within(dialog).queryByText('settings.dns.confirm.in_use_title')).toBeNull();
+  });
+
+  it('asks it for the templates read as readily as for the services read', async () => {
+    templatesAnswer = 'fails';
+    const dialog = await askToDelete('example.test');
+
+    expect(within(dialog).getByText('settings.dns.confirm.unknown_title')).toBeInTheDocument();
+  });
+
+  it('asks the unknown question while a read is still in flight', async () => {
+    servicesAnswer = 'never';
+    const dialog = await askToDelete('example.test');
+
+    expect(within(dialog).getByText('settings.dns.confirm.unknown_title')).toBeInTheDocument();
+  });
+
+  it('still deletes the domain once the unknown question is confirmed', async () => {
+    // Withholding the deletion would strand the tab on a read it may never get. What changes
+    // is which question is asked, not whether the operator may answer it.
+    servicesAnswer = 'fails';
+    const dialog = await askToDelete('example.test');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'common.delete' }));
+
+    expect(vi.mocked(api.delete)).toHaveBeenCalledWith('/domains/example.test');
   });
 });
