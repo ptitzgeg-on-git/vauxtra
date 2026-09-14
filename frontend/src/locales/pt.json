@@ -2004,6 +2004,8 @@
   "settings.backup.passphrase_distinct": "Use pelo menos {count} caracteres diferentes.",
   "settings.webhooks.scope_no_providers": "Ainda não há nenhuma integração ativa para apontar.",
   "settings.webhooks.scope_no_services": "Ainda não há nenhum ponto de acesso ativo para apontar.",
+  "settings.webhooks.scope_providers_unknown": "A lista de integrações não foi carregada, portanto este escopo ainda não pode ser definido.",
+  "settings.webhooks.scope_services_unknown": "A lista de pontos de acesso não foi carregada, portanto este escopo ainda não pode ser definido.",
   "expose.preflight.detail.dns_failed": "O teste de ligação a {name} falhou.",
   "expose.preflight.detail.dns_ok": "A ligação a {name} está saudável.",
   "expose.preflight.detail.dns_resolved": "Destino DNS público: {target} ({source})",

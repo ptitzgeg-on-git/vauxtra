@@ -2004,6 +2004,8 @@
   "settings.backup.passphrase_distinct": "Use at least {count} different characters.",
   "settings.webhooks.scope_no_providers": "No enabled integration to point at yet.",
   "settings.webhooks.scope_no_services": "No enabled endpoint to point at yet.",
+  "settings.webhooks.scope_providers_unknown": "The list of integrations has not loaded, so this scope cannot be set yet.",
+  "settings.webhooks.scope_services_unknown": "The list of endpoints has not loaded, so this scope cannot be set yet.",
   "expose.preflight.detail.dns_failed": "The connection test to {name} failed.",
   "expose.preflight.detail.dns_ok": "The connection to {name} is healthy.",
   "expose.preflight.detail.dns_resolved": "Public DNS target: {target} ({source})",

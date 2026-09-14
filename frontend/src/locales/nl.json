@@ -2004,6 +2004,8 @@
   "settings.backup.passphrase_distinct": "Gebruik minstens {count} verschillende tekens.",
   "settings.webhooks.scope_no_providers": "Nog geen ingeschakelde integratie om naar te verwijzen.",
   "settings.webhooks.scope_no_services": "Nog geen ingeschakeld eindpunt om naar te verwijzen.",
+  "settings.webhooks.scope_providers_unknown": "De lijst met integraties is niet geladen, dus dit bereik kan nog niet worden ingesteld.",
+  "settings.webhooks.scope_services_unknown": "De lijst met eindpunten is niet geladen, dus dit bereik kan nog niet worden ingesteld.",
   "expose.preflight.detail.dns_failed": "De verbindingstest met {name} is mislukt.",
   "expose.preflight.detail.dns_ok": "De verbinding met {name} is in orde.",
   "expose.preflight.detail.dns_resolved": "Publiek DNS-doel: {target} ({source})",

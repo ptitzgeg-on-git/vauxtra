@@ -1875,6 +1875,8 @@
   "settings.backup.passphrase_distinct": "少なくとも {count} 種類の異なる文字を使ってください。",
   "settings.webhooks.scope_no_providers": "対象にできる有効な連携がまだありません。",
   "settings.webhooks.scope_no_services": "対象にできる有効な公開先がまだありません。",
+  "settings.webhooks.scope_providers_unknown": "連携の一覧が読み込まれていないため、この対象範囲はまだ設定できません。",
+  "settings.webhooks.scope_services_unknown": "公開先の一覧が読み込まれていないため、この対象範囲はまだ設定できません。",
   "expose.preflight.detail.dns_failed": "{name} への接続テストに失敗しました。",
   "expose.preflight.detail.dns_ok": "{name} への接続は正常です。",
   "expose.preflight.detail.dns_resolved": "公開 DNS の宛先: {target} ({source})",
