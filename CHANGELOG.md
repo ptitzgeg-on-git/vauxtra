@@ -3015,6 +3015,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Changed
 
+- **One rule about automatic DNS was written twice, and the two copies already disagreed.**
+  "An automatic public target needs a DNS provider that can resolve one" decided both what the
+  expose form drew and what the payload sent, and it was written once for each. The copies
+  differed by a single clause: the payload asked whether the selected provider had been found
+  at all, the form did not. So for a `dns_provider_id` naming a provider the catalogue could
+  not resolve — deleted, or simply not answered for yet — the form computed `manual` with the
+  automatic update off while the payload sent `auto` with it on.
+
+  Nothing ever showed it, and that is the only reason this is not filed as a bug. The form's
+  value has exactly one consumer, the automatic-update switch, and that switch is drawn only
+  for a provider that resolves — which is every input where the two copies agreed. The
+  disagreement lived precisely where nobody could see it, and would have become visible the
+  day someone widened that condition.
+
+  `autoPublicTarget()` in `components/features/expose/types.ts` now answers the question once:
+  the mode, the update flag, and whether the switch has anything true to say at all. The form
+  calls it, the payload calls it, and so does the handler that reacts to a provider change, so
+  what is drawn, what is sent and what is written back into the form state are one computation.
+  The reading that survived is the payload's: a provider that cannot be resolved has said
+  nothing, and reading nothing as "cannot" is what dropped an operator's automatic update the
+  last time it happened — the same lesson `CAPABILITY_FALLBACK` in `lib/providers.ts` carries.
+
+  `components/features/expose/types.test.ts` pins the matrix, including the two rows the copies
+  answered differently and the catalogue-down row that must not drop a saved setting. It also
+  reads both components as text, so a second writer of the rule fails the build instead of
+  waiting to be noticed in review, and four mutations were used to prove each half can fail.
+
 - **`POST /api/settings/api-keys` answers `201`, not `200`.** The eleven other routes that
   create a resource already answered `201`; this one did not. Nothing broke, because both the
   panel and the MCP bridge accept any 2xx, which is exactly why it went unnoticed for so long.

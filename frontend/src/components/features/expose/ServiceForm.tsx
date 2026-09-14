@@ -27,7 +27,14 @@ import {
   Switch,
 } from '@/components/ui';
 import type { Environment, ProviderTypesResponse, Tag } from '@/types/api';
-import { fqdnOf, providerHasCapability, type FormState, type Provider, type UiExposeMode } from './types';
+import {
+  autoPublicTarget,
+  fqdnOf,
+  providerHasCapability,
+  type FormState,
+  type Provider,
+  type UiExposeMode,
+} from './types';
 
 interface TargetSuggestion {
   candidates: Array<{ value: string; source: string }>;
@@ -267,20 +274,13 @@ export function ServiceForm({
   const standardProxyProviders = proxyProviders.filter((p) => !tunnelIds.has(p.id));
 
   const selectedDns = dnsProviders.find((p) => String(p.id) === formData.dns_provider_id);
-  const selectedDnsSupportsAuto = selectedDns
-    ? providerHasCapability(selectedDns, 'supports_auto_public_target', providerTypeMap)
-    : false;
+  // Same call as the payload builder in `ExposeModal`: this is the whole point of it
+  // living in `types.ts`. Drawing one answer and sending another is what it prevents.
+  const publicTarget = autoPublicTarget(formData, selectedDns, providerTypeMap);
 
   // Use provider capabilities instead of hardcoded types for long-term extensibility.
   const isExternalDns = selectedDns ? providerHasCapability(selectedDns, 'public_dns', providerTypeMap) : false;
   const isLocalDns = Boolean(selectedDns) && !isExternalDns;
-
-  const effectivePublicTargetMode =
-    formData.public_target_mode === 'auto' && formData.dns_provider_id && !selectedDnsSupportsAuto
-      ? 'manual'
-      : formData.public_target_mode;
-
-  const effectiveAutoUpdateDns = effectivePublicTargetMode === 'auto' ? formData.auto_update_dns : false;
 
   const fqdnPreview = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
 
@@ -776,9 +776,6 @@ export function ServiceForm({
                       onChange={(e) => {
                         const nextDnsProviderId = e.target.value;
                         const nextDnsProvider = dnsProviders.find((p) => String(p.id) === nextDnsProviderId);
-                        const nextSupportsAuto = nextDnsProvider
-                          ? providerHasCapability(nextDnsProvider, 'supports_auto_public_target', providerTypeMap)
-                          : false;
 
                         // Clear dns_ip when scope changes (local ↔ external) to avoid a stale
                         // LAN IP sitting in a field now labelled "Public WAN IP" and vice-versa.
@@ -790,15 +787,26 @@ export function ServiceForm({
                           : false;
                         const scopeChanged = nextDnsProviderId && prevIsExternal !== nextIsExternal;
 
-                        setFormData((prev) => ({
-                          ...prev,
-                          dns_provider_id: nextDnsProviderId,
-                          dns_ip: scopeChanged ? '' : prev.dns_ip,
-                          public_target_mode:
-                            nextDnsProviderId && !nextSupportsAuto ? 'manual' : prev.public_target_mode,
-                          auto_update_dns: nextDnsProviderId && !nextSupportsAuto ? false : prev.auto_update_dns,
-                          extra_dns_provider_ids: prev.extra_dns_provider_ids.filter((id) => id !== nextDnsProviderId),
-                        }));
+                        setFormData((prev) => {
+                          // The rule that decides what the next provider allows is the one
+                          // the payload will apply anyway. Asking it here is what keeps the
+                          // state the operator edits from meaning something else on save.
+                          const next = autoPublicTarget(
+                            { ...prev, dns_provider_id: nextDnsProviderId },
+                            nextDnsProvider,
+                            providerTypeMap,
+                          );
+                          return {
+                            ...prev,
+                            dns_provider_id: nextDnsProviderId,
+                            dns_ip: scopeChanged ? '' : prev.dns_ip,
+                            public_target_mode: next.mode,
+                            auto_update_dns: next.autoUpdateDns,
+                            extra_dns_provider_ids: prev.extra_dns_provider_ids.filter(
+                              (id) => id !== nextDnsProviderId,
+                            ),
+                          };
+                        });
                       }}
                     >
                       <option value="">{t('expose.field.none')}</option>
@@ -876,7 +884,7 @@ export function ServiceForm({
                               : t('expose.field.dns_target_external_placeholder')
                           }
                         />
-                        {isExternalDns && selectedDnsSupportsAuto && (
+                        {publicTarget.canOfferAuto && (
                           <Button
                             type="button"
                             variant="outline"
@@ -900,20 +908,20 @@ export function ServiceForm({
                         failure stays on screen even once a target is typed by hand, because
                         the automatic update switch below reads the same lookup; "nothing was
                         detected" goes away, since a typed target settles that question. */}
-                    {isExternalDns && selectedDnsSupportsAuto && targetLookupFailed && (
+                    {publicTarget.canOfferAuto && targetLookupFailed && (
                       <InlineAlert tone="warning" title={t('expose.detect_unread')}>
                         {t('expose.detect_unread_hint')}
                       </InlineAlert>
                     )}
-                    {isExternalDns && selectedDnsSupportsAuto && targetLookupFoundNothing && !formData.dns_ip && (
+                    {publicTarget.canOfferAuto && targetLookupFoundNothing && !formData.dns_ip && (
                       <InlineAlert tone="info" title={t('expose.detect_none')} />
                     )}
 
                     {/* Auto-update DNS — only for external DNS with auto capability */}
-                    {isExternalDns && selectedDnsSupportsAuto && (
+                    {publicTarget.canOfferAuto && (
                       <Switch
                         size="sm"
-                        checked={effectiveAutoUpdateDns}
+                        checked={publicTarget.autoUpdateDns}
                         onCheckedChange={(checked) =>
                           setFormData((prev) => ({ ...prev, public_target_mode: 'auto', auto_update_dns: checked }))
                         }
