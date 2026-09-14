@@ -1631,6 +1631,8 @@
   "setup.providers.continue": "Doorgaan",
   "setup.providers.empty_body": "Voeg er minstens één toe zodat Vauxtra je routes kan lezen. Je kunt dit ook later doen.",
   "setup.providers.empty_title": "Nog geen integratie",
+  "setup.providers.load_failed": "Kan de integraties niet laden",
+  "setup.providers.load_failed_hint": "De lijst is leeg omdat het verzoek is mislukt, niet omdat er niets verbonden is. Probeer opnieuw voordat je een integratie toevoegt die je misschien al hebt.",
   "setup.providers.skip": "Nu overslaan",
   "setup.providers.subtitle": "Reverse proxy's, tunnels en DNS-providers waarmee Vauxtra moet praten.",
   "setup.providers.title": "Verbind je integraties",

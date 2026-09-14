@@ -1631,6 +1631,8 @@
   "setup.providers.continue": "Weiter",
   "setup.providers.empty_body": "Fügen Sie mindestens eine hinzu, damit Vauxtra Ihre Routen lesen kann. Das geht auch später.",
   "setup.providers.empty_title": "Noch keine Integration",
+  "setup.providers.load_failed": "Integrationen konnten nicht geladen werden",
+  "setup.providers.load_failed_hint": "Die Liste ist leer, weil die Anfrage fehlgeschlagen ist, nicht weil nichts verbunden wäre. Versuchen Sie es erneut, bevor Sie eine Integration hinzufügen, die es vielleicht schon gibt.",
   "setup.providers.skip": "Vorerst überspringen",
   "setup.providers.subtitle": "Reverse Proxys, Tunnel und DNS-Anbieter, mit denen Vauxtra sprechen soll.",
   "setup.providers.title": "Integrationen verbinden",

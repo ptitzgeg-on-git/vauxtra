@@ -1513,6 +1513,8 @@
   "setup.providers.continue": "继续",
   "setup.providers.empty_body": "至少添加一个，Vauxtra 才能读取您的路由。您也可以稍后再添加。",
   "setup.providers.empty_title": "尚无集成",
+  "setup.providers.load_failed": "无法加载集成",
+  "setup.providers.load_failed_hint": "列表为空是因为请求失败，而不是因为没有任何连接。请先重试，以免重复添加已有的集成。",
   "setup.providers.skip": "暂时跳过",
   "setup.providers.subtitle": "Vauxtra 需要对接的反向代理、隧道和 DNS 提供商。",
   "setup.providers.title": "连接您的集成",
