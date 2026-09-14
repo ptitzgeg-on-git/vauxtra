@@ -347,6 +347,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Two of the wizard's optional steps hid the list they were built around, and the screen
+  that congratulates the operator counted from both.** `useDockerEndpoints` handed its rows
+  out with no failure state at all, the way `useWebhookActions` used to before the comment
+  beside its own query spelt out why it must not: an empty array after a failed fetch and an
+  empty array on an instance with nothing registered are the same array. Three screens paid
+  for it. The Docker step and the notifications step drew a read that had failed as nothing
+  at all — no list, no message, and a footer button offering to skip a step whose contents
+  nobody had seen. The shell binds Enter to that button, so the fastest way through the
+  wizard confirmed the claim.
+
+  On the notifications step the cost is not cosmetic. `POST /api/webhooks` carries no
+  duplicate guard — no UNIQUE index, no lookup — unlike `POST /api/docker/endpoints`, which
+  answers 409. An operator who re-adds the target they cannot see ends up with two rows, and
+  every alert from then on fires twice on the same channel, for good.
+
+  The celebration screen printed `formatNumber(0)` beside "Notification targets" and "Docker
+  hosts" whenever those reads had not answered, and usually they have not: it mounts the
+  instant the wizard finishes, with both requests still open. `StatRow` settled the rule for
+  this repo — zero and "we could not ask" look identical as a number, and only one of them
+  means everything is fine — and six dashboard tiles already followed it.
+
+  Both steps now hold the place of the list while it is in flight, state the failure with a
+  retry when it fails, and keep the neutral "Continue" label until the list has actually been
+  seen; a failed read still lets them move on, since neither step is required. The summary
+  prints a dash rather than a nought for a figure nobody could ask for, and says so once
+  underneath, with a retry that refetches only the read that failed. Eighteen tests across
+  three new files cover the three screens.
+
 - **Both dialogs that create a route blamed the operator's setup for an integration list
   they had never read.** The exposure wizard destructured `/providers` as `data = []` with
   only an `isLoading` beside it, while the three reads under it — domains, tags,

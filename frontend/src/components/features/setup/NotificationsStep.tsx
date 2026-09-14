@@ -2,10 +2,17 @@
  * Optional step: register Apprise webhook targets so Vauxtra can shout when a service goes
  * down. Everything here goes through `useWebhookActions`, which owns the queries, the
  * mutations and their toasts.
+ *
+ * That hook returns its query as well as its rows, and says in a comment why: an empty array
+ * after a failed fetch and an empty array on an instance with no target are the same array.
+ * This screen took only the rows, so a failed read drew no list, no message, and a button
+ * offering to skip. The cost is not cosmetic here: `POST /api/webhooks` has no duplicate
+ * guard -- no UNIQUE index, no lookup -- so an operator who re-adds the target they cannot
+ * see ends up with two rows, and every alert from then on fires twice on the same channel.
  */
 
 import { Bell, ExternalLink, Plus, Send, Trash2 } from 'lucide-react';
-import { Button, Field, IconButton, InlineAlert, Input, useConfirmDialog } from '@/components/ui';
+import { Button, Field, IconButton, InlineAlert, Input, Skeleton, useConfirmDialog } from '@/components/ui';
 import { useWebhookActions } from '@/hooks/useWebhookActions';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
@@ -27,11 +34,12 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
   const t = useT();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const {
-    webhooks, name, setName, url, setUrl, testResult,
+    webhooks, webhooksQuery, name, setName, url, setUrl, testResult,
     addWebhook, deleteWebhook, testWebhookById, testWebhookUrl,
   } = useWebhookActions();
 
   const canAdd = Boolean(name.trim() && url.trim());
+  const listUnread = webhooksQuery.isLoading || webhooksQuery.isError;
 
   const askDelete = async (id: number, label: string) => {
     const ok = await confirm({
@@ -50,8 +58,13 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
       description={t('setup.notifications.subtitle')}
       onBack={onBack}
       primary={{
-        label: webhooks.length > 0 ? t('setup.providers.continue') : t('setup.providers.skip'),
+        /* Same reading as `ProvidersStep` and `DockerStep`: "Skip for now" is a claim about
+           what is here, and neither a read in flight nor a read that failed has made it. */
+        label: listUnread || webhooks.length > 0
+          ? t('setup.providers.continue')
+          : t('setup.providers.skip'),
         onClick: onContinue,
+        disabled: webhooksQuery.isLoading,
       }}
     >
       <p className="rounded-xl border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
@@ -67,7 +80,27 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
         </a>
       </p>
 
-      {webhooks.length > 0 && (
+      {webhooksQuery.isLoading ? (
+        <ul className="space-y-2">
+          {Array.from({ length: 2 }, (_, i) => (
+            <li key={i}>
+              <Skeleton className="h-16 w-full rounded-xl" />
+            </li>
+          ))}
+        </ul>
+      ) : webhooksQuery.isError ? (
+        <InlineAlert
+          tone="danger"
+          title={t('setup.notifications.load_failed')}
+          action={
+            <Button variant="outline" size="sm" onClick={() => void webhooksQuery.refetch()}>
+              {t('common.retry')}
+            </Button>
+          }
+        >
+          {t('setup.notifications.load_failed_hint')}
+        </InlineAlert>
+      ) : webhooks.length > 0 ? (
         <ul className="space-y-2">
           {webhooks.map((wh) => (
             <li key={wh.id} className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
@@ -95,7 +128,7 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field label={t('setup.notifications.name_label')} htmlFor="vx-setup-webhook-name">
