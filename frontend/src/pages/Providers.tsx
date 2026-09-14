@@ -193,6 +193,14 @@ export function Providers() {
   const providers = useMemo(() => (Array.isArray(providersQuery.data) ? providersQuery.data : []), [providersQuery.data]);
   const typeMap = useMemo(() => typesQuery.data || {}, [typesQuery.data]);
   const metaFor = useCallback((provider: Provider): ProviderTypeMeta | undefined => typeMap[String(provider.type || '').toLowerCase()], [typeMap]);
+  // The `|| {}` above is the right floor and not the defect: `lib/providers.ts` groups the
+  // known types from its own table, so the sections below hold without the catalogue. What
+  // that table cannot supply is the label -- every card fell back to its stored slug, `npm`
+  // where the catalogue says "Nginx Proxy Manager" -- nor `read_only`, the one place this
+  // page says an integration cannot be written to. Both went quiet on a screen that looked
+  // perfectly healthy otherwise. The modal this page opens has always handed this error to
+  // its type picker; the page behind it swallowed it.
+  const typesUnavailable = typesQuery.isError;
 
   const tunnelHealthById = useMemo(() => {
     const out: Record<number, ProviderHealthStatus> = {};
@@ -599,6 +607,25 @@ export function Providers() {
                 t,
                 t('providers.health.load_failed_hint'),
               )}
+            </InlineAlert>
+          )}
+
+          {typesUnavailable && (
+            <InlineAlert
+              tone="warning"
+              title={t('providers.catalog.load_failed')}
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={typesQuery.isFetching}
+                  onClick={() => void typesQuery.refetch()}
+                >
+                  {t('common.retry')}
+                </Button>
+              }
+            >
+              {translateApiError(typesQuery.error, t, t('providers.catalog.load_failed_hint'))}
             </InlineAlert>
           )}
 

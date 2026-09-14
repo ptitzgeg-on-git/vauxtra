@@ -964,6 +964,8 @@
   "providers.card.read_only": "Lecture seule",
   "providers.card.toggle": "Activer {name}",
   "providers.card.version": "Version {value}",
+  "providers.catalog.load_failed": "Le catalogue des intégrations n'a pas pu être chargé",
+  "providers.catalog.load_failed_hint": "Chaque carte ci-dessous revient au nom de type enregistré, et une intégration en lecture seule cesse de l'indiquer, tant que cette liste n'est pas chargée.",
   "providers.delete.dep_dark_tag": "plus publié",
   "providers.delete.dep_kept_tag": "toujours publié",
   "providers.delete.deps_dark_one": "{count} d'entre eux n'a aucune autre cible : il garde son adresse publique et plus rien ne la publie.",

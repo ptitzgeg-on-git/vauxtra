@@ -337,6 +337,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The integrations page hid a failed catalogue read behind the names it fell back to.**
+  `GET /providers/types` is the catalogue that turns a stored slug into a name — `npm` is
+  "Nginx Proxy Manager" there — and it carries `read_only`, the only place the page says an
+  integration cannot be written to. The page read it as `typesQuery.data || {}` and never
+  looked at `isError`. The empty map is the right floor and is not the defect: `lib/providers`
+  groups the ten shipped types from its own table, so the sections still held. What the floor
+  cannot supply is the label, so every card dropped to its slug, and it has no entry for
+  `read_only`, so Traefik quietly stopped calling itself read-only — on a screen that showed
+  no error at all, and looked instead like the names had been corrupted. The same query has
+  always had an error path in the modal this page opens, which hands it to the type picker;
+  the page behind it swallowed it. It now raises the same warning the health checks raise,
+  with a retry that re-reads the catalogue on its own — "Test all" refetched it, but only
+  alongside a live connection test against every enabled integration.
+
 - **The certificates page blamed an empty table on integrations it had never read.**
   An empty table explains itself by naming the integrations it queried, and two reads stand
   behind that sentence: `GET /providers` for the names and `GET /providers/types` for which of

@@ -964,6 +964,8 @@
   "providers.card.read_only": "Schreibgeschützt",
   "providers.card.toggle": "{name} aktivieren",
   "providers.card.version": "Version {value}",
+  "providers.catalog.load_failed": "Der Integrationskatalog konnte nicht geladen werden",
+  "providers.catalog.load_failed_hint": "Jede Karte unten fällt auf den gespeicherten Typnamen zurück, und eine schreibgeschützte Integration weist nicht mehr darauf hin, solange diese Liste nicht geladen ist.",
   "providers.delete.dep_dark_tag": "nicht mehr veröffentlicht",
   "providers.delete.dep_kept_tag": "weiterhin veröffentlicht",
   "providers.delete.deps_dark_one": "{count} davon hat kein weiteres Ziel: Er behält seine öffentliche Adresse, und nichts veröffentlicht ihn mehr.",

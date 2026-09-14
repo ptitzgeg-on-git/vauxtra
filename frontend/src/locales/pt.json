@@ -964,6 +964,8 @@
   "providers.card.read_only": "Somente leitura",
   "providers.card.toggle": "Ativar {name}",
   "providers.card.version": "Versão {value}",
+  "providers.catalog.load_failed": "Não foi possível carregar o catálogo de integrações",
+  "providers.catalog.load_failed_hint": "Cada cartão abaixo volta ao nome de tipo armazenado, e uma integração somente leitura deixa de informar isso, até que esta lista seja carregada.",
   "providers.delete.dep_dark_tag": "já não publicado",
   "providers.delete.dep_kept_tag": "ainda publicado",
   "providers.delete.deps_dark_one": "{count} deles não possui outro destino: mantém o endereço público e nada mais o publica.",
