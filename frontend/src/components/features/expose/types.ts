@@ -1,4 +1,5 @@
-import type { Provider, Service, TemplateApplyResult } from '@/types/api';
+import type { Provider, ProviderTypesResponse, Service, TemplateApplyResult } from '@/types/api';
+import { providerHasCapability } from '@/lib/providers';
 
 //: the modal reads whole `GET /api/providers` rows; this module used to declare a
 //: five-key `Provider` of its own, so the name meant two things in one panel.
@@ -155,4 +156,39 @@ export const fqdnOf = (formData: Pick<FormState, 'subdomain' | 'domain'>): strin
 // The capability rule this file used to carry a third copy of now lives in `lib/providers.ts`.
 // That copy had no `supports_tunnel` branch, so both call sites patched around it inline and a
 // provider offered by the Templates picker could go missing from this one. One table now.
-export { providerHasCapability } from '@/lib/providers';
+export { providerHasCapability };
+
+/**
+ * The one place that decides what a form means by "find the public target automatically".
+ *
+ * An automatic target needs a DNS provider that can resolve one, and a provider that says it
+ * cannot sends the target back to manual and the automatic update with it. A provider the
+ * list cannot resolve says nothing at all: it was deleted, or the catalogue has not answered
+ * yet. Unknown is not `false` here, and leaving the saved setting alone is what keeps a
+ * catalogue that failed to load from dropping an operator's automatic update on the next
+ * save -- the same reason `CAPABILITY_FALLBACK` exists in `lib/providers.ts`.
+ *
+ * The three answers come back together because the form drew one of them and the payload
+ * sent another. They agreed on every input where the switch is on screen, which is why this
+ * was never visible; they disagreed on exactly the two where it is hidden.
+ */
+export const autoPublicTarget = (
+  formData: Pick<FormState, 'public_target_mode' | 'auto_update_dns' | 'dns_provider_id'>,
+  selectedDns: Pick<Provider, 'type'> | undefined,
+  providerTypes: ProviderTypesResponse,
+): { mode: FormState['public_target_mode']; autoUpdateDns: boolean; canOfferAuto: boolean } => {
+  const supportsAuto = selectedDns
+    ? providerHasCapability(selectedDns, 'supports_auto_public_target', providerTypes)
+    : false;
+  const isExternal = selectedDns ? providerHasCapability(selectedDns, 'public_dns', providerTypes) : false;
+  const mode =
+    formData.public_target_mode === 'auto' && formData.dns_provider_id && selectedDns && !supportsAuto
+      ? 'manual'
+      : formData.public_target_mode;
+  return {
+    mode,
+    autoUpdateDns: mode === 'auto' ? formData.auto_update_dns : false,
+    /** Whether the automatic-update switch has anything true to say, so it is drawn at all. */
+    canOfferAuto: isExternal && supportsAuto,
+  };
+};

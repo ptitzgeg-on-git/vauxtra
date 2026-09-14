@@ -51,7 +51,15 @@ import type {
   Template,
   TemplateIn,
 } from '@/types/api';
-import { type FormState, type Provider, fqdnOf, initialForm, providerHasCapability, toFormState } from './types';
+import {
+  type FormState,
+  type Provider,
+  autoPublicTarget,
+  fqdnOf,
+  initialForm,
+  providerHasCapability,
+  toFormState,
+} from './types';
 import { ServiceForm } from './ServiceForm';
 import { ServicePreview } from './ServicePreview';
 
@@ -268,10 +276,9 @@ export function ExposeModal({
 
   const fqdnPreview = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
 
-  const effectivePublicTargetMode =
-    formData.public_target_mode === 'auto' && formData.dns_provider_id && selectedDnsProvider && !selectedDnsSupportsAuto
-      ? 'manual'
-      : formData.public_target_mode;
+  // What the payload sends and what the form draws are the same call, so the two cannot
+  // answer differently for a provider the catalogue has not resolved.
+  const publicTarget = autoPublicTarget(formData, selectedDnsProvider, providerTypeMap);
 
   /** Every payload rule lives here: what the API receives on create, edit and preflight. */
   const buildPayload = (): ServicePayload => {
@@ -283,8 +290,6 @@ export function ExposeModal({
         ? formData.target_ip.trim()
         : '';
 
-    const effectiveAutoUpdateDns = effectivePublicTargetMode === 'auto' ? formData.auto_update_dns : false;
-
     return {
       subdomain: formData.subdomain.trim().toLowerCase(),
       domain: formData.domain.trim().toLowerCase(),
@@ -293,8 +298,8 @@ export function ExposeModal({
       forward_scheme: formData.forward_scheme,
       websocket: formData.websocket,
       expose_mode: formData.expose_mode,
-      public_target_mode: formData.expose_mode === 'proxy_dns' ? effectivePublicTargetMode : 'manual',
-      auto_update_dns: formData.expose_mode === 'proxy_dns' ? effectiveAutoUpdateDns : false,
+      public_target_mode: formData.expose_mode === 'proxy_dns' ? publicTarget.mode : 'manual',
+      auto_update_dns: formData.expose_mode === 'proxy_dns' ? publicTarget.autoUpdateDns : false,
       tunnel_provider_id:
         formData.expose_mode === 'tunnel' && formData.tunnel_provider_id ? Number(formData.tunnel_provider_id) : null,
       tunnel_hostname: formData.expose_mode === 'tunnel' ? tunnelHostname : '',
@@ -353,7 +358,7 @@ export function ExposeModal({
     const suggestedDnsTarget = String(targetSuggestion?.recommended || '').trim();
 
     if (formData.expose_mode === 'proxy_dns' && formData.dns_provider_id) {
-      if (effectivePublicTargetMode === 'manual' && !manualDnsTarget) {
+      if (publicTarget.mode === 'manual' && !manualDnsTarget) {
         if (formData.ui_expose_mode === 'dns_only') {
           // A local resolver may answer with the service's own LAN address, and that is what
           // `localDnsFallback` publishes. A public zone must not carry one, so `target_ip`
@@ -368,7 +373,7 @@ export function ExposeModal({
           return t('expose.validation.dns_target_local_required');
         }
       }
-      if (effectivePublicTargetMode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
+      if (publicTarget.mode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
         // Three states reach here as the same empty string: a lookup that failed, one still
         // in flight, and one that answered with nothing. Only the last is a fact about the
         // proxy -- the other two are facts about a question that has no answer yet, and
