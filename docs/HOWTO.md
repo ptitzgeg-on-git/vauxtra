@@ -935,7 +935,7 @@ no such capability, and 502 when the provider itself refuses.
 | `POST` | `/api/settings` | Update settings — send only the keys you change; 400 (and nothing written) on an invalid value |
 | `POST` | `/api/settings/test-webhook` | Send a test notification to every enabled webhook; answers `{ok, results[]}` with one entry per target |
 | `GET` | `/api/logs` | Get logs (supports `?level=` filter) |
-| `GET` | `/api/logs/stream` | SSE log stream |
+| `GET` | `/api/logs/stream` | SSE log stream; the credential is re-read on every tick, so a stream already open ends when the password changes or the key is revoked |
 | `POST` | `/api/logs/clear` | Clear logs (`admin`; the clear is itself logged) |
 | `GET` | `/api/stats` | Global counters |
 | `GET` | `/api/health` | System health check |
@@ -1068,6 +1068,17 @@ The setup routes are the one exception to the table: while the installation wiza
 been completed they answer without any authentication at all, because there is nobody to
 authenticate yet. As soon as `setup-complete` has been stored they fall back to the scope
 listed above.
+
+One route outlives the request that opened it, and is checked accordingly. `GET /api/logs/stream`
+holds the socket and pushes every line as it is written — a refused sign-in, a key created
+and the scopes it carries, a service changed — so it asks whether the credential still holds
+on every tick rather than settling it once at connect time. Changing the admin password ends
+every stream opened with the cookie it replaces; revoking a key ends the stream that key
+opened. A password change deliberately does **not** end a key's stream, for the same reason it
+does not revoke the key: revocation is what ends a key. The check runs before the read, so no
+line written after the credential died is sent. The browser that made the change reconnects
+once on its own and the live view comes back; any other browser is refused, falls back to
+polling, and the poll answers 401, which is what puts the login screen up.
 
 ---
 

@@ -5,7 +5,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.auth import require_auth
+from app.auth import is_authenticated, require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
 from app.text import name_list, plural, verb
@@ -612,32 +612,58 @@ def delete_domain(name: str, request: Request):
         conn.close()
 
 
+async def _log_stream(request: Request):
+    """Push every log line written from now on, for as long as the credential holds.
+
+    Module level rather than a closure inside the route so the loop can be driven without
+    an HTTP client. It is the only place in this API where authorisation is a question
+    asked more than once, and `tests/test_session_and_headers.py` asks it here.
+    """
+    conn = get_db()
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()
+    conn.close()
+    last_id: int = row[0]
+
+    while True:
+        if await request.is_disconnected():
+            break
+        # Every other route settles authorisation once because it answers once. This one
+        # holds the socket open for as long as the browser keeps it and pushes every line
+        # the instance writes: a refused sign-in, a key created and the scopes it carries,
+        # a service changed. Settling it once at connect time meant the one move an
+        # operator makes after "I think someone has my session" -- changing the password,
+        # which raises the stored epoch and refuses that cookie on every later request --
+        # left the thief's live feed running until they closed the tab, and revoking a key
+        # did the same to a key. Asking again each tick re-reads both: the epoch, and the
+        # key row revocation deletes. It costs one small read of a local file every 2 s.
+        #
+        # Before the read, not after it, so no line written after the credential died is
+        # sent. The browser sees the stream end, falls back to polling, and the poll comes
+        # back 401, which is what puts the login screen up.
+        if not is_authenticated(request):
+            break
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, level, message, created_at FROM logs "
+            "WHERE id > ? ORDER BY id ASC LIMIT 50",
+            (last_id,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            last_id = r["id"]
+            yield {"data": json.dumps(dict(r))}
+        await asyncio.sleep(2)
+
+
 @router.get("/api/logs/stream")
 async def stream_logs(request: Request):
-    """Server-Sent Events stream: pushes new log rows every 2 s."""
+    """Server-Sent Events stream: pushes new log rows every 2 s.
+
+    Checked here so a caller with no credential gets a 401 rather than an empty stream,
+    and checked again on every tick inside `_log_stream`, which is what ends a stream the
+    password change or the key revocation was meant to end.
+    """
     require_auth(request)
     if not _HAS_SSE:
         raise HTTPException(500, "Package 'sse-starlette' not installed — rebuild the Docker image.")
-
-    async def generator():
-        conn = get_db()
-        row  = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()
-        conn.close()
-        last_id: int = row[0]
-
-        while True:
-            if await request.is_disconnected():
-                break
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT id, level, message, created_at FROM logs "
-                "WHERE id > ? ORDER BY id ASC LIMIT 50",
-                (last_id,),
-            ).fetchall()
-            conn.close()
-            for r in rows:
-                last_id = r["id"]
-                yield {"data": json.dumps(dict(r))}
-            await asyncio.sleep(2)
-
-    return _SSEResponse(generator())
+    return _SSEResponse(_log_stream(request))
