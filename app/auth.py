@@ -372,8 +372,29 @@ def _get_auth_context(request: Request) -> dict | None:
     return None
 
 
+def is_authorized(request: Request, scope: str | None = None) -> bool:
+    """`require_auth` asked as a question rather than raised as a refusal.
+
+    One caller needs the answer instead of the exception. `GET /api/logs/stream` holds the
+    socket open and re-asks on every tick, and what it must re-ask is the question its own
+    door asked -- not a weaker one. A tick that settles for "are you someone" behind a door
+    that demanded "are you admin" is a gate that reopens two seconds after it closed.
+
+    So the scope argument is spelt the same way here as in `require_auth`, and both go
+    through `_get_auth_context` and `_scope_satisfies`. There is no second reading of a
+    credential in this file for the two to disagree about.
+    """
+    ctx = _get_auth_context(request)
+    if ctx is None:
+        return False
+    if scope is None:
+        return True
+    return _scope_satisfies(ctx["scopes"], scope)
+
+
 def is_authenticated(request: Request) -> bool:
-    return _get_auth_context(request) is not None
+    """True when the caller presents any credential this build accepts, whatever its reach."""
+    return is_authorized(request)
 
 
 def require_auth(request: Request, scope: str | None = None) -> None:

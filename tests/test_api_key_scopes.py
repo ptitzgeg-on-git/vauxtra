@@ -6,14 +6,17 @@ A key minted for a monitoring dashboard could rewrite every service status, driv
 server into arbitrary TCP connections, send notifications, and try the admin password.
 """
 
+import asyncio
 import hashlib
 import os
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
+import app.api.settings as settings_api
 import app.auth as auth
 import app.db as db
 import app.main as app_main
@@ -130,7 +133,10 @@ class ApiKeyScopeTests(unittest.TestCase):
         self.assertEqual(refused.status_code, 403, refused.text)
         self.assertIn("Insufficient scope", refused.json().get("detail", ""))
 
-        survived = self.client.get("/api/logs", headers=self._headers("ro")).json()
+        # Read with `adm`, not with `ro`: reading the log is itself an `admin` question
+        # now, and an oracle that a `read` key can no longer answer would fail this test
+        # on the wrong route.
+        survived = self.client.get("/api/logs", headers=self._headers("adm")).json()
         self.assertIn(
             "Sign-in refused: wrong password",
             [row["message"] for row in survived["items"]],
@@ -139,10 +145,63 @@ class ApiKeyScopeTests(unittest.TestCase):
         allowed = self.client.post("/api/logs/clear", headers=self._headers("adm"))
         self.assertEqual(allowed.status_code, 200, allowed.text)
 
-        after = self.client.get("/api/logs", headers=self._headers("ro")).json()
+        after = self.client.get("/api/logs", headers=self._headers("adm")).json()
         self.assertEqual([row["message"] for row in after["items"]], ["Logs cleared"])
         self.assertEqual(after["total"], 1)
 
+    def test_reading_the_log_needs_the_admin_scope(self):
+        """The file a `write` key may not empty is not a file a `read` key may page through.
+
+        1.5.0 raised `POST /api/logs/clear` to `admin` and left both readers at "are you
+        someone", so the argument for the one was published next to its own counter-example.
+        The rows are "Sign-in refused: wrong password", "Signed in", "Admin password
+        changed", "Secure backup exported with encrypted secrets", and "API key created:
+        deploy (scopes: admin)" -- the name and the reach of every key on the instance.
+
+        A `read` key is the one an operator mints for a status page, a dashboard or an agent
+        they do not entirely trust. At 200 rows a call it could learn which key to go after,
+        when the admin is at the keyboard, and whether somebody else was already guessing at
+        the password. None of that is needed to read the estate, which is what it was for.
+
+        The stream is asserted on its refusals only: accepting it hands back a socket that
+        wakes every two seconds and never ends by itself, which a request/response client
+        cannot read to the end. `tests/test_session_and_headers.py` drives the accepted
+        stream directly, tick by tick, and asks the same question of it there.
+        """
+        models.add_log("info", "API key created: deploy (scopes: admin)")
+
+        for scope in ("ro", "rw"):
+            with self.subTest(scope=scope, route="GET /api/logs"):
+                resp = self.client.get("/api/logs", headers=self._headers(scope))
+                self.assertEqual(resp.status_code, 403, resp.text)
+                self.assertIn("Insufficient scope", resp.json().get("detail", ""))
+
+            # Called as a function rather than over HTTP. Granting it hands back a socket
+            # that wakes every two seconds and never ends by itself, and a client that
+            # reads a response to its end would wait for the rest of the afternoon.
+            # `require_auth` raises before the generator is built, so the refusal is the
+            # whole answer -- and a build that dropped the scope returns an object here
+            # instead, which reads as a failed assertion rather than as a hung suite.
+            with self.subTest(scope=scope, route="GET /api/logs/stream"):
+                request = Request(
+                    {
+                        "type": "http",
+                        "method": "GET",
+                        "path": "/api/logs/stream",
+                        "headers": [(b"authorization", f"Bearer key-{scope}".encode())],
+                    }
+                )
+                with self.assertRaises(HTTPException) as refused:
+                    asyncio.run(settings_api.stream_logs(request))
+                self.assertEqual(refused.exception.status_code, 403)
+                self.assertIn("Insufficient scope", refused.exception.detail)
+
+        allowed = self.client.get("/api/logs", headers=self._headers("adm"))
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertIn(
+            "API key created: deploy (scopes: admin)",
+            [row["message"] for row in allowed.json()["items"]],
+        )
     def test_the_read_only_diagnostics_stay_open_to_a_read_key(self):
         resp = self.client.post("/api/services/1/push/dry-run", headers=self._headers("ro"))
         self.assertNotEqual(resp.status_code, 403, resp.text)

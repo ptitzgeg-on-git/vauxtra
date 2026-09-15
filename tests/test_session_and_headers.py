@@ -706,6 +706,46 @@ class TheLiveLogStreamStopsWhenItsCredentialDoesTests(_WithServer):
 
         self.assertEqual(self._messages(frames), ["Sign-in refused: wrong password"])
 
+    def test_narrowing_the_key_ends_the_stream_it_opened(self) -> None:
+        """A credential narrowed rather than destroyed must end the stream too.
+
+        The door asks for `admin`, because this feed is the audit log as it is written: a
+        refused sign-in, a key created and the scopes it carries, a password change. For one
+        release the tick asked only "is this caller someone", which is a weaker question than
+        the one that let them in -- so a key dropped to `read` kept its socket and went on
+        receiving every line the door would no longer have opened for.
+
+        `is_authorized(request, scope="admin")` is `require_auth`'s question with the raise
+        taken off, and both go through `_get_auth_context`, so there is no second reading for
+        the two to disagree about. Narrowing a key is where the weak question and the right
+        one answer differently, which is why it is the case written down. No route edits the
+        `scopes` column -- keys are created and revoked -- so it is done here the way it
+        would happen in the field, by hand in the table.
+        """
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        key, key_id = self._mint_admin_key(owner)
+        request = self._key_request(key)
+
+        def _narrow_then_write() -> None:
+            conn = models.get_db()
+            try:
+                conn.execute("UPDATE api_keys SET scopes=? WHERE id=?", ("read", key_id))
+                conn.commit()
+            finally:
+                conn.close()
+            models.add_log("info", "Service updated: mail")
+
+        frames = self._run(
+            request,
+            [
+                lambda: models.add_log("warning", "Sign-in refused: wrong password"),
+                _narrow_then_write,
+            ],
+        )
+
+        self.assertEqual(self._messages(frames), ["Sign-in refused: wrong password"])
     def test_a_password_change_leaves_a_stream_opened_with_a_key_running(self) -> None:
         """The other half of the documented asymmetry.
 

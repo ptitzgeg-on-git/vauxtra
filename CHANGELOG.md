@@ -9,6 +9,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **Any API key could read the audit log, including one minted `read`, while emptying that
+  same log needed `admin`.** 1.5.0 raised `POST /api/logs/clear` to `admin` on an argument
+  built entirely on what the `logs` table holds — "it is where failed sign-ins, key creations
+  and password changes are written down" — and left both readers of that same table at "is
+  this caller someone". The argument was published next to its own counter-example.
+
+  The rows are "Sign-in refused: wrong password", "Signed in", "Admin password changed, and
+  every other session was signed out", "Secure backup exported with encrypted secrets", and
+  "API key created: deploy (scopes: admin)" — the name and the reach of every key on the
+  instance. A `read` key is the one an operator mints for a status page, a dashboard, or an
+  agent they do not entirely trust; at 200 rows a call it could learn which key to go after,
+  when the admin is at the keyboard, and whether somebody else was already guessing at the
+  password. None of that is needed to read the estate, which is what the key was for. Since
+  the entry below it, it could also watch all of it arrive live.
+
+  `GET /api/logs` and `GET /api/logs/stream` now ask for `admin`, like the clear they sit
+  beside. The `get_logs` and `stream_logs_snapshot` MCP tools move with them and say so in
+  their own descriptions, which is where an agent reads what a tool will cost it.
+
+  The stream's per-tick check was the same bar one rung lower. It asked "is this caller
+  someone" while its own door asked `admin`, so a key narrowed to `read` kept its socket and
+  went on receiving every line the door would no longer have opened for — a gate that
+  reopens two seconds after it closed. The tick now asks the door's question, spelt the same
+  way and answered through the same `_get_auth_context`, so there is no second reading of a
+  credential for the two to disagree about.
+
+  **Upgrading:** a `read` or `write` key calling `GET /api/logs` or `GET /api/logs/stream`,
+  or the `get_logs` and `stream_logs_snapshot` tools, is now refused with
+  `403 Insufficient scope: 'admin' required`. No route edits a key's scopes, so an
+  integration that needs the log needs a key created with `admin`. The UI is unaffected: a
+  session is always `admin`, so the Logs tab, the dashboard and the monitoring page are
+  unchanged.
+
 - **A stolen session kept a live feed of the audit log running after the password that was
   supposed to end it had been changed.** `GET /api/logs/stream` is the one route in this API
   that holds the socket open: it pushes every line the instance writes, every two seconds, for
@@ -22,7 +55,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   that person's live feed running until they closed the tab, and the feed's next line was the
   one saying the password had just been changed.
 
-  The loop now asks `is_authenticated(request)` on every tick, before the read rather than
+  The loop now re-asks authorisation on every tick, before the read rather than
   after it, so no line written after the credential died is sent. A single shared helper
   answers for both halves — it re-reads the session epoch and re-reads the key row from the
   database — so revocation and the password change are each felt by the next tick, and no

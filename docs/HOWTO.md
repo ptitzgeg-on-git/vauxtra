@@ -592,7 +592,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | Tool | Description |
 |---|---|
 | `get_health` | System health |
-| `get_logs` | Retrieve logs |
+| `get_logs` | Retrieve logs; needs `admin` |
 | `get_stats` | Global counters |
 | `get_certificates` | List SSL certificates |
 | `get_certificate_expiry` | Certificate expiry info |
@@ -934,8 +934,8 @@ no such capability, and 502 when the provider itself refuses.
 | `GET` | `/api/settings` | Get settings |
 | `POST` | `/api/settings` | Update settings — send only the keys you change; 400 (and nothing written) on an invalid value |
 | `POST` | `/api/settings/test-webhook` | Send a test notification to every enabled webhook; answers `{ok, results[]}` with one entry per target |
-| `GET` | `/api/logs` | Get logs (supports `?level=` filter) |
-| `GET` | `/api/logs/stream` | SSE log stream; the credential is re-read on every tick, so a stream already open ends when the password changes or the key is revoked |
+| `GET` | `/api/logs` | Read the activity log (`admin`; supports `?level=` filter). Reading it asks the same question as emptying it, because it is the same file |
+| `GET` | `/api/logs/stream` | SSE log stream (`admin`, like the page it streams). The credential is re-read on every tick against that same scope, so a stream already open ends when the password changes, when the key is revoked, and when the key is narrowed |
 | `POST` | `/api/logs/clear` | Clear logs (`admin`; the clear is itself logged) |
 | `GET` | `/api/stats` | Global counters |
 | `GET` | `/api/health` | System health check |
@@ -1034,9 +1034,9 @@ what it was created with. A request that falls short is refused with
 
 | Scope | Covers |
 |---|---|
-| `read` | Every `GET` except the deprecated `GET /api/services/{sid}/check`, which writes and therefore needs `write` like its `POST`. Plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
+| `read` | Every `GET` except three: the deprecated `GET /api/services/{sid}/check`, which writes and therefore needs `write` like its `POST`, and `GET /api/logs` with `GET /api/logs/stream`, which are `admin` for what the log holds. Plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
 | `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/services/{sid}/check`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
-| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`, `/api/logs/clear`. The log is in this row rather than in `write` because it is where failed sign-ins, key creations and password changes are written down: a `write` key that could empty it could erase the record of its own work. |
+| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`, and the log in all three of its forms: `/api/logs`, `/api/logs/stream`, `/api/logs/clear`. The log is in this row rather than in `read` or `write` because it is where failed sign-ins, key creations with the scopes they carry, and password changes are written down. A `write` key that could empty it could erase the record of its own work; a `read` key that could page through it would learn which key to go after and when the admin is at the keyboard, neither of which it needs to read the estate. |
 
 Two things a `write` key may **not** do, because they choose a URL rather than a value,
 and the server is what goes and fetches it:
@@ -1072,13 +1072,17 @@ listed above.
 One route outlives the request that opened it, and is checked accordingly. `GET /api/logs/stream`
 holds the socket and pushes every line as it is written — a refused sign-in, a key created
 and the scopes it carries, a service changed — so it asks whether the credential still holds
-on every tick rather than settling it once at connect time. Changing the admin password ends
-every stream opened with the cookie it replaces; revoking a key ends the stream that key
-opened. A password change deliberately does **not** end a key's stream, for the same reason it
-does not revoke the key: revocation is what ends a key. The check runs before the read, so no
-line written after the credential died is sent. The browser that made the change reconnects
-once on its own and the live view comes back; any other browser is refused, falls back to
-polling, and the poll answers 401, which is what puts the login screen up.
+on every tick rather than settling it once at connect time. The tick asks the door's own
+question, `admin`, and not a weaker "is this caller someone": a stream that settled for less
+would outlive any narrowing of the credential that opened it, which is the defect this loop
+exists to prevent, one rung lower down. Changing the admin password ends every stream opened
+with the cookie it replaces; revoking a key ends the stream that key opened, and so does
+dropping that key to `read` or `write`. A password change deliberately does **not** end a
+key's stream, for the same reason it does not revoke the key: revocation is what ends a key.
+The check runs before the read, so no line written after the credential died is sent. The
+browser that made the change reconnects once on its own and the live view comes back; any
+other browser is refused, falls back to polling, and the poll answers 401, which is what puts
+the login screen up.
 
 ---
 

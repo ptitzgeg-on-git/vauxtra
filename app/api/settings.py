@@ -5,7 +5,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.auth import is_authenticated, require_auth
+from app.auth import is_authorized, require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
 from app.text import name_list, plural, verb
@@ -345,7 +345,21 @@ def get_stats(request: Request):
 
 @router.get("/api/logs")
 def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = ""):
-    require_auth(request)
+    """Read the activity log. `admin`, for the same reason emptying it is.
+
+    `POST /api/logs/clear` was raised to `admin` because of what this table holds, and
+    everything that argument says about erasing it says about reading it. The rows are
+    "Sign-in refused: wrong password", "Signed in", "Admin password changed", "Secure
+    backup exported with encrypted secrets", and "API key created: deploy (scopes:
+    admin)" -- the name and the reach of every key on the instance.
+
+    A `read` key is what an operator mints for a status page, a dashboard or an agent they
+    do not entirely trust. At `read` that key could page through the whole file at 200 rows
+    a call and learn which key to go after, when the admin is at the keyboard, and whether
+    somebody else was already guessing at the password. None of that is needed to read the
+    estate, which is what the key was for.
+    """
+    require_auth(request, scope="admin")
     page     = max(1, page)
     per_page = min(200, max(1, per_page))
     offset   = (page - 1) * per_page
@@ -640,7 +654,13 @@ async def _log_stream(request: Request):
         # Before the read, not after it, so no line written after the credential died is
         # sent. The browser sees the stream end, falls back to polling, and the poll comes
         # back 401, which is what puts the login screen up.
-        if not is_authenticated(request):
+        #
+        # `scope="admin"` and not a bare "is this caller someone", which is what this asked
+        # while the door below asked the same weak question. Now that both ask for `admin`,
+        # a tick that settled for less would be a gate that reopens two seconds after it
+        # closes: the stream would outlive any narrowing of the credential that opened it,
+        # which is the whole defect this loop exists to prevent, one rung lower down.
+        if not is_authorized(request, scope="admin"):
             break
         conn = get_db()
         rows = conn.execute(
@@ -662,8 +682,12 @@ async def stream_logs(request: Request):
     Checked here so a caller with no credential gets a 401 rather than an empty stream,
     and checked again on every tick inside `_log_stream`, which is what ends a stream the
     password change or the key revocation was meant to end.
+
+    `admin`, like `GET /api/logs` it streams and like `POST /api/logs/clear` that empties
+    it: this is the live form of the same file, and a scope that would be wrong to hand the
+    file to is no more right for a feed of it as it is written.
     """
-    require_auth(request)
+    require_auth(request, scope="admin")
     if not _HAS_SSE:
         raise HTTPException(500, "Package 'sse-starlette' not installed — rebuild the Docker image.")
     return _SSEResponse(_log_stream(request))

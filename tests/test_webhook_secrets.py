@@ -222,8 +222,10 @@ class WebhookReadPathTests(_IsolatedDB):
 
 
 class WebhookLogTests(_IsolatedDB):
-    """`add_log` writes into the `logs` table, which `GET /api/logs` and its SSE stream hand
-    to any key. A transient Discord outage used to persist the token there."""
+    """`add_log` writes into the `logs` table, which `GET /api/logs` and its SSE stream read
+    back and the Logs tab shows in full. A transient Discord outage used to persist the token
+    there, and that copy is one masking the settings response cannot reach. Both readers ask
+    for `admin` now, which narrows who sees it and does nothing about its being written."""
 
     def _logs(self) -> str:
         conn = models.get_db()

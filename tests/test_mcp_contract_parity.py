@@ -950,6 +950,22 @@ Ask for `errors` and it will not become a row.
         self.assertEqual(_half_succeeds_table(readme), set())
 
 
+#: Tools that reach an `admin` route through a client the join cannot see.
+#:
+#: `_routes_needing_admin` reads the app, and `collect_mcp_contracts` reads `client.get`,
+#: `client.post` and their siblings. `stream_logs_snapshot` opens its own `httpx` client to
+#: hold the SSE socket open -- the shared `client` has no streaming verb -- so the route it
+#: calls is invisible to the join, and the README naming it would read as a name invented.
+#: Teaching the collector a second call shape would put a streaming route into every other
+#: pass that assumes a request and a response, which is a wide change for one tool.
+#:
+#: So the tool is named here with the route it reaches, and
+#: `test_the_exemption_still_calls_the_route_it_names` fails if either half stops being
+#: true: the tool no longer opening that path, or that path no longer asking for `admin`.
+#: An exemption cannot outlive what it was written for, which is the rule the
+#: `ALLOWED_*` sets in the gate itself are held to.
+ADMIN_THROUGH_OWN_CLIENT = {"stream_logs_snapshot": ("GET", "/api/logs/stream")}
+
 def _routes_needing_admin(repo_root: Path, normalize) -> set[tuple[str, str]]:
     """Every (verb, path) whose body asks `require_auth(request, scope="admin")`.
 
@@ -1026,7 +1042,27 @@ class TheAdminToolListNamesEveryToolThatNeedsAdmin(unittest.TestCase):
             name
             for name, tool in self.gate.collect_mcp_contracts(REPO_ROOT).items()
             if any((call.method, call.path) in admin for call in tool.calls)
-        }
+        } | set(ADMIN_THROUGH_OWN_CLIENT)
+
+    def test_the_exemption_still_calls_the_route_it_names(self):
+        """Both halves of `ADMIN_THROUGH_OWN_CLIENT`, so it cannot outlive its reason.
+
+        A name added here is a name the README must carry, and nothing else checks it. If
+        the tool stops opening that path, or the path stops asking for `admin`, the entry
+        would go on demanding a line in the README that would then be wrong.
+        """
+        admin = _routes_needing_admin(REPO_ROOT, self.gate.normalize)
+        tools = self.gate.collect_mcp_contracts(REPO_ROOT)
+        for name, (method, path) in ADMIN_THROUGH_OWN_CLIENT.items():
+            with self.subTest(tool=name):
+                self.assertIn(name, tools)
+                source = (REPO_ROOT / "vauxtra_mcp" / "tools" / tools[name].module).read_text(
+                    encoding="utf-8"
+                )
+                body = source.split("def " + name + "(", 1)[1].split("@mcp.tool()", 1)[0]
+                self.assertIn(path, body)
+                self.assertIn(method, body)
+                self.assertIn((method, path), admin)
 
     def test_the_list_names_every_tool_and_invents_none(self):
         readme = (REPO_ROOT / "vauxtra_mcp" / "README.md").read_text(encoding="utf-8")
