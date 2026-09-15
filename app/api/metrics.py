@@ -9,7 +9,12 @@ the `all` series on its own, or add up the parts, but never the whole family at 
 from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
-from app.models import LOG_LEVELS, get_db, normalise_log_level
+from app.models import (
+    LOG_LEVELS,
+    WEBHOOK_DELIVERY_STATUSES,
+    get_db,
+    normalise_log_level,
+)
 
 router = APIRouter()
 
@@ -137,26 +142,45 @@ def prometheus_metrics() -> str:
         lines.append(_gauge("vauxtra_webhooks_total", wh_enabled, {"state": "enabled"}))
 
         # ── Webhook delivery log ──────────────────────────────────────────────
-        try:
-            dlq_rows = conn.execute(
-                "SELECT status, COUNT(*) as n FROM webhook_delivery_log GROUP BY status"
-            ).fetchall()
-            if dlq_rows:
-                lines.append("# HELP vauxtra_webhook_delivery_total Webhook delivery log entries by status")
-                lines.append("# TYPE vauxtra_webhook_delivery_total gauge")
-                for r in dlq_rows:
-                    lines.append(_gauge("vauxtra_webhook_delivery_total", r["n"], {"status": r["status"]}))
-        except Exception:
-            pass
+        # Zero-filled from `WEBHOOK_DELIVERY_STATUSES`, and published whether or not the
+        # table holds anything, for the reason `vauxtra_logs_24h` is: an absent series and a
+        # count of zero are the same picture to a person and opposite answers to `absent()`.
+        # This family used to be emitted only `if dlq_rows`, so the instance that had never
+        # failed a delivery answered an alarm on failures with no-data. `docs/HOWTO.md`
+        # declared the vocabulary `pending, delivered, failed` beside it all the while, a
+        # promise kept only while the table happened to hold all three at once -- which is
+        # what the fixture in `tests/test_metrics_endpoint.py` was seeding.
+        #
+        # A status the column holds that this build has never heard of is counted beside the
+        # three rather than dropped, again as the log levels are.
+        lines.append("# HELP vauxtra_webhook_delivery_total Webhook delivery log entries by status")
+        lines.append("# TYPE vauxtra_webhook_delivery_total gauge")
+        dlq_rows = conn.execute(
+            "SELECT status, COUNT(*) as n FROM webhook_delivery_log GROUP BY status"
+        ).fetchall()
+        dlq_counts: dict[str, int] = dict.fromkeys(WEBHOOK_DELIVERY_STATUSES, 0)
+        for r in dlq_rows:
+            # `unspecified` rather than an empty label value, for the reason spelt out over
+            # the log levels: Prometheus reads `status=""` as the label not being there.
+            status = (r["status"] or "").strip() or "unspecified"
+            dlq_counts[status] = dlq_counts.get(status, 0) + r["n"]
+        for status in sorted(dlq_counts):
+            lines.append(_gauge("vauxtra_webhook_delivery_total", dlq_counts[status], {"status": status}))
 
         # ── Templates ─────────────────────────────────────────────────────────
-        try:
-            tpl_count = conn.execute("SELECT COUNT(*) FROM service_templates").fetchone()[0]
-            lines.append("# HELP vauxtra_templates_total Total service templates")
-            lines.append("# TYPE vauxtra_templates_total gauge")
-            lines.append(_gauge("vauxtra_templates_total", tpl_count))
-        except Exception:
-            pass
+        # Both queries above and below ran inside `except Exception: pass` until now. They
+        # were written in the same commit that created the two tables, when an instance
+        # could still predate them; `init_db()` has created both with `CREATE TABLE IF NOT
+        # EXISTS` on every boot since, and it runs in the lifespan before a scrape can
+        # arrive. What the guard could still catch is a real failure, and what it did with
+        # one was drop the series without a word -- the other half of the same defect, since
+        # zero-filling a family that a swallowed error can still make vanish is half a
+        # remedy. The six sibling sections in this function have never had a guard: a broken
+        # query surfaces as a 500, which a scrape reads as `up 0` and an operator can see.
+        tpl_count = conn.execute("SELECT COUNT(*) FROM service_templates").fetchone()[0]
+        lines.append("# HELP vauxtra_templates_total Total service templates")
+        lines.append("# TYPE vauxtra_templates_total gauge")
+        lines.append(_gauge("vauxtra_templates_total", tpl_count))
 
         # ── Schema version ────────────────────────────────────────────────────
         sv_row = conn.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
