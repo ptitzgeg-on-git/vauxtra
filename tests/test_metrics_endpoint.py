@@ -9,6 +9,7 @@ this suite does and what actually redirects the connection.
 
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
 
@@ -423,8 +424,167 @@ class TheDocumentedCatalogueIsTheOnePublished(unittest.TestCase):
                 self.assertEqual(documented, published.get((family, name), set()))
             checked += 1
         # Every row skipped is a row this test did not check, and a filter that quietly
-        # matched everything would pass in silence. Four rows carry a closed list today.
+        # matched everything would pass in silence. Four rows carry a closed list today;
+        # `vauxtra_webhook_delivery_total` left that side of the line when its three
+        # statuses became a floor the endpoint zero-fills rather than the whole vocabulary.
         self.assertGreaterEqual(checked, 4)
+
+    #: A family whose cell is open still has a floor: the values the endpoint zero-fills,
+    #: named in the cell ahead of the ellipsis. Nothing compared those to the constants the
+    #: code fills from, and the open-ended reading of the cell would excuse the difference
+    #: -- so the cell could name a value the endpoint never publishes and read as correct.
+    ZERO_FILLED = {
+        "vauxtra_logs_24h": "LOG_LEVELS",
+        "vauxtra_webhook_delivery_total": "WEBHOOK_DELIVERY_STATUSES",
+    }
+
+    def test_an_open_cell_still_names_the_floor_the_endpoint_zero_fills(self):
+        from app import models
+
+        seen = 0
+        for metric_cell, labels_cell, _ in self.rows:
+            constant = self.ZERO_FILLED.get(self._ticked(metric_cell)[0])
+            if constant is None:
+                continue
+            with self.subTest(constant=constant):
+                self.assertIn(self.OPEN_VOCABULARY, labels_cell)
+                named = self._ticked(labels_cell.split("(", 1)[1])
+                self.assertEqual(named, list(getattr(models, constant)))
+            seen += 1
+        self.assertEqual(seen, len(self.ZERO_FILLED))
+
+def _scrape_against(seed):
+    """`/metrics` read off a database of this test's own, with `seed` run on it first.
+
+    The class above builds one body and every test reads it, which is the right shape for
+    "is the catalogue the one published" and the wrong one for "what does this family do
+    when the table is empty" -- that needs a body per condition.
+    """
+    import shutil
+
+    import app.db as _app_db
+    from app import models
+
+    tmpdir = tempfile.mkdtemp()
+    orig = (models.DATA_DIR, models.DB_PATH, _app_db.DATA_DIR, _app_db.DB_PATH)
+    models.DATA_DIR = _app_db.DATA_DIR = tmpdir
+    models.DB_PATH = _app_db.DB_PATH = os.path.join(tmpdir, "test.db")
+    os.environ.setdefault("SECRET_KEY", "test-secret-key-for-metrics")
+    try:
+        models.init_db()
+        conn = models.get_db()
+        try:
+            seed(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        from app.main import app
+
+        return TestClient(app, raise_server_exceptions=True).get("/metrics").text
+    finally:
+        models.DATA_DIR, models.DB_PATH, _app_db.DATA_DIR, _app_db.DB_PATH = orig
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _value_in(body, family, labels):
+    """One sample line's value, parsed the way `_samples` above parses them."""
+    for line in body.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        head, _, value = line.rpartition(" ")
+        published, brace, carried = head.partition("{")
+        if published == family and (carried[:-1] if brace else "") == labels:
+            return float(value)
+    return None
+
+
+def _no_deliveries(conn):
+    """Seed nothing: the state of an instance that has never sent a webhook."""
+
+
+def _one_delivery(conn, status):
+    """One delivery row, with the webhook its foreign key needs standing behind it."""
+    webhook_id = conn.execute(
+        "INSERT INTO webhooks (name, url, enabled) VALUES ('w', 'u', 1)"
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO webhook_delivery_log (webhook_id, url, title, body, status, attempt,"
+        " error_msg) VALUES (?, 'u', 't', 'b', ?, 1, '')",
+        (webhook_id, status),
+    )
+
+class TheDeliveryFamilyIsPublishedWhateverTheTableHolds(unittest.TestCase):
+    """`vauxtra_webhook_delivery_total` was emitted only `if dlq_rows`, and only for the
+    statuses the table happened to hold.
+
+    So the family went absent entirely on an instance that had never sent a webhook, and an
+    alarm on failed deliveries read no-data on the instance that had never failed -- the one
+    answer it must never give. `docs/HOWTO.md` declared the closed vocabulary `pending,
+    delivered, failed` beside it the whole time, a promise kept only where all three
+    happened to be present at once; and the fixture two classes up seeds exactly that
+    condition, one row per status, which is why the catalogue check was green.
+
+    Each body here is built against a table of this test's own, so nothing below rests on
+    that fixture.
+    """
+
+    def test_all_three_read_zero_on_an_instance_that_has_never_sent_one(self):
+        from app.models import WEBHOOK_DELIVERY_STATUSES
+
+        body = _scrape_against(_no_deliveries)
+        for status in WEBHOOK_DELIVERY_STATUSES:
+            with self.subTest(status=status):
+                self.assertEqual(
+                    _value_in(body, "vauxtra_webhook_delivery_total", f'status="{status}"'),
+                    0.0,
+                )
+
+    def test_the_family_declares_help_and_type_with_nothing_to_count(self):
+        body = _scrape_against(_no_deliveries)
+        for keyword in ("HELP", "TYPE"):
+            with self.subTest(keyword=keyword):
+                self.assertIn(f"# {keyword} vauxtra_webhook_delivery_total", body)
+
+    def test_a_status_nothing_in_the_product_writes_is_reported_not_dropped(self):
+        body = _scrape_against(lambda conn: _one_delivery(conn, "abandoned"))
+        self.assertEqual(
+            _value_in(body, "vauxtra_webhook_delivery_total", 'status="abandoned"'), 1.0
+        )
+        self.assertEqual(
+            _value_in(body, "vauxtra_webhook_delivery_total", 'status="failed"'), 0.0
+        )
+
+    def test_a_row_with_no_status_gets_a_name_instead_of_an_empty_label(self):
+        body = _scrape_against(lambda conn: _one_delivery(conn, ""))
+        self.assertEqual(
+            _value_in(body, "vauxtra_webhook_delivery_total", 'status="unspecified"'), 1.0
+        )
+        self.assertIsNone(_value_in(body, "vauxtra_webhook_delivery_total", 'status=""'))
+
+class AFailedQueryIsVisibleRatherThanAFamilyThatQuietlyVanishes(unittest.TestCase):
+    """Two sections of `app/api/metrics.py` sat inside `except Exception: pass`.
+
+    They were written in the commit that created `webhook_delivery_log` and
+    `service_templates`, when an instance could still predate both tables. `init_db()` has
+    created them with `CREATE TABLE IF NOT EXISTS` on every boot since, and runs in the
+    lifespan before a scrape can arrive, so what the guard could still catch was a real
+    failure -- and what it did with one was drop the series without a word. Zero-filling a
+    family that a swallowed error can still make vanish is half a remedy.
+
+    The six sibling sections in that function have never had a guard: a broken query
+    surfaces as a 500, which a scrape reads as `up 0` and an operator can see. These two
+    now answer the same way.
+    """
+
+    def test_a_broken_delivery_query_is_raised_rather_than_swallowed(self):
+        with self.assertRaises(sqlite3.OperationalError):
+            _scrape_against(lambda conn: conn.execute("DROP TABLE webhook_delivery_log"))
+
+    def test_a_broken_template_query_is_raised_rather_than_swallowed(self):
+        with self.assertRaises(sqlite3.OperationalError):
+            _scrape_against(lambda conn: conn.execute("DROP TABLE service_templates"))
+
 
 if __name__ == "__main__":
     unittest.main()

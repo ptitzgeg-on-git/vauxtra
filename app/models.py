@@ -556,6 +556,19 @@ _LEVEL_ALIASES = {"warn": "warning"}
 #: vocabulary, after the fold above -- `warn` is not a member, it is an alias of one.
 LOG_LEVELS = ("info", "ok", "warning", "error")
 
+#: The `status` a row of `webhook_delivery_log` can hold. `scheduler.py` writes exactly
+#: these three: the column defaults to `pending`, a send that succeeds becomes `delivered`,
+#: and one that runs out of attempts becomes `failed`.
+#:
+#: Here for the same reason as `LOG_LEVELS` above, and with the same consequence. `/metrics`
+#: zero-fills these, so an instance that has never sent a webhook publishes the family at
+#: zero instead of not publishing it. It used to be emitted only when the table had rows,
+#: and `docs/HOWTO.md` declared the closed vocabulary `pending, delivered, failed` next to
+#: it -- a promise kept only on an instance that happened to hold all three at once. An
+#: alarm on failed deliveries read no-data on the instance that had never failed, which is
+#: the one answer it must never give.
+WEBHOOK_DELIVERY_STATUSES = ("pending", "delivered", "failed")
+
 
 def normalise_log_level(level: str) -> str:
     """The spelling stored for `level`: lowercased, trimmed, `warn` folded into `warning`."""

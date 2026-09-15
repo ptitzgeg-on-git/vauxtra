@@ -528,6 +528,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **An alarm on failed webhook deliveries read no-data on the instance that had never failed,
+  and the page beside it declared a vocabulary that was only ever true on the test bench.**
+  `vauxtra_webhook_delivery_total` was emitted only when `webhook_delivery_log` held rows, and
+  only for the statuses those rows carried.
+
+  A fresh instance published no such family at all, and one that had sent webhooks but never
+  lost one published `pending` and `delivered` with no `failed` beside them. The rule this
+  project's own alerting example recommends,
+  `vauxtra_webhook_delivery_total{status="failed"} > 0`, therefore answered no-data on exactly
+  the estate it was meant to reassure: an absent series and a count of zero are the same
+  picture to a person and opposite answers to `absent()`. `vauxtra_logs_24h` is zero-filled
+  for exactly that reason, in an entry further down this same section. This family was left
+  behind.
+
+  `docs/HOWTO.md` declared the closed list `pending`, `delivered`, `failed` for the `status`
+  label and added "absent entirely until a first delivery has been attempted", which is the
+  defect written down as though it were a design. `tests/test_metrics_endpoint.py` compares
+  that table against a live body in both directions and was green throughout, because its
+  fixture seeds one row per status — it manufactures the single condition under which the
+  closed list is true.
+
+  The three come from `WEBHOOK_DELIVERY_STATUSES` in `app/models.py` now, are zero-filled, and
+  are published whether or not the table holds anything; a status the column carries that this
+  build has never heard of is counted beside them rather than dropped, as the log levels are.
+  The table row says so and is open-ended, and a new check reads the floor it names back
+  against the constant the endpoint fills from. Nothing compared those before, so the cell
+  could have named a value never published and the open-ended reading of it would have excused
+  the difference.
+
+  Both this query and the `service_templates` count beside it also sat inside
+  `except Exception: pass`, written in the commit that created the two tables, when an instance
+  could still predate them. `init_db()` has created both with `CREATE TABLE IF NOT EXISTS` on
+  every boot since and runs in the lifespan before a scrape can arrive, so what the guard could
+  still catch was a real failure — and what it did with one was drop the series without a
+  word. That is the other half of the same defect: zero-filling a family a swallowed error can
+  still make vanish is half a remedy. Both guards are gone. The six sibling sections in that
+  function have never had one, and a broken query surfaces there as a 500, which a scrape reads
+  as `up 0` and an operator can see.
+
 - **An agent could delete a provider only in the way that leaves its records published, and
   nine tools reported partial failures as success.** Two holes in the same surface, both of
   them in what the MCP bridge lets an agent do and say.

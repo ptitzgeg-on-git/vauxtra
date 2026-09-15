@@ -727,7 +727,7 @@ No `Authorization` header required. Response is `text/plain` in Prometheus text 
 | `vauxtra_logs_24h` | `level` (`info`, `ok`, `warning`, `error`, …) | Log entries in the last 24 hours. Those four are always published, at `0` on a quiet instance; any other level the table holds appears beside them rather than being dropped |
 | `vauxtra_uptime_events_24h` | `status` (`ok`, `error`) | Service uptime check results in the last 24 hours |
 | `vauxtra_webhooks_total` | `state` (`all`, `enabled`) | Configured webhooks. `enabled` is a subset of `all`, in the same family — the same caution as `vauxtra_services_total` |
-| `vauxtra_webhook_delivery_total` | `status` (`pending`, `delivered`, `failed`) | Webhook delivery log entries. Absent entirely until a first delivery has been attempted |
+| `vauxtra_webhook_delivery_total` | `status` (`pending`, `delivered`, `failed`, …) | Webhook delivery log entries. Those three are always published, at `0` on an instance that has never sent one; any other status the column holds appears beside them rather than being dropped |
 | `vauxtra_templates_total` | *(none)* | Number of service templates |
 | `vauxtra_schema_version` | *(none)* | Current database schema version |
 
