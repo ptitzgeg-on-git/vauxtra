@@ -437,7 +437,11 @@ def reset_all_data() -> dict[str, Any]:
 
 @mcp.tool()
 def stream_logs_snapshot(max_events: int = 10, timeout_seconds: float = 5.0) -> dict[str, Any]:
-    """Read a bounded snapshot from the SSE logs stream endpoint.
+    """Read a bounded snapshot from the SSE logs stream endpoint. Needs an `admin` key.
+
+    The stream is the live form of what `get_logs` pages through and `clear_logs` empties,
+    and carries the same scope for the same reason. A `write` or `read` key is refused with
+    403 before a single event arrives.
 
     This does not keep a persistent stream open; it reads up to `max_events` and returns.
 

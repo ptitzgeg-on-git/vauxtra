@@ -645,8 +645,10 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
     import apprise as _apprise
     a = _apprise.Apprise()
     # The URL carries the token. `add_log` writes straight into the `logs` table, which
-    # `GET /api/logs` and its SSE stream hand to any key -- masking here is what keeps a
-    # transient Discord outage from persisting the secret in normal operation.
+    # `GET /api/logs` and its SSE stream read back and the Logs tab shows in full -- masking
+    # here is what keeps a transient Discord outage from persisting the secret in normal
+    # operation. Both readers ask for `admin`, which narrows who sees a leaked token and
+    # does nothing about its being written.
     safe_url = mask_secret_url(url)
     if not a.add(url):
         add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {safe_url}")

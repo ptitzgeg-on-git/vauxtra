@@ -7,7 +7,7 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 ## Prerequisites
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
-2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `clear_logs`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, and `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches.
+2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `get_logs`, `clear_logs`, `stream_logs_snapshot`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, and `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches.
 3. Python 3.12+ with dependencies installed:
 
 ```bash
@@ -167,7 +167,7 @@ provider rows follow, so reaching underneath them is a way to manufacture drift.
 | Tool | Description |
 |---|---|
 | `get_health` | DB status, latency, disk usage, version |
-| `get_logs` | Recent operational logs, filterable by level |
+| `get_logs` | Recent operational logs, filterable by level; needs `admin`, like the file it reads |
 | `get_certificates` | TLS certificates held by the proxy providers |
 | `get_certificate_expiry` | The same certificates with days remaining, sorted by urgency |
 | `check_all_services` | Trigger a health-check pass over every service |
@@ -233,7 +233,7 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 | Tool | Description |
 |---|---|
 | `clear_logs` | Delete every log entry; needs `admin`, and records the clear |
-| `stream_logs_snapshot` | Read a bounded slice of the SSE log stream; a quiet instance answers `timed_out: true` with whatever it collected |
+| `stream_logs_snapshot` | Read a bounded slice of the SSE log stream; needs `admin` like `get_logs`; a quiet instance answers `timed_out: true` with whatever it collected |
 
 **Backup and reset**
 
@@ -396,7 +396,10 @@ Once connected to Claude Desktop or Cursor:
   itself like a password.
 - Scopes are hierarchical: `admin` satisfies `write`, `write` satisfies `read`. A `read`
   key is refused with `403 Insufficient scope` on anything that changes state or sends
-  something outward, including the test-send and preflight tools.
+  something outward, including the test-send and preflight tools, and on the three log
+  tools. `get_logs`, `stream_logs_snapshot` and `clear_logs` read, follow and erase one
+  file, and that file holds refused sign-ins, password changes, and the name and the reach
+  of every key on the instance.
 - Never commit the key to git — pass it via environment variable only.
 - The MCP server runs locally (stdio) by default, so the key never leaves your machine.
 - For HTTP mode, secure the endpoint (reverse proxy + TLS + IP allowlist).

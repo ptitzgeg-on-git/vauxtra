@@ -20,7 +20,13 @@ def get_health() -> dict[str, Any]:
 @mcp.tool()
 def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dict[str, Any]:
     """
-    Retrieve recent operational logs.
+    Retrieve recent operational logs. Needs an `admin` key, not a `write` or `read` one.
+
+    This is the activity log, and it is the same file `clear_logs` empties: a refused
+    sign-in, a successful one, a password change, a secure backup taken, and the name and
+    the scopes of every API key created or revoked. It sits with backup and restore rather
+    than with the tools that read the estate, so a key minted for a status page is refused
+    with 403 and the message names the scope.
 
     level: filter by 'info', 'ok', 'warning' or 'error'. 'warn' is accepted and means
     'warning' -- the two spellings were both written for a while and the second is the one
