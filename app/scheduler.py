@@ -252,29 +252,68 @@ def _sync_npm_once() -> None:
 
 
 def _purge_history(conn) -> None:
-    """Drop monitoring history, logs and settled webhook rows past their retention."""
-    monitoring_retention_days = _read_retention_days(conn, "monitoring_retention_days", 14)
-    log_retention_days = _read_retention_days(conn, "log_retention_days", 30)
-    webhook_retry_retention_days = _read_retention_days(
-        conn, "webhook_retry_retention_days", 7, min_days=1, max_days=90
-    )
-    conn.execute(
-        "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)",
-        (f"-{monitoring_retention_days} days",),
-    )
-    conn.execute(
-        "DELETE FROM logs WHERE created_at < datetime('now', ?)",
-        (f"-{log_retention_days} days",),
-    )
-    try:
-        conn.execute(
-            """DELETE FROM webhook_delivery_log
-               WHERE status IN ('delivered', 'failed')
-                 AND updated_at < datetime('now', ?)""",
-            (f"-{webhook_retry_retention_days} days",),
-        )
-    except Exception:
-        pass
+    """Drop monitoring history, logs and settled webhook rows past their retention.
+
+    Three sweeps, each with its own handler, because they fail independently and because
+    this function is the only thing that bounds the three tables: a sweep that stops
+    working without saying so is a table that grows until the disk notices. One of them
+    used to carry `except Exception: pass` and the other two carried nothing at all,
+    which is one defect read from either end -- the first could never report a failure,
+    and the other two reported it by taking the rest of the cycle down with them.
+
+    The handler belongs here rather than around the call, because of what follows the
+    call. `run_health_checks` dispatches this cycle's alerts after the purge, and
+    `_provider_last_status` has already advanced to the status those alerts describe, so
+    an exception leaving this function does not delay an integration alert, it drops it:
+    the next cycle compares the new status against itself and finds no transition to
+    report. APScheduler logs what reaches it and keeps the job, so the cycle survives;
+    what does not survive is the round of notifications it was holding.
+    """
+    for table, sql, setting, default_days, bounds in (
+        (
+            "uptime_events",
+            "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)",
+            "monitoring_retention_days",
+            14,
+            {},
+        ),
+        (
+            "logs",
+            "DELETE FROM logs WHERE created_at < datetime('now', ?)",
+            "log_retention_days",
+            30,
+            {},
+        ),
+        (
+            # Settled rows only: a `pending` row is still the retry queue's work,
+            # however old the attempt that queued it is.
+            "webhook_delivery_log",
+            "DELETE FROM webhook_delivery_log"
+            " WHERE status IN ('delivered', 'failed')"
+            " AND updated_at < datetime('now', ?)",
+            "webhook_retry_retention_days",
+            7,
+            {"max_days": 90},
+        ),
+    ):
+        try:
+            days = _read_retention_days(conn, setting, default_days, **bounds)
+            conn.execute(sql, (f"-{days} days",))
+        except Exception:
+            import traceback
+            detail = traceback.format_exc()
+            try:
+                # On this connection, for the reason spelt out over `_run_cert_expiry_alerts`:
+                # a second one opened here would wait on our own uncommitted write and raise
+                # "database is locked" from inside the handler that came to record a failure.
+                add_log("error", f"[Purge] {table} sweep failed: {detail}", conn)
+            except Exception:
+                # The end of the line, and the one place in this function where silence is
+                # the answer. Recording the failure needs the same database that just refused
+                # the sweep, so the states that break a purge hardest -- a locked base, a full
+                # disk -- are the ones that also break the record of it. Raising here would
+                # hand the cycle the exact fate the handler above exists to prevent.
+                pass
 
 
 def run_health_checks() -> None:
