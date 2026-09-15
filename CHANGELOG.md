@@ -9,6 +9,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **A stolen session kept a live feed of the audit log running after the password that was
+  supposed to end it had been changed.** `GET /api/logs/stream` is the one route in this API
+  that holds the socket open: it pushes every line the instance writes, every two seconds, for
+  as long as the browser keeps the connection. It settled authorisation once, at connect time,
+  and then looped. Neither of the two moves that end a credential reached that loop.
+  `POST /api/auth/change-password` raises the stored session epoch, which refuses the replaced
+  cookie on every *later* request — and a stream already open never makes another request.
+  `DELETE /api/settings/api-keys/{key_id}` deletes the key row, with the same result for a
+  stream that key opened. `bump_session_epoch` describes the password change in its own
+  docstring as "the one move an operator makes after 'I think someone has my session'"; it left
+  that person's live feed running until they closed the tab, and the feed's next line was the
+  one saying the password had just been changed.
+
+  The loop now asks `is_authenticated(request)` on every tick, before the read rather than
+  after it, so no line written after the credential died is sent. A single shared helper
+  answers for both halves — it re-reads the session epoch and re-reads the key row from the
+  database — so revocation and the password change are each felt by the next tick, and no
+  second writer of the authorisation rule was created. It costs one small read of a local file
+  every two seconds.
+
+  The generator moved out of the route to module level, which is what lets a test drive it
+  without a socket. Five tests in `tests/test_session_and_headers.py` swap `asyncio.sleep` for
+  a hook, so "the credential is ended between tick one and tick two" is one line of test code,
+  and a stream that asks for a tick past the end of the script fails with "the stream asked for
+  another tick after its credential was ended" instead of hanging.
+
+  The fix necessarily ends the operator's own stream as well: the open connection carries the
+  cookie as it was parsed at connect time, and the refreshed one can never reach it. So the
+  Logs tab now reconnects exactly once per switch-on. The browser that changed the password
+  already holds the new cookie and comes straight back to live; anyone else is refused, the
+  view falls back to five-second polling, and the poll answers 401, which is what raises the
+  login screen. Once, and counted per switch-on rather than per connection: a stream that dies
+  twice is not coming back, and a server that accepts and drops in a loop must not be
+  reconnected to in a loop.
+
+  A password change deliberately does not end a stream opened with an API key. That is the
+  asymmetry the key routes already carry — a password change kills every cookie and no key — and
+  a test pins it here too: revocation is what ends a key.
+
+  **Upgrading:** nothing to do. A Logs view left on **Live** blinks once when the admin
+  password is changed and comes back by itself. Every other holder of the replaced credential
+  loses the stream within two seconds and lands on the login screen.
+
 - **The key with the fewest privileges that can do anything at all could erase the record of
   everything it did.** `POST /api/logs/clear` carried `scope="write"`, presumably because the
   verb changes rows. What it changes rows in is the one table that holds

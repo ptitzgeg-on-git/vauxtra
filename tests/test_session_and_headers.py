@@ -22,6 +22,8 @@ The rest of this file is about statements the code made and did not keep:
   credentials, and there was no Content-Security-Policy to say that was unusual.
 """
 
+import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -30,6 +32,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -552,6 +555,229 @@ class TheSourceNoLongerPromisesWhatItDoesNotDoTests(unittest.TestCase):
         # in the stylesheet, not in a config file.
         self.assertIn("Inter Variable", self._read("frontend/src/index.css"))
 
+
+class _StreamKeptRunning(AssertionError):
+    """The stream asked for a tick the script did not budget for: it did not stop."""
+
+
+def _streaming_request(
+    session: dict, headers: list | None = None, closed: dict | None = None
+) -> Request:
+    """A request that stays connected, for driving the log stream without a socket.
+
+    A `Request` built from a bare scope has no `receive`, and `is_disconnected` calls it.
+    The one below models a live connection with nothing pending: it never returns, so the
+    cancelled scope inside `is_disconnected` gives up on it and reads "still connected".
+    Flip `closed["now"]` and it returns the disconnect immediately instead, which is how a
+    test below says "the browser closed the tab".
+    """
+
+    async def _receive() -> dict:
+        if closed is not None and closed["now"]:
+            return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
+        return {}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/logs/stream",
+            "headers": headers or [],
+            "session": session,
+        },
+        receive=_receive,
+    )
+
+
+class TheLiveLogStreamStopsWhenItsCredentialDoesTests(_WithServer):
+    """The one route that holds the socket open, against the moves that end a credential.
+
+    `GET /api/logs/stream` pushes every line the instance writes: a refused sign-in, a key
+    created and the scopes it carries, a service changed. It does so for as long as the
+    browser keeps the socket, and it asked `require_auth` once, at connect time, before
+    looping forever. Changing the password raises the stored epoch and refuses that cookie
+    on every later request; revoking a key deletes the row behind it. Neither reaches a loop
+    that never asks again, so the thief whose stolen cookie had the Logs tab open went on
+    watching the operator work, live, including the line saying the password had just been
+    changed. The one move somebody makes after "I think someone has my session" closed every
+    door except the one that was already open.
+
+    The generator is driven here rather than over HTTP because one tick is two seconds of
+    real time and the interesting moment is between two of them. `_run` puts a hook where
+    the wait was, so "the credential is ended between tick one and tick two" is a line of
+    test code, and a stream that asks for a tick past the end of the script is the symptom
+    this class exists for, raised rather than waited out.
+
+    The asymmetry pinned by `AnApiKeySurvivesThePasswordChangeTests` is pinned here too: a
+    password change must not take down a stream opened with a key, because a key is a
+    separate credential and revoking it is what ends it.
+    """
+
+    def _run(self, request: Request, script: list) -> list[dict]:
+        """Drive `_log_stream` to its end, running one step of `script` per tick."""
+        frames: list[dict] = []
+        pending = list(script)
+
+        async def _tick(_seconds: float) -> None:
+            if not pending:
+                raise _StreamKeptRunning(
+                    "the stream asked for another tick after its credential was ended"
+                )
+            pending.pop(0)()
+
+        async def _drive() -> None:
+            with patch.object(settings_api.asyncio, "sleep", _tick):
+                async for frame in settings_api._log_stream(request):
+                    frames.append(json.loads(frame["data"]))
+
+        asyncio.run(_drive())
+        return frames
+
+    def _messages(self, frames: list[dict]) -> list[str]:
+        return [frame["message"] for frame in frames]
+
+    def _mint_admin_key(self, browser: TestClient) -> tuple[str, int]:
+        resp = browser.post(
+            "/api/settings/api-keys", json={"name": "monitoring", "scopes": ["admin"]}
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        body = resp.json()
+        return body["key"], body["id"]
+
+    def _change_password(self, browser: TestClient) -> None:
+        resp = browser.post(
+            "/api/auth/change-password",
+            json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def _session_request(self, closed: dict | None = None) -> Request:
+        return _streaming_request(
+            {"authenticated": True, "epoch": auth.current_session_epoch()}, closed=closed
+        )
+
+    def _key_request(self, key: str, closed: dict | None = None) -> Request:
+        header = ("Bearer " + key).encode()
+        return _streaming_request({}, headers=[(b"authorization", header)], closed=closed)
+
+    def test_the_password_change_ends_a_stream_that_was_already_open(self) -> None:
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        request = self._session_request()
+
+        def _change_then_write() -> None:
+            self._change_password(owner)
+            models.add_log("info", "Service updated: mail")
+
+        frames = self._run(
+            request,
+            [
+                lambda: models.add_log("warning", "Sign-in refused: wrong password"),
+                _change_then_write,
+            ],
+        )
+
+        # The first line was written while the cookie still counted, so it was sent. The
+        # second was written after the change, and the check sits before the read, so it
+        # was not, and the stream ended rather than asking for a third tick.
+        self.assertEqual(self._messages(frames), ["Sign-in refused: wrong password"])
+
+    def test_revoking_the_key_ends_the_stream_it_opened(self) -> None:
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        key, key_id = self._mint_admin_key(owner)
+        request = self._key_request(key)
+
+        def _revoke_then_write() -> None:
+            resp = owner.delete("/api/settings/api-keys/" + str(key_id))
+            self.assertEqual(resp.status_code, 200, resp.text)
+            models.add_log("info", "Service updated: mail")
+
+        frames = self._run(
+            request,
+            [
+                lambda: models.add_log("warning", "Sign-in refused: wrong password"),
+                _revoke_then_write,
+            ],
+        )
+
+        self.assertEqual(self._messages(frames), ["Sign-in refused: wrong password"])
+
+    def test_a_password_change_leaves_a_stream_opened_with_a_key_running(self) -> None:
+        """The other half of the documented asymmetry.
+
+        A key is a separate credential with its own lifetime; the password change does not
+        touch it, and the screen says so. Were the tick check reading "something changed,
+        stop" rather than "is this caller still authorised", this test is what notices:
+        both lines arrive, and the stream ends only because the browser went away.
+        """
+        self._configure_password()
+        owner = self._browser()
+        self._login(owner)
+        key, _ = self._mint_admin_key(owner)
+        closed = {"now": False}
+        request = self._key_request(key, closed=closed)
+
+        def _change_then_write() -> None:
+            self._change_password(owner)
+            models.add_log("info", "Service updated: mail")
+
+        def _hang_up() -> None:
+            closed["now"] = True
+
+        frames = self._run(
+            request,
+            [
+                lambda: models.add_log("warning", "Sign-in refused: wrong password"),
+                _change_then_write,
+                _hang_up,
+            ],
+        )
+
+        # The middle line is the password change writing itself down, and the key stream
+        # is entitled to it: this is the credential that did not change.
+        self.assertEqual(
+            self._messages(frames),
+            [
+                "Sign-in refused: wrong password",
+                "Admin password changed, and every other session was signed out",
+                "Service updated: mail",
+            ],
+        )
+
+    def test_a_stream_whose_credential_holds_keeps_delivering_every_tick(self) -> None:
+        """Without this, a check that simply always stopped would pass the tests above."""
+        self._configure_password()
+        closed = {"now": False}
+        request = self._session_request(closed=closed)
+
+        def _hang_up() -> None:
+            closed["now"] = True
+
+        frames = self._run(
+            request,
+            [
+                lambda: models.add_log("info", "one"),
+                lambda: models.add_log("info", "two"),
+                _hang_up,
+            ],
+        )
+
+        self.assertEqual(self._messages(frames), ["one", "two"])
+
+    def test_a_caller_with_no_credential_is_refused_before_any_stream_exists(self) -> None:
+        """The connect-time check stays: a 401 is a status code, an empty stream is not.
+
+        Moving the question into the loop alone would answer it with a 200 and a socket that
+        closes a moment later, which reads as "the feed is quiet" on every client.
+        """
+        self._configure_password()
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(settings_api.stream_logs(_streaming_request({})))
+        self.assertEqual(ctx.exception.status_code, 401)
 
 if __name__ == "__main__":
     unittest.main()

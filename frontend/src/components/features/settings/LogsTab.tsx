@@ -68,30 +68,57 @@ export function LogsTab() {
 
   useEffect(() => {
     if (!live || !sseSupported) return;
-    // Not '/api/...': a build served behind VITE_API_URL has its API somewhere else, and
-    // EventSource cannot go through the axios instance that knows where.
-    const source = new EventSource(`${API_BASE_URL}/logs/stream`, { withCredentials: true });
-    source.onopen = () => setLiveState('open');
-    source.onmessage = (event: MessageEvent<string>) => {
-      try {
-        const entry = JSON.parse(event.data) as Partial<LogEntry>;
-        if (!entry || typeof entry.id !== 'number' || typeof entry.message !== 'string') return;
-        const full: LogEntry = {
-          id: entry.id,
-          level: (entry.level ?? 'info') as LogLevel,
-          message: entry.message,
-          created_at: entry.created_at ?? '',
-        };
-        setLiveEntries((prev) => (prev.some((e) => e.id === full.id) ? prev : [full, ...prev].slice(0, LIVE_CAP)));
-      } catch {
-        // A malformed frame is dropped; the next one stands on its own.
-      }
+    let current: EventSource | null = null;
+    let stopped = false;
+    let retried = false;
+
+    const open = () => {
+      // Not '/api/...': a build served behind VITE_API_URL has its API somewhere else, and
+      // EventSource cannot go through the axios instance that knows where.
+      const source = new EventSource(`${API_BASE_URL}/logs/stream`, { withCredentials: true });
+      current = source;
+      source.onopen = () => setLiveState('open');
+      source.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const entry = JSON.parse(event.data) as Partial<LogEntry>;
+          if (!entry || typeof entry.id !== 'number' || typeof entry.message !== 'string') return;
+          const full: LogEntry = {
+            id: entry.id,
+            level: (entry.level ?? 'info') as LogLevel,
+            message: entry.message,
+            created_at: entry.created_at ?? '',
+          };
+          setLiveEntries((prev) => (prev.some((e) => e.id === full.id) ? prev : [full, ...prev].slice(0, LIVE_CAP)));
+        } catch {
+          // A malformed frame is dropped; the next one stands on its own.
+        }
+      };
+      source.onerror = () => {
+        source.close();
+        if (stopped) return;
+        // The server ends this stream on purpose as well as by accident: it re-checks the
+        // credential on every tick, so changing the password ends every stream opened with
+        // the cookie it replaced. The browser that made the change already holds the new
+        // one, so a single reconnect puts the live view back for the operator who did the
+        // right thing, and returns 401 to anyone else, which the poll below turns into the
+        // login screen. Exactly one, counted per switch-on rather than per connection: a
+        // stream that dies twice is not coming back, and a server that accepts and drops in
+        // a loop must not be reconnected to in a loop.
+        if (!retried) {
+          retried = true;
+          setLiveState('connecting');
+          open();
+          return;
+        }
+        setLiveState('fallback');
+      };
     };
-    source.onerror = () => {
-      source.close();
-      setLiveState('fallback');
+
+    open();
+    return () => {
+      stopped = true;
+      current?.close();
     };
-    return () => source.close();
   }, [live, sseSupported]);
 
   const clearLogs = useMutation({
