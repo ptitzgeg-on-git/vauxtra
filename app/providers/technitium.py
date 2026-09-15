@@ -3,7 +3,7 @@
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, ProviderListingRefused, TimeoutSession
 from app.text import plural
 
 
@@ -50,19 +50,35 @@ class TechnitiumProvider(DNSProvider):
         return self._login()
 
     def _list_zones(self) -> list[str]:
+        """Every enabled zone on this server.
+
+        Raises when the server did not finish answering. It used to return [] there, and an
+        empty zone list is not nothing: `list_rewrites` reads it as an empty server and
+        `_find_zone` reads it as "no zone covers this name" and lets the caller guess one
+        from the last two labels. That guess is wrong exactly when the true zone is a
+        delegated child, which is the case `_find_zone` exists to catch.
+        """
         try:
             r = self.session.get(
                 f"{self.url}/api/zones/list",
                 params={"token": self._token},
                 timeout=PROVIDER_TIMEOUT,
             )
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("status") == "ok":
-                    return [z["name"] for z in data["response"].get("zones", []) if not z.get("disabled")]
-        except (requests.RequestException, KeyError, ValueError):
-            pass
-        return []
+        except requests.RequestException as exc:
+            raise ProviderListingRefused(f"Technitium zone list failed: {exc}") from exc
+        if r.status_code != 200:
+            raise ProviderListingRefused(f"Technitium zone list returned HTTP {r.status_code}")
+        try:
+            data = r.json()
+        except ValueError as exc:
+            raise ProviderListingRefused("Technitium zone list was not JSON") from exc
+        if data.get("status") != "ok":
+            raise ProviderListingRefused(f"Technitium zone list: status {data.get('status')!r}")
+        try:
+            zones = data["response"].get("zones", [])
+        except (KeyError, TypeError) as exc:
+            raise ProviderListingRefused("Technitium zone list had no response body") from exc
+        return [z["name"] for z in zones if not z.get("disabled")]
 
     def _find_zone(self, domain: str) -> str | None:
         """Return the longest matching zone for a domain."""
@@ -146,12 +162,20 @@ class TechnitiumProvider(DNSProvider):
         return {"ok": overall_ok, "checks": checks, "warnings": warnings}
 
     def list_rewrites(self) -> list[dict]:
+        """Every enabled A record in every zone on this server.
+
+        Raises rather than returning what it managed to collect. Each zone used to be
+        skipped with `continue` on a non-200 or a non-ok status, and the whole sweep sat
+        inside one handler that returned []. Both hand back a list shorter than the truth,
+        and a name missing from that list means one thing to every caller: the record is
+        not there. `push` then creates it, the drift check reports it missing, and the
+        record routes answer 404. That is the one thing a listing that failed does not say.
+        """
         if not self._ensure_token():
-            return []
-        try:
-            zones = self._list_zones()
-            records: list[dict] = []
-            for zone in zones:
+            raise ProviderListingRefused("Technitium refused the credentials")
+        records: list[dict] = []
+        for zone in self._list_zones():
+            try:
                 r = self.session.get(
                     f"{self.url}/api/zones/records/get",
                     params={
@@ -162,19 +186,28 @@ class TechnitiumProvider(DNSProvider):
                     },
                     timeout=PROVIDER_TIMEOUT,
                 )
-                if r.status_code != 200:
-                    continue
+            except requests.RequestException as exc:
+                raise ProviderListingRefused(f"Technitium zone {zone}: {exc}") from exc
+            if r.status_code != 200:
+                raise ProviderListingRefused(f"Technitium zone {zone}: HTTP {r.status_code}")
+            try:
                 data = r.json()
-                if data.get("status") != "ok":
-                    continue
-                for rec in data["response"].get("records", []):
-                    if rec.get("type") == "A" and not rec.get("isDisabled"):
-                        ip = rec.get("rData", {}).get("ipAddress", "")
-                        if ip:
-                            records.append({"domain": rec["name"], "answer": ip})
-            return records
-        except (requests.RequestException, KeyError, ValueError):
-            return []
+            except ValueError as exc:
+                raise ProviderListingRefused(f"Technitium zone {zone}: not JSON") from exc
+            if data.get("status") != "ok":
+                raise ProviderListingRefused(
+                    f"Technitium zone {zone}: status {data.get('status')!r}"
+                )
+            try:
+                zone_records = data["response"].get("records", [])
+            except (KeyError, TypeError) as exc:
+                raise ProviderListingRefused(f"Technitium zone {zone}: no response body") from exc
+            for rec in zone_records:
+                if rec.get("type") == "A" and not rec.get("isDisabled"):
+                    ip = rec.get("rData", {}).get("ipAddress", "")
+                    if ip:
+                        records.append({"domain": rec["name"], "answer": ip})
+        return records
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         if not self._ensure_token():

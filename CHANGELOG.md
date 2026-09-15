@@ -528,6 +528,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The same short listing, on the five remaining DNS providers, and the zone lookups
+  underneath them.** Cloudflare's sweep was the first found; the others reach the same
+  answer by different routes. Technitium skipped a zone with `continue` on any non-200,
+  sat inside an outer handler that returned `[]`, and returned `[]` again when the login
+  failed. deSEC and PowerDNS each built the three answers deliberately one layer down --
+  `_get_all` returns `None` because "one means the account has no records, the other means
+  we do not know", `_zone_rrsets` returns `None` because flattening both "made a 403 look
+  like an empty RRset" -- and then wrote `or []` in `list_rewrites`, the one caller that
+  acts on the difference. AdGuard and Pi-hole answered `[]` to every failure outright.
+
+  PowerDNS said in a comment that a zone it cannot read "contributes nothing here. That is
+  the one place the distinction is safely ignorable: listing is read-only." The sweep is
+  read-only; what reads the sweep is not. Measured against the real provider, a zone whose
+  body would not open made `/drift` report `missing_dns_rewrite` -- "Rewrite
+  app.example.com missing on provider" -- for a record sitting in that zone.
+
+  The zone lookups carried a second harm the listings do not. Technitium's `_find_zone`
+  answering "no zone covers this name" sends `add_rewrite` to `_zone_fallback`, which
+  guesses the zone from the last two labels; a zone list that answered `[]` on failure made
+  every name look uncovered, so a record meant for a delegated child zone was written into
+  its parent and reported as success. deSEC's `_find_domain` and PowerDNS's `_find_zone`
+  turned a refused listing into "the account holds no domain for this name".
+
+  All five now raise. `app/providers/base.py` gains `ProviderListingRefused`, for the
+  providers whose helpers return `None` rather than throwing, and
+  `DNSProvider.list_rewrites` states the contract the callers had always assumed -- along
+  the way its docstring stops promising an `ip` key that no provider has returned in a
+  long time. `CONTRIBUTING.md` carries the same rule for anyone adding a provider. `None`
+  from the two zone lookups goes back to meaning only what the write paths read it as: the
+  server holds no zone for this name. The diagnostics keep the tolerant reading, because
+  they can tell the cases apart and exist to report the difference: PowerDNS's
+  `validate_permissions` now raises a `zones_error` check where it used to show "No zones
+  found". Pi-hole's API seat still comes back on the way out, exception included.
+
+  Two negative controls, as with the Cloudflare fix. Restoring the five providers fails
+  fifteen tests across the suites, `/drift` among them. Replacing the raise with an empty
+  answer -- all-or-nothing, the obvious alternative -- fails nine of those same tests, and
+  every one it leaves standing is a lookup whose None the empty answer happens to
+  reproduce: at a caller that writes, an empty inventory and an empty zone are the same
+  answer. What neither control moves is the complete listing on each provider, which is
+  what says this changed the failing case and nothing else.
+
 - **A DNS listing that failed came back as a short list, and a short list reads as an empty
   zone.** `CloudflareProvider.list_rewrites` walked every zone and every managed record type
   inside one `except Exception: pass`, then returned whatever it had gathered before the

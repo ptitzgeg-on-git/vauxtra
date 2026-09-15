@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, ProviderListingRefused, TimeoutSession
 from app.text import plural
 
 DEFAULT_API = "https://desec.io/api/v1"
@@ -95,10 +95,19 @@ class DesecProvider(DNSProvider):
         return domains
 
     def _find_domain(self, fqdn: str) -> dict | None:
-        """The longest account domain that contains *fqdn*."""
+        """The longest account domain that contains *fqdn*, or None when none does.
+
+        Raises when the account's domains could not be listed. None has to keep meaning
+        "the account holds no domain covering this name", because that is what the write
+        paths turn into a refusal to write; a refused listing answering None would make
+        them report the account as not holding a domain it may well hold.
+        """
+        domains = self._list_domains()
+        if domains is None:
+            raise ProviderListingRefused("deSEC would not list the account's domains")
         target = (fqdn or "").strip().rstrip(".").lower()
         best: tuple[int, dict] | None = None
-        for domain in self._list_domains() or []:
+        for domain in domains:
             name = str(domain.get("name", "")).strip().rstrip(".").lower()
             if not name:
                 continue
@@ -197,13 +206,27 @@ class DesecProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
+        """Every managed record set on every domain in the account.
+
+        `_list_domains` and `_get_all` both answer None when the API refused, and say in
+        their own words why that is not the same as an empty list. This used to spell both
+        `or []`, which threw the third answer away right where it mattered most: a name
+        absent from what this returns is read by `push` as a record to create, by the drift
+        check as a record gone missing, and by the record routes as a 404. So the two
+        helpers kept the distinction and the one caller that acts on it dropped it.
+        """
+        domains = self._list_domains(refresh=True)
+        if domains is None:
+            raise ProviderListingRefused("deSEC would not list the account's domains")
         records: list[dict] = []
-        for domain in self._list_domains(refresh=True) or []:
+        for domain in domains:
             name = str(domain.get("name", "")).strip().rstrip(".").lower()
             if not name:
                 continue
             rrsets = self._get_all(f"{self.url}/domains/{quote(name, safe='')}/rrsets/")
-            for rrset in rrsets or []:
+            if rrsets is None:
+                raise ProviderListingRefused(f"deSEC would not list the records of {name}")
+            for rrset in rrsets:
                 rtype = rrset.get("type")
                 if rtype not in MANAGED_TYPES:
                     continue
