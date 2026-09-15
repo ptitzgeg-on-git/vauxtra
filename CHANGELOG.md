@@ -528,6 +528,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A DNS listing that failed came back as a short list, and a short list reads as an empty
+  zone.** `CloudflareProvider.list_rewrites` walked every zone and every managed record type
+  inside one `except Exception: pass`, then returned whatever it had gathered before the
+  error. Nothing in the answer said whether the API had finished speaking, and a shorter list
+  means one thing to every caller: the record it was looking for is not there.
+
+  Five callers act on that reading, and every one of them had already been given the honest
+  branch to take. The two record routes answer 502, `/drift` raises a `dns_check_failed`
+  issue, the import scan logs the provider that failed, and the withdrawal path falls back to
+  the address Vauxtra stored. The handler inside the provider is what made all five
+  unreachable — including the one that writes.
+
+  That one is `push`, which reads the provider's current value to correct drift and creates a
+  record when it finds none. A listing that failed before reaching the hostname sent it down
+  the creation branch: against a zone already holding a CNAME for that name, it added an A
+  record beside it, answered `{"ok": true}`, and wrote `DNS synced` in the journal.
+  `_rewrite_for`'s own docstring names that state as the one to avoid; the provider handed the
+  push the reading that produces it.
+
+  `list_rewrites` now carries no handler. The tolerant reading it was making — a zone this
+  token can list but not read — is one PowerDNS keeps on purpose and explains over
+  `_zone_rrsets`, and keeps only because it can tell that case apart from a listing that
+  failed. One handler wrapped around the whole sweep cannot, so it read every failure as the
+  harmless one.
+
+  `tests/test_dns_listing_is_not_partial.py` is new: eleven tests, four on the provider and
+  seven on the callers, the last of them driving `push` against `CloudflareProvider` itself
+  rather than a stand-in. Two negative controls hold them in place. With the original handler
+  back, four fail, and the push test fails by naming the write it should never have made:
+  `create(zone_id='zone123', name='app.example.com', type='A', content='198.51.100.7')`
+  against the live CNAME. With a handler that returns `[]` rather than a partial list — the
+  shape every other DNS provider still uses — the same four fail identically, which is the
+  measurement worth keeping: all-or-nothing is not the fix here, because an empty inventory
+  and an empty zone remain the same answer.
+
 - **A retention sweep that failed took the cycle's alerts with it, and the one sweep that could
   not fail out loud quietly stopped bounding its table.** `_purge_history` runs three DELETEs
   — `uptime_events`, `logs` and `webhook_delivery_log` — and handled their failures two
