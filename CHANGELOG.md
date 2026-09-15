@@ -528,6 +528,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **A retention sweep that failed took the cycle's alerts with it, and the one sweep that could
+  not fail out loud quietly stopped bounding its table.** `_purge_history` runs three DELETEs
+  — `uptime_events`, `logs` and `webhook_delivery_log` — and handled their failures two
+  different ways, neither of them right.
+
+  The webhook sweep sat in `except Exception: pass`, written in `867112d`, the same commit as
+  the two metrics guards this release also removes, on the same table and for the same reason:
+  an instance could still predate it. `init_db()` has created it with `CREATE TABLE IF NOT
+  EXISTS` on every boot since, so what the guard could still catch was a real failure, and what
+  it did with one was stop bounding the retry queue without a word. The operator's only window
+  onto the size of that queue is `vauxtra_webhook_delivery_total`, the family this same release
+  stops hiding.
+
+  The other two sat in nothing at all, and that is the expensive half. `run_health_checks`
+  purges and *then* dispatches: `_save_scheduler_state()` and the three webhook calls all run
+  after `_purge_history` returns. An exception leaving it skipped them, and the integration
+  alert it skipped was not postponed to the next cycle but lost. `_provider_last_status` lives
+  in memory and had already been advanced to the status that alert described, so the next cycle
+  compared the new status against itself, found no transition, and said nothing. APScheduler
+  logs what reaches it and keeps the job scheduled, so the cycle itself went on running: that is
+  why a purge failing could cost an alert and leave no sign of having done so.
+
+  The three sweeps are now one loop, each with its own handler and its own retention setting. A
+  sweep that fails is written to the `logs` table the panel shows, with its traceback, and the
+  two beside it still run. Recording the failure is deliberately best-effort: it needs the same
+  database that just refused the DELETE, so a locked base or a full disk breaks both halves at
+  once, and letting that second failure out would hand the cycle the exact fate the handler
+  exists to prevent.
+
+  `tests/test_scheduler_purge.py` is new, and four negative controls hold it in place. With the
+  original function restored, the four failure tests fail and the three behaviour tests pass,
+  which is what makes this a rewrite of the handling rather than a change to the retention.
+  With the best-effort record removed, the case that drops the `logs` table raises out through
+  `add_log` itself. With one handler around the whole loop instead of one per sweep, a broken
+  sweep takes its siblings down with it. And without the settled-only clause, a `pending` row
+  old enough to be swept is swept, though it is still the retry queue's own work.
+
 - **An alarm on failed webhook deliveries read no-data on the instance that had never failed,
   and the page beside it declared a vocabulary that was only ever true on the test bench.**
   `vauxtra_webhook_delivery_total` was emitted only when `webhook_delivery_log` held rows, and
