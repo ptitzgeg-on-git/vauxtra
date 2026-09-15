@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import requests
 
 from app.providers.adguard import AdGuardProvider
+from app.providers.base import ProviderListingRefused
 
 
 def _response(status_code: int = 200, json_data=None) -> MagicMock:
@@ -52,15 +53,18 @@ class TestAdGuardListRewrites(unittest.TestCase):
         self.assertEqual(result[0]["domain"], "app.home.local")
         self.assertEqual(result[0]["answer"], "192.168.1.10")
 
-    def test_list_rewrites_returns_empty_on_error(self):
+    def test_a_network_error_is_not_an_empty_rewrite_list(self):
+        """[] is how every caller learns a name is free. A failed call never said that."""
         self.ag.session.get = MagicMock(side_effect=requests.RequestException("err"))
-        self.assertEqual(self.ag.list_rewrites(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.ag.list_rewrites()
 
-    def test_list_rewrites_returns_empty_on_401(self):
+    def test_a_401_is_not_an_empty_rewrite_list(self):
         r = _response(401)
         r.raise_for_status = MagicMock(side_effect=requests.HTTPError)
         self.ag.session.get = MagicMock(return_value=r)
-        self.assertEqual(self.ag.list_rewrites(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.ag.list_rewrites()
 
 
 class TestAdGuardAddRewrite(unittest.TestCase):

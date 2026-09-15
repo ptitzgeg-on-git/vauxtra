@@ -3,7 +3,7 @@ from urllib.parse import quote
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, ProviderListingRefused, TimeoutSession
 
 
 class PiholeProvider(DNSProvider):
@@ -99,7 +99,10 @@ class PiholeProvider(DNSProvider):
         The counter makes the helper reentrant, so `update_rewrite` can wrap its add and
         its delete in a single seat instead of spending two.
 
-        Yields False when authentication failed; the caller returns its empty value.
+        Yields False when authentication failed; the caller decides what that means --
+        a write reports failure, a listing raises rather than answer an empty inventory.
+        The seat comes back either way, exception included, because the release is in a
+        `finally`.
         """
         self._depth += 1
         try:
@@ -140,9 +143,16 @@ class PiholeProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
+        """Every local DNS record Pi-hole holds.
+
+        Raises when the session could not be opened or the request failed. [] was the
+        answer to both, and [] is what `add_rewrite` reads as "this name is free", what
+        `/drift` reads as "the rewrite is gone" and what the record routes answer 404 on.
+        A login Pi-hole refused says nothing about the records behind it.
+        """
         with self._api_session() as authed:
             if not authed:
-                return []
+                raise ProviderListingRefused("Pi-hole refused the session")
             return self._list_rewrites_inner()
 
     def _list_rewrites_inner(self) -> list[dict]:
@@ -157,18 +167,17 @@ class PiholeProvider(DNSProvider):
                     if len(parts) >= 2:
                         rewrites.append({"domain": parts[1], "answer": parts[0]})
                 return rewrites
-            else:
-                r = self.session.get(
-                    f"{self.url}/admin/api.php",
-                    params={"customdns": "", "action": "get", "auth": self.api_key},
-                )
-                r.raise_for_status()
-                return [
-                    {"domain": row[0], "answer": row[1]}
-                    for row in r.json().get("data", [])
-                ]
-        except requests.RequestException:
-            return []
+            r = self.session.get(
+                f"{self.url}/admin/api.php",
+                params={"customdns": "", "action": "get", "auth": self.api_key},
+            )
+            r.raise_for_status()
+            return [
+                {"domain": row[0], "answer": row[1]}
+                for row in r.json().get("data", [])
+            ]
+        except requests.RequestException as exc:
+            raise ProviderListingRefused(f"Pi-hole would not list its records: {exc}") from exc
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         with self._api_session() as authed:

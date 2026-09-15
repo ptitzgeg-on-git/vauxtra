@@ -2,7 +2,7 @@
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, ProviderListingRefused, TimeoutSession
 
 
 class AdGuardProvider(DNSProvider):
@@ -21,12 +21,20 @@ class AdGuardProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
+        """Every rewrite AdGuard holds.
+
+        Raises rather than answering []. AdGuard's whole inventory comes back in one call,
+        so there was never a partial list to hand out here -- but [] is not a neutral
+        answer either. It is how `add_rewrite` decides the name is free, how `/drift` finds
+        a rewrite missing, and how the record routes answer 404. A request that failed says
+        nothing about what AdGuard holds.
+        """
         try:
             r = self.session.get(f"{self.url}/control/rewrite/list")
             r.raise_for_status()
-            return [{"domain": e["domain"], "answer": e["answer"]} for e in r.json()]
-        except requests.RequestException:
-            return []
+        except requests.RequestException as exc:
+            raise ProviderListingRefused(f"AdGuard would not list its rewrites: {exc}") from exc
+        return [{"domain": e["domain"], "answer": e["answer"]} for e in r.json()]
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         try:

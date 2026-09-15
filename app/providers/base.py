@@ -28,6 +28,21 @@ class TimeoutSession(requests.Session):
         return super().request(method, url, **kwargs)
 
 
+class ProviderListingRefused(RuntimeError):
+    """The provider did not finish saying what it holds.
+
+    An empty list and a refused listing are different answers, and every caller that acts on
+    a listing acts on the difference: `push` creates a record when it finds none, the drift
+    check reports one missing, the record routes answer 404. `desec._get_all` puts it in its
+    own words one layer down -- "one means the account has no records, the other means we do
+    not know" -- and `powerdns._zone_rrsets` keeps the same three answers for the same
+    reason. This is how that third answer leaves `list_rewrites`, which has only two to give.
+
+    Providers whose own client raises, Cloudflare's for one, let that exception out instead.
+    Every caller wraps the call, so what matters is that something arrives.
+    """
+
+
 class DNSProvider(ABC):
     """Common interface for all DNS providers (AdGuard, Pi-hole, etc.)."""
 
@@ -37,7 +52,12 @@ class DNSProvider(ABC):
 
     @abstractmethod
     def list_rewrites(self) -> list[dict]:
-        """List all DNS rewrites. Returns [{'domain': ..., 'ip': ...}]."""
+        """Every rewrite the provider holds, as [{'domain': ..., 'answer': ...}].
+
+        An empty list means the provider said it holds nothing. A provider that could not
+        finish answering raises -- `ProviderListingRefused`, or whatever its own client
+        threw -- rather than handing back the part it managed to collect.
+        """
 
     @abstractmethod
     def add_rewrite(self, domain: str, ip: str) -> bool:

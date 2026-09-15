@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import requests
 
 from app.config import PROVIDER_TIMEOUT, encrypt_secret
-from app.providers.base import TimeoutSession
+from app.providers.base import ProviderListingRefused, TimeoutSession
 from app.providers.factory import PROVIDER_TYPES, create_provider
 from app.providers.powerdns import PowerDNSProvider
 
@@ -190,13 +190,19 @@ class TestPowerDNSZones(unittest.TestCase):
         _wire(self.provider, _FakePowerDNS({"home.lab.": []}, with_ids=False))
         self.assertEqual(self.provider._find_zone("a.home.lab"), "home.lab.")
 
-    def test_a_refused_zone_list_is_empty_not_an_error(self):
+    def test_a_refused_zone_list_answers_none_not_an_empty_server(self):
         self.provider.session.get = MagicMock(return_value=_response(403, {}))
-        self.assertEqual(self.provider._list_zones(), [])
+        self.assertIsNone(self.provider._list_zones())
 
-    def test_a_zone_list_that_is_not_a_list_is_empty(self):
+    def test_a_zone_list_that_is_not_a_list_answers_none(self):
         self.provider.session.get = MagicMock(return_value=_response(200, {"error": "nope"}))
-        self.assertEqual(self.provider._list_zones(), [])
+        self.assertIsNone(self.provider._list_zones())
+
+    def test_find_zone_raises_rather_than_reporting_no_zone_covers_the_name(self):
+        """None means no zone covers it; a refused list does not establish that."""
+        self.provider.session.get = MagicMock(return_value=_response(403, {}))
+        with self.assertRaises(ProviderListingRefused):
+            self.provider._find_zone("a.home.lab")
 
 
 class TestPowerDNSListRewrites(unittest.TestCase):
@@ -443,11 +449,23 @@ class TestPowerDNSRefusedRead(unittest.TestCase):
         self.assertFalse(self.provider.delete_rewrite("app.home.lab", "192.168.1.10"))
         self.assertEqual(fake.patches, [])
 
-    def test_listing_still_skips_a_zone_it_cannot_read(self):
-        """Listing is read-only, so a zone it cannot open simply contributes nothing."""
+    def test_a_zone_it_cannot_read_is_not_a_zone_with_nothing_in_it(self):
+        """Listing is read-only, but what reads the listing is not.
+
+        This zone used to be skipped in silence, on the reasoning that a read-only sweep
+        can safely ignore what it cannot open. The push reads the result and creates the
+        record it does not find; the drift check reports it missing. A skipped zone is a
+        zone Vauxtra believes to be empty, and acts on.
+        """
         _wire(self.provider, _RefusesTheZoneBody({"home.lab.": [
             _rrset("app.home.lab.", "A", "192.168.1.10"),
         ]}))
+        with self.assertRaises(ProviderListingRefused):
+            self.provider.list_rewrites()
+
+    def test_a_genuinely_empty_zone_still_lists_as_empty(self):
+        """The guard must not turn a zone that really holds nothing into a failure."""
+        _wire(self.provider, _FakePowerDNS({"home.lab.": []}))
         self.assertEqual(self.provider.list_rewrites(), [])
 
     def test_an_empty_zone_is_still_writable(self):
