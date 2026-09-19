@@ -193,3 +193,40 @@ describe('Providers, when the type catalogue cannot be read', () => {
     expect(typesCalls).toBeGreaterThan(1);
   });
 });
+
+describe('Providers, when the last manual test has gone stale', () => {
+  const seed = (minutesAgo: number) =>
+    window.localStorage.setItem(
+      DIAGNOSTICS_STORAGE_KEY,
+      JSON.stringify({ 1: { ok: true, testedAt: Date.now() - minutesAgo * 60 * 1000 } }),
+    );
+
+  it('names the hour it ran while the verdict is still fresh', async () => {
+    seed(5);
+    renderWithProviders(<Providers />);
+    await filters();
+
+    expect(screen.getByText('providers.card.last_test')).toBeInTheDocument();
+    expect(screen.queryByText('providers.card.never_tested')).toBeNull();
+  });
+
+  it('still names it once the verdict has expired', async () => {
+    // Past the TTL the card used to say "Never tested" about an integration validated forty
+    // minutes earlier, because the stale entry was deleted on restore and written back gone.
+    // The verdict is right to expire; the date it ran is a different fact and does not.
+    seed(40);
+    renderWithProviders(<Providers />);
+    await filters();
+
+    expect(screen.getByText('providers.card.last_test')).toBeInTheDocument();
+    expect(screen.queryByText('providers.card.never_tested')).toBeNull();
+  });
+
+  it('says never only when nothing was ever stored', async () => {
+    renderWithProviders(<Providers />);
+    await filters();
+
+    expect(screen.getByText('providers.card.never_tested')).toBeInTheDocument();
+    expect(screen.queryByText('providers.card.last_test')).toBeNull();
+  });
+});

@@ -98,15 +98,20 @@ function useBusyIds() {
   return { has: (id: number) => ids.has(id), start, end };
 }
 
+// Everything stamped with a date is restored, not only what is still fresh. Dropping the
+// stale ones here deleted the date along with the verdict -- the effect below then wrote the
+// shorter map back -- and the card, which had nothing left to read, said "Never tested" about
+// an integration validated forty minutes earlier. The verdict does expire, and `signalsById`
+// still gates `diag` on `isDiagnosticsFresh` so no stale check feeds the score; the hour at
+// which someone last ran it is a different fact, and it does not expire.
 function restoreDiagnostics(): DiagnosticsMap {
   try {
     const raw = localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, ProviderDiagnostics>;
-    const now = Date.now();
     const restored: DiagnosticsMap = {};
     for (const [id, diag] of Object.entries(parsed || {})) {
-      if (isDiagnosticsFresh(diag, now)) restored[Number(id)] = diag;
+      if (Number(diag?.testedAt || 0) > 0) restored[Number(id)] = diag;
     }
     return restored;
   } catch {
@@ -122,6 +127,8 @@ type RouteModal = { mode: 'create' } | { mode: 'edit'; provider: Provider };
 
 interface ProviderSignals {
   diag?: ProviderDiagnostics;
+  /** When the last manual test ran, fresh or not -- unlike `diag`, this does not expire. */
+  lastTestedAt?: number;
   tunnel?: ProviderHealthStatus;
   auto?: ProviderHealthSummary;
   health: HealthScore;
@@ -253,6 +260,7 @@ export function Providers() {
       const health = getHealthScore(provider, { diag, tunnel, auto }, t);
       out[id] = {
         diag,
+        lastTestedAt: Number(raw?.testedAt || 0) || undefined,
         tunnel,
         auto,
         health,
@@ -671,6 +679,7 @@ export function Providers() {
                         health={signals.health}
                         status={signals.status}
                         diagnostics={signals.diag}
+                        lastTestedAt={signals.lastTestedAt}
                         tunnelHealth={isTunnelType(String(provider.type || ''), meta) ? signals.tunnel : undefined}
                         autoHealth={signals.auto}
                         testing={testing.has(id)}
