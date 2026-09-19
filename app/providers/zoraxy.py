@@ -8,7 +8,13 @@ import re
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider, TimeoutSession, login_check, reachability_check
+from app.providers.base import (
+    ProviderListingRefused,
+    ProxyProvider,
+    TimeoutSession,
+    login_check,
+    reachability_check,
+)
 from app.text import plural
 
 log = logging.getLogger(__name__)
@@ -315,11 +321,21 @@ class ZoraxyProvider(ProxyProvider):
         }
 
     def list_hosts(self) -> list[dict]:
+        """Every host rule Zoraxy holds.
+
+        Raises rather than answering []. `_get` returns None for a refused session, a
+        non-200 and a body that is not JSON alike, and turning that None into an empty
+        list hands the drift check the one sentence it reads as `route_missing` with a
+        Reconcile button beside it. `validate_permissions` above gets this right -- it
+        asks `_get` itself and tests `isinstance(rules, list)` -- so the panel could say
+        "rules unreadable" while the drift check, on the same failure, said "the route
+        is gone". Only one of those two was ever true.
+        """
         if not self._ensure_auth():
-            return []
+            raise ProviderListingRefused("Zoraxy refused the credentials")
         rules = self._get("/api/proxy/list", {"type": "host"})
         if not isinstance(rules, list):
-            return []
+            raise ProviderListingRefused("Zoraxy would not list its proxy rules")
         return [
             self._normalize_rule(rule)
             for rule in rules

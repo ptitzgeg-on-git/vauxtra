@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from app.providers.base import ProviderListingRefused
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
 
 
@@ -283,8 +284,15 @@ class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
         methods = [c.args[0] for c in self.p.session.request.call_args_list]
         self.assertNotIn("PUT", methods)
 
-    def test_list_hosts_is_empty_but_does_not_pretend_on_read_failure(self):
+    def test_a_config_that_could_not_be_read_is_not_a_tunnel_serving_nothing(self):
+        """The helper already refuses to conflate the two; the caller must not undo it."""
         self.p._get_configuration = MagicMock(return_value=None)
+        with self.assertRaises(ProviderListingRefused):
+            self.p.list_hosts()
+
+    def test_a_tunnel_with_no_ingress_still_answers_the_empty_list(self):
+        """An ingress holding nothing is an answer, and it stays an empty list."""
+        self.p._get_configuration = MagicMock(return_value={"ingress": []})
         self.assertEqual(self.p.list_hosts(), [])
 
     def test_delete_dns_record_fails_when_zone_cannot_be_resolved(self):

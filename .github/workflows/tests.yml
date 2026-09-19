@@ -110,6 +110,15 @@ jobs:
       - name: Capability parity gate
         run: python scripts/check_capability_parity.py
 
+      # An empty list is the sentence the drift check reads as "this route is gone", and
+      # four providers said it when they had merely failed to ask. Two swallowed an
+      # exception, two turned an honest None from their own helper into [] one line later,
+      # which is why looking inside except handlers found only half of them. The rule is
+      # about the returned value instead: a listing never writes an empty answer as a
+      # literal, it raises.
+      - name: Listing contract gate
+        run: python scripts/check_listing_contract.py
+
       - name: Run tests
         run: python -m pytest tests/ -v
 
