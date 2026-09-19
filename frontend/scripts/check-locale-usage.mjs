@@ -73,6 +73,39 @@ const KEY_FORMS = [
  */
 const COMMENT_LINE = /^\s*(\/\/|\*|\/\*)/;
 
+/** A hole a sentence expects to be filled, as `{name}`. */
+const PLACEHOLDER = /\{(\w+)\}/g;
+
+/**
+ * The text of a `t()` call's remaining arguments, or '' when the key was its only one.
+ *
+ * Read by balancing parentheses from just after the key rather than by a regex, because the
+ * arguments are an object literal and can hold parentheses of their own. Quotes are tracked
+ * so a paren inside a string does not close the call early; template literals are tracked
+ * the same way, which is coarse -- a `${...}` hole inside one is not parsed -- and coarse is
+ * safe here, since the worst case is arguments that read as longer than they are and a
+ * placeholder found in text that is still part of the same call.
+ */
+function argsAfter(source, start) {
+  let depth = 1;
+  let quote = null;
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    else if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i);
+    }
+  }
+  return '';
+}
+
 function sourceFiles(dir) {
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
@@ -90,14 +123,47 @@ function sourceFiles(dir) {
 
 const en = JSON.parse(readFileSync(join(localesDir, 'en.json'), 'utf8'));
 const known = new Set(Object.keys(en));
-for (const key of Object.keys(en)) {
+/** Every hole a key can present, a counted sentence's categories folded into its base. */
+const holes = new Map();
+const noteHoles = (key, text) => {
+  const found = holes.get(key) ?? new Set();
+  for (const [, name] of text.matchAll(PLACEHOLDER)) found.add(name);
+  holes.set(key, found);
+};
+for (const [key, text] of Object.entries(en)) {
+  noteHoles(key, text);
   const category = CATEGORIES.find((c) => key.endsWith(`_${c}`));
-  if (category) known.add(key.slice(0, -(category.length + 1)));
+  if (category) {
+    const base = key.slice(0, -(category.length + 1));
+    known.add(base);
+    noteHoles(base, text);
+  }
 }
 
 const files = sourceFiles(srcDir);
 let checked = 0;
+let filled = 0;
 let failed = false;
+
+/**
+ * Whether a `t()` call fills every hole its sentence presents.
+ *
+ * The two gates beside this one compare the eight locale files to each other, so they see a
+ * placeholder that one language dropped and are blind to one that no call site fills: the
+ * files agree, the key exists, and `{host}` is printed to the operator verbatim -- in all
+ * eight languages, which is how `expose.done.body` announced a published route as
+ * "{host} is published on its providers." on the last screen of the wizard.
+ *
+ * Arguments that spread another object, or that build their names, are skipped rather than
+ * guessed at: `{ ...counts }` may well carry the hole, and a gate that fails on correct code
+ * is worse than one that checks less.
+ */
+function unfilledHoles(key, args) {
+  const wanted = holes.get(key);
+  if (!wanted || wanted.size === 0) return [];
+  if (args.includes('...') || args.includes('[')) return [];
+  return [...wanted].filter((name) => !new RegExp(`\\b${name}\\s*[:,}]`).test(args));
+}
 
 for (const file of files) {
   const shown = file.slice(process.cwd().length + 1).replaceAll('\\', '/');
@@ -119,6 +185,21 @@ for (const file of files) {
       );
     }
   }
+
+  for (const match of source.matchAll(LITERAL_KEY)) {
+    const key = match[2];
+    if (!known.has(key)) continue;
+    const missing = unfilledHoles(key, argsAfter(source, match.index + match[0].length));
+    filled += 1;
+    if (missing.length === 0) continue;
+    failed = true;
+    const line = source.slice(0, match.index).split('\n').length;
+    console.error(
+      `${shown}:${line}: t('${key}') fills none of ` +
+        `${missing.map((name) => `{${name}}`).join(', ')} ` +
+        `-- the sentence would print that hole to the page as it is written.`,
+    );
+  }
 }
 
 if (!checked) {
@@ -132,5 +213,6 @@ if (failed) {
 
 console.log(
   `Locale usage check passed for ${files.length} source files ` +
-    `(${checked} keys spelt out by hand, all present in en.json).`,
+    `(${checked} keys spelt out by hand, all present in en.json; ` +
+    `${filled} t() calls fill every hole their sentence presents).`,
 );
