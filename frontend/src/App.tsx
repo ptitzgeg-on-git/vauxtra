@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
@@ -21,6 +21,7 @@ const Certificates = lazy(() => import('./pages/Certificates').then((m) => ({ de
 const Templates = lazy(() => import('./pages/Templates').then((m) => ({ default: m.Templates })));
 const Login = lazy(() => import('./pages/Login').then((m) => ({ default: m.Login })));
 const Setup = lazy(() => import('./pages/Setup').then((m) => ({ default: m.Setup })));
+const NotFound = lazy(() => import('./pages/NotFound').then((m) => ({ default: m.NotFound })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -140,7 +141,8 @@ function AuthGate() {
   return <AppRoutes />;
 }
 
-function AppRoutes() {
+/** The route table, exported so a test can ask it what an unknown address answers. */
+export function AppRoutes() {
   const t = useT();
 
   return (
@@ -154,7 +156,7 @@ function AppRoutes() {
           <Route path="monitoring" element={<RouteErrorBoundary page={t('nav.monitoring')}><Monitoring /></RouteErrorBoundary>} />
           <Route path="settings" element={<RouteErrorBoundary page={t('nav.settings')}><Settings /></RouteErrorBoundary>} />
           <Route path="certificates" element={<RouteErrorBoundary page={t('nav.certificates')}><Certificates /></RouteErrorBoundary>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<RouteErrorBoundary page={t('notfound.title')}><NotFound /></RouteErrorBoundary>} />
         </Route>
       </Routes>
     </Suspense>
