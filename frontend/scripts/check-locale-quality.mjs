@@ -198,6 +198,7 @@ const DECLARED = new Map(
 
     // A number with nothing beside it to agree.
     'layout.nav.item_with_badge': { badge: 'a badge in parentheses next to {label}; it can read "9+"' },
+    'layout.nav.item_alert_with_badge': { badge: 'the same badge, in the name that also says something is wrong' },
     'providers.health.score': { score: 'a score printed as {score}/100' },
     'settings.migration.import_selected': { count: 'a badge in parentheses, nothing agrees with it' },
     'setup.import.finish_import': { count: 'a bare number between a verb and a conjunction' },

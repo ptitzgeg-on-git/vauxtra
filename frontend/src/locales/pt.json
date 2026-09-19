@@ -2134,6 +2134,8 @@
   "providers.diag.detail.zones_listed_other": "{count} zonas acessíveis com este token — a deteção automática vai funcionar.",
   "providers.diag.detail.zones_none": "Nenhuma zona encontrada.",
   "layout.nav.item_with_badge": "{label} ({badge})",
+  "layout.nav.item_alert": "{label}, requer atenção",
+  "layout.nav.item_alert_with_badge": "{label} ({badge}), requer atenção",
   "ui.tooltip.exact_time": "Hora exata: {when}",
   "providers.delete.hook_title": "Notificações ainda apontam para ela",
   "providers.delete.hook_intro_one": "{count} webhook de notificação ainda aponta para {name}.",

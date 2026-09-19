@@ -46,6 +46,7 @@ import type {
   Service,
 } from '@/types/api';
 import { BrandMark } from './BrandMark';
+import { navItemName } from './navLabel';
 
 
 export interface SidebarProps {
@@ -281,12 +282,16 @@ export function Sidebar({
                       to={item.href}
                       onClick={onNavigate}
                       // The badge is the only surfacing of "3 checks are failing" at this width, and an
-                      // `aria-label` replaces the whole subtree in the name -- so the count goes into the name.
-                      aria-label={
-                        item.badge !== undefined
-                          ? t('layout.nav.item_with_badge', { label: item.label, badge: formatBadge(item.badge) })
-                          : item.label
-                      }
+                      // `aria-label` replaces the whole subtree in the name -- so the count, and the
+                      // alert the expanded sidebar draws a glyph for, both go into the name.
+                      aria-label={navItemName(
+                        {
+                          label: item.label,
+                          badge: item.badge !== undefined ? formatBadge(item.badge) : undefined,
+                          alert: item.alert,
+                        },
+                        t,
+                      )}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
                         'relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors [&>svg]:h-[18px] [&>svg]:w-[18px]',
@@ -295,6 +300,16 @@ export function Sidebar({
                     >
                       {active && <span aria-hidden="true" className="absolute -left-2 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary" />}
                       {item.icon}
+                      {/* The expanded sidebar draws this glyph; at rail width a red badge was the
+                          whole signal, which is the one thing `alert` exists to prevent. */}
+                      {item.alert && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute -bottom-1 -left-1 flex h-[14px] w-[14px] items-center justify-center rounded-full bg-card ring-2 ring-card"
+                        >
+                          <TriangleAlert className="h-3 w-3 text-destructive" />
+                        </span>
+                      )}
                       {item.badge !== undefined && (
                         <span
                           className={cn(
@@ -386,6 +401,16 @@ export function Sidebar({
                     <Link
                       to={item.href}
                       onClick={onNavigate}
+                      // The glyph below is `aria-hidden`, so without this the alert was drawn
+                      // and never spoken -- the same omission the rail had, one width wider.
+                      aria-label={navItemName(
+                        {
+                          label: item.label,
+                          badge: item.badge !== undefined ? formatBadge(item.badge) : undefined,
+                          alert: item.alert,
+                        },
+                        t,
+                      )}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
                         'group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
