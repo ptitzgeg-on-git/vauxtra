@@ -123,6 +123,7 @@ Symptoms:
 - A save was refused after the providers had already been called
 - A service stopped alerting and nothing was reported
 - A route is reported missing, and it is still there on the provider
+- A service exposed through a tunnel is reported in sync, and its hostname answers nothing
 
 Checks:
 
@@ -137,6 +138,8 @@ Checks:
 9. An alert list replaced with nothing. `POST /api/services/{sid}/alerts` replaces every rule of the service, so a body that did not carry its `alerts` key -- an empty body, or one whose key was misspelled -- used to delete them all and answer `ok`, and an entry inside the list that had lost its `webhook_id` used to be skipped, which after the deletion means removed. Both are refused now, with a `422` naming the field, and the stored rules are left alone. If a service went quiet before this version, open its alert tab: an empty list there is the symptom, and the rules have to be added back. Clearing them deliberately is still one request, and it is `{"alerts": []}`. An id naming no row is answered before anything is deleted -- `404 Service not found` for the service, or a `400` naming every unknown webhook at once -- so a refused request never costs you the rules you already had.
 
 10. A route reported missing that is still on the provider. A drift check reads a listing with no matching record as a route that has disappeared, so a provider that refused the listing used to produce exactly that report, with a Reconcile button beside it whose only meaning would have been "publish it again". Four providers answered an empty list for a read that had failed -- NPM, Traefik, Zoraxy and Cloudflare Tunnel -- and they no longer do: a listing that could not be finished is reported as `proxy_check_failed`, naming the provider and what it said. If you see `route_missing` now, the provider answered and the record really is absent. If you see `proxy_check_failed`, fix the provider first (an expired token or a restarted container is the usual cause) and re-run the check before reconciling anything.
+
+11. A tunnel service reported in sync while nothing answers on its hostname. Before this version every service was read as if it were in `proxy_dns` mode, because the test that asked the row which mode it was in could only ever answer "no". A tunnel service has no `proxy_provider_id`, so it was compared against no provider at all, and the silence was reported as agreement: `mode: proxy_dns`, `ok: true`, `issues: []`, with a dry-run beside it saying `would_change: false`. Upgrade first, then re-run the drift check on every service exposed through a tunnel: the ones that were never actually published now report `route_missing` on the tunnel provider, and a push creates the ingress rule. Two related symptoms have the same origin. A tunnel service whose `tunnel_hostname` differs from `subdomain.domain` was read, compared and withdrawn under the wrong name, so a delete or a disable made before this version may have left a live ingress rule behind -- check the tunnel's configuration for the hostname the service actually served. And a service set to resolve its public target automatically was pushed as if it were set to the manual address: if its DNS record has been pointing at a stale address, one push now re-resolves it and the journal says where the new value came from.
 
 Actions:
 

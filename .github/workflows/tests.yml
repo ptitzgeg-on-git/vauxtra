@@ -119,6 +119,15 @@ jobs:
       - name: Listing contract gate
         run: python scripts/check_listing_contract.py
 
+      # `"expose_mode" in svc` reads like a question about the schema and is not one: a
+      # sqlite3.Row is a sequence, so `in` walks its values. No column ever holds the string
+      # "expose_mode", so six sites answered False for every row that ever reached them and
+      # nothing contradicted them. Tunnel services were read as proxy_dns and collected
+      # against no provider at all, so the drift check said "in sync" about a route that had
+      # never been published. A guard that always answers no is not a guard.
+      - name: Row membership gate
+        run: python scripts/check_row_membership.py
+
       - name: Run tests
         run: python -m pytest tests/ -v
 

@@ -236,6 +236,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **A row membership gate**, `scripts/check_row_membership.py`, run in the backend job beside
+  the other parity gates, with `tests/test_row_membership_gate.py` running it against this
+  repository so the suite catches the next instance even with the CI step removed. It holds
+  one rule across `app/`: a string literal is never tested with `in` against a value the
+  file can see is a database row. A `sqlite3.Row` is a sequence, so `in` searches its values
+  and not its column names, and such a test is therefore False for every row that will ever
+  reach it -- whatever it guards is dead, and nothing will ever say so. A row is recognised
+  three ways, all local to the function being read: a name assigned from a cursor, a `for`
+  target iterating over one, and a parameter spelled the way this repository spells a row it
+  was handed. Simple aliasing is followed. Plain dicts are left alone on purpose, since a
+  dict already answers on its keys and most of `app/` passes dicts -- a gate that cried
+  about those would cry forty times and be read as noise, which is how the six real sites
+  hid in plain sight.
+
 - **A listing contract gate**, `scripts/check_listing_contract.py`, run in the backend job
   beside the other parity gates, with `tests/test_listing_contract_gate.py` running it against
   this repository so the suite catches the next instance even with the CI step removed. It
@@ -539,6 +553,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `python -m pytest tests/` catches the next such bump even with the CI step removed.
 
 ### Fixed
+
+- **A service exposed through a Cloudflare tunnel was never examined at all, and the drift
+  check said it was in sync.** `app/api/sync.py` asked each service row `"expose_mode" in
+  svc` before reading the column, and a `sqlite3.Row` is a sequence: `in` searches its
+  *values*, not its column names. No service column ever holds the string `"expose_mode"`,
+  so the test was False for every row that ever reached it, and all six sites that asked --
+  two for `expose_mode`, one for `tunnel_hostname`, two for `public_target_mode`, one more
+  in the withdrawal -- fell through to their default. A guard that always answers "no"
+  contradicts nothing, which is why this was quiet.
+
+  Measured on a live instance, on a tunnel service whose own creation had answered
+  `errors: ["Failed to create tunnel route"]`: `GET /api/services/{id}/drift` came back
+  `{"mode": "proxy_dns", "ok": true, "issues": []}` and `POST /api/services/{id}/push/dry-run`
+  came back `{"proxy_actions": [], "would_change": false}`. Read as `proxy_dns`, the service
+  was collected against `proxy_provider_id`, which is NULL on a tunnel service, so the check
+  compared it against no provider at all and reported the resulting silence as agreement. An
+  operator watching that page would have been told a hostname was published while nothing
+  answered on it, and the scheduler would never have republished it.
+
+  Three more things moved with it. `tunnel_hostname` was never read, so a service exposed
+  under one name was read, compared and -- the one that bites -- **withdrawn** under
+  another: a delete or a disable aimed `delete_host` at `subdomain.domain` and left the
+  live ingress rule in place. `public_target_mode` was read the same way on *every* service,
+  tunnel or not, so `resolve_public_target` was always called with `mode="manual"`: an
+  operator who chose the automatic public target got the stored address republished verbatim
+  for ever, and the mode did nothing. And a provider refusing to list its rules could not
+  reach a tunnel service either, since that service never asked it anything -- so the
+  `ProviderListingRefused` answer added below was unreachable for a whole class of service.
+
+  A `_has_column` helper now asks the row for its keys, and the six sites ask it.
 
 - **Zoraxy and Cloudflare Tunnel answered "no routes" when they had answered nothing.**
   Neither swallowed an exception, which is why the audit that caught NPM and Traefik walked
