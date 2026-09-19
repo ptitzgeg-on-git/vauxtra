@@ -528,6 +528,123 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **The preflight called a LAN address "public", on the screen whose field above it calls
+  the same address a LAN one.** `expose.preflight.detail.dns_resolved` read "Resolved public
+  DNS target: 10.0.0.99 (auto)" whatever DNS server the route had been given, while the field
+  it echoes is labelled "DNS target (LAN IP)" as soon as the selected server only answers on
+  the LAN -- `ServiceForm` reads the provider's own `public_dns` capability to choose that
+  label. One screen, two claims about one value.
+
+  The check now reads the same capability, so the two cannot drift apart. `dns_resolved`
+  splits into `dns_resolved_public` and `dns_resolved_local`, plus a neutral `dns_resolved`
+  for the one case where neither word is honest: a `dns_provider_id` pointing at nothing,
+  which the `dns_provider` check beside it is already blocking the save over.
+
+  The word in brackets was the wire word too -- `auto`, `proxy_provider_host` -- printed
+  straight into a translated sentence. It goes through `publicTargetSourceLabel` now, as the
+  dry run already did; `checkDetail` moved out of `ExposeModal` into `preflightDetailText`
+  so a test can hold it.
+
+  The split found a gap of its own. No healthy case in the preflight symmetry corpus had a
+  DNS server that answers off the LAN: every resolving scenario picked AdGuard, so the public
+  branch had never been walked by any route. A Cloudflare case walks it now.
+
+- **The collapsed sidebar rail said "something is wrong" in red and nothing else.** `NavItem`
+  carries the reason its `alert` field exists in a comment -- "colour is never the only
+  signal" -- and the expanded sidebar does draw a warning triangle for it. But that triangle
+  is `aria-hidden`, and the rail drew none at all.
+
+  So an already-expired certificate reached a screen reader as "Certificates, 1", the same
+  three words a renewal due next week produces, and reached a sighted reader at rail width as
+  a red badge and nothing more. The badge is always there to hide behind:
+  `app/api/certificates.py` counts expired certificates into `expiring_soon_count`, so a
+  breached estate always has a number. Monitoring behaves the same way when services are
+  failing.
+
+  The triangle is drawn at both widths now, and `navItemName` puts the count and the alert
+  into the accessible name, because an `aria-label` replaces the whole subtree: whatever is
+  not spelt there is not spoken. Two `layout.nav.item_alert*` keys in all eight locales, the
+  one printing a badge declared to the quality gate as the one without an alert already was.
+
+- **Every address the route table did not know silently became the dashboard.** The catch-all
+  was `<Navigate to="/" replace />`. The dashboard appeared, and `replace` erased the address
+  that had been asked for from the history, so a stale bookmark, a renamed page and a typo
+  were all answered as if they had been right.
+
+  `/integrations` is the one to type by accident: it is the word the sidebar itself uses for
+  the section whose route is `/providers`. A `NotFound` page now names the address back and
+  offers a link to the dashboard instead of taking one. Four `notfound.*` keys in all eight
+  locales; the route table is exported so a test can ask it the question.
+
+- **The dry run printed the wire word for where a public target came from.**
+  `resolve_public_target()` answers the address and, beside it, the machine word saying where
+  it came from: `manual`, `auto`, `current`, `proxy_provider_host`, `server_public_ip`. The
+  dry run wrote it into its own sentence untouched, so a French panel announced "Cible DNS
+  10.0.0.99 (manual)" -- the same half-translated line `healthStatusLabel` was written for.
+
+  `publicTargetSourceLabel()` goes through `expose.dry_run.source.<word>`, present in all
+  eight locale files, and returns an unknown word as it came, so a newer API never blanks the
+  line.
+
+- **The version badge wrote "vdev" and "vmain".** `APP_VERSION` is a free environment
+  variable whose default is the word `dev`, and the sidebar glued a `v` in front of it without
+  looking. Any development build read "vdev"; a build tagged with a branch or a commit id read
+  "vmain", or `v` followed by a hash. The dashboard chip had always shown the bare string, so
+  the two disagreed on one screen. `versionLabel()` puts the prefix in front of a number,
+  leaves a word alone, and answers a dash when nothing was reported.
+
+- **"Never tested" erased the date of the last test.** The provider card footer reads a manual
+  diagnostic that is discarded on page load once it is older than thirty minutes, and written
+  back absent to local storage. The card then had nothing left to read and claimed "Never
+  tested" of an integration validated forty minutes earlier.
+
+  The verdict is right to expire -- a two-hour-old check must not hold up a health score, and
+  `signalsById` still filters `diag` on `isDiagnosticsFresh`. The hour someone ran it is a
+  different fact, and that one does not expire. It reaches the card as `lastTestedAt` now, and
+  "Never tested" is shown only when nothing was ever recorded. Measured on the dev instance:
+  Traefik's diagnostic, aged to thirty-one minutes, left local storage on reload and all seven
+  cards fell back to "Never tested".
+
+- **The delete confirmation undercounted what the delete withdraws.** "Its proxy host and its
+  DNS record are withdrawn from the providers": two singulars, where `withdraw_service_routes`
+  walks the whole list of holders, second DNS target and second proxy included.
+
+  Measured on the bench. A route carrying AdGuard and Pi-hole showed that sentence, and the
+  log then recorded three withdrawals: NPM, AdGuard and Pi-hole. The behaviour is the right
+  one; the sentence undercounted it, on the screen where an operator confirms an irreversible
+  action. All eight locales now say the withdrawal reaches every provider serving the route,
+  in the plural and without naming a number: the exact count depends on the route, the reach
+  does not.
+
+- **A return code alone does not say what failed, on five providers and one toggle.** AdGuard,
+  Pi-hole, NPM, Zoraxy and Traefik exposed no detailed diagnostic, so the panel folded their
+  whole result onto the single boolean of `test_connection`, labelled `connection_failed`. A
+  refused password, a revoked token, an API behind a filter: all of it came out as a
+  connection failure, and the operator went looking on the network for the one thing that was
+  not there. The five now separate "unreachable" from "reached and refused", through two
+  shared helpers in `base.py`.
+
+  NPM read the status code of its own host toggle. Measured against a live NPM, it answers
+  400 "Host is already enabled" when the host is already in the state asked for. Every
+  publication re-enables the host it has just updated, and that host is almost always already
+  running, so the ordinary case was reported as a refusal, with an error line in the log and a
+  warning telling the operator to go and check credentials that were valid. The toggle re-reads
+  the host state and answers on the state obtained, which is the question that was asked.
+  Zoraxy, measured too, really is idempotent and does not change. The comment in `sync.py`
+  claimed the opposite of the measurement, and is corrected.
+
+- **`{host}` was printed to the screen as `{host}`.** The wizard's last step and its
+  confirmation message name the host that was published, but the translation call passed it no
+  value, so all eight languages showed the placeholder itself -- on the one screen an operator
+  looks at to check what they have just created.
+
+  The name is passed to all three calls now, and the emphasis is recomposed here by splitting
+  on the name rather than appending after the sentence, so each language keeps the name where
+  its grammar wants it. A new gate closes the family: the two neighbouring checks compare the
+  eight locale files with each other, so they see a placeholder one language lost and never a
+  placeholder no call fills. The new one reads the calls themselves and refuses those that
+  leave a hole.
+
 - **The same short listing, on the five remaining DNS providers, and the zone lookups
   underneath them.** Cloudflare's sweep was the first found; the others reach the same
   answer by different routes. Technitium skipped a zone with `continue` on any non-200,
@@ -3526,8 +3643,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   each a plural family so the sentence agrees at one as well as at many.
 
 - `expose.preflight.detail.dns_unresolved`, in all eight locales. No preflight check has
-  emitted that detail key since the DNS target gate was rewritten to answer `dns_resolved`,
-  `dns_target_required` or `dns_target_detection_failed`; nothing in `app/`, `vauxtra_mcp/` or
+  emitted that detail key since the DNS target gate was rewritten to answer a `dns_resolved*`
+  code, `dns_target_required` or `dns_target_detection_failed`; nothing in `app/`, `vauxtra_mcp/` or
   `frontend/src/` names it. (`monitoring.drawer.dns_unresolved` is a different key, and stays:
   the service drawer still renders it.)
 
