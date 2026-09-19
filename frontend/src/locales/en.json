@@ -2134,6 +2134,8 @@
   "providers.diag.detail.zones_listed_other": "{count} zones reachable with this token — auto-detection will work.",
   "providers.diag.detail.zones_none": "No zone found.",
   "layout.nav.item_with_badge": "{label} ({badge})",
+  "layout.nav.item_alert": "{label}, needs attention",
+  "layout.nav.item_alert_with_badge": "{label} ({badge}), needs attention",
   "ui.tooltip.exact_time": "Exact time: {when}",
   "providers.delete.hook_title": "Notifications still point at it",
   "providers.delete.hook_intro_one": "{count} notification webhook is scoped to {name}.",
