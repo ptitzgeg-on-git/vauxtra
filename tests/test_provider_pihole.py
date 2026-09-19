@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import requests
 
+from app.providers.base import ProviderListingRefused
 from app.providers.pihole import PiholeProvider
 
 
@@ -295,13 +296,16 @@ class TestPiholeApiSeats(unittest.TestCase):
         self.assertSeatReturned()
 
     def test_network_error_still_releases_session(self):
+        """The listing raises now, and the seat still has to come back."""
         self.p.session.get = MagicMock(side_effect=requests.RequestException("boom"))
-        self.assertEqual(self.p.list_rewrites(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.p.list_rewrites()
         self.assertSeatReturned()
 
     def test_rejected_auth_takes_no_seat(self):
         self.p._ensure_auth = MagicMock(return_value=False)
-        self.assertEqual(self.p.list_rewrites(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.p.list_rewrites()
         self.assertFalse(self.p.test_connection())
         self.assertEqual(self._logouts(), 0)
 

@@ -13,12 +13,24 @@
 
 import type { Provider, ProviderCapability, ProviderTypeMeta, ProviderTypesResponse } from '@/types/api';
 
-/** Types that shipped before `capabilities` existed in `GET /api/providers/types`. */
+/**
+ * Types that shipped before `capabilities` existed in `GET /api/providers/types`.
+ *
+ * A floor cannot answer "unknown": a capability missing from this table reads as
+ * `false` for every type, and the screens act on it. `supports_auto_public_target`
+ * and `certificates` were missing here, and `cloudflare_tunnel` was missing from
+ * `proxy`, so a failed catalogue read told the expose modal that Cloudflare cannot
+ * resolve a public target — which made it drop an operator's automatic DNS update
+ * on the next save. Held to `PROVIDER_TYPES` by `scripts/check_capability_parity.py`,
+ * which compares every cell of this table against the backend's own declarations.
+ */
 const CAPABILITY_FALLBACK: Partial<Record<ProviderCapability, ReadonlySet<string>>> = {
-  proxy: new Set(['npm', 'traefik', 'zoraxy']),
+  proxy: new Set(['npm', 'traefik', 'zoraxy', 'cloudflare_tunnel']),
   dns: new Set(['cloudflare', 'pihole', 'adguard', 'technitium', 'powerdns', 'desec']),
   public_dns: new Set(['cloudflare', 'desec']),
+  supports_auto_public_target: new Set(['cloudflare', 'desec']),
   supports_tunnel: new Set(['cloudflare_tunnel']),
+  certificates: new Set(['npm', 'zoraxy']),
 };
 
 /**

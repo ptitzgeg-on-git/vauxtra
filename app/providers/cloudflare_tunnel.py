@@ -12,7 +12,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider, TimeoutSession
+from app.providers.base import ProviderListingRefused, ProxyProvider, TimeoutSession
 
 
 class CloudflareTunnelProvider(ProxyProvider):
@@ -297,9 +297,18 @@ class CloudflareTunnelProvider(ProxyProvider):
         return isinstance(tunnel, dict)
 
     def list_hosts(self) -> list[dict]:
+        """Every hostname the tunnel's ingress serves.
+
+        Raises rather than answering []. `_get_configuration` already refuses to
+        conflate "unreadable" with "empty" -- its docstring says so, because a config
+        read as empty and written back would delete every other route of the tunnel --
+        and then this method threw that distinction away one line later. A tunnel that
+        would not answer came back as a tunnel serving nothing, which the drift check
+        reads as `route_missing` and offers to republish.
+        """
         config = self._get_configuration()
         if config is None:
-            return []
+            raise ProviderListingRefused("Cloudflare would not return the tunnel configuration")
         ingress = self._normalize_ingress(config.get("ingress"))
 
         hosts: list[dict] = []

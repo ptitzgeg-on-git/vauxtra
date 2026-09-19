@@ -5,12 +5,21 @@ import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
 import {
+  domainProblem,
+  domainProblemKey,
+  fqdnProblem,
+  fqdnProblemKey,
+  subdomainProblem,
+  subdomainProblemKey,
+} from '@/lib/hostname';
+import {
   Button,
   Checkbox,
   Chip,
   ChipGroup,
   Field,
   FieldHint,
+  InlineAlert,
   Input,
   SectionHeading,
   Select,
@@ -18,7 +27,14 @@ import {
   Switch,
 } from '@/components/ui';
 import type { Environment, ProviderTypesResponse, Tag } from '@/types/api';
-import { fqdnOf, providerHasCapability, type FormState, type Provider, type UiExposeMode } from './types';
+import {
+  autoPublicTarget,
+  fqdnOf,
+  providerHasCapability,
+  type FormState,
+  type Provider,
+  type UiExposeMode,
+} from './types';
 
 interface TargetSuggestion {
   candidates: Array<{ value: string; source: string }>;
@@ -32,17 +48,26 @@ interface ServiceFormProps {
   domains: string[];
   /**
    * A list below came back empty because its request failed, not because it is empty. One
-   * flag each: they are three separate requests, and the one that answered must not be made
+   * flag each: they are four separate requests, and the one that answered must not be made
    * to apologise for the one that did not.
    */
+  providersError?: boolean;
   domainsError?: boolean;
   tagsError?: boolean;
   environmentsError?: boolean;
   isLoadingProviders: boolean;
+  /** Narrowed to the failed read: the busy state also disables the button it sits on. */
+  isRefetchingProviders?: boolean;
+  refetchProviders?: () => void;
   isLoadingDomains: boolean;
   providerTypeMap: ProviderTypesResponse;
   targetSuggestion: TargetSuggestion | undefined;
   isFetchingTargetSuggestion: boolean;
+  /**
+   * The public-target lookup failed, rather than answering that there is no target. The
+   * suggestion itself cannot tell the two apart: both arrive as an absent `recommended`.
+   */
+  targetSuggestionError?: boolean;
   refetchTargetSuggestion: () => void;
   tags: Tag[];
   environments: Environment[];
@@ -82,7 +107,7 @@ function ModeOption({
         'relative flex cursor-pointer gap-3 rounded-xl border p-3 transition-colors duration-150',
         checked ? 'border-primary bg-primary/5 shadow-sm' : 'border-border bg-card hover:bg-accent/60',
         disabled && 'cursor-not-allowed opacity-60 hover:bg-card',
-        'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-background',
+        'has-focus-visible:ring-2 has-focus-visible:ring-ring has-focus-visible:ring-offset-2 has-focus-visible:ring-offset-background',
       )}
     >
       <input
@@ -202,14 +227,18 @@ export function ServiceForm({
   setFormData,
   providers,
   domains,
+  providersError = false,
   domainsError = false,
   tagsError = false,
   environmentsError = false,
   isLoadingProviders,
+  isRefetchingProviders = false,
+  refetchProviders,
   isLoadingDomains,
   providerTypeMap,
   targetSuggestion,
   isFetchingTargetSuggestion,
+  targetSuggestionError,
   refetchTargetSuggestion,
   tags,
   environments,
@@ -218,6 +247,21 @@ export function ServiceForm({
   const t = useT();
   const modeGroupName = useId();
   const domainListId = useId();
+
+  // A list below is empty because the read failed, not because there is nothing in it. A
+  // refresh that fails over rows that already arrived leaves those rows in the selects, and
+  // a list that is empty at that point is empty for a reason worth stating as its own.
+  const providersUnread = providersError && providers.length === 0;
+
+  // The public-target lookup has three outcomes and the field showed only one of them. A
+  // suggestion that arrived proves the read succeeded, so nothing beyond `targetSuggestion`
+  // is needed to tell "answered with nothing" from "never answered"; the failure, though,
+  // is only knowable from the query, hence the prop.
+  const targetLookupFailed = Boolean(targetSuggestionError);
+  const targetLookupFoundNothing =
+    !targetSuggestionError &&
+    targetSuggestion !== undefined &&
+    !String(targetSuggestion.recommended || '').trim();
 
   const allProviders = providers.filter((p) => Boolean(p.enabled));
   const proxyProviders = allProviders.filter((p) => providerHasCapability(p, 'proxy', providerTypeMap));
@@ -230,22 +274,33 @@ export function ServiceForm({
   const standardProxyProviders = proxyProviders.filter((p) => !tunnelIds.has(p.id));
 
   const selectedDns = dnsProviders.find((p) => String(p.id) === formData.dns_provider_id);
-  const selectedDnsSupportsAuto = selectedDns
-    ? providerHasCapability(selectedDns, 'supports_auto_public_target', providerTypeMap)
-    : false;
+  // Same call as the payload builder in `ExposeModal`: this is the whole point of it
+  // living in `types.ts`. Drawing one answer and sending another is what it prevents.
+  const publicTarget = autoPublicTarget(formData, selectedDns, providerTypeMap);
 
   // Use provider capabilities instead of hardcoded types for long-term extensibility.
   const isExternalDns = selectedDns ? providerHasCapability(selectedDns, 'public_dns', providerTypeMap) : false;
   const isLocalDns = Boolean(selectedDns) && !isExternalDns;
 
-  const effectivePublicTargetMode =
-    formData.public_target_mode === 'auto' && formData.dns_provider_id && !selectedDnsSupportsAuto
-      ? 'manual'
-      : formData.public_target_mode;
-
-  const effectiveAutoUpdateDns = effectivePublicTargetMode === 'auto' ? formData.auto_update_dns : false;
-
   const fqdnPreview = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
+
+  // The same rules the server applies, so the field says which one is broken instead of
+  // letting "Continue" spend a round trip on a name that cannot be accepted. Only once
+  // something has been typed: an empty required field is already marked as such, and a form
+  // that opens shouting at every blank is a form nobody reads.
+  const subdomainError = formData.subdomain ? subdomainProblem(formData.subdomain, { allowWildcard: true }) : null;
+  const domainError = formData.domain ? domainProblem(formData.domain) : null;
+  // The rule about the name the two halves make, which neither field can ask on its own.
+  // It shows under the subdomain: that is where the composite preview lives, and the half
+  // an operator would shorten. Only once both halves are otherwise sound, so a name that is
+  // both malformed and too long says the first thing to fix rather than the second.
+  const fqdnError =
+    !subdomainError && !domainError && formData.subdomain && formData.domain
+      ? fqdnProblem(formData.subdomain, formData.domain)
+      : null;
+  // `subdomain.domain` is a claim about both halves, so one broken half makes the whole
+  // preview a promise the server will not keep. It comes back when the name is publishable.
+  const showFqdnPreview = !subdomainError && !domainError && !fqdnError;
 
   // Auto-sync tunnel_hostname when subdomain/domain change in tunnel mode.
   // Only auto-fill when the user hasn't typed a custom hostname.
@@ -349,10 +404,19 @@ export function ServiceForm({
           <Field
             label={t('expose.field.subdomain')}
             required
+            error={
+              subdomainError
+                ? t(subdomainProblemKey(subdomainError))
+                : fqdnError
+                  ? t(fqdnProblemKey(fqdnError))
+                  : undefined
+            }
             hint={
-              <>
-                {t('expose.field.final_route')} <span className="font-mono text-foreground">{fqdnPreview}</span>
-              </>
+              showFqdnPreview ? (
+                <>
+                  {t('expose.field.final_route')} <span className="font-mono text-foreground">{fqdnPreview}</span>
+                </>
+              ) : undefined
             }
           >
             <Input
@@ -379,6 +443,7 @@ export function ServiceForm({
           <Field
             label={t('expose.field.domain')}
             required
+            error={domainError ? t(domainProblemKey(domainError)) : undefined}
             hint={
               domains.length === 0 && domainsError ? (
                 // "You have no domains" and "we could not read your domains" are the same
@@ -579,6 +644,27 @@ export function ServiceForm({
           title={t('expose.section.providers.title')}
           description={t('expose.section.providers.description')}
         />
+        {providersUnread && (
+          <InlineAlert
+            tone="warning"
+            title={t('expose.providers.unread')}
+            action={
+              refetchProviders && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leftIcon={<RefreshCw />}
+                  loading={isRefetchingProviders}
+                  onClick={refetchProviders}
+                >
+                  {t('common.retry')}
+                </Button>
+              )
+            }
+          >
+            {t('expose.providers.unread_hint')}
+          </InlineAlert>
+        )}
         {isLoadingProviders ? (
           <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4" aria-busy="true" aria-label={t('expose.providers.loading')}>
             <Skeleton className="h-4 w-40" />
@@ -637,7 +723,7 @@ export function ServiceForm({
                   providers={standardProxyProviders}
                   selectedIds={formData.extra_proxy_provider_ids}
                   onToggle={(id, checked) => toggleExtra('proxy', id, checked)}
-                  emptyText={t('expose.field.extra_proxies_empty')}
+                  emptyText={providersUnread ? t('ui.error.list_unavailable') : t('expose.field.extra_proxies_empty')}
                 />
               </>
             )}
@@ -690,9 +776,6 @@ export function ServiceForm({
                       onChange={(e) => {
                         const nextDnsProviderId = e.target.value;
                         const nextDnsProvider = dnsProviders.find((p) => String(p.id) === nextDnsProviderId);
-                        const nextSupportsAuto = nextDnsProvider
-                          ? providerHasCapability(nextDnsProvider, 'supports_auto_public_target', providerTypeMap)
-                          : false;
 
                         // Clear dns_ip when scope changes (local ↔ external) to avoid a stale
                         // LAN IP sitting in a field now labelled "Public WAN IP" and vice-versa.
@@ -704,15 +787,26 @@ export function ServiceForm({
                           : false;
                         const scopeChanged = nextDnsProviderId && prevIsExternal !== nextIsExternal;
 
-                        setFormData((prev) => ({
-                          ...prev,
-                          dns_provider_id: nextDnsProviderId,
-                          dns_ip: scopeChanged ? '' : prev.dns_ip,
-                          public_target_mode:
-                            nextDnsProviderId && !nextSupportsAuto ? 'manual' : prev.public_target_mode,
-                          auto_update_dns: nextDnsProviderId && !nextSupportsAuto ? false : prev.auto_update_dns,
-                          extra_dns_provider_ids: prev.extra_dns_provider_ids.filter((id) => id !== nextDnsProviderId),
-                        }));
+                        setFormData((prev) => {
+                          // The rule that decides what the next provider allows is the one
+                          // the payload will apply anyway. Asking it here is what keeps the
+                          // state the operator edits from meaning something else on save.
+                          const next = autoPublicTarget(
+                            { ...prev, dns_provider_id: nextDnsProviderId },
+                            nextDnsProvider,
+                            providerTypeMap,
+                          );
+                          return {
+                            ...prev,
+                            dns_provider_id: nextDnsProviderId,
+                            dns_ip: scopeChanged ? '' : prev.dns_ip,
+                            public_target_mode: next.mode,
+                            auto_update_dns: next.autoUpdateDns,
+                            extra_dns_provider_ids: prev.extra_dns_provider_ids.filter(
+                              (id) => id !== nextDnsProviderId,
+                            ),
+                          };
+                        });
                       }}
                     >
                       <option value="">{t('expose.field.none')}</option>
@@ -729,7 +823,7 @@ export function ServiceForm({
                       providers={extraProxyCandidates}
                       selectedIds={formData.extra_proxy_provider_ids}
                       onToggle={(id, checked) => toggleExtra('proxy', id, checked)}
-                      emptyText={t('expose.field.extra_proxies_empty')}
+                      emptyText={providersUnread ? t('ui.error.list_unavailable') : t('expose.field.extra_proxies_empty')}
                     />
                   )}
                   <ExtraProviderList
@@ -737,11 +831,14 @@ export function ServiceForm({
                     providers={extraDnsCandidates}
                     selectedIds={formData.extra_dns_provider_ids}
                     onToggle={(id, checked) => toggleExtra('dns', id, checked)}
-                    emptyText={t('expose.field.extra_dns_empty')}
+                    emptyText={providersUnread ? t('ui.error.list_unavailable') : t('expose.field.extra_dns_empty')}
                   />
                 </div>
 
-                {formData.dns_provider_id && formData.ui_expose_mode !== 'dns_only' && (
+                {/* Hidden in DNS-only mode only while the resolver is local, where the
+                    record takes the service's own address. A public zone needs a target
+                    stated here, and a refusal may name it. */}
+                {formData.dns_provider_id && (formData.ui_expose_mode !== 'dns_only' || isExternalDns) && (
                   <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
                     <Field
                       label={isLocalDns ? t('expose.field.dns_target_local') : t('expose.field.dns_target_external')}
@@ -764,7 +861,7 @@ export function ServiceForm({
                               onClick={() =>
                                 setFormData((prev) => ({ ...prev, dns_ip: String(targetSuggestion.recommended) }))
                               }
-                              className="ml-2 rounded-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              className="ml-2 rounded-xs font-medium text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               {t('expose.use_this')}
                             </button>
@@ -787,7 +884,7 @@ export function ServiceForm({
                               : t('expose.field.dns_target_external_placeholder')
                           }
                         />
-                        {isExternalDns && selectedDnsSupportsAuto && (
+                        {publicTarget.canOfferAuto && (
                           <Button
                             type="button"
                             variant="outline"
@@ -806,11 +903,25 @@ export function ServiceForm({
                       </div>
                     </Field>
 
+                    {/* The button above used to spin, stop, and change nothing. It stands in
+                        for the retry here, so neither of these carries one of its own. The
+                        failure stays on screen even once a target is typed by hand, because
+                        the automatic update switch below reads the same lookup; "nothing was
+                        detected" goes away, since a typed target settles that question. */}
+                    {publicTarget.canOfferAuto && targetLookupFailed && (
+                      <InlineAlert tone="warning" title={t('expose.detect_unread')}>
+                        {t('expose.detect_unread_hint')}
+                      </InlineAlert>
+                    )}
+                    {publicTarget.canOfferAuto && targetLookupFoundNothing && !formData.dns_ip && (
+                      <InlineAlert tone="info" title={t('expose.detect_none')} />
+                    )}
+
                     {/* Auto-update DNS — only for external DNS with auto capability */}
-                    {isExternalDns && selectedDnsSupportsAuto && (
+                    {publicTarget.canOfferAuto && (
                       <Switch
                         size="sm"
-                        checked={effectiveAutoUpdateDns}
+                        checked={publicTarget.autoUpdateDns}
                         onCheckedChange={(checked) =>
                           setFormData((prev) => ({ ...prev, public_target_mode: 'auto', auto_update_dns: checked }))
                         }

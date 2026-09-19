@@ -1,10 +1,15 @@
 /**
  * Optional step: register Docker engines so Vauxtra can discover containers.
  * `useDockerEndpoints` owns the query key `['docker-endpoints']` and both mutations.
+ *
+ * The list that read failed is not the same screen as the list that came back empty, and this
+ * step used to draw both as nothing at all: no engines, no message, and a button offering to
+ * skip a step whose contents nobody had seen. `ProvidersStep` was given this rung; this one
+ * and `NotificationsStep` were not.
  */
 
 import { Container, Plus, Trash2 } from 'lucide-react';
-import { Button, Field, IconButton, Input, useConfirmDialog } from '@/components/ui';
+import { Button, Field, IconButton, InlineAlert, Input, Skeleton, useConfirmDialog } from '@/components/ui';
 import { useDockerEndpoints } from '@/hooks/useDockerEndpoints';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
@@ -23,7 +28,10 @@ const SCHEMES = [
 export function DockerStep({ onBack, onContinue }: DockerStepProps) {
   const t = useT();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
-  const { endpoints, name, setName, host, setHost, canSubmit, addEndpoint, deleteEndpoint } = useDockerEndpoints();
+  const { endpoints, endpointsQuery, name, setName, host, setHost, canSubmit, addEndpoint, deleteEndpoint } =
+    useDockerEndpoints();
+
+  const listUnread = endpointsQuery.isLoading || endpointsQuery.isError;
 
   const askDelete = async (id: number, label: string) => {
     const ok = await confirm({
@@ -42,8 +50,14 @@ export function DockerStep({ onBack, onContinue }: DockerStepProps) {
       description={t('setup.docker.subtitle')}
       onBack={onBack}
       primary={{
-        label: endpoints.length > 0 ? t('setup.providers.continue') : t('setup.providers.skip'),
+        /* `ProvidersStep` carries the reasoning: of the two labels only "Skip for now" is a
+           claim, and a list still being read or one that could not be read has not earned it.
+           A failed read still lets them move on; the alert above says why the screen is bare. */
+        label: listUnread || endpoints.length > 0
+          ? t('setup.providers.continue')
+          : t('setup.providers.skip'),
         onClick: onContinue,
+        disabled: endpointsQuery.isLoading,
       }}
     >
       <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
@@ -52,14 +66,34 @@ export function DockerStep({ onBack, onContinue }: DockerStepProps) {
           {SCHEMES.map((scheme) => (
             <li key={scheme.key}>
               <span className="font-semibold text-foreground">{t(`setup.docker.scheme_${scheme.key}`)}</span>
-              <code className="ml-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{scheme.sample}</code>
+              <code className="ml-1.5 rounded-sm bg-muted px-1.5 py-0.5 font-mono text-foreground">{scheme.sample}</code>
               <span className="ml-1.5">{t(`setup.docker.scheme_${scheme.key}_hint`)}</span>
             </li>
           ))}
         </ul>
       </div>
 
-      {endpoints.length > 0 && (
+      {endpointsQuery.isLoading ? (
+        <ul className="space-y-2">
+          {Array.from({ length: 2 }, (_, i) => (
+            <li key={i}>
+              <Skeleton className="h-16 w-full rounded-xl" />
+            </li>
+          ))}
+        </ul>
+      ) : endpointsQuery.isError ? (
+        <InlineAlert
+          tone="danger"
+          title={t('setup.docker.load_failed')}
+          action={
+            <Button variant="outline" size="sm" onClick={() => void endpointsQuery.refetch()}>
+              {t('common.retry')}
+            </Button>
+          }
+        >
+          {t('setup.docker.load_failed_hint')}
+        </InlineAlert>
+      ) : endpoints.length > 0 ? (
         <ul className="space-y-2">
           {endpoints.map((endpoint) => (
             <li key={endpoint.id} className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
@@ -79,7 +113,7 @@ export function DockerStep({ onBack, onContinue }: DockerStepProps) {
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label={t('provider_modal.docker.name')} htmlFor="vx-setup-docker-name">

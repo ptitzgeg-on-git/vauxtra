@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
@@ -34,21 +34,20 @@ import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
+import { versionLabel } from '@/lib/format';
 import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, toneClasses, type Tone } from '@/components/ui';
 import { isMacPlatform } from '@/components/ui/_internal';
-import type { HealthResponse, Provider, Service } from '@/types/api';
+import { certificateUrgency } from '@/components/features/certificates/certificates';
+import { AUTH_STATUS_KEY, useAuthStatus } from '@/hooks/useAuthStatus';
+import type {
+  CertificateExpiryResponse,
+  HealthResponse,
+  Provider,
+  Service,
+} from '@/types/api';
 import { BrandMark } from './BrandMark';
+import { navItemName } from './navLabel';
 
-interface AuthStatus {
-  authenticated: boolean;
-  auth_required: boolean;
-  auth_mode?: 'password' | 'open';
-  setup_required?: boolean;
-}
-
-interface CertExpiryResponse {
-  expiring_soon_count: number;
-}
 
 export interface SidebarProps {
   /** Rendered inside the mobile drawer: full width, close button, no collapse. */
@@ -116,11 +115,7 @@ export function Sidebar({
 
   const isCollapsed = !isMobile && collapsed;
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 120_000,
-  });
+  const { data: authStatus } = useAuthStatus();
 
   const { data: services } = useQuery<Service[]>({
     queryKey: ['services'],
@@ -145,9 +140,9 @@ export function Sidebar({
   // cache entry held a fabricated zero, the warning badge vanished on a backend hiccup, and
   // whichever of the three observers happened to fetch first decided what the other two
   // read. A failed check now leaves the badge off because the count is unknown, not zero.
-  const { data: certExpiry, isSuccess: certExpiryKnown } = useQuery<CertExpiryResponse>({
+  const { data: certExpiry, isSuccess: certExpiryKnown } = useQuery<CertificateExpiryResponse>({
     queryKey: ['certificates-expiry'],
-    queryFn: () => api.get<CertExpiryResponse>('/certificates/expiry'),
+    queryFn: () => api.get<CertificateExpiryResponse>('/certificates/expiry'),
     staleTime: 5 * 60_000,
   });
 
@@ -155,6 +150,21 @@ export function Sidebar({
   const errorServicesCount = services?.filter((s) => s.enabled && s.status === 'error').length ?? 0;
   const healthyProvidersCount = providers?.filter((p) => p.enabled).length ?? 0;
   const expiringSoonCount = certExpiryKnown ? (certExpiry?.expiring_soon_count ?? 0) : 0;
+  // Amber is the wrong colour for a certificate that lapsed three weeks ago: nothing is
+  // falling due there, the host is serving a certificate error to every client that reaches
+  // it. The Certificates page one click away has always drawn that row red. This badge drew
+  // the whole estate amber and, with no glyph beside it, said so in colour alone -- which
+  // this file's own `alert` field exists to stop.
+  const certUrgency = useMemo(
+    () =>
+      certificateUrgency(
+        certExpiryKnown ? certExpiry?.certificates : undefined,
+        expiringSoonCount,
+        Date.now(),
+        certExpiry?.warn_threshold_days,
+      ),
+    [certExpiryKnown, certExpiry?.certificates, certExpiry?.warn_threshold_days, expiringSoonCount],
+  );
 
   const settingsTab = new URLSearchParams(location.search).get('tab') || 'general';
 
@@ -196,7 +206,8 @@ export function Sidebar({
           label: t('nav.certificates'),
           href: '/certificates',
           badge: expiringSoonCount || undefined,
-          tone: expiringSoonCount > 0 ? 'warning' : 'neutral',
+          tone: certUrgency.tone,
+          alert: certUrgency.breached,
         },
       ],
     },
@@ -214,7 +225,7 @@ export function Sidebar({
     },
   ];
 
-  const version = health?.version ? `v${health.version}` : '—';
+  const version = versionLabel(health?.version);
   const modKey = isMacPlatform() ? '⌘' : 'Ctrl';
   const themeLabel = `${t('layout.theme.toggle')} · ${t(`layout.theme.${theme}`)}`;
   const currentLang = SUPPORTED_LANGUAGES.find((l) => l.code === lang) ?? SUPPORTED_LANGUAGES[0];
@@ -230,7 +241,7 @@ export function Sidebar({
   // machine had every reason to believe they had signed out.
   const signOut = useMutation({
     mutationFn: () => api.post('/auth/logout'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['auth-status'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY }),
     onError: (err) => toast.error(translateApiError(err, t, t('nav.signout_failed'))),
   });
 
@@ -271,12 +282,16 @@ export function Sidebar({
                       to={item.href}
                       onClick={onNavigate}
                       // The badge is the only surfacing of "3 checks are failing" at this width, and an
-                      // `aria-label` replaces the whole subtree in the name -- so the count goes into the name.
-                      aria-label={
-                        item.badge !== undefined
-                          ? t('layout.nav.item_with_badge', { label: item.label, count: formatBadge(item.badge) })
-                          : item.label
-                      }
+                      // `aria-label` replaces the whole subtree in the name -- so the count, and the
+                      // alert the expanded sidebar draws a glyph for, both go into the name.
+                      aria-label={navItemName(
+                        {
+                          label: item.label,
+                          badge: item.badge !== undefined ? formatBadge(item.badge) : undefined,
+                          alert: item.alert,
+                        },
+                        t,
+                      )}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
                         'relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors [&>svg]:h-[18px] [&>svg]:w-[18px]',
@@ -285,6 +300,16 @@ export function Sidebar({
                     >
                       {active && <span aria-hidden="true" className="absolute -left-2 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary" />}
                       {item.icon}
+                      {/* The expanded sidebar draws this glyph; at rail width a red badge was the
+                          whole signal, which is the one thing `alert` exists to prevent. */}
+                      {item.alert && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute -bottom-1 -left-1 flex h-[14px] w-[14px] items-center justify-center rounded-full bg-card ring-2 ring-card"
+                        >
+                          <TriangleAlert className="h-3 w-3 text-destructive" />
+                        </span>
+                      )}
                       {item.badge !== undefined && (
                         <span
                           className={cn(
@@ -376,6 +401,16 @@ export function Sidebar({
                     <Link
                       to={item.href}
                       onClick={onNavigate}
+                      // The glyph below is `aria-hidden`, so without this the alert was drawn
+                      // and never spoken -- the same omission the rail had, one width wider.
+                      aria-label={navItemName(
+                        {
+                          label: item.label,
+                          badge: item.badge !== undefined ? formatBadge(item.badge) : undefined,
+                          alert: item.alert,
+                        },
+                        t,
+                      )}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
                         'group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors',

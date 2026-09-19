@@ -1,5 +1,7 @@
 """MCP tools — service CRUD and inspection."""
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -54,22 +56,49 @@ def create_service(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: int,
-    forward_scheme: str = "http",
-    expose_mode: str = "proxy_dns",
+    target_port: Annotated[int, Field(ge=1, le=65535)],
+    forward_scheme: Literal["http", "https"] = "http",
+    expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
     tunnel_provider_id: int | None = None,
-    public_target_mode: str = "manual",
+    public_target_mode: Literal["auto", "manual"] = "manual",
     dns_ip: str = "",
     websocket: bool = False,
     enabled: bool = True,
+    tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """
     Create a new service (DNS + proxy route).
 
     expose_mode: 'proxy_dns' for NPM/Traefik + DNS, 'tunnel' for Cloudflare Tunnel.
     public_target_mode: 'manual' (use dns_ip) or 'auto' (detect WAN IP).
+
+    tag_ids and environment_ids attach labels. Both default to none, and every id has to
+    name a row that exists: `list_tags` and `list_environments` are where they come from,
+    and the route refuses the whole call with 400 naming the id it could not find, so a
+    wrong id creates nothing rather than a service missing the label it was asked for.
+
+    The bridge used to send `tag_ids: []` here with no parameter to fill it, and
+    `update_service` had none either. Eight tools could build a taxonomy that nothing
+    could then apply, and a service an agent created stayed unlabelled for good.
+
+    The three `Literal` sets repeat, by hand, the values `ServiceIn` validates. Nothing
+    derives them: FastMCP builds the schema from this signature, and a normal install
+    publishes no OpenAPI document to read the model from. Declared as plain `str` they
+    let a caller spend a round trip discovering that 'ftp' is not a forward scheme --
+    and this schema is the only place an agent can learn the answer before calling.
+    `scripts/check_api_mcp_parity.py` fails the build if these sets drift from the model.
+
+    The answer carries an `errors` list, and an empty one is the only thing that means the
+    service is actually reachable. Storing the row and publishing it are separate steps: the
+    route creates the tunnel route, the proxy host and the DNS record first, collects every
+    refusal into `errors`, and inserts the row regardless, answering 207 instead of 201 when
+    the list is not empty. So a service can come back with an id and an fqdn while nothing
+    routes to that fqdn -- no proxy host, or no DNS record, or a tunnel provider that was not
+    found. Report a non-empty `errors` as a service that exists in Vauxtra but was never
+    published, and name what failed; `push_service` is what retries the publication.
     """
     payload: dict[str, Any] = {
         "subdomain": subdomain,
@@ -85,8 +114,8 @@ def create_service(
         "dns_ip": dns_ip,
         "websocket": websocket,
         "enabled": enabled,
-        "tag_ids": [],
-        "environment_ids": [],
+        "tag_ids": tag_ids or [],
+        "environment_ids": environment_ids or [],
         "icon_url": "",
         "extra_proxy_provider_ids": [],
         "extra_dns_provider_ids": [],
@@ -100,8 +129,8 @@ def create_service(
 def update_service(
     service_id: int,
     target_ip: str | None = None,
-    target_port: int | None = None,
-    forward_scheme: str | None = None,
+    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
+    forward_scheme: Literal["http", "https"] | None = None,
     subdomain: str | None = None,
     domain: str | None = None,
     dns_ip: str | None = None,
@@ -109,12 +138,31 @@ def update_service(
     websocket: bool | None = None,
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
+    tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """
     Update specific fields of an existing service.
 
     Only provided (non-None) fields are changed; omitted fields keep their current values.
     The current service state is fetched first and merged with your overrides.
+
+    tag_ids and environment_ids follow that rule with one edge worth naming: omitted, the
+    service keeps the labels it has; a list replaces them all, because `PUT /api/services`
+    replaces rather than merges. So `tag_ids=[3]` on a service carrying 1 and 2 leaves it
+    carrying 3 alone, and `tag_ids=[]` strips every label. Read the service back with
+    `get_service` and send its ids plus the new one to add rather than replace.
+
+    `forward_scheme` carries the same `Literal` as `create_service`: the route validates
+    the merged body with `ServiceIn`, so an override it refuses fails the whole update,
+    including the fields that were valid.
+
+    The service comes back with an extra `errors` key. Vauxtra's own row is saved before the
+    providers are touched, so the fields you sent are stored whatever that list holds; each
+    sentence in it is a proxy host, DNS record or tunnel rule that could not be brought in
+    line with what was just saved. That leaves the two out of step -- Vauxtra describing the
+    service one way and the provider still publishing it another -- so report the list
+    rather than the saved row alone.
     """
     current = client.get(f"/services/{service_id}")
     client.check(current)
@@ -130,6 +178,8 @@ def update_service(
         "websocket": websocket,
         "proxy_provider_id": proxy_provider_id,
         "dns_provider_id": dns_provider_id,
+        "tag_ids": tag_ids,
+        "environment_ids": environment_ids,
     }.items():
         if value is not None:
             payload[key] = value
@@ -140,7 +190,14 @@ def update_service(
 
 @mcp.tool()
 def delete_service(service_id: int) -> dict[str, Any]:
-    """Delete a service and remove its routes from all configured providers."""
+    """Delete a service and take its routes down from every provider that held one.
+
+    `ok` is true whenever the service is gone from Vauxtra, which it is even when a provider
+    refused -- answering false would only push a caller into retrying a delete that can now
+    answer nothing but 404. So `ok` is not the result: `errors` is. Each sentence in it is a
+    record this call could not withdraw, and every one of those is still live on its
+    provider, still resolving, with nothing in Vauxtra left pointing at it. Report them.
+    """
     r = client.delete(f"/services/{service_id}")
     client.check(r)
     return r.json()
@@ -148,7 +205,17 @@ def delete_service(service_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def toggle_service(service_id: int, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a service without removing its provider routes."""
+    """Enable or disable a service without removing its configuration.
+
+    The answer carries an `errors` list, and on this tool it is the part that matters most.
+    Disabling a service does not only flip a flag: a tunnel-mode service is exposed by its
+    ingress rule alone, so the route withdraws that rule, and a proxy-mode one has its host
+    updated at the provider. The database row is written either way. If the provider refused
+    or was unreachable, the sentence lands in `errors` and nowhere else -- Vauxtra shows the
+    service as disabled while its public hostname is still live and still serving traffic.
+    A non-empty `errors` after disabling means the service is off in Vauxtra and still
+    reachable from the internet; say so rather than reporting the toggle done.
+    """
     current = client.get(f"/services/{service_id}")
     client.check(current)
     payload: dict[str, Any] = {**_service_to_payload(current.json()), "enabled": enabled}
@@ -176,7 +243,19 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
     Import services discovered by sync_services_from_providers.
 
     Pass the proxy_hosts and/or dns_rewrites arrays from the sync result.
-    Returns {"imported": int, "errors": list[str]}.
+
+    Returns four outcomes, and every submitted row lands in one of them:
+      imported (int)      new services created;
+      linked   (int)      existing services that gained the DNS half they were missing;
+      skipped  (list[str]) rows passed over on purpose, nothing is wrong with them: a name
+                          Vauxtra already tracks, or the 2nd..Nth name of a proxy host that
+                          answers for several, since a service carries one name;
+      errors   (list[str]) rows that are wrong and that the operator has somewhere to fix.
+
+    A skipped list is not a failure: re-importing a scan Vauxtra already knows fills it and
+    leaves errors empty. The one row that is not counted separately is a DNS record whose
+    name matches a proxy host in the same payload: it is folded into that host and the pair
+    counts once under imported.
     """
     payload = {
         "proxy_hosts": proxy_hosts or [],
@@ -226,6 +305,15 @@ def import_docker_containers(
     proxy_provider_id: optional reverse proxy provider
     dns_provider_id: optional DNS provider
     dns_ip: public IP for DNS records (optional)
+
+    The answer says what became of each container, and the count alone will mislead you:
+    `imported` is how many became services, `skipped` names the ones already tracked under
+    that name -- the nominal result of selecting a whole page -- and `errors` names the ones
+    this route refused, for want of a reachable address or a port. Those two are separate
+    lists of sentences precisely because they call for opposite responses: a `skipped` line
+    is nothing to do, an `errors` line is a container that will never be imported until
+    somebody fixes it. An import of six that answers `imported: 1` has five sentences to
+    report, not a number.
     """
     payload = {
         "domain": domain,
@@ -260,14 +348,33 @@ def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, An
 @mcp.tool()
 def check_service_health(service_id: int) -> dict[str, Any]:
     """Run a live health/TCP and DNS check for one service."""
-    r = client.get(f"/services/{service_id}/check")
+    # POST since 1.5.0: the route writes `status`, `last_checked` and an uptime event, so
+    # it now asks for the `write` scope like every other mutation.
+    r = client.post(f"/services/{service_id}/check")
     client.check(r)
     return r.json()
 
 
 @mcp.tool()
-def bulk_service_action(service_ids: list[int], action: str) -> dict[str, Any]:
-    """Run bulk service actions: enable, disable, or delete."""
+def bulk_service_action(
+    service_ids: list[int], action: Literal["enable", "disable", "delete"]
+) -> dict[str, Any]:
+    """
+    Run bulk service actions: enable, disable, or delete.
+
+    `action` was declared as a plain `str` while `POST /api/services/bulk` accepts three
+    words, so every other value reached the API and came back a 400 -- after the request
+    had been sent, and with no list of what would have worked. The `Literal` refuses it
+    here, before the call, and publishes the three words in the tool's schema.
+
+    The answer carries `affected` and `errors`, and they count different things. `affected`
+    is how many service rows Vauxtra changed; it is written before the provider work starts,
+    so it says nothing about whether the providers followed. `errors` is where that is
+    recorded, one sentence per service and provider that refused. A bulk disable reporting
+    `affected: 12` with two sentences in `errors` has twelve services marked disabled in
+    Vauxtra and two hostnames still publicly served -- which is the outcome that matters, so
+    read `errors` before reporting the action done.
+    """
     r = client.post("/services/bulk", json={"ids": service_ids, "action": action})
     client.check(r)
     return r.json()

@@ -304,10 +304,12 @@ class BackupSecureRoundTripTests(IsolatedDBTestCase):
 class WebhookDeliveryLogCascadeTests(IsolatedDBTestCase):
     """Schema 11: deleting a webhook must take its queued sends with it.
 
-    `delete_webhook` is one `DELETE FROM webhooks WHERE id=?` and nothing else. Before the
-    cascade, the rows in `webhook_delivery_log` stayed -- and since the retry job reads the
-    destination off the log row rather than off `webhooks`, Vauxtra kept POSTing to a URL the
-    operator had just revoked, for the whole length of the backoff.
+    `delete_webhook` looks the id up, answers 404 when nothing is there, and then removes
+    exactly one row: `DELETE FROM webhooks WHERE id=?`. No statement in it reaches
+    `webhook_delivery_log`. Before the cascade the queued sends therefore stayed -- and
+    since the retry job reads the destination off the log row rather than off `webhooks`,
+    Vauxtra kept POSTing to a URL the operator had just revoked, for the whole length of
+    the backoff.
     """
 
     SECRET = "discord://1234567890/aTokenTheOperatorRevoked"
@@ -333,7 +335,10 @@ class WebhookDeliveryLogCascadeTests(IsolatedDBTestCase):
             self._queue(conn, wid)
             conn.commit()
 
-            # Exactly the body of app/api/webhooks.py::delete_webhook.
+            # The only statement in app/api/webhooks.py::delete_webhook that removes
+            # anything. The rest of that route is the 404 lookup, the commit and the
+            # close; nothing there touches webhook_delivery_log, which is the whole
+            # reason the queue has to go with the row by itself.
             conn.execute("DELETE FROM webhooks WHERE id=?", (wid,))
             conn.commit()
 
@@ -591,6 +596,143 @@ class RestoreWipesEveryTableTests(IsolatedDBTestCase):
             with self.subTest(child=child, parent=parent):
                 self.assertLess(order.index(child), order.index(parent))
 
+    def _export(self) -> dict:
+        with patch.object(backup_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(backup_api, "limiter") as mock_limiter:
+            mock_limiter.limit = lambda *a, **kw: (lambda f: f)
+            return json.loads(backup_api.export_backup(_request("GET", "/api/backup")).body)
+
+    def test_every_wiped_table_is_exported(self) -> None:
+        """The other half of the wipe gate: emptied, and nothing to put back.
+
+        `test_restore_wipe_covers_the_schema` holds the wipe list to the schema, so no
+        table outlives a restore. Nothing held the wipe list to the *export*, so a table
+        could be emptied by every restore and carried by no backup file, which is the
+        louder failure of the two: the data is gone and the answer is still `ok: true`.
+        `service_templates` sat there for the whole of 1.4, and only the Templates page
+        ever said so.
+
+        The export is called rather than read, so a key renamed in the dict fails here.
+        """
+        exported = set(self._export())
+        wiped = set(backup_api._RESTORE_WIPE_TABLES)
+        self.assertEqual(
+            wiped - exported - backup_api._NOT_EXPORTED_ON_PURPOSE,
+            set(),
+            "a table the restore empties is in no export and is not named as deliberate",
+        )
+        # And the reverse, so the exemption list cannot outlive the table it excuses.
+        self.assertEqual(backup_api._NOT_EXPORTED_ON_PURPOSE - wiped, set())
+
+    def test_templates_survive_the_round_trip_pointing_at_the_right_rows(self) -> None:
+        """Two templates in, two templates out, still naming their provider and tags.
+
+        Surviving is not the same as surviving intact. `proxy_provider_id` is a real
+        foreign key; `tag_ids_json` is a list of ids in a TEXT column no constraint
+        watches. The restore re-inserts providers and tags under their exported ids, so
+        neither needs remapping -- and this is what fails if that ever stops being true.
+        """
+        pid = self._insert_provider("NPM-tpl")
+        conn = models.get_db()
+        try:
+            tag_id = conn.execute(
+                "INSERT INTO tags (name, color) VALUES ('homelab', 'blue')"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO service_templates "
+                "(name, description, target_port, proxy_provider_id, tag_ids_json, icon_url) "
+                "VALUES (?,?,?,?,?,?)",
+                ("Jellyfin", "media server", 8096, pid, json.dumps([tag_id]), "https://i/jf.png"),
+            )
+            conn.execute(
+                "INSERT INTO service_templates (name, target_port) VALUES ('Grafana', 3000)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        backup = self._export()
+        self.assertEqual(len(backup["service_templates"]), 2)
+
+        result = self._restore(backup)
+        self.assertEqual(result["templates"], 2)
+
+        conn = models.get_db()
+        try:
+            rows = {
+                r["name"]: dict(r)
+                for r in conn.execute("SELECT * FROM service_templates").fetchall()
+            }
+            provider_names = {
+                r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM providers").fetchall()
+            }
+            tag_names = {
+                r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM tags").fetchall()
+            }
+        finally:
+            conn.close()
+
+        self.assertEqual(set(rows), {"Jellyfin", "Grafana"})
+        jf = rows["Jellyfin"]
+        self.assertEqual(jf["description"], "media server")
+        self.assertEqual(jf["target_port"], 8096)
+        self.assertEqual(jf["icon_url"], "https://i/jf.png")
+        # The ids are only worth anything if they still name the same rows.
+        self.assertEqual(provider_names.get(jf["proxy_provider_id"]), "NPM-tpl")
+        self.assertEqual(
+            [tag_names.get(i) for i in json.loads(jf["tag_ids_json"])],
+            ["homelab"],
+        )
+
+    def test_a_file_written_before_templates_were_exported_says_the_table_was_emptied(self) -> None:
+        """Every backup taken before this release still loses them -- out loud, now.
+
+        The wipe is unconditional and the file has nothing to put back, so the outcome is
+        the old one. What changed is that it is no longer silent: the count is taken before
+        the wipe, and the warning is written only when there were templates and the file
+        offered none, so an instance that never had any reads nothing at all.
+        """
+        conn = models.get_db()
+        try:
+            conn.execute("INSERT INTO service_templates (name, target_port) VALUES ('Grafana', 3000)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        legacy = self._minimal_backup()
+        self.assertNotIn("service_templates", legacy)
+        result = self._restore(legacy)
+
+        self.assertEqual(result["templates"], 0)
+        self.assertEqual(self._count("service_templates"), 0)
+        conn = models.get_db()
+        try:
+            warnings = [
+                r["message"]
+                for r in conn.execute("SELECT message FROM logs WHERE level='warning'").fetchall()
+            ]
+        finally:
+            conn.close()
+        self.assertTrue(
+            any("service template" in m for m in warnings),
+            f"the restore emptied a template table and said nothing: {warnings}",
+        )
+        # Singular, because one was lost: the line is read by whoever lost it.
+        self.assertTrue(any("1 service template was" in m for m in warnings), warnings)
+
+    def test_an_instance_with_no_templates_reads_no_warning(self) -> None:
+        """Calibration: a line that fired on every restore would teach the eye to skip it."""
+        self._restore(self._minimal_backup())
+        conn = models.get_db()
+        try:
+            warnings = [
+                r["message"]
+                for r in conn.execute("SELECT message FROM logs WHERE level='warning'").fetchall()
+            ]
+        finally:
+            conn.close()
+        self.assertEqual([m for m in warnings if "template" in m], [])
+
 
 # ===========================================================================
 # 2. Auth — change-password
@@ -830,7 +972,7 @@ class EnvironmentUpdateTests(IsolatedDBTestCase):
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
             created = environments_api.add_environment(
                 _request("POST", "/api/environments"),
-                {"name": "staging", "color": "orange"},
+                environments_api.EnvironmentIn(name="staging", color="orange"),
             )
 
         eid = created["id"]
@@ -839,7 +981,7 @@ class EnvironmentUpdateTests(IsolatedDBTestCase):
             updated = environments_api.update_environment(
                 eid,
                 _request("PUT", f"/api/environments/{eid}"),
-                {"name": "production", "color": "red"},
+                environments_api.EnvironmentIn(name="production", color="red"),
             )
 
         self.assertEqual(updated["name"], "production")
@@ -855,21 +997,25 @@ class EnvironmentUpdateTests(IsolatedDBTestCase):
         """An invalid color must fall back to 'blue' without rejecting the request."""
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
             created = environments_api.add_environment(
-                _request(), {"name": "test-env", "color": "blue"}
+                _request(), environments_api.EnvironmentIn(name="test-env", color="blue")
             )
             updated = environments_api.update_environment(
                 created["id"],
                 _request("PUT", "/api/environments/1"),
-                {"name": "test-env", "color": "notacolor"},
+                environments_api.EnvironmentIn(name="test-env", color="notacolor"),
             )
         self.assertEqual(updated["color"], "blue")
 
     def test_create_duplicate_environment_raises(self) -> None:
         """Creating two environments with the same name must raise 409."""
         with patch.object(environments_api, "require_auth", lambda _req, scope=None: None):
-            environments_api.add_environment(_request(), {"name": "dev"})
+            environments_api.add_environment(
+                _request(), environments_api.EnvironmentIn(name="dev")
+            )
             with self.assertRaises(HTTPException) as ctx:
-                environments_api.add_environment(_request(), {"name": "dev"})
+                environments_api.add_environment(
+                    _request(), environments_api.EnvironmentIn(name="dev")
+                )
         self.assertEqual(ctx.exception.status_code, 409)
 
 
@@ -908,19 +1054,53 @@ class I18nLocaleIntegrityTests(unittest.TestCase):
                 data = self._load(lang)
                 self.assertIsInstance(data, dict, f"{lang}.json root must be a dict")
 
+    # A counted sentence is stored once per plural category the language has, so `foo` is
+    # written as `foo_one` / `foo_other` and compared by its base name. WHICH categories a
+    # language declares is not decidable here: `frontend/scripts/check-locale-parity.mjs`
+    # asks `Intl.PluralRules` and owns that rule, and CI runs it.
+    _PLURAL_SUFFIXES = ("_zero", "_one", "_two", "_few", "_many", "_other")
+
+    def _sentences(self, lang: str) -> set:
+        keys = self._flatten(self._load(lang))
+        out = set()
+        for key in keys:
+            for suffix in self._PLURAL_SUFFIXES:
+                if key.endswith(suffix):
+                    key = key[: -len(suffix)]
+                    break
+            out.add(key)
+        return out
+
     def test_all_locales_have_en_keys(self) -> None:
-        """Every locale must contain all keys that exist in en.json."""
-        en_keys = self._flatten(self._load("en"))
+        """Every locale must carry every sentence en.json has, in the forms it has."""
+        en_keys = self._sentences("en")
         for lang in _SUPPORTED_LANGS:
             if lang == "en":
                 continue
             with self.subTest(lang=lang):
-                lang_keys = self._flatten(self._load(lang))
-                missing = en_keys - lang_keys
+                missing = en_keys - self._sentences(lang)
                 self.assertEqual(
                     missing,
                     set(),
                     f"{lang}.json is missing keys: {sorted(missing)}",
+                )
+
+    def test_every_counted_sentence_keeps_its_other_form(self) -> None:
+        """`other` is the one category every language has, and what `t()` falls back to."""
+        for lang in _SUPPORTED_LANGS:
+            keys = self._flatten(self._load(lang))
+            counted = {
+                k[: -len(s)]
+                for k in keys
+                for s in self._PLURAL_SUFFIXES
+                if k.endswith(s)
+            }
+            self.assertGreater(len(counted), 20, f"{lang}: the suffix scan found almost nothing")
+            with self.subTest(lang=lang):
+                self.assertEqual(
+                    sorted(b for b in counted if f"{b}_other" not in keys),
+                    [],
+                    f"{lang}.json has a counted sentence with no _other form",
                 )
 
     def test_no_empty_translation_values(self) -> None:

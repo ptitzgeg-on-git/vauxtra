@@ -1,4 +1,5 @@
-"""Every API route must be reachable through the MCP bridge, and documented.
+"""Every API route must be reachable through the MCP bridge, documented, and declared with
+the contract the route enforces.
 
 The gate used to compare paths alone, and a path is not a route. `PUT /api/templates/{tid}`
 counted as covered because `get_template` and `delete_template` mention the same path: the
@@ -9,10 +10,97 @@ It also checks the bridge's README against the tools that exist. That list had d
 31 of 84 tools and omitted two whole modules -- an agent reading it would conclude the
 bridge could not manage templates, settings, webhooks or API keys at all. A tool nobody
 knows about is as unreachable as one that was never written, so the drift fails the build.
+
+The same question is asked of `docs/HOWTO.md`, because the bridge's README is not the only
+reference and an operator with curl is not an agent. Eight routes had fallen out of that one:
+`GET /api/services/{sid}`, the plainest read in the API; `POST /api/services/bulk`; and all
+six of the direct per-provider record routes, a whole capability that appeared nowhere in any
+document. They were not new, and nothing failed while they were invisible.
+
+Reaching a route is not the same as calling it correctly, and that was the third gap. A
+tool declares its parameters by hand -- FastMCP reads the signature, and a normal install
+publishes no schema to derive them from (`DEBUG` is false, so `openapi_url` is None) -- so
+nothing but this script compares a signature with the model the route validates against.
+`apply_template` declared `target_port` optional and filled the hole with `or 80`: every
+call that named no port created a service pointing at port 80, which the API accepts
+because 80 is a port. `bulk_service_action` declared `action: str` where the route allows
+three words. Neither was visible to a check that compares methods and paths.
+
+So the contract half below reads both sides and compares them field by field:
+
+  * a field the model requires must be carried by a parameter the tool requires -- not by
+    an optional one, and not by a fallback that invents a value;
+  * a field the route restricts to a set of values must be a `Literal` of exactly that set
+    on the tool, whether the route refuses the others or quietly replaces them;
+  * a payload key the model does not declare is an error, silent or 422;
+  * types, numeric bounds and list minimums must agree.
+
+Two shapes are recognized as bridge conveniences rather than divergences, because the
+comparison would otherwise be meaningless rather than merely noisy:
+
+  * a *derived* payload -- one built from a helper or a `**` merge, as `update_service` and
+    `toggle_service` build theirs by reading the service back first. What the tool declares
+    is an overlay on a full body that came from the API, so requiredness is answered by the
+    GET, not by the signature. Value constraints are still compared for every parameter the
+    overlay does name.
+  * a route whose body is a plain `dict` (five of them: settings, domains, environments,
+    webhooks, alerts). There is no model, so there is no contract to compare. They are
+    counted and printed rather than passed over in silence.
+
+Anything else that is deliberate needs an entry in ALLOWED_CONTRACT_DIVERGENCES, with the
+reason written next to it, and an entry that stops matching fails the build like a stale
+route exemption does.
+
+The contract half asks whether a tool declares what the route *requires*, and that is the
+fourth gap. `ServiceIn` gives `tag_ids` and `environment_ids` a default, so neither field is
+required, so nothing above had anything to say while `create_service` sent `tag_ids: []`
+with no parameter to fill it and `update_service` declared neither at all. The bridge
+published eight tools for building tags and environments and no way to put one on a service:
+the only labelled service it could make came from `apply_template`, wearing whatever the
+template carried, and no tool could change it afterwards.
+
+So a last pass reads the body every write tool sends and reports each key fixed to a bare
+literal. Such a key is not a default a caller may override -- it is the only value that route
+will ever see from that tool. Eleven are deliberate and carry their reason in
+ALLOWED_UNREACHABLE_FIELDS, on the same terms as the tables above: an entry that stops
+matching fails the build.
+
+That pass asks its question of body fields, and asking it of query parameters is the fifth
+gap. The contract half does compare query parameters, but only in the direction a tool
+sends: a key in `call.query_keys` the route does not read is reported, and a parameter the
+route reads that no tool names is not, because nothing was looking at the route's side.
+`DELETE /api/providers/{pid}` takes `withdraw`, which decides whether the provider's proxy
+hosts and DNS records are taken down before it is forgotten or left live on a provider
+Vauxtra no longer knows about. The panel has offered that as a checkbox since it was
+written. The bridge had no way to send it, so the only provider deletion an agent could
+perform was the one that orphans published records -- and the check that exists to catch
+exactly this could not see it. Both directions are now compared, and a parameter left out
+on purpose needs an entry in ALLOWED_UNREACHABLE_QUERY.
+
+The sixth is not about what a tool can send but about what it says. FastMCP publishes the
+signature and the docstring, and nothing else: the docstring *is* the whole description of
+the answer, for every agent, forever. Several routes here answer a partial success --
+`{"ok": true, "errors": [...]}` from a service deletion whose provider records are still
+live, `not_applied` from a settings save the running scheduler never received, `skipped`
+against `errors` from a Docker import where the two mean opposite things. Four pairs of tool
+and key spelt those out and ten did not, so an agent reading `ok: true` reported work done
+while the list beside it held what had not happened. The last pass reads the keys each route
+returns, keeps the ones whose job is to name a failure, and requires the tool's docstring to
+mention them by name. Silence that is deliberate goes in ALLOWED_SILENT_PARTIALS, on the
+same terms as everything above.
+
+Two of those ten were invisible at first for a reason worth recording: the pass read only
+`return {...}`, and a route answering a partial success with a 207 writes
+`return JSONResponse({...}, status_code=...)`. `POST /api/services` is written that way, so
+the answer `create_service` and `apply_template` both hand an agent went unread by the very
+check meant to read it. `collect_route_answers` now reads the dict through that wrapper, and
+`tests/test_mcp_contract_parity.py` fails if it stops.
 """
+import argparse
 import ast
 import re
 import sys
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 API_PATTERN = re.compile(r'@router\.(get|post|put|delete|patch)\("(/api[^"\\)]*)"')
@@ -23,6 +111,10 @@ ALLOWED_API_ONLY = {
     # A continuous SSE stream has no place in a request/response tool; `stream_logs_snapshot`
     # reads a bounded slice of it with its own client.
     ("GET", "/api/logs/stream"),
+    # The deprecated GET alias of `POST /api/services/{sid}/check`, kept one version for
+    # existing scripts. `check_service_health` calls the POST; offering an agent the alias
+    # would be handing it a route we are in the middle of removing.
+    ("GET", "/api/services/{}/check"),
     # Raw per-provider record editing. A service is the bridge's unit of work: it pushes a
     # service and the provider rows follow, so reaching underneath is a way to create drift.
     ("GET", "/api/providers/{}/dns-records"),
@@ -32,6 +124,111 @@ ALLOWED_API_ONLY = {
     ("POST", "/api/providers/{}/proxy-hosts"),
     ("DELETE", "/api/providers/{}/proxy-hosts/{}"),
 }
+
+# Routes the operator reference is allowed not to give a row of its own.
+#
+# Held to the same rule as ALLOWED_API_ONLY: an entry for a route that no longer exists fails
+# the build, so an exemption cannot outlive what it was written for.
+ALLOWED_UNDOCUMENTED = {
+    # Documented inside the row for `POST /api/services/{sid}/check`, which is where a reader
+    # meets it: the sentence exists to say the GET is the deprecated one and to stop them
+    # reaching for it. A row of its own would advertise it instead.
+    ("GET", "/api/services/{}/check"),
+}
+
+# (tool, field or parameter, finding kind) -> why the divergence is the right call.
+#
+# Every entry is checked against what this run observed: one that no longer matches fails
+# the build, so an exemption cannot outlive the shape it was written for.
+ALLOWED_CONTRACT_DIVERGENCES = {
+    # `apply_template` merges three sources for these two fields: the argument, then the
+    # template's own default, then nothing. `POST /api/services` requires both, and the
+    # template legitimately carries neither -- an empty `domain` and a null `target_port`
+    # are what makes a template a template (`app/api/templates.py`). Demanding them on the
+    # tool would make every template's domain and port dead weight. What is not allowed is
+    # the third case: when neither source has a value the tool raises and posts nothing,
+    # instead of inventing 80 and "" the way it used to.
+    ("apply_template", "target_port", "required-from-expression"):
+        "merged from the template, and refused outright when neither side carries one",
+    ("apply_template", "domain", "required-from-expression"):
+        "merged from the template, and refused outright when neither side carries one",
+}
+
+# A field a write tool fills with a constant is a field no caller can reach. `create_service`
+# sent `tag_ids: []` and declared no parameter for it, and `update_service` declared none
+# either, so the bridge published eight tools for building tags and environments and nowhere
+# to put one: a service an agent created was unlabelled, and stayed that way. The contract
+# half above did not see it, and could not -- `ServiceIn` gives both fields a default, so
+# neither is required, and requiredness is the only thing that half asks about.
+#
+# Each entry names why the field is not a gap. Held to the same rule as the tables above: an
+# entry whose tool no longer exists, or whose field stopped being a constant, fails the build.
+ALLOWED_UNREACHABLE_FIELDS = {
+    # `POST /api/services/preflight` answers and stores nothing, and `_run_preflight` reads
+    # fourteen fields of the body it is handed. These five are not among them. They are in
+    # the payload because `ServicePreflightIn` is `ServiceIn` plus `service_id` and the model
+    # wants the whole shape, not because a check consults them.
+    ("run_preflight", "tag_ids"): "no check reads it; the route stores nothing",
+    ("run_preflight", "environment_ids"): "no check reads it; the route stores nothing",
+    ("run_preflight", "icon_url"): "no check reads it; the route stores nothing",
+    ("run_preflight", "enabled"): "no check reads it; the route stores nothing",
+    ("run_preflight", "websocket"): "no check reads it; the route stores nothing",
+    # Multi-sync push targets, the second proxy and the second DNS server. The bridge offers
+    # them nowhere, which is the same position it already takes on the six per-provider
+    # record routes in ALLOWED_API_ONLY: a service is its unit of work, and reaching several
+    # providers at once is where drift comes from. Preflight would check these two -- it is
+    # the one place that reads them -- and has nothing to check while no tool can set them.
+    ("create_service", "extra_proxy_provider_ids"): "multi-sync targets are not offered",
+    ("create_service", "extra_dns_provider_ids"): "multi-sync targets are not offered",
+    ("run_preflight", "extra_proxy_provider_ids"): "multi-sync targets are not offered",
+    ("run_preflight", "extra_dns_provider_ids"): "multi-sync targets are not offered",
+    # A URL the panel's icon picker produces, and an agent has nothing to derive one from.
+    # The service shows the default glyph until someone chooses another in the panel.
+    ("create_service", "icon_url"): "cosmetic, and no agent has a URL to give",
+    # A template is applied in order to publish something. `toggle_service` turns the result
+    # off in one call, so this costs a round trip rather than being out of reach.
+    ("apply_template", "enabled"): "applied to publish; toggle_service turns it off",
+}
+
+# The same question as ALLOWED_UNREACHABLE_FIELDS, asked of query parameters instead of body
+# fields, and asked in the direction nothing was asking it. `compare_contract` reports a
+# query parameter a tool *sends* that its route does not read; nothing reported a parameter
+# the route *reads* that no tool can send, and a parameter no tool sends is invisible to a
+# check that only reads what tools send. `DELETE /api/providers/{pid}` takes `withdraw`,
+# which decides whether the provider's records come down before it is forgotten or stay live
+# on a provider Vauxtra no longer knows about. The panel has offered that choice as a
+# checkbox since it was written; the bridge could not make it, so an agent's only possible
+# provider deletion was the one that leaves published records behind.
+#
+# Routes no tool serves at all are not this table's business -- that is what ALLOWED_API_ONLY
+# answers, above. Each entry here names why the parameter is not a gap, and an entry that
+# stops matching fails the build like every other exemption in this file.
+ALLOWED_UNREACHABLE_QUERY: dict[tuple[str, str, str], str] = {}
+
+# Keys whose whole job is to name the part of the work that did not happen. A route that
+# answers with one is reporting a partial success, and the tool's docstring is the only
+# description of that answer an agent ever reads: FastMCP publishes the signature and the
+# docstring, and nothing else. An agent told "delete a service and remove its routes from all
+# configured providers" reads `ok: true` and reports the deletion done, while `errors` holds
+# the records still live on their providers with nothing in Vauxtra pointing at them.
+#
+# Six such keys were unnamed across five tools -- `not_applied`, and `errors` or `skipped` on
+# four more -- while four others were already spelt out, which is why this is drift rather
+# than a convention nobody had adopted.
+PARTIAL_FAILURE_KEYS = (
+    "not_applied", "ignored", "unreachable", "refused",
+    "skipped", "failed", "errors", "conflicts", "rejected", "warnings",
+)
+
+# A tool that deliberately says nothing about one of those keys, with the reason. Same terms
+# as the tables above: an entry that stops matching fails the build.
+ALLOWED_SILENT_PARTIALS: dict[tuple[str, str], str] = {}
+
+_CONTAINER_TYPES = {"list", "dict", "set", "tuple", "frozenset"}
+
+# Filled by `collect_api_contracts`: helper name -> the bounds it enforces. A validator
+# that hands the value to `is_valid_port` says nothing about ports on its own face.
+_RANGE_PREDICATES: dict[str, tuple[int, int]] = {}
 
 
 def normalize(path: str) -> str:
@@ -66,12 +263,75 @@ def collect_mcp_tools(repo_root: Path) -> set[str]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            if any(
-                isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool"
-                for d in node.decorator_list
-            ):
+            if _is_tool(node):
                 tools.add(node.name)
     return tools
+
+
+_WRITE_METHODS = {"post", "put", "patch"}
+
+
+def _tool_writes(fn: ast.FunctionDef) -> list[ast.Dict]:
+    """Every dict literal this tool sends as a request body, or an empty list if it sends none.
+
+    Only bodies: a tool is free to build dicts for its own bookkeeping, and a key in one of
+    those says nothing about what a caller can reach. Both shapes the bridge uses are read --
+    `json={...}` written inline, and a `payload` built above and passed by name.
+    """
+    inline: list[ast.Dict] = []
+    by_name: set[str] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _WRITE_METHODS:
+            continue
+        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "client"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "json":
+                continue
+            if isinstance(keyword.value, ast.Dict):
+                inline.append(keyword.value)
+            elif isinstance(keyword.value, ast.Name):
+                by_name.add(keyword.value.id)
+
+    bodies = list(inline)
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        named = any(isinstance(t, ast.Name) and t.id in by_name for t in targets)
+        if named and isinstance(node.value, ast.Dict):
+            bodies.append(node.value)
+    return bodies
+
+
+def collect_unreachable_fields(repo_root: Path) -> list[tuple[str, str, str]]:
+    """(tool, field, literal) for every body key fixed to a constant with no parameter to set it.
+
+    A key whose value comes from a parameter, or from anything computed -- a `.get` off a
+    template, a merge, a conditional -- is reachable and not reported. A key spelt as a bare
+    literal is the whole of what that route will ever receive from this tool.
+    """
+    unreachable: list[tuple[str, str, str]] = []
+    for file_path in sorted((repo_root / "vauxtra_mcp" / "tools").glob("*.py")):
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef) or not _is_tool(fn):
+                continue
+            parameters = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
+            for body in _tool_writes(fn):
+                for key, value in zip(body.keys, body.values, strict=True):
+                    if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                        continue
+                    if key.value in parameters:
+                        continue
+                    if isinstance(value, (ast.Constant, ast.List, ast.Dict, ast.Tuple)):
+                        unreachable.append((fn.name, key.value, ast.unparse(value)))
+    return sorted(unreachable)
 
 
 def collect_documented_tools(repo_root: Path) -> set[str]:
@@ -96,7 +356,1024 @@ def collect_documented_tools(repo_root: Path) -> set[str]:
     return documented
 
 
-def main() -> int:
+def collect_documented_routes(repo_root: Path) -> set[tuple[str, str]]:
+    """(method, path) out of the `| Method | Endpoint | ... |` rows of the API Reference.
+
+    Only rows whose endpoint is an API path, so the section stays free to document `/metrics`
+    without it being read as a route that does not exist.
+
+    The section is found by its name and not by the number in front of it. That number moves
+    whenever a section is inserted above it, which is the same drift that left `README.md`
+    pointing at `docs/HOWTO.md#10-mcp-integration` after MCP Integration became section 11.
+    """
+    text = (repo_root / "docs" / "HOWTO.md").read_text(encoding="utf-8")
+    heading = re.search(r"^##\s+(?:\d+\)\s*)?API Reference\s*$", text, re.M)
+    if heading is None:
+        raise SystemExit(
+            "docs/HOWTO.md has no `## API Reference` heading. Either it was renamed -- in "
+            "which case rename it here too -- or the operator's route reference is gone."
+        )
+    end = text.find("\n## ", heading.start() + 1)
+    section = text[heading.start():end if end != -1 else len(text)]
+
+    documented: set[tuple[str, str]] = set()
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) < 4:
+            continue
+        method = re.fullmatch(r"`(GET|POST|PUT|PATCH|DELETE)`", cells[1])
+        endpoint = re.fullmatch(r"`(/[^`]*)`", cells[2])
+        if method and endpoint and endpoint.group(1).startswith("/api"):
+            documented.add((method.group(1), normalize(endpoint.group(1))))
+    return documented
+
+
+# ---------------------------------------------------------------------------------------
+# Reading declarations out of the AST
+# ---------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TypeFacts:
+    """What an annotation promises: base type, whether None is allowed, and its value set."""
+
+    base: str = "any"
+    nullable: bool = False
+    enum: tuple[str, ...] = ()       # a scalar restricted to these values
+    item_enum: tuple[str, ...] = ()  # a list whose items are restricted to these values
+    min_items: int | None = None
+    minimum: int | None = None
+    maximum: int | None = None
+
+
+def _is_tool(node: ast.FunctionDef) -> bool:
+    return any(
+        isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool"
+        for d in node.decorator_list
+    )
+
+
+def _call_name(node: ast.AST) -> str:
+    if not isinstance(node, ast.Call):
+        return ""
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return ""
+
+
+def _string_members(node: ast.AST) -> tuple[str, ...] | None:
+    """The string members of a literal collection, or None when it is not one.
+
+    A dict answers with its keys: `PROVIDER_TYPES` is a table of types, and membership in
+    it is membership in its keys.
+    """
+    if isinstance(node, ast.Call) and _call_name(node) in _CONTAINER_TYPES:
+        return _string_members(node.args[0]) if node.args else ()
+    if isinstance(node, ast.Dict):
+        elements = list(node.keys)
+    elif isinstance(node, ast.Tuple | ast.List | ast.Set):
+        elements = list(node.elts)
+    else:
+        return None
+    values = []
+    for element in elements:
+        if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
+            return None
+        values.append(element.value)
+    return tuple(sorted(values))
+
+
+def collect_constant_sets(repo_root: Path) -> dict[str, tuple[str, ...] | None]:
+    """Module-level collections of strings, by name, from everything under `app/`.
+
+    A name two modules define differently is stored as None: unresolvable is the only
+    honest answer, and a wrong value set would be worse than none.
+    """
+    table: dict[str, tuple[str, ...] | None] = {}
+    for path in sorted((repo_root / "app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            members = _string_members(node.value)
+            if members is None:
+                continue
+            if table.get(target.id, members) != members:
+                table[target.id] = None
+            else:
+                table[target.id] = members
+    return table
+
+
+def collect_membership_predicates(
+    repo_root: Path, constants: dict[str, tuple[str, ...] | None]
+) -> dict[str, tuple[str, ...]]:
+    """`def is_valid_colour(v): return v in _COLOUR_VALID` -> the set, by function name.
+
+    One level deep and no further. It is what `TagIn.color` does, and without following it
+    the tag palette would read as "any string" while the route replaces anything outside
+    the set with `blue`.
+    """
+    predicates: dict[str, tuple[str, ...]] = {}
+    for path in sorted((repo_root / "app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or len(node.body) != 1:
+                continue
+            statement = node.body[0]
+            if not isinstance(statement, ast.Return):
+                continue
+            members = _membership_target(statement.value, constants)
+            if members:
+                predicates[node.name] = members
+    return predicates
+
+
+def _range_target(node: ast.AST | None) -> tuple[int, int] | None:
+    """The bounds of a chained `lo <= x <= hi`, which is how this codebase spells a range.
+
+    `is_valid_port` returns one and `TemplateIn.valid_port` negates one; both mean a port is
+    1 to 65535, and neither is visible to a check that reads annotations only.
+    """
+    if not isinstance(node, ast.Compare) or len(node.ops) != 2:
+        return None
+    low, high = node.left, node.comparators[1]
+    if not (isinstance(low, ast.Constant) and isinstance(low.value, int)):
+        return None
+    if not (isinstance(high, ast.Constant) and isinstance(high.value, int)):
+        return None
+    if not all(isinstance(op, ast.Lt | ast.LtE) for op in node.ops):
+        return None
+    minimum = low.value + (0 if isinstance(node.ops[0], ast.LtE) else 1)
+    maximum = high.value - (0 if isinstance(node.ops[1], ast.LtE) else 1)
+    return minimum, maximum
+
+
+def collect_range_predicates(repo_root: Path) -> dict[str, tuple[int, int]]:
+    """`def is_valid_port(v): return 1 <= int(v) <= 65535` -> the bounds, by function name."""
+    predicates: dict[str, tuple[int, int]] = {}
+    for path in sorted((repo_root / "app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Return):
+                    continue
+                bounds = _range_target(child.value)
+                if bounds:
+                    predicates[node.name] = bounds
+                    break
+    return predicates
+
+
+def _membership_target(
+    node: ast.AST | None, constants: dict[str, tuple[str, ...] | None]
+) -> tuple[str, ...]:
+    """The value set of an `x in <collection>` / `x not in <collection>` comparison."""
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+        return ()
+    if not isinstance(node.ops[0], ast.In | ast.NotIn):
+        return ()
+    right = node.comparators[0]
+    members = _string_members(right)
+    if members is not None:
+        return members
+    if isinstance(right, ast.Name):
+        return constants.get(right.id) or ()
+    if isinstance(right, ast.Attribute):
+        return constants.get(right.attr) or ()
+    return ()
+
+
+def _field_call_facts(node: ast.Call) -> tuple[bool, TypeFacts]:
+    """What a `Field(...)` says: whether it carries a default, and the bounds it sets."""
+    has_default = bool(node.args)
+    bounds = TypeFacts()
+    for keyword in node.keywords:
+        if keyword.arg in ("default", "default_factory"):
+            has_default = True
+        if not isinstance(keyword.value, ast.Constant):
+            continue
+        value = keyword.value.value
+        if keyword.arg in ("min_length", "min_items"):
+            bounds = replace(bounds, min_items=value)
+        elif keyword.arg == "ge":
+            bounds = replace(bounds, minimum=value)
+        elif keyword.arg == "gt":
+            bounds = replace(bounds, minimum=value + 1)
+        elif keyword.arg == "le":
+            bounds = replace(bounds, maximum=value)
+        elif keyword.arg == "lt":
+            bounds = replace(bounds, maximum=value - 1)
+    return has_default, bounds
+
+
+def _with_bounds(facts: TypeFacts, bounds: TypeFacts) -> TypeFacts:
+    """Lay a `Field(...)`'s bounds over an annotation, keeping what it does not mention."""
+    return replace(
+        facts,
+        min_items=bounds.min_items if bounds.min_items is not None else facts.min_items,
+        minimum=bounds.minimum if bounds.minimum is not None else facts.minimum,
+        maximum=bounds.maximum if bounds.maximum is not None else facts.maximum,
+    )
+
+
+def _facts(node: ast.AST | None) -> TypeFacts:
+    """Read an annotation. Unknown shapes answer `any`, which constrains nothing."""
+    if node is None:
+        return TypeFacts()
+    if isinstance(node, ast.Constant):
+        if node.value is None:
+            return TypeFacts(base="none")
+        if isinstance(node.value, str):
+            # A stringified annotation. Parsing it is possible; nothing here uses one.
+            return TypeFacts()
+        return TypeFacts()
+    if isinstance(node, ast.Name):
+        return TypeFacts(base=node.id if node.id in _KNOWN_BASES else "any")
+    if isinstance(node, ast.Attribute):
+        return TypeFacts()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left, right = _facts(node.left), _facts(node.right)
+        nullable = left.base == "none" or right.base == "none" or left.nullable or right.nullable
+        carrier = right if left.base == "none" else left
+        return replace(carrier, nullable=nullable)
+    if isinstance(node, ast.Subscript):
+        return _subscript_facts(node)
+    return TypeFacts()
+
+
+_KNOWN_BASES = {"str", "int", "float", "bool", "list", "dict", "set", "tuple", "none"}
+
+
+def _subscript_facts(node: ast.Subscript) -> TypeFacts:
+    head = node.value.id if isinstance(node.value, ast.Name) else ""
+    arguments = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+
+    if head == "Literal":
+        values = tuple(sorted(
+            a.value for a in arguments if isinstance(a, ast.Constant) and isinstance(a.value, str)
+        ))
+        return TypeFacts(base="str" if values else "any", enum=values)
+    if head == "Optional":
+        return replace(_facts(arguments[0]), nullable=True)
+    if head == "Annotated":
+        inner = _facts(arguments[0])
+        for extra in arguments[1:]:
+            if _call_name(extra) == "Field":
+                _, bounds = _field_call_facts(extra)
+                inner = _with_bounds(inner, bounds)
+        return inner
+    if head in ("list", "set", "tuple", "frozenset"):
+        inner = _facts(arguments[0])
+        return TypeFacts(base="list", item_enum=inner.enum)
+    if head == "dict":
+        return TypeFacts(base="dict")
+    return TypeFacts()
+
+
+# ---------------------------------------------------------------------------------------
+# The API side: models, the value sets their validators impose, and the routes using them
+# ---------------------------------------------------------------------------------------
+
+
+@dataclass
+class ModelField:
+    name: str
+    facts: TypeFacts
+    required: bool
+    enum: tuple[str, ...] = ()
+    item_enum: tuple[str, ...] = ()
+
+
+@dataclass
+class ApiModel:
+    name: str
+    bases: tuple[str, ...]
+    fields: dict[str, ModelField] = field(default_factory=dict)
+    forbids_extra: bool = False
+    resolved: bool = False
+
+
+@dataclass
+class ApiRoute:
+    method: str
+    path: str
+    handler: str
+    model: str | None = None
+    body_is_dict: bool = False
+    query_params: dict[str, bool] = field(default_factory=dict)  # name -> required
+    enums: dict[str, tuple[str, ...]] = field(default_factory=dict)  # route-level value sets
+
+
+def _model_from_class(
+    node: ast.ClassDef,
+    constants: dict[str, tuple[str, ...] | None],
+    predicates: dict[str, tuple[str, ...]],
+) -> ApiModel:
+    bases = tuple(b.id for b in node.bases if isinstance(b, ast.Name))
+    model = ApiModel(name=node.name, bases=bases)
+
+    for statement in node.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "model_config" for t in statement.targets
+        ):
+            model.forbids_extra = any(
+                keyword.arg == "extra" and getattr(keyword.value, "value", "") == "forbid"
+                for keyword in getattr(statement.value, "keywords", [])
+            )
+            continue
+
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            name = statement.target.id
+            if name.startswith("model_config"):
+                continue
+            facts = _facts(statement.annotation)
+            required = statement.value is None
+            if isinstance(statement.value, ast.Call) and _call_name(statement.value) == "Field":
+                has_default, bounds = _field_call_facts(statement.value)
+                required = not has_default
+                facts = _with_bounds(facts, bounds)
+            model.fields[name] = ModelField(
+                name=name, facts=facts, required=required,
+                enum=facts.enum, item_enum=facts.item_enum,
+            )
+            continue
+
+        if isinstance(statement, ast.FunctionDef):
+            for name, found in _validator_facts(statement, constants, predicates).items():
+                target = model.fields.get(name)
+                if target is None:
+                    continue
+                if found.enum:
+                    if target.facts.base == "list":
+                        target.item_enum = target.item_enum or found.enum
+                    else:
+                        target.enum = target.enum or found.enum
+                if found.minimum is not None or found.maximum is not None:
+                    target.facts = _with_bounds(target.facts, found)
+
+    return model
+
+
+def _validator_facts(
+    node: ast.FunctionDef,
+    constants: dict[str, tuple[str, ...] | None],
+    predicates: dict[str, tuple[str, ...]],
+) -> dict[str, TypeFacts]:
+    """What a `@field_validator` imposes, for each field it is registered on.
+
+    Refusal and replacement count the same. `TagIn.color` swaps anything outside the
+    palette for `blue` instead of raising, and a caller who asked for `chartreuse` and was
+    given `blue` was not obeyed either.
+    """
+    fields: list[str] = []
+    for decorator in node.decorator_list:
+        if _call_name(decorator) != "field_validator":
+            continue
+        fields.extend(
+            a.value for a in decorator.args if isinstance(a, ast.Constant) and isinstance(a.value, str)
+        )
+    if not fields:
+        return {}
+
+    found = TypeFacts()
+    for child in ast.walk(node):
+        if not found.enum:
+            members = _membership_target(child, constants)
+            if not members and isinstance(child, ast.Call) and _call_name(child) in predicates:
+                members = predicates[_call_name(child)]
+            if members:
+                found = replace(found, enum=members)
+        if found.minimum is None:
+            bounds = _range_target(child)
+            if not bounds and isinstance(child, ast.Call) and _call_name(child) in _RANGE_PREDICATES:
+                bounds = _RANGE_PREDICATES[_call_name(child)]
+            if bounds:
+                found = replace(found, minimum=bounds[0], maximum=bounds[1])
+    if not found.enum and found.minimum is None:
+        return {}
+    return dict.fromkeys(fields, found)
+
+
+def collect_api_contracts(
+    repo_root: Path,
+) -> tuple[dict[str, ApiModel], dict[tuple[str, str], ApiRoute]]:
+    """Every pydantic body model under `app/api/`, and the routes that validate against one."""
+    constants = collect_constant_sets(repo_root)
+    predicates = collect_membership_predicates(repo_root, constants)
+    _RANGE_PREDICATES.clear()
+    _RANGE_PREDICATES.update(collect_range_predicates(repo_root))
+
+    models: dict[str, ApiModel] = {}
+    routes: dict[tuple[str, str], ApiRoute] = {}
+
+    for path in sorted((repo_root / "app" / "api").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                models[node.name] = _model_from_class(node, constants, predicates)
+            elif isinstance(node, ast.FunctionDef):
+                route = _route_from_function(node, models, constants)
+                if route is not None:
+                    routes[(route.method, route.path)] = route
+
+    for name in list(models):
+        _resolve_inheritance(name, models)
+    return models, routes
+
+
+def _resolve_inheritance(name: str, models: dict[str, ApiModel]) -> ApiModel:
+    """Fold a parent's fields under a child's, so `ServicePreflightIn` carries `ServiceIn`."""
+    model = models[name]
+    if model.resolved:
+        return model
+    model.resolved = True
+    merged: dict[str, ModelField] = {}
+    for base in model.bases:
+        if base in models:
+            parent = _resolve_inheritance(base, models)
+            merged.update(parent.fields)
+            model.forbids_extra = model.forbids_extra or parent.forbids_extra
+    merged.update(model.fields)
+    model.fields = merged
+    return model
+
+
+def _route_from_function(
+    node: ast.FunctionDef,
+    models: dict[str, ApiModel],
+    constants: dict[str, tuple[str, ...] | None],
+) -> ApiRoute | None:
+    decorator = next(
+        (
+            d for d in node.decorator_list
+            if isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and isinstance(d.func.value, ast.Name)
+            and d.func.value.id == "router"
+        ),
+        None,
+    )
+    if decorator is None or not decorator.args:
+        return None
+    raw_path = decorator.args[0]
+    if not isinstance(raw_path, ast.Constant):
+        return None
+
+    route = ApiRoute(
+        method=decorator.func.attr.upper(),
+        path=normalize(raw_path.value),
+        handler=node.name,
+    )
+
+    path_names = set(re.findall(r"\{([^}]+)\}", raw_path.value))
+    arguments = list(node.args.args) + list(node.args.kwonlyargs)
+    defaults = [None] * (len(node.args.args) - len(node.args.defaults)) + list(node.args.defaults)
+    defaults += list(node.args.kw_defaults)
+    body_name = ""
+
+    for argument, default in zip(arguments, defaults, strict=False):
+        facts = _facts(argument.annotation)
+        annotation_name = _annotation_root(argument.annotation)
+        if annotation_name == "Request" or argument.arg in path_names:
+            continue
+        if annotation_name in models:
+            route.model = annotation_name
+            body_name = argument.arg
+            continue
+        if _call_name(default) == "Body" or (facts.base == "dict" and default is None):
+            route.body_is_dict = True
+            body_name = argument.arg
+            continue
+        route.query_params[argument.arg] = default is None
+
+    if body_name:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Compare):
+                continue
+            left = child.left
+            if (
+                isinstance(left, ast.Attribute)
+                and isinstance(left.value, ast.Name)
+                and left.value.id == body_name
+            ):
+                members = _membership_target(child, constants)
+                if members:
+                    route.enums.setdefault(left.attr, members)
+    return route
+
+
+def _annotation_root(node: ast.AST | None) -> str:
+    """The named type of an annotation, looking through `X | None`."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _annotation_root(node.left) or _annotation_root(node.right)
+    return ""
+
+
+# ---------------------------------------------------------------------------------------
+# The bridge side: what each tool declares, and what it puts in the payload
+# ---------------------------------------------------------------------------------------
+
+
+@dataclass
+class ToolParam:
+    name: str
+    facts: TypeFacts
+    has_default: bool
+
+
+@dataclass
+class Sent:
+    """Where one payload key gets its value."""
+
+    kind: str            # param | cond-param | mask | const | expr
+    source: str = ""     # the parameter name, for param / cond-param / mask
+    detail: str = ""     # the fallback, or the expression, as written
+
+
+@dataclass
+class ToolCall:
+    method: str
+    path: str
+    payload: dict[str, Sent] | None = None
+    complete: bool = True   # False once a key can be absent, or the body comes from a helper
+    derived: bool = False   # the body is a full one read back from the API and overlaid
+    query_keys: tuple[str, ...] = ()
+
+
+@dataclass
+class McpTool:
+    name: str
+    module: str
+    params: dict[str, ToolParam]
+    calls: list[ToolCall]
+
+
+def collect_mcp_contracts(repo_root: Path) -> dict[str, McpTool]:
+    tools: dict[str, McpTool] = {}
+    for path in sorted((repo_root / "vauxtra_mcp" / "tools").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and _is_tool(node):
+                tools[node.name] = McpTool(
+                    name=node.name,
+                    module=path.name,
+                    params=_tool_params(node),
+                    calls=_tool_calls(node),
+                )
+    return tools
+
+
+def _tool_params(node: ast.FunctionDef) -> dict[str, ToolParam]:
+    params: dict[str, ToolParam] = {}
+    positional = list(node.args.args)
+    defaults = [None] * (len(positional) - len(node.args.defaults)) + list(node.args.defaults)
+    for argument, default in zip(positional, defaults, strict=True):
+        params[argument.arg] = ToolParam(
+            name=argument.arg, facts=_facts(argument.annotation), has_default=default is not None
+        )
+    for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
+        params[argument.arg] = ToolParam(
+            name=argument.arg, facts=_facts(argument.annotation), has_default=default is not None
+        )
+    return params
+
+
+def _provenance(node: ast.AST, params: dict[str, ToolParam]) -> Sent:
+    if isinstance(node, ast.Name) and node.id in params:
+        return Sent(kind="param", source=node.id)
+    if isinstance(node, ast.Constant):
+        return Sent(kind="const", detail=repr(node.value))
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        head = node.values[0]
+        if isinstance(head, ast.Name) and head.id in params:
+            fallback = " or ".join(ast.unparse(v) for v in node.values[1:])
+            return Sent(kind="mask", source=head.id, detail=fallback)
+    return Sent(kind="expr", detail=ast.unparse(node))
+
+
+def _dict_payload(node: ast.Dict, params: dict[str, ToolParam]) -> tuple[dict[str, Sent], bool]:
+    payload: dict[str, Sent] = {}
+    complete = True
+    for key, value in zip(node.keys, node.values, strict=True):
+        if key is None:  # `**something`: the rest of the body comes from elsewhere
+            complete = False
+            continue
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            complete = False
+            continue
+        payload[key.value] = _provenance(value, params)
+    return payload, complete
+
+
+def _tool_calls(node: ast.FunctionDef) -> list[ToolCall]:
+    params = _tool_params(node)
+    bodies: dict[str, tuple[dict[str, Sent], bool, bool]] = {}  # name -> (payload, complete, derived)
+    calls: list[ToolCall] = []
+
+    for statement in ast.walk(node):
+        # `payload = {...}` / `payload: dict[str, Any] = {...}`
+        if isinstance(statement, ast.Assign | ast.AnnAssign):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            value = statement.value
+            for target in targets:
+                if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
+                    payload, complete = _dict_payload(value, params)
+                    bodies[target.id] = (payload, complete, not complete)
+                elif (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id in bodies
+                    and isinstance(target.slice, ast.Constant)
+                ):
+                    payload, _, derived = bodies[target.value.id]
+                    payload[target.slice.value] = _provenance(value, params)
+                    bodies[target.value.id] = (payload, False, derived)
+                elif isinstance(target, ast.Name) and isinstance(value, ast.Call):
+                    bodies[target.id] = ({}, False, True)
+
+        # `for key, value in {...}.items(): ... payload[key] = value`
+        if isinstance(statement, ast.For) and isinstance(statement.iter, ast.Call):
+            iterated = statement.iter.func
+            if (
+                isinstance(iterated, ast.Attribute)
+                and iterated.attr == "items"
+                and isinstance(iterated.value, ast.Dict)
+            ):
+                overlay, _ = _dict_payload(iterated.value, params)
+                written = {
+                    sub.value.id
+                    for child in ast.walk(statement)
+                    if isinstance(child, ast.Assign)
+                    for sub in child.targets
+                    if isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)
+                }
+                for name in written & set(bodies):
+                    payload, _, derived = bodies[name]
+                    for key, sent in overlay.items():
+                        payload[key] = Sent(kind="cond-param", source=sent.source, detail=sent.detail)
+                    bodies[name] = (payload, False, derived)
+
+    for statement in ast.walk(node):
+        if not isinstance(statement, ast.Call):
+            continue
+        function = statement.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "client"
+            and function.attr in ("get", "post", "put", "delete", "patch")
+        ):
+            continue
+        if not statement.args:
+            continue
+        path = _path_of(statement.args[0])
+        if path is None:
+            continue
+
+        call = ToolCall(method=function.attr.upper(), path=path)
+        for keyword in statement.keywords:
+            if keyword.arg == "json":
+                if isinstance(keyword.value, ast.Dict):
+                    call.payload, call.complete = _dict_payload(keyword.value, params)
+                    call.derived = not call.complete
+                elif isinstance(keyword.value, ast.Name) and keyword.value.id in bodies:
+                    call.payload, call.complete, call.derived = bodies[keyword.value.id]
+                else:
+                    call.payload, call.complete, call.derived = {}, False, True
+            if keyword.arg == "params" and isinstance(keyword.value, ast.Dict):
+                call.query_keys = tuple(
+                    k.value for k in keyword.value.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                )
+        calls.append(call)
+    return calls
+
+
+def _path_of(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return normalize(node.value)
+    if isinstance(node, ast.JoinedStr):
+        rendered = "".join(
+            part.value if isinstance(part, ast.Constant) else "{}" for part in node.values
+        )
+        return normalize(rendered)
+    return None
+
+
+# ---------------------------------------------------------------------------------------
+# The comparison
+# ---------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    tool: str
+    target: str
+    kind: str
+    message: str
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.tool, self.target, self.kind)
+
+
+def _values(members: tuple[str, ...]) -> str:
+    return ", ".join(members)
+
+
+def compare_contract(tool: McpTool, call: ToolCall, route: ApiRoute, model: ApiModel) -> list[Finding]:
+    findings: list[Finding] = []
+    where = f"{route.method} {route.path}"
+    payload = call.payload or {}
+
+    for name, spec in model.fields.items():
+        enum = route.enums.get(name) or spec.enum
+        item_enum = spec.item_enum
+        sent = payload.get(name)
+
+        if spec.required and not call.derived:
+            if sent is None and call.complete:
+                findings.append(Finding(
+                    tool.name, name, "required-not-sent",
+                    f"{tool.name}: {where} requires '{name}' and the tool never sends it",
+                ))
+            elif sent is not None and sent.kind == "mask":
+                findings.append(Finding(
+                    tool.name, name, "required-masked",
+                    f"{tool.name}: '{name}' is required by {where}, and the tool falls back to "
+                    f"`{sent.detail}` when '{sent.source}' is omitted -- it invents a value "
+                    f"instead of refusing",
+                ))
+            elif sent is not None and sent.kind == "expr":
+                findings.append(Finding(
+                    tool.name, name, "required-from-expression",
+                    f"{tool.name}: {where} requires '{name}' and no parameter carries it; the "
+                    f"payload fills it with `{sent.detail}`",
+                ))
+            elif sent is not None and sent.kind in ("param", "cond-param"):
+                param = tool.params[sent.source]
+                if param.has_default or param.facts.nullable:
+                    findings.append(Finding(
+                        tool.name, sent.source, "required-declared-optional",
+                        f"{tool.name}: parameter '{sent.source}' is optional "
+                        f"({'has a default' if param.has_default else 'accepts None'}), but "
+                        f"{where} requires '{name}'",
+                    ))
+
+        if sent is not None and sent.kind in ("param", "cond-param"):
+            param = tool.params[sent.source]
+            if not spec.required and not param.has_default and not call.derived:
+                findings.append(Finding(
+                    tool.name, sent.source, "optional-declared-required",
+                    f"{tool.name}: parameter '{sent.source}' is required, but {where} accepts a "
+                    f"body without '{name}'",
+                ))
+            if enum and param.facts.enum != enum:
+                kind = "enum-mismatch" if param.facts.enum else "enum-not-declared"
+                declared = _values(param.facts.enum) if param.facts.enum else param.facts.base
+                findings.append(Finding(
+                    tool.name, sent.source, kind,
+                    f"{tool.name}: parameter '{sent.source}' declares {declared}, but {where} "
+                    f"accepts only: {_values(enum)}",
+                ))
+            if item_enum and param.facts.item_enum != item_enum:
+                kind = "enum-mismatch" if param.facts.item_enum else "enum-not-declared"
+                findings.append(Finding(
+                    tool.name, sent.source, kind,
+                    f"{tool.name}: the items of '{sent.source}' are unconstrained, but {where} "
+                    f"accepts only: {_values(item_enum)}",
+                ))
+            if (
+                spec.facts.min_items is not None
+                and param.facts.min_items != spec.facts.min_items
+            ):
+                findings.append(Finding(
+                    tool.name, sent.source, "min-items-not-declared",
+                    f"{tool.name}: parameter '{sent.source}' carries no minimum, but {where} "
+                    f"demands at least {spec.facts.min_items} item(s) in '{name}'",
+                ))
+            if (spec.facts.minimum, spec.facts.maximum) != (None, None) and (
+                param.facts.minimum,
+                param.facts.maximum,
+            ) != (spec.facts.minimum, spec.facts.maximum):
+                findings.append(Finding(
+                    tool.name, sent.source, "range-not-declared",
+                    f"{tool.name}: parameter {sent.source!r} declares no bounds, but {where} "
+                    f"accepts {name!r} only between {spec.facts.minimum} and "
+                    f"{spec.facts.maximum}",
+                ))
+            if (
+                spec.facts.base not in ("any", "none")
+                and param.facts.base not in ("any", "none")
+                and spec.facts.base != param.facts.base
+            ):
+                findings.append(Finding(
+                    tool.name, sent.source, "type-mismatch",
+                    f"{tool.name}: parameter '{sent.source}' is {param.facts.base}, but "
+                    f"{where} reads '{name}' as {spec.facts.base}",
+                ))
+
+        if sent is not None and sent.kind == "const" and enum:
+            literal = sent.detail.strip("'\"")
+            if literal not in enum:
+                findings.append(Finding(
+                    tool.name, name, "enum-invalid-constant",
+                    f"{tool.name}: sends '{name}'={sent.detail}, which {where} refuses; "
+                    f"it accepts only: {_values(enum)}",
+                ))
+
+    for key in payload:
+        if key in model.fields:
+            continue
+        how = "refuses it with a 422" if model.forbids_extra else "ignores it"
+        findings.append(Finding(
+            tool.name, key, "unknown-key",
+            f"{tool.name}: sends '{key}', which {model.name} does not declare -- {where} {how}",
+        ))
+
+    for key in call.query_keys:
+        if key not in route.query_params:
+            findings.append(Finding(
+                tool.name, key, "unknown-query-param",
+                f"{tool.name}: passes the query parameter '{key}', which {where} does not read",
+            ))
+
+    return findings
+
+
+def contract_findings(repo_root: Path) -> tuple[list[Finding], dict[str, int]]:
+    models, routes = collect_api_contracts(repo_root)
+    tools = collect_mcp_contracts(repo_root)
+
+    findings: list[Finding] = []
+    stats = {"tools": len(tools), "compared": 0, "dict_body": 0, "derived": 0}
+    unmodelled: set[tuple[str, str]] = set()
+
+    for tool in tools.values():
+        for call in tool.calls:
+            route = routes.get((call.method, call.path))
+            if route is None or call.payload is None:
+                continue
+            if route.model is None:
+                if route.body_is_dict:
+                    unmodelled.add((route.method, route.path))
+                continue
+            stats["compared"] += 1
+            if call.derived:
+                stats["derived"] += 1
+            findings.extend(compare_contract(tool, call, route, models[route.model]))
+
+    stats["dict_body"] = len(unmodelled)
+    stats["unmodelled_routes"] = sorted(unmodelled)
+    return findings, stats
+
+
+def collect_route_answers(repo_root: Path) -> dict[tuple[str, str], set[str]]:
+    """Every key each route returns in a literal dict, by (method, path).
+
+    Two shapes count as a literal answer: `return {...}`, and `return JSONResponse({...},
+    status_code=...)`, which is how a route answers a partial success with 207 instead of
+    200. Reading only the bare dict missed precisely that case. `POST /api/services` answers
+    `{"id", "fqdn", "errors"}` with a 207 when the service was stored but its proxy host or
+    DNS record was not published, and the wrapper alone hid it from this pass.
+
+    A route whose answer is built elsewhere and returned by name still contributes nothing,
+    which is the honest outcome: this cannot say what such a route answers, so it does not
+    guess. Nor does it descend into nested dicts -- `warnings` inside a validation report is
+    the report, not a write that half happened. Both limits under-report, which is the right
+    direction for a check that fails a build.
+    """
+    answers: dict[tuple[str, str], set[str]] = {}
+    for file_path in sorted((repo_root / "app" / "api").glob("*.py")):
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not (isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute)):
+                    continue
+                if not (isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "router"):
+                    continue
+                if not decorator.args or not isinstance(decorator.args[0], ast.Constant):
+                    continue
+                key = (decorator.func.attr.upper(), normalize(decorator.args[0].value))
+                keys = answers.setdefault(key, set())
+                for inner in ast.walk(node):
+                    if not isinstance(inner, ast.Return):
+                        continue
+                    answered = inner.value
+                    if isinstance(answered, ast.Call) and answered.args:
+                        answered = answered.args[0]
+                    if not isinstance(answered, ast.Dict):
+                        continue
+                    for name in answered.keys:
+                        if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                            keys.add(name.value)
+    return answers
+
+
+def collect_tool_prose(repo_root: Path) -> dict[str, tuple[str, str]]:
+    """Each tool's docstring and its whole source text.
+
+    The source is read as text on purpose. Asking whether a tool can send a query parameter
+    by parsing the call reaches only `params={"force": "true"}` written inline, and misses
+    `params=params` built above it and `params={...} if force else None` -- both of which are
+    in use here. Matching the name anywhere in the function is cruder and errs the safe way:
+    it can call a parameter reachable that is not, never out of reach when it is, so this
+    under-reports rather than crying wolf.
+    """
+    prose: dict[str, tuple[str, str]] = {}
+    for file_path in sorted((repo_root / "vauxtra_mcp" / "tools").glob("*.py")):
+        text = file_path.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not any(
+                isinstance(decorator, ast.Call) and getattr(decorator.func, "attr", "") == "tool"
+                for decorator in node.decorator_list
+            ):
+                continue
+            prose[node.name] = (
+                ast.get_docstring(node) or "",
+                ast.get_source_segment(text, node) or "",
+            )
+    return prose
+
+
+def tools_by_route(tools: dict) -> dict[tuple[str, str], list[str]]:
+    """Which tools call each route."""
+    serving: dict[tuple[str, str], list[str]] = {}
+    for name, tool in sorted(tools.items()):
+        for call in tool.calls:
+            serving.setdefault((call.method, call.path), []).append(name)
+    return serving
+
+
+def collect_unreachable_query(repo_root: Path) -> list[tuple[str, str, str, list[str]]]:
+    """Query parameters a route reads that no tool serving it can send.
+
+    Routes no tool serves at all are out of scope: an unserved route is an unserved route,
+    which ALLOWED_API_ONLY answers with a reason. This asks the narrower question -- the
+    bridge reaches this route, and still cannot ask it for one of the things it does.
+    """
+    _models, routes = collect_api_contracts(repo_root)
+    prose = collect_tool_prose(repo_root)
+    serving = tools_by_route(collect_mcp_contracts(repo_root))
+
+    unreachable: list[tuple[str, str, str, list[str]]] = []
+    for (method, path), servers in sorted(serving.items()):
+        route = routes.get((method, path))
+        if route is None:
+            continue
+        for name in sorted(route.query_params):
+            if any(name in prose.get(tool, ("", ""))[1] for tool in servers):
+                continue
+            unreachable.append((method, path, name, servers))
+    return unreachable
+
+
+def collect_silent_partials(repo_root: Path) -> list[tuple[str, str, str, str]]:
+    """Partial-failure keys a route answers with that the calling tool never names.
+
+    Matching the key anywhere in the docstring is deliberately loose. The question is
+    whether an agent reading the tool is told the key exists at all; how well it is
+    explained is a matter for review, and a check that tried to judge that would report
+    everything and be turned off.
+    """
+    answers = collect_route_answers(repo_root)
+    prose = collect_tool_prose(repo_root)
+
+    silent: list[tuple[str, str, str, str]] = []
+    for name, tool in sorted(collect_mcp_contracts(repo_root).items()):
+        docstring = prose.get(name, ("", ""))[0]
+        for call in tool.calls:
+            for key in sorted(answers.get((call.method, call.path), set())):
+                if key not in PARTIAL_FAILURE_KEYS or key in docstring:
+                    continue
+                silent.append((name, key, call.method, call.path))
+    return silent
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="list every contract divergence, exempt ones included, and return 0",
+    )
+    options = parser.parse_args(argv)
+
     repo_root = Path(__file__).resolve().parents[1]
     api_routes = collect_api_routes(repo_root)
     mcp_routes = collect_mcp_routes(repo_root)
@@ -151,6 +1428,126 @@ def main() -> int:
         print("Tools documented in vauxtra_mcp/README.md that do not exist:")
         for name in phantom:
             print(name)
+        return 1
+
+    documented_routes = collect_documented_routes(repo_root)
+    print(f"DOCUMENTED_ROUTE_COUNT {len(documented_routes & api_routes)}")
+
+    undocumented_routes = sorted(api_routes - documented_routes - ALLOWED_UNDOCUMENTED)
+    if undocumented_routes:
+        print("Routes missing from the API Reference in docs/HOWTO.md:")
+        for method, path in undocumented_routes:
+            print(f"{method} {path}")
+        return 1
+
+    phantom_routes = sorted(documented_routes - api_routes)
+    if phantom_routes:
+        # Same asymmetry as the tool tables: an omission is found by reading the code, a
+        # promise by calling something that is not there.
+        print("Routes documented in docs/HOWTO.md that do not exist:")
+        for method, path in phantom_routes:
+            print(f"{method} {path}")
+        return 1
+
+    stale_undocumented = sorted(ALLOWED_UNDOCUMENTED - api_routes)
+    if stale_undocumented:
+        print("Documentation exemptions for routes that no longer exist (remove them):")
+        for method, path in stale_undocumented:
+            print(f"{method} {path}")
+        return 1
+
+    findings, stats = contract_findings(repo_root)
+    exempt = [f for f in findings if f.key in ALLOWED_CONTRACT_DIVERGENCES]
+    divergent = [f for f in findings if f.key not in ALLOWED_CONTRACT_DIVERGENCES]
+
+    print(f"CONTRACT_COMPARED_COUNT {stats['compared']}")
+    print(f"CONTRACT_DERIVED_COUNT {stats['derived']}")
+    print(f"CONTRACT_DIVERGENCE_COUNT {len(divergent)}")
+    print(f"CONTRACT_EXEMPT_COUNT {len(exempt)}")
+    print(f"UNMODELLED_BODY_ROUTE_COUNT {stats['dict_body']}")
+    for method, path in stats["unmodelled_routes"]:
+        # Not a failure: the route validates a plain dict by hand, so there is no contract
+        # for a tool to declare. Printed so the blind spot stays visible.
+        print(f"  no body model, nothing to compare: {method} {path}")
+
+    if options.report:
+        for finding in sorted(findings, key=lambda f: (f.tool, f.target, f.kind)):
+            marker = "exempt " if finding.key in ALLOWED_CONTRACT_DIVERGENCES else "DIVERGE"
+            print(f"[{marker}] {finding.kind}: {finding.message}")
+        return 0
+
+    if divergent:
+        print("Tool signatures that do not match the model their route enforces:")
+        for finding in sorted(divergent, key=lambda f: (f.tool, f.target, f.kind)):
+            print(f"  {finding.kind}: {finding.message}")
+        return 1
+
+    observed = {f.key for f in findings}
+    stale_exemptions = sorted(set(ALLOWED_CONTRACT_DIVERGENCES) - observed)
+    if stale_exemptions:
+        # Same reasoning as a stale route exemption: an allowance nobody is watching is one
+        # the next signature inherits without ever having argued for it.
+        print("Contract exemptions that no longer match anything (remove them):")
+        for tool, target, kind in stale_exemptions:
+            print(f"  {tool}.{target}: {kind}")
+        return 1
+
+    unreachable = collect_unreachable_fields(repo_root)
+    print(f"UNREACHABLE_FIELD_COUNT {len(unreachable)}")
+
+    unexplained = [row for row in unreachable if row[:2] not in ALLOWED_UNREACHABLE_FIELDS]
+    if unexplained:
+        print("Body fields no caller can reach (give each a parameter, or a reason):")
+        for tool, field_name, literal in unexplained:
+            print(f"  {tool}.{field_name} is always {literal}")
+        return 1
+
+    observed_fields = {row[:2] for row in unreachable}
+    stale_fields = sorted(set(ALLOWED_UNREACHABLE_FIELDS) - observed_fields)
+    if stale_fields:
+        # Same reasoning as every other stale exemption here: an allowance nobody is watching
+        # is one the next signature inherits without having argued for it.
+        print("Unreachable-field exemptions that no longer match anything (remove them):")
+        for tool, field_name in stale_fields:
+            print(f"  {tool}.{field_name}")
+        return 1
+
+    unreachable_query = collect_unreachable_query(repo_root)
+    print(f"UNREACHABLE_QUERY_COUNT {len(unreachable_query)}")
+
+    unexplained_query = [
+        row for row in unreachable_query if (row[0], row[1], row[2]) not in ALLOWED_UNREACHABLE_QUERY
+    ]
+    if unexplained_query:
+        print("Query parameters the route reads that no tool serving it can send:")
+        for method, path, name, servers in unexplained_query:
+            print(f"  {method} {path} ?{name} -- served by {', '.join(servers)}")
+        return 1
+
+    observed_query = {(m, p, n) for m, p, n, _ in unreachable_query}
+    stale_query = sorted(set(ALLOWED_UNREACHABLE_QUERY) - observed_query)
+    if stale_query:
+        print("Unreachable-query exemptions that no longer match anything (remove them):")
+        for method, path, name in stale_query:
+            print(f"  {method} {path} ?{name}")
+        return 1
+
+    silent = collect_silent_partials(repo_root)
+    print(f"SILENT_PARTIAL_COUNT {len(silent)}")
+
+    unexplained_silent = [row for row in silent if row[:2] not in ALLOWED_SILENT_PARTIALS]
+    if unexplained_silent:
+        print("Partial-failure keys the route answers with that the tool never mentions:")
+        for tool_name, key, method, path in unexplained_silent:
+            print(f"  {tool_name} says nothing about `{key}` from {method} {path}")
+        return 1
+
+    observed_silent = {row[:2] for row in silent}
+    stale_silent = sorted(set(ALLOWED_SILENT_PARTIALS) - observed_silent)
+    if stale_silent:
+        print("Silent-partial exemptions that no longer match anything (remove them):")
+        for tool_name, key in stale_silent:
+            print(f"  {tool_name}.{key}")
         return 1
 
     return 0

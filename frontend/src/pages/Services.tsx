@@ -21,6 +21,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -130,6 +131,7 @@ const isModeFilter = (value: string): value is ModeFilter => (MODE_FILTERS as st
 
 export function Services() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -341,6 +343,37 @@ export function Services() {
   );
 
   const hasFilters = Boolean(search.trim()) || Boolean(tagFilter) || Boolean(envFilter) || Boolean(statusFilter) || modeFilter !== 'all';
+
+  /**
+   * Both filters live in the URL, so each is set before its list has been read, survives a
+   * reload, and outlives whatever it points at. When the id is not in the list the `<Select>`
+   * has no option to select and falls back to the first one -- "All tags" -- while the rows
+   * below stay filtered. Measured with `/tags` failing and `?tag=5` in the address bar: every
+   * service hidden, the header counter at 0, and the one control that could account for it
+   * denying that any filter was applied. The page read as an instance with nothing in it.
+   *
+   * So an applied filter always gets an option of its own, and which one follows the rule the
+   * webhook scope field already keeps: an id missing from a list that came back is a tag that
+   * was deleted; an id missing from a list that has not come back is a name nobody has read.
+   */
+  const orphanTagOption =
+    tagFilter !== null && !tags.some((tag) => tag.id === tagFilter)
+      ? {
+          value: String(tagFilter),
+          label: tagsQuery.isSuccess
+            ? t('services.filter.tag_gone', { id: tagFilter })
+            : t('services.filter.tag_unread', { id: tagFilter }),
+        }
+      : null;
+  const orphanEnvironmentOption =
+    envFilter !== null && !environments.some((env) => env.id === envFilter)
+      ? {
+          value: String(envFilter),
+          label: environmentsQuery.isSuccess
+            ? t('services.filter.environment_gone', { id: envFilter })
+            : t('services.filter.environment_unread', { id: envFilter }),
+        }
+      : null;
   const clearFilters = useCallback(() => {
     setSearch('');
     setModeFilter('all');
@@ -414,11 +447,30 @@ export function Services() {
     mutationFn: (service: Service) =>
       api.put<Service>(`/services/${service.id}`, buildServicePayload(service, { enabled: !service.enabled })),
     onMutate: (service) => startAction(service.id),
-    onSuccess: (_data, service) => {
+    onSuccess: (result, service) => {
       invalidateAfterPush();
       forgetDrift([service.id]);
       const host = publicHostOf(service);
-      toast.success(service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host }));
+      // The save answers with what it could not carry out on a provider, and this switch was
+      // the one caller that threw the field away: a disable the proxy refused -- the host
+      // still up, still serving, and deliberately not deleted rather than removed behind the
+      // operator's back -- was reported as a green "{host} disabled". The delete button and
+      // the bulk bar had both already learnt to read the same field.
+      //
+      // Written out rather than built from `service.enabled`, because `npm run i18n:check`
+      // only sees a key spelled in full, and these four are exactly the kind a later rename
+      // would leave behind untranslated.
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      if (errors.length > 0) {
+        const shown = errors.slice(0, 2).join(' · ');
+        const more = errors.length > 2 ? t('services.toast.more', { count: errors.length - 2 }) : '';
+        const message = service.enabled
+          ? t('services.toast.disabled_warnings', { host, errors: shown, more })
+          : t('services.toast.enabled_warnings', { host, errors: shown, more });
+        toast(message, { icon: '⚠️', duration: 8000 });
+      } else {
+        toast.success(service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host }));
+      }
     },
     onError: (err, service) => {
       toast.error(translateApiError(err, t, t('services.toast.update_failed', { host: publicHostOf(service) })));
@@ -455,7 +507,7 @@ export function Services() {
   });
 
   const checkService = useMutation({
-    mutationFn: (service: Service) => api.get<ServiceCheckResult>(`/services/${service.id}/check`),
+    mutationFn: (service: Service) => api.post<ServiceCheckResult>(`/services/${service.id}/check`),
     onMutate: (service) => startAction(service.id),
     onSuccess: (result, service) => {
       setCheckById((prev) => ({ ...prev, [service.id]: result }));
@@ -549,7 +601,7 @@ export function Services() {
       for (const service of targets) {
         startAction(service.id);
         try {
-          const result = await api.get<ServiceCheckResult>(`/services/${service.id}/check`);
+          const result = await api.post<ServiceCheckResult>(`/services/${service.id}/check`);
           setCheckById((prev) => ({ ...prev, [service.id]: result }));
           if (result.status === 'ok') ok += 1;
           else failed += 1;
@@ -563,7 +615,13 @@ export function Services() {
       invalidateServices();
       clearSelection();
       if (failed === 0) toast.success(t('services.bulk.result.checked', { count: ok }));
-      else toast(t('services.bulk.result.checked_mixed', { ok, failed }), { icon: '⚠️', duration: 6000 });
+      else toast(
+          t('services.bulk.result.checked_mixed', {
+            ok: t('services.bulk.result.reachable', { count: ok }),
+            failed: t('services.bulk.result.unreachable', { count: failed }),
+          }),
+          { icon: '⚠️', duration: 6000 },
+        );
     },
     [startAction, endAction, invalidateServices, clearSelection, t],
   );
@@ -764,7 +822,7 @@ export function Services() {
   } else {
     listBody = (
       <div className="overflow-x-auto rounded-2xl border border-border bg-card shadow-card animate-in fade-in animate-duration-200">
-        <table className="w-full min-w-[56rem] text-sm">
+        <table className="w-full min-w-4xl text-sm">
           <thead className="border-b border-border bg-muted/40 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             <tr>
               <th scope="col" className="w-10 px-3 py-2.5">
@@ -813,7 +871,7 @@ export function Services() {
         description={t('services.description')}
         meta={
           !servicesQuery.isPending && !servicesQuery.isError ? (
-            <span className="text-xs text-muted-foreground">{t('services.meta', { shown, total })}</span>
+            <span className="text-xs text-muted-foreground">{t('services.meta', { count: shown, total: formatNumber(total) })}</span>
           ) : undefined
         }
         actions={
@@ -844,7 +902,7 @@ export function Services() {
       >
         <div className="space-y-4 rounded-2xl border border-border bg-card p-4 shadow-card">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[14rem] flex-1">
+            <div className="relative min-w-56 flex-1">
               <SearchInput
                 ref={searchRef}
                 value={search}
@@ -866,6 +924,9 @@ export function Services() {
               wrapperClassName="w-40"
             >
               <option value="">{t('services.filter.all_tags')}</option>
+              {orphanTagOption && (
+                <option value={orphanTagOption.value}>{orphanTagOption.label}</option>
+              )}
               {tags.map((tag) => (
                 <option key={tag.id} value={tag.id}>
                   {tag.name}
@@ -879,6 +940,9 @@ export function Services() {
               wrapperClassName="w-40"
             >
               <option value="">{t('services.filter.all_environments')}</option>
+              {orphanEnvironmentOption && (
+                <option value={orphanEnvironmentOption.value}>{orphanEnvironmentOption.label}</option>
+              )}
               {environments.map((env) => (
                 <option key={env.id} value={env.id}>
                   {env.name}
@@ -937,7 +1001,7 @@ export function Services() {
             <div
               role="toolbar"
               aria-label={t('services.bulk.label')}
-              className="sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-primary/30 bg-card/95 px-4 py-2.5 shadow-elevated backdrop-blur animate-in fade-in animate-duration-200"
+              className="sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-2xl border border-primary/30 bg-card/95 px-4 py-2.5 shadow-elevated backdrop-blur-sm animate-in fade-in animate-duration-200"
             >
               <Badge tone="primary" size="md">
                 {t('services.bulk.selected', { count: selectedIds.size })}

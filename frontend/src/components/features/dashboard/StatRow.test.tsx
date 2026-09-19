@@ -23,7 +23,7 @@ const ALL_ANSWERED: StatRowProps = {
   loading: NOTHING_IN_FLIGHT,
   services: { total: 0, enabled: 0, ok: 0, error: 0 },
   providers: { total: 0, enabled: 0, healthy: 0 },
-  certificates: { expiring: 0, total: 0, thresholdDays: 30 },
+  certificates: { expiring: 0, expired: 0, total: 0, thresholdDays: 30 },
   logs: { today: 0, todayCapped: false, total: 0 },
 };
 
@@ -32,7 +32,7 @@ const ALL_FAILED: StatRowProps = {
   loading: NOTHING_IN_FLIGHT,
   services: { total: 0, enabled: undefined, ok: 0, error: 0, failed: true },
   providers: { total: 0, enabled: 0, healthy: 0, failed: true },
-  certificates: { expiring: 0, total: 0, thresholdDays: 30, failed: true },
+  certificates: { expiring: 0, expired: 0, total: 0, thresholdDays: 30, failed: true },
   logs: { today: 0, todayCapped: false, total: undefined, failed: true },
 };
 
@@ -87,5 +87,67 @@ describe('StatRow', () => {
 
     rerender(<StatRow {...ALL_FAILED} />);
     expect(container.querySelectorAll('.animate-shimmer')).toHaveLength(0);
+  });
+});
+
+/**
+ * One figure on the certificate tile answers two different questions.
+ *
+ * `expiring_soon_count` is "still valid, inside the warning window" plus "already past
+ * expiry". Both need renewing, which is why the route adds them up, but only one of the two
+ * is a deadline: the other is a host answering every HTTPS client with a certificate error
+ * right now. The tile drew both in the same amber, under a hint that named the size of the
+ * whole estate beneath a value that was not about the estate.
+ */
+describe('StatRow, the certificate tile', () => {
+  /** Three to renew, and two of the three are not a deadline but an outage. */
+  const SOME_LAPSED: StatRowProps = {
+    ...ALL_ANSWERED,
+    certificates: { expiring: 3, expired: 2, total: 12, thresholdDays: 30 },
+  };
+
+  /** Three to renew, every one of them still valid. */
+  const NONE_LAPSED: StatRowProps = {
+    ...ALL_ANSWERED,
+    certificates: { expiring: 3, expired: 0, total: 12, thresholdDays: 30 },
+  };
+
+  /** The tinted bubble is `aria-hidden`, which is why the words below it have to carry this too. */
+  function certificateTone(): string {
+    const card = screen.getByText('dashboard.stats.certificates').closest('button');
+    return card?.querySelector('[aria-hidden="true"]')?.className ?? '';
+  }
+
+  it('prints the figure the route counted, both halves together', () => {
+    renderWithProviders(<StatRow {...SOME_LAPSED} />);
+
+    expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('says in words that some of them have lapsed, never in colour alone', () => {
+    renderWithProviders(<StatRow {...SOME_LAPSED} />);
+
+    expect(screen.getByText('dashboard.stats.certificates_hint_expired')).toBeInTheDocument();
+    expect(screen.queryByText('dashboard.stats.certificates_hint')).not.toBeInTheDocument();
+  });
+
+  it('is drawn the way every other live failure on this page is drawn', () => {
+    renderWithProviders(<StatRow {...SOME_LAPSED} />);
+
+    expect(certificateTone()).toContain('bg-destructive/10');
+  });
+
+  it('stays a warning, and names the estate, while nothing has lapsed yet', () => {
+    renderWithProviders(<StatRow {...NONE_LAPSED} />);
+
+    expect(screen.getByText('dashboard.stats.certificates_hint')).toBeInTheDocument();
+    expect(certificateTone()).toContain('bg-warning/10');
+  });
+
+  it('claims nothing has lapsed when the expiry check itself never answered', () => {
+    renderWithProviders(<StatRow {...ALL_FAILED} />);
+
+    expect(screen.getByText('dashboard.stats.certificates_unknown')).toBeInTheDocument();
+    expect(certificateTone()).not.toContain('bg-destructive/10');
   });
 });

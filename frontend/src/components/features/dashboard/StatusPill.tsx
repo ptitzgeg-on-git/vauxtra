@@ -49,7 +49,7 @@ export function StatusPill() {
         onClick={() => refetch()}
         aria-label={t('dashboard.status.refresh')}
         className={cn(
-          'inline-flex rounded-full transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'inline-flex rounded-full transition-opacity focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring',
           isFetching && 'opacity-70',
         )}
       >

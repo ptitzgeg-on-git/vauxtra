@@ -13,9 +13,10 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import { Badge, Button, Field, Input, useConfirmDialog } from '@/components/ui';
+import type { RestoreResult } from '@/types/api';
 import { SettingsSection } from '../SettingsSection';
 
-type BackupSummary = { services: number; providers: number; domains: number; tags: number; environments: number; webhooks: number };
+type BackupSummary = { services: number; providers: number; domains: number; tags: number; environments: number; webhooks: number; templates: number };
 
 interface PendingRestore {
   json: Record<string, unknown>;
@@ -32,10 +33,11 @@ function summarizeBackup(backup: Record<string, unknown>): BackupSummary {
     tags: count('tags'),
     environments: count('environments'),
     webhooks: count('webhooks'),
+    templates: count('service_templates'),
   };
 }
 
-const SUMMARY_KEYS: (keyof BackupSummary)[] = ['services', 'providers', 'domains', 'tags', 'environments', 'webhooks'];
+const SUMMARY_KEYS: (keyof BackupSummary)[] = ['services', 'providers', 'domains', 'tags', 'environments', 'webhooks', 'templates'];
 
 export function RestoreSection() {
   const t = useT();
@@ -46,7 +48,7 @@ export function RestoreSection() {
 
   const restore = useMutation({
     mutationFn: (payload: { backup: Record<string, unknown>; passphrase: string }) =>
-      api.post<{ ok: boolean; webhooks_needing_url?: number }>('/restore', payload),
+      api.post<RestoreResult>('/restore', payload),
     onSuccess: async (result) => {
       setPending(null);
       setPassphrase('');
@@ -57,6 +59,10 @@ export function RestoreSection() {
         queryClient.invalidateQueries({ queryKey: ['tags'] }),
         queryClient.invalidateQueries({ queryKey: ['environments'] }),
         queryClient.invalidateQueries({ queryKey: ['webhooks'] }),
+        // The restore empties and refills this table like any other, and the Templates
+        // page held whatever was cached from before it: the old rows if the file carried
+        // none, the old rows still if it carried different ones.
+        queryClient.invalidateQueries({ queryKey: ['templates'] }),
         queryClient.invalidateQueries({ queryKey: ['logs'] }),
         queryClient.invalidateQueries({ queryKey: ['certificates-expiry'] }),
         queryClient.invalidateQueries({ queryKey: ['health'] }),
@@ -73,6 +79,22 @@ export function RestoreSection() {
       // those rows come back disabled, and the operator has to hear it.
       const needingUrl = result?.webhooks_needing_url ?? 0;
       if (needingUrl > 0) toast.error(t('settings.backup.restore_webhooks_disabled', { count: needingUrl }));
+      // Two more outcomes the response has always carried and this handler used to drop on
+      // the floor. Neither is a failure -- the restore succeeded -- and neither shows up
+      // anywhere else: a setting this version does not accept is simply absent afterwards,
+      // and a domain row with no name leaves whatever pointed at it pointing at a domain
+      // the list no longer offers. So they are said plainly, and without the red.
+      const droppedSettings = result?.settings_not_restored ?? [];
+      if (droppedSettings.length > 0) {
+        toast(
+          t('settings.backup.restore_settings_dropped', {
+            count: droppedSettings.length,
+            keys: droppedSettings.join(', '),
+          }),
+        );
+      }
+      const namelessDomains = result?.domains_without_name ?? 0;
+      if (namelessDomains > 0) toast(t('settings.backup.restore_domains_skipped', { count: namelessDomains }));
     },
     onError: (err: unknown) => toast.error(translateApiError(err, t, t('settings.backup.restore_failed'))),
   });
@@ -101,9 +123,20 @@ export function RestoreSection() {
     if (!pending) return;
     const ok = await confirm({
       title: t('settings.backup.restore_confirm_title'),
-      message: t('settings.backup.restore_confirm_message', pending.summary),
+      // Each noun is counted in its own language before the sentence is assembled: `t()`
+      // inflects exactly one `{count}`, and seven numbers cannot share it.
+      message: t(
+        'settings.backup.restore_confirm_message',
+        Object.fromEntries(
+          SUMMARY_KEYS.map((key) => [key, t(`settings.backup.restore_count.${key}`, { count: pending.summary[key] })]),
+        ),
+      ),
       confirmLabel: t('settings.backup.restore'),
       variant: 'danger',
+      // `POST /api/restore` empties the same sixteen tables `POST /api/reset` does, and the
+      // reset one button below asks the operator to type RESET. Without this, a file picked
+      // by mistake was two clicks from an emptied database.
+      requireText: 'RESTORE',
     });
     if (ok) restore.mutate({ backup: pending.json, passphrase });
   };
@@ -168,6 +201,7 @@ export function RestoreSection() {
                 value={passphrase}
                 placeholder={t('settings.backup.passphrase_enter')}
                 onChange={(e) => setPassphrase(e.target.value)}
+                // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
                 autoFocus
               />
             </Field>

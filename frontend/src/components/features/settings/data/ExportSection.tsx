@@ -137,7 +137,7 @@ export function ExportSection() {
               leftIcon={<Lock />}
               loading={secureExport.isPending}
               disabled={!isPasswordStrongEnough(passphrase)}
-              className="sm:mt-[1.375rem]"
+              className="sm:mt-5.5"
             >
               {t('settings.backup.export')}
             </Button>

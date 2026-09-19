@@ -16,6 +16,7 @@ from app.api import certificates as certificates_api
 from app.api import services as services_api
 from app.api import sync as sync_api
 from app.config import encrypt_secret
+from app.providers.base import ProviderListingRefused
 from app.providers.factory import (
     PROVIDER_TYPES,
     certificate_provider_types,
@@ -376,18 +377,29 @@ class TestZoraxyListHosts(unittest.TestCase):
                             _rule(ProxyType=2, RootOrMatchingDomain="vdir"))
         self.assertEqual([h["id"] for h in hosts], ["app.example.com"])
 
-    def test_list_hosts_returns_empty_on_auth_fail(self):
+    def test_a_refused_session_is_not_an_empty_rule_list(self):
+        """Zoraxy declining the login says nothing about the rules it holds."""
         self.z._ensure_auth = MagicMock(return_value=False)
         self.z.session.get = MagicMock()
-        self.assertEqual(self.z.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.z.list_hosts()
         self.z.session.get.assert_not_called()
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    def test_a_network_error_is_not_an_empty_rule_list(self):
+        """[] is how the drift check learns a route is gone. A failed call never said that."""
         self.z.session.get = MagicMock(side_effect=requests.RequestException("down"))
-        self.assertEqual(self.z.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.z.list_hosts()
 
-    def test_list_hosts_returns_empty_when_answer_is_not_a_list(self):
+    def test_an_answer_that_is_not_a_list_is_not_an_empty_list(self):
+        """Zoraxy answering {"error": ...} is a refusal, not an inventory of nothing."""
         self.z.session.get = MagicMock(return_value=_response(200, {"error": "nope"}))
+        with self.assertRaises(ProviderListingRefused):
+            self.z.list_hosts()
+
+    def test_a_zoraxy_holding_no_rules_still_answers_the_empty_list(self):
+        """The honest empty answer must survive: only a refusal raises."""
+        self.z.session.get = MagicMock(return_value=_response(200, []))
         self.assertEqual(self.z.list_hosts(), [])
 
 
@@ -849,7 +861,7 @@ class TestZoraxyCertificates(unittest.TestCase):
              "expires_on": "2027-01-01T12:30:00Z", "remaining_days": 120,
              "use_dns": True, "is_fallback": False},
             {"id": "app.example.com", "nice_name": "app.example.com", "domains": ["app.example.com"],
-             "expires_on": "", "remaining_days": -1, "use_dns": False, "is_fallback": True},
+             "expires_on": "", "remaining_days": None, "use_dns": False, "is_fallback": True},
         ])
         call = self.z.session.get.call_args
         self.assertEqual(call.args[0], "http://zoraxy:8000/api/cert/list")
@@ -859,7 +871,29 @@ class TestZoraxyCertificates(unittest.TestCase):
     def test_get_certificates_expires_on_is_parsed_by_the_certificates_route(self):
         self.z.session.get = MagicMock(return_value=_response(200, self._CERTS))
         raw = self.z.get_certificates()[0]["expires_on"]
-        self.assertEqual(certificates_api._parse_expiry(raw), datetime.datetime(2027, 1, 1, 12, 30))
+        self.assertEqual(certificates_api.parse_expiry(raw), datetime.datetime(2027, 1, 1, 12, 30))
+
+    def test_get_certificates_drops_a_countdown_with_no_date_behind_it(self):
+        """`RemainingDays` with no `ExpireDate` behind it is a sentinel, not a count.
+
+        Zoraxy states -1 both for a certificate whose date it could not read and for one
+        that expired yesterday, so the number alone cannot tell those apart. The panel
+        counts down from whatever number arrives, and drew the unreadable one -- usually
+        the fallback certificate -- in red as "expired 1 day ago", in the same row that
+        said it had no expiry date at all. The guard is the date, not the value: a -1 that
+        does come with a date is still a -1.
+        """
+        self.z.session.get = MagicMock(return_value=_response(200, [
+            {"Domain": "app.example.com", "Filename": "app.example.com",
+             "ExpireDate": "Unknown", "RemainingDays": -1},
+            {"Domain": "ok.example.com", "Filename": "ok.example.com",
+             "ExpireDate": "2027-01-01 12:30:00", "RemainingDays": -1},
+        ]))
+        certs = self.z.get_certificates()
+        self.assertEqual(certs[0]["expires_on"], "")
+        self.assertIsNone(certs[0]["remaining_days"])
+        self.assertEqual(certs[1]["expires_on"], "2027-01-01T12:30:00Z")
+        self.assertEqual(certs[1]["remaining_days"], -1)
 
     def test_get_certificates_adds_hostname_filename_as_domain(self):
         self.z.session.get = MagicMock(return_value=_response(200, [
@@ -1053,6 +1087,39 @@ class TestCertificatesRouteCoversZoraxy(unittest.TestCase):
             self.assertEqual(cert["domain_names"], ["*.example.com"])
             self.assertEqual(cert["domains"], ["*.example.com"])
 
+    def test_a_store_that_could_not_be_read_is_named_rather_than_dropped(self):
+        """A provider that raises used to leave a page that looked complete.
+
+        Every counter, the total and the integration filter are built from the rows the
+        route returned, so an estate whose only expiring certificate sits behind the
+        integration that was down read exactly like an estate with nothing to renew.
+        """
+        def _provider(row):
+            if row["type"] == "zoraxy":
+                raise RuntimeError("Zoraxy login failed: 401")
+            return _FakeCertProvider(row["type"])
+
+        with patch.object(certificates_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(certificates_api, "create_provider", _provider):
+            result = certificates_api.certificate_expiry(_request("GET", "/api/certificates/expiry"))
+
+        self.assertEqual([c["provider_name"] for c in result["certificates"]], ["npm-a"])
+        self.assertEqual(result["unreachable"], [{"id": 2, "name": "zoraxy-a", "type": "zoraxy"}])
+        # `zoraxy-off` is disabled, so it was never queried and is not reported as missing.
+        self.assertEqual(len(result["unreachable"]), 1)
+        # The reason stays in the journal: a provider error carries the URL and sometimes
+        # the credential that failed, and neither should reach the page.
+        with models.get_db_ctx() as conn:
+            journal = [r["message"] for r in conn.execute(
+                "SELECT message FROM logs WHERE level='error'").fetchall()]
+        self.assertTrue(any("zoraxy-a" in m and "401" in m for m in journal), journal)
+
+    def test_an_answer_read_from_every_store_says_so_with_an_empty_list(self):
+        with patch.object(certificates_api, "require_auth", lambda _req, scope=None: None), \
+             patch.object(certificates_api, "create_provider", lambda row: _FakeCertProvider(row["type"])):
+            result = certificates_api.certificate_expiry(_request("GET", "/api/certificates/expiry"))
+        self.assertEqual(result["unreachable"], [])
+
 
 class TestSchedulerCertExpiryAlertsCoverZoraxy(unittest.TestCase):
     """The scheduler's expiry scan runs on the provider's real `expires_on`, end to end."""
@@ -1105,7 +1172,7 @@ class TestSchedulerCertExpiryAlertsCoverZoraxy(unittest.TestCase):
             rows = self._cert_expiry_logs(conn)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["level"], "error")
-        self.assertIn("CRITICAL: '_.example.com' (ID _.example.com) expires in 5 day(s)", rows[0]["message"])
+        self.assertIn("CRITICAL: '_.example.com' (ID _.example.com) expires in 5 days", rows[0]["message"])
 
     def test_scheduler_stays_quiet_for_a_zoraxy_certificate_with_time_left(self):
         with patch.object(scheduler, "create_provider", lambda _row: self._zoraxy_with_cert_expiring_in(120)), \
@@ -1114,6 +1181,57 @@ class TestSchedulerCertExpiryAlertsCoverZoraxy(unittest.TestCase):
             conn.commit()
             rows = self._cert_expiry_logs(conn)
         self.assertEqual(rows, [])
+
+    def _zoraxy_with_cert_that_lapsed(self, days_ago: int, hours_ago: int = 0) -> ZoraxyProvider:
+        """A store holding one certificate whose date is already behind us."""
+        expire = datetime.datetime.utcnow() - datetime.timedelta(days=days_ago, hours=hours_ago)
+        z = ZoraxyProvider("http://zoraxy:8000", "vauxtra", "secret")
+        z._ensure_auth = MagicMock(return_value=True)
+        z.session.get = MagicMock(return_value=_response(200, [
+            {"Domain": "*.example.com", "Filename": "_.example.com",
+             "LastModifiedDate": "2026-08-01 10:00:00",
+             "ExpireDate": expire.strftime("%Y-%m-%d %H:%M:%S"),
+             "RemainingDays": -1, "UseDNS": True, "IsFallback": False},
+        ]))
+        return z
+
+    def test_a_lapsed_certificate_is_not_announced_as_a_negative_countdown(self):
+        """The alert about the worst state a certificate can be in was the broken one.
+
+        A certificate 47 days past its date is not expiring, it has expired: it is
+        serving a browser warning to every visitor right now. The line said `expires in
+        -47 days`, while the certificates page described the same certificate, in the
+        same session, as `Expired 47 days ago`.
+        """
+        with patch.object(scheduler, "create_provider",
+                          lambda _row: self._zoraxy_with_cert_that_lapsed(47, hours_ago=2)),              models.get_db_ctx() as conn:
+            scheduler._run_cert_expiry_alerts(conn)
+            conn.commit()
+            rows = self._cert_expiry_logs(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["level"], "error")
+        self.assertIn("expired 47 days ago", rows[0]["message"])
+        self.assertNotIn("-", rows[0]["message"].split("(ID _.example.com)")[1])
+
+    def test_a_certificate_that_lapsed_within_the_day_is_not_called_a_whole_day_down(self):
+        with patch.object(scheduler, "create_provider",
+                          lambda _row: self._zoraxy_with_cert_that_lapsed(0, hours_ago=3)),              models.get_db_ctx() as conn:
+            scheduler._run_cert_expiry_alerts(conn)
+            conn.commit()
+            rows = self._cert_expiry_logs(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("expired less than a day ago", rows[0]["message"])
+
+    def test_a_certificate_with_hours_left_is_not_called_a_certificate_with_no_deadline(self):
+        # `timedelta.days` floors, so 20 hours left arrived as 0 and the alert read
+        # "expires in 0 days" -- which states the opposite of the urgency it is raising.
+        with patch.object(scheduler, "create_provider",
+                          lambda _row: self._zoraxy_with_cert_that_lapsed(0, hours_ago=-20)),              models.get_db_ctx() as conn:
+            scheduler._run_cert_expiry_alerts(conn)
+            conn.commit()
+            rows = self._cert_expiry_logs(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("expires in less than a day", rows[0]["message"])
 
 
 class _HostnameKeyedProvider:

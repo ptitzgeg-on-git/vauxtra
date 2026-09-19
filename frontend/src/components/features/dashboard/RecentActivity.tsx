@@ -88,7 +88,7 @@ export function RecentActivity({ logs, loading, error, onRetry, now }: RecentAct
             <li key={log.id} className="relative flex gap-3 py-2 pl-5 animate-in fade-in">
               <span aria-hidden="true" className={cn('absolute left-0 top-[15px] h-[11px] w-[11px] rounded-full ring-4 ring-card', c.dot)} />
               <div className="min-w-0 flex-1">
-                <p className="break-words text-sm leading-relaxed text-foreground">{log.message}</p>
+                <p className="wrap-break-word text-sm leading-relaxed text-foreground">{log.message}</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   <Badge tone={tone} size="sm">
                     {t(LEVEL_KEY[level] ?? 'settings.logs.level_info')}

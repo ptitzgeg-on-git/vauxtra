@@ -24,7 +24,11 @@ export interface StatRowProps {
   // nobody answered.
   services: { total: number; enabled?: number; ok: number; error: number; failed?: boolean };
   providers: { total: number; enabled: number; healthy: number; failed?: boolean };
-  certificates: { expiring: number; total: number; thresholdDays: number; failed?: boolean };
+  // `expired` is the half of `expiring` that is not a renewal falling due but a host already
+  // answering with a broken certificate. The route hands back one merged figure, so the tile
+  // used to draw both in the same amber under a hint that named the size of the estate and
+  // never said any of them had lapsed.
+  certificates: { expiring: number; expired: number; total: number; thresholdDays: number; failed?: boolean };
   logs: { today: number; todayCapped: boolean; total?: number; failed?: boolean };
 }
 
@@ -44,7 +48,7 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
         hint={
           services.enabled === undefined
             ? t('dashboard.stats.services_unknown')
-            : t('dashboard.stats.services_hint', { enabled: formatNumber(services.enabled) })
+            : t('dashboard.stats.services_hint', { count: services.enabled })
         }
         icon={<Globe />}
         tone={services.failed ? 'neutral' : 'primary'}
@@ -86,8 +90,8 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
           providers.failed
             ? t('dashboard.stats.providers_unknown')
             : t('dashboard.stats.providers_hint', {
-                healthy: formatNumber(providers.healthy),
-                enabled: formatNumber(providers.enabled),
+                healthy: t('dashboard.stats.providers_healthy', { count: providers.healthy }),
+                enabled: t('dashboard.stats.providers_enabled', { count: providers.enabled }),
               })
         }
         icon={<Plug />}
@@ -101,13 +105,21 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
         hint={
           certificates.failed
             ? t('dashboard.stats.certificates_unknown')
-            : t('dashboard.stats.certificates_hint', {
-                total: formatNumber(certificates.total),
-                days: formatNumber(certificates.thresholdDays),
-              })
+            : certificates.expired > 0
+              ? t('dashboard.stats.certificates_hint_expired', { count: certificates.expired })
+              : t('dashboard.stats.certificates_hint', {
+                  count: certificates.total,
+                  days: formatNumber(certificates.thresholdDays),
+                })
         }
         icon={<ShieldCheck />}
-        tone={certificates.failed || certificates.expiring > 0 ? 'warning' : 'neutral'}
+        tone={
+          certificates.expired > 0
+            ? 'danger'
+            : certificates.failed || certificates.expiring > 0
+              ? 'warning'
+              : 'neutral'
+        }
         loading={loading.certificates}
         onClick={() => navigate('/certificates')}
       />
@@ -117,7 +129,7 @@ export function StatRow({ loading, services, providers, certificates, logs }: St
         hint={
           logs.total === undefined
             ? t('dashboard.stats.logs_unknown')
-            : t('dashboard.stats.logs_today_hint', { total: formatNumber(logs.total) })
+            : t('dashboard.stats.logs_today_hint', { count: logs.total })
         }
         icon={<ScrollText />}
         tone="neutral"

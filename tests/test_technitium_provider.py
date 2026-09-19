@@ -3,6 +3,7 @@
 import unittest
 from unittest.mock import MagicMock
 
+from app.providers.base import ProviderListingRefused
 from app.providers.technitium import TechnitiumProvider
 
 
@@ -165,9 +166,32 @@ class TestTechnitiumListRewrites(unittest.TestCase):
         self.provider.session.get = MagicMock(side_effect=mock_get)
         self.assertEqual(self.provider.list_rewrites(), [])
 
-    def test_list_rewrites_returns_empty_on_auth_fail(self) -> None:
+    def test_a_refused_login_is_not_a_server_holding_no_records(self) -> None:
+        """This used to answer [], and [] is how the callers learn a name is free."""
         self.provider._ensure_token = MagicMock(return_value=False)
-        self.assertEqual(self.provider.list_rewrites(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.provider.list_rewrites()
+
+    def test_a_zone_that_will_not_open_stops_the_sweep(self) -> None:
+        """Each zone used to be skipped with `continue`, which shortens the answer.
+
+        A list one zone short is not a list with a note attached: every caller reads the
+        names that are missing from it as names the server does not hold.
+        """
+        def mock_get(url: str, **kwargs):
+            if "zones/list" in url:
+                return _response(200, {"status": "ok", "response": {"zones": [
+                    {"name": "home.local"}, {"name": "lab.local"},
+                ]}})
+            if kwargs.get("params", {}).get("zone") == "home.local":
+                return _response(200, {"status": "ok", "response": {"records": [
+                    {"name": "app.home.local", "type": "A", "rData": {"ipAddress": "10.0.0.5"}},
+                ]}})
+            return _response(403, {"status": "error"})
+
+        self.provider.session.get = MagicMock(side_effect=mock_get)
+        with self.assertRaises(ProviderListingRefused):
+            self.provider.list_rewrites()
 
 
 class TestTechnitiumAddRewrite(unittest.TestCase):

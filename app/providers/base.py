@@ -28,6 +28,66 @@ class TimeoutSession(requests.Session):
         return super().request(method, url, **kwargs)
 
 
+def reachability_check(session, url: str) -> dict:
+    """One diagnostic check saying whether anything at all answered at `url`.
+
+    `test_connection` cannot answer this, and that is the whole point of asking separately:
+    it folds "nothing listened on that port" and "the host answered and refused the
+    credentials" into one `False`, which the providers panel then labels `connection_failed`.
+    An operator who reads that goes looking for a firewall, and the integrations with no
+    richer diagnostic of their own sent them there every time a password was simply wrong.
+
+    Any HTTP answer proves the host is reachable, a refusal included, so the status code is
+    deliberately not read here: whether the credentials are accepted is the next check's
+    business. Only a transport error -- refused connection, DNS failure, timeout -- says the
+    host was never reached.
+    """
+    try:
+        session.get(url, timeout=PROVIDER_TIMEOUT, allow_redirects=False)
+    except requests.RequestException as exc:
+        return {
+            "name": "Reachability",
+            "ok": False,
+            "detail": f"Could not reach {url}: {exc}",
+            "detail_code": "connection_failed",
+            "detail_params": {"error": str(exc)},
+            "blocking": True,
+        }
+    return {
+        "name": "Reachability",
+        "ok": True,
+        "detail": f"{url} answered",
+        "detail_code": "connection_ok",
+        "blocking": False,
+    }
+
+
+def login_check(ok: bool) -> dict:
+    """One diagnostic check for credentials the host was reachable enough to refuse."""
+    return {
+        "name": "Login",
+        "ok": ok,
+        "detail": "Authenticated successfully" if ok else "Login failed -- check username/password and URL",
+        "detail_code": "login_ok" if ok else "login_failed",
+        "blocking": True,
+    }
+
+
+class ProviderListingRefused(RuntimeError):
+    """The provider did not finish saying what it holds.
+
+    An empty list and a refused listing are different answers, and every caller that acts on
+    a listing acts on the difference: `push` creates a record when it finds none, the drift
+    check reports one missing, the record routes answer 404. `desec._get_all` puts it in its
+    own words one layer down -- "one means the account has no records, the other means we do
+    not know" -- and `powerdns._zone_rrsets` keeps the same three answers for the same
+    reason. This is how that third answer leaves `list_rewrites`, which has only two to give.
+
+    Providers whose own client raises, Cloudflare's for one, let that exception out instead.
+    Every caller wraps the call, so what matters is that something arrives.
+    """
+
+
 class DNSProvider(ABC):
     """Common interface for all DNS providers (AdGuard, Pi-hole, etc.)."""
 
@@ -37,7 +97,12 @@ class DNSProvider(ABC):
 
     @abstractmethod
     def list_rewrites(self) -> list[dict]:
-        """List all DNS rewrites. Returns [{'domain': ..., 'ip': ...}]."""
+        """Every rewrite the provider holds, as [{'domain': ..., 'answer': ...}].
+
+        An empty list means the provider said it holds nothing. A provider that could not
+        finish answering raises -- `ProviderListingRefused`, or whatever its own client
+        threw -- rather than handing back the part it managed to collect.
+        """
 
     @abstractmethod
     def add_rewrite(self, domain: str, ip: str) -> bool:
@@ -74,7 +139,15 @@ class ProxyProvider(ABC):
 
     @abstractmethod
     def list_hosts(self) -> list[dict]:
-        """List all proxy hosts."""
+        """Every proxy host the provider holds.
+
+        Same contract as `DNSProvider.list_rewrites`, and for the same reason: an empty
+        list means the provider said it holds nothing, while a provider that could not
+        finish answering raises rather than handing back the part it collected. It was
+        only ever written down on the DNS side, so the one proxy client that answered []
+        to a failed request drifted for as long as nothing here said otherwise -- and the
+        drift check reads a missing host as a route to republish.
+        """
 
     @abstractmethod
     def create_host(self, domain: str, ip: str, port: int,
@@ -110,3 +183,21 @@ class ProxyProvider(ABC):
     @abstractmethod
     def find_best_certificate(self, domain_suffix: str) -> int | None:
         """Find the most suitable wildcard certificate for the domain."""
+
+
+def supports_suspension(proxy) -> bool:
+    """Whether this proxy can switch a host off instead of deleting it.
+
+    `ProxyProvider.toggle_host` returns False, so a provider that never overrode it can only
+    fail the call: there is no suspension to apply, none to lift, and none to plan. Two
+    override it, NPM and Zoraxy. Comparing the class's method to the base's is what tells those
+    apart from a provider that merely refused one particular host -- which is the same
+    `False` on the wire and a completely different thing to tell the operator.
+
+    Read through `getattr`, because a provider is whatever `create_provider` returns and not
+    necessarily a subclass: one that does not carry the method at all has no suspension to
+    speak of either, and that is the answer to give rather than an `AttributeError` from the
+    middle of a push.
+    """
+    override = getattr(type(proxy), "toggle_host", None)
+    return override is not None and override is not ProxyProvider.toggle_host

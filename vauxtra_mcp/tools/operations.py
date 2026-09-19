@@ -1,5 +1,7 @@
 """MCP tools — preflight, dry-run, drift detection, and reconcile."""
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -10,14 +12,14 @@ def run_preflight(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: int,
-    forward_scheme: str = "http",
-    expose_mode: str = "proxy_dns",
+    target_port: Annotated[int, Field(ge=1, le=65535)],
+    forward_scheme: Literal["http", "https"] = "http",
+    expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
     tunnel_provider_id: int | None = None,
     tunnel_hostname: str = "",
-    public_target_mode: str = "manual",
+    public_target_mode: Literal["auto", "manual"] = "manual",
     dns_ip: str = "",
     service_id: int | None = None,
 ) -> dict[str, Any]:
@@ -29,6 +31,11 @@ def run_preflight(
     - TCP reachability of the target
     - Provider connection tests
     - DNS target resolution
+
+    The body is validated by `ServicePreflightIn`, which is `ServiceIn` plus `service_id`,
+    so the constrained fields carry the same `Literal` sets and port bounds as
+    `create_service`. A preflight that is refused for a bad scheme has checked nothing, and
+    the point of this tool is to answer before anything is created.
     """
     payload: dict[str, Any] = {
         "subdomain": subdomain,
@@ -63,6 +70,9 @@ def dry_run_push(service_id: int) -> dict[str, Any]:
     Simulate pushing a service to all configured providers without making any changes.
 
     Returns the list of planned proxy and DNS actions, and whether anything would change.
+    A disabled service is withheld rather than published, so its plan describes the
+    withdrawal instead: `withheld` is true and the actions are `suspend` and `delete`. On an enabled service whose
+    proxy host is switched off, the action is `resume` rather than `update`.
     """
     r = client.post(f"/services/{service_id}/push/dry-run")
     client.check(r)
@@ -73,6 +83,12 @@ def dry_run_push(service_id: int) -> dict[str, Any]:
 def push_service(service_id: int) -> dict[str, Any]:
     """
     Push a service to all configured providers (proxy + DNS).
+
+    A push converges the providers on the service record, and a disabled service is
+    therefore withdrawn rather than published: the primary proxy host is suspended, every
+    other route is removed. Enable the service first if you meant to publish it. On an
+    enabled service the push also lifts a suspension it finds, so it repairs a route that
+    exists and answers nothing.
 
     Use dry_run_push first to preview changes.
     """
@@ -86,7 +102,11 @@ def check_drift(service_id: int) -> dict[str, Any]:
     """
     Compare the expected service state against what is actually configured in providers.
 
-    Returns a list of issues (errors and warnings) if discrepancies are detected.
+    Returns a list of issues (errors and warnings) if discrepancies are detected. A disabled
+    service expects the opposite, so its issues name a provider that is still serving the
+    route (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than one missing it.
+    A route that exists and is switched off on the provider is `proxy_route_suspended`: an
+    enabled service whose hostname answers nothing, which a push repairs.
     """
     r = client.get(f"/services/{service_id}/drift")
     client.check(r)

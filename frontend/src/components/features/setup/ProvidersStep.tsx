@@ -5,10 +5,14 @@
  * Colours come from `toneClasses`, never from the `provider_color` the API sends — that field
  * carries raw palette classes (`bg-orange-500/10`), which would be the only hardcoded colours
  * left on the screen.
+ *
+ * `providers` arrives from a list this screen does not own, so it has the three readings every
+ * list has: still being read, failed, and answered with nothing. Only the third one is the
+ * empty state below, and only the third one makes the footer button say "Skip for now".
  */
 
 import { GitMerge, Plus, Server, Trash2 } from 'lucide-react';
-import { Badge, Button, EmptyState, ProviderLogo, cn, toneClasses, useConfirmDialog, type Tone } from '@/components/ui';
+import { Badge, Button, EmptyState, InlineAlert, ProviderLogo, Skeleton, cn, toneClasses, useConfirmDialog, type Tone } from '@/components/ui';
 import {
   PROVIDER_GROUPS,
   fallbackIconByType,
@@ -24,6 +28,11 @@ import type { ProviderItem } from './types';
 interface ProvidersStepProps {
   providers: ProviderItem[];
   providerTypes?: Record<string, ProviderTypeMeta>;
+  //: The list is still being read. Not the same fact as an answer that came back empty.
+  loading?: boolean;
+  //: The read failed, so the empty list below says nothing about what is configured.
+  loadFailed?: boolean;
+  onRetry?: () => void;
   onAdd: () => void;
   onDelete: (id: number) => void;
   deleteIsPending: boolean;
@@ -48,6 +57,9 @@ const GROUP_TONE: Record<ProviderGroup, Tone> = {
 export function ProvidersStep({
   providers,
   providerTypes,
+  loading = false,
+  loadFailed = false,
+  onRetry,
   onAdd,
   onDelete,
   deleteIsPending,
@@ -81,11 +93,37 @@ export function ProvidersStep({
       description={t('setup.providers.subtitle')}
       onBack={onBack}
       primary={{
-        label: providers.length > 0 ? t('setup.providers.continue') : t('setup.providers.skip'),
+        /* Of the two labels only one is a claim: "Skip for now" tells the operator there is
+           nothing here to carry forward. A list still being read and a list that could not be
+           read have not said that, so the neutral one holds the place -- and while the request
+           is in flight so does Enter, which this shell binds to the primary action. A failed
+           read still lets them move on; the alert above says why the screen is bare. */
+        label: loading || loadFailed || providers.length > 0
+          ? t('setup.providers.continue')
+          : t('setup.providers.skip'),
         onClick: onContinue,
+        disabled: loading,
       }}
     >
-      {providers.length === 0 ? (
+      {loading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className="h-16 w-full rounded-xl" />
+          ))}
+        </div>
+      ) : loadFailed ? (
+        <InlineAlert
+          tone="danger"
+          title={t('setup.providers.load_failed')}
+          action={onRetry ? (
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              {t('common.retry')}
+            </Button>
+          ) : undefined}
+        >
+          {t('setup.providers.load_failed_hint')}
+        </InlineAlert>
+      ) : providers.length === 0 ? (
         <EmptyState
           compact
           icon={<Server />}
@@ -151,7 +189,7 @@ export function ProvidersStep({
       <button
         type="button"
         onClick={onAdd}
-        className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-4 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-4 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Plus aria-hidden="true" className="h-4 w-4" />
         {t('setup.providers.add')}

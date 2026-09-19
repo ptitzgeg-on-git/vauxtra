@@ -33,6 +33,7 @@ import {
   Chip,
   ChipGroup,
   EmptyState,
+  InlineAlert,
   PageHeader,
   SectionHeading,
   SkeletonCard,
@@ -41,11 +42,20 @@ import {
   useConfirmDialog,
 } from '@/components/ui';
 import { useFormat } from '@/hooks/useFormat';
-import { describeDeleteConflict, isProviderDeleteConflict } from '@/hooks/useProviderMutations';
+import {
+  type ProviderDeleteVars,
+  createWithdrawChoice,
+  describeWithdrawal,
+  isProviderDeleteConflict,
+  providerConflictTitleKey,
+  providerDeleteQuery,
+} from '@/hooks/useProviderMutations';
+import { ProviderDeleteConflictBody } from '@/components/features/providers/ProviderDeleteConflictBody';
 import { useT } from '@/i18n';
 import { getErrorDetail, translateApiError, getHttpStatus } from '@/lib/errors';
 import type {
   Provider,
+  ProviderDeleteResult,
   ProviderHealthStatus,
   ProviderHealthSummary,
   ProvidersHealthMap,
@@ -88,15 +98,20 @@ function useBusyIds() {
   return { has: (id: number) => ids.has(id), start, end };
 }
 
+// Everything stamped with a date is restored, not only what is still fresh. Dropping the
+// stale ones here deleted the date along with the verdict -- the effect below then wrote the
+// shorter map back -- and the card, which had nothing left to read, said "Never tested" about
+// an integration validated forty minutes earlier. The verdict does expire, and `signalsById`
+// still gates `diag` on `isDiagnosticsFresh` so no stale check feeds the score; the hour at
+// which someone last ran it is a different fact, and it does not expire.
 function restoreDiagnostics(): DiagnosticsMap {
   try {
     const raw = localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, ProviderDiagnostics>;
-    const now = Date.now();
     const restored: DiagnosticsMap = {};
     for (const [id, diag] of Object.entries(parsed || {})) {
-      if (isDiagnosticsFresh(diag, now)) restored[Number(id)] = diag;
+      if (Number(diag?.testedAt || 0) > 0) restored[Number(id)] = diag;
     }
     return restored;
   } catch {
@@ -112,6 +127,8 @@ type RouteModal = { mode: 'create' } | { mode: 'edit'; provider: Provider };
 
 interface ProviderSignals {
   diag?: ProviderDiagnostics;
+  /** When the last manual test ran, fresh or not -- unlike `diag`, this does not expire. */
+  lastTestedAt?: number;
   tunnel?: ProviderHealthStatus;
   auto?: ProviderHealthSummary;
   health: HealthScore;
@@ -133,7 +150,7 @@ function unwrapHealthMap(raw: ProvidersHealthMap | { items?: ProvidersHealthMap 
 export function Providers() {
   const t = useT();
   const queryClient = useQueryClient();
-  const { formatDateTime, formatRelative } = useFormat();
+  const { formatNumber, formatDateTime, formatRelative } = useFormat();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -183,6 +200,14 @@ export function Providers() {
   const providers = useMemo(() => (Array.isArray(providersQuery.data) ? providersQuery.data : []), [providersQuery.data]);
   const typeMap = useMemo(() => typesQuery.data || {}, [typesQuery.data]);
   const metaFor = useCallback((provider: Provider): ProviderTypeMeta | undefined => typeMap[String(provider.type || '').toLowerCase()], [typeMap]);
+  // The `|| {}` above is the right floor and not the defect: `lib/providers.ts` groups the
+  // known types from its own table, so the sections below hold without the catalogue. What
+  // that table cannot supply is the label -- every card fell back to its stored slug, `npm`
+  // where the catalogue says "Nginx Proxy Manager" -- nor `read_only`, the one place this
+  // page says an integration cannot be written to. Both went quiet on a screen that looked
+  // perfectly healthy otherwise. The modal this page opens has always handed this error to
+  // its type picker; the page behind it swallowed it.
+  const typesUnavailable = typesQuery.isError;
 
   const tunnelHealthById = useMemo(() => {
     const out: Record<number, ProviderHealthStatus> = {};
@@ -235,6 +260,7 @@ export function Providers() {
       const health = getHealthScore(provider, { diag, tunnel, auto }, t);
       out[id] = {
         diag,
+        lastTestedAt: Number(raw?.testedAt || 0) || undefined,
         tunnel,
         auto,
         health,
@@ -247,6 +273,9 @@ export function Providers() {
 
   const issueCount = providers.filter((p) => ['degraded', 'error'].includes(signalsById[Number(p.id)]?.severity)).length;
   const healthyCount = providers.filter((p) => signalsById[Number(p.id)]?.severity === 'healthy').length;
+  // A failed health request is not an all-clear. Both of these were unread, so the two
+  // counters below answered 0 whether nothing was wrong or nothing could be measured.
+  const healthUnavailable = allHealthQuery.isError || tunnelHealthQuery.isError;
 
   const matchesFocus = useCallback(
     (provider: Provider) => {
@@ -342,7 +371,7 @@ export function Providers() {
       setDiagnostics((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
       const failed = entries.filter(([, data]) => !data?.ok).length;
       if (failed === 0) toast.success(t('providers.refresh.success_all_passed'));
-      else toast.error(t('providers.refresh.failed_count', { failed, total: enabled.length }));
+      else toast.error(t('providers.refresh.failed_count', { count: failed, total: formatNumber(enabled.length) }));
     } catch {
       toast.error(t('providers.refresh.failed'));
     } finally {
@@ -406,11 +435,21 @@ export function Providers() {
   });
 
   const deleteProvider = useMutation({
-    mutationFn: ({ id, force }: { id: number; force?: boolean }) => api.delete(`/providers/${id}${force ? '?force=true' : ''}`),
-    onSuccess: () => {
+    mutationFn: (vars: ProviderDeleteVars) =>
+      api.delete<ProviderDeleteResult>(`/providers/${vars.id}${providerDeleteQuery(vars)}`),
+    onSuccess: (result: ProviderDeleteResult, vars: ProviderDeleteVars) => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });
       queryClient.invalidateQueries({ queryKey: ['services'] });
-      toast.success(t('providers.toast.deleted'));
+      // The delete blanks the provider columns of every template that named it, so the
+      // Templates page is stale in exactly the way the Services page is.
+      if (result?.unlinked_templates?.length) {
+        queryClient.invalidateQueries({ queryKey: ['templates'] });
+      }
+      // A withdrawal that only half worked leaves records live on a server Vauxtra can no
+      // longer reach; announcing "deleted" and nothing else is how that stayed invisible.
+      const partial = describeWithdrawal(result, vars.name ?? '', t);
+      if (partial) toast.error(partial, { duration: 8000 });
+      else toast.success(t('providers.toast.deleted'));
     },
   });
 
@@ -426,22 +465,24 @@ export function Providers() {
     if (!ok) return;
     deleting.start(id);
     try {
-      await deleteProvider.mutateAsync({ id });
+      await deleteProvider.mutateAsync({ id, name });
       if (inspectId === id) setInspectId(null);
       deleting.end(id);
     } catch (error: unknown) {
       const detail = getErrorDetail(error);
       if (getHttpStatus(error) === 409 && isProviderDeleteConflict(detail)) {
-        const count = detail.services.length;
+        // `confirm()` resolves to a boolean and nothing else, so the checkbox inside the
+        // dialog writes into this box and we read it back once the question is answered.
+        const choiceRef = createWithdrawChoice();
         const force = await confirm({
-          title: t('providers.delete.deps_title'),
-          message: t('providers.delete.deps_message', { count, name, list: describeDeleteConflict(detail, t) }),
+          title: t(providerConflictTitleKey(detail)),
+          message: <ProviderDeleteConflictBody name={name} detail={detail} choiceRef={choiceRef} />,
           confirmLabel: t('providers.delete.force_confirm'),
           variant: 'warning',
         });
         if (force) {
           deleteProvider.mutate(
-            { id, force: true },
+            { id, name, force: true, withdraw: choiceRef.current },
             {
               onSettled: () => deleting.end(id),
               onError: (err: unknown) => toast.error(translateApiError(err, t, t('providers.toast.delete_failed'))),
@@ -474,7 +515,7 @@ export function Providers() {
           <div className="flex flex-wrap items-center gap-2">
             {providersQuery.isSuccess && (
               <Badge tone="neutral" size="sm">
-                {t(total === 1 ? 'providers.meta.count_one' : 'providers.meta.count_other', { count: total })}
+                {t('providers.meta.count', { count: total })}
               </Badge>
             )}
             {hasFreshManualCheck ? (
@@ -544,6 +585,58 @@ export function Providers() {
         />
       ) : (
         <>
+          {/* Neither health query's `isError` was read anywhere on this page. When they fail
+              every integration falls to `unknown`, which is the honest reading of a
+              measurement that did not happen -- but `unknown` is what neither filter counts,
+              so the bar below published `Issues - 0` and `Healthy - 0` over a full list and
+              the warning badge in the header went away. A page that cannot reach its checks
+              looked exactly like a page where every check passed. The dashboard already
+              links here saying the health check failed; the page it opens has to agree. */}
+          {healthUnavailable && (
+            <InlineAlert
+              tone="warning"
+              title={t('providers.health.load_failed')}
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={allHealthQuery.isFetching || tunnelHealthQuery.isFetching}
+                  onClick={() => {
+                    void allHealthQuery.refetch();
+                    void tunnelHealthQuery.refetch();
+                  }}
+                >
+                  {t('common.retry')}
+                </Button>
+              }
+            >
+              {translateApiError(
+                allHealthQuery.error ?? tunnelHealthQuery.error,
+                t,
+                t('providers.health.load_failed_hint'),
+              )}
+            </InlineAlert>
+          )}
+
+          {typesUnavailable && (
+            <InlineAlert
+              tone="warning"
+              title={t('providers.catalog.load_failed')}
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={typesQuery.isFetching}
+                  onClick={() => void typesQuery.refetch()}
+                >
+                  {t('common.retry')}
+                </Button>
+              }
+            >
+              {translateApiError(typesQuery.error, t, t('providers.catalog.load_failed_hint'))}
+            </InlineAlert>
+          )}
+
           <ChipGroup label={t('providers.filter.label')}>
             <Chip size="sm" selected={focusFilter === 'all'} onClick={() => setFocusFilter('all')} count={total}>
               {t('providers.filter.all')}
@@ -586,6 +679,7 @@ export function Providers() {
                         health={signals.health}
                         status={signals.status}
                         diagnostics={signals.diag}
+                        lastTestedAt={signals.lastTestedAt}
                         tunnelHealth={isTunnelType(String(provider.type || ''), meta) ? signals.tunnel : undefined}
                         autoHealth={signals.auto}
                         testing={testing.has(id)}

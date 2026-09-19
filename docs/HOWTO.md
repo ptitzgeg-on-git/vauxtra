@@ -54,7 +54,7 @@ Vauxtra uses a password to protect access to the panel.
   scope with no credential at all — anyone who can reach the port can add providers, read
   the decrypted credentials of the ones already there, and delete your services. Vauxtra
   logs a warning at each boot and shows a permanent banner in the interface while this is
-  the case; setting a password later is one form in **Settings → API keys**.
+  the case; setting a password later is one form in **Settings → Security**.
 
 Generate the hash with the same function the wizard uses:
 
@@ -110,6 +110,28 @@ docker compose exec vauxtra \
 # Or go back to open access on purpose (see the warning above)
 sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='auth_mode';"
 ```
+
+### What reaches the activity log
+
+Four authentication events are written to the journal you read in *Recent activity* and in
+**Settings → Logs**:
+
+| Event | Level |
+| --- | --- |
+| A sign-in was refused because the password was wrong | `warning` |
+| Somebody signed in | `info` |
+| The wizard set the admin password | `info` |
+| The admin password was changed, ending every other session | `info` |
+
+No client address is written beside them. Behind a reverse proxy the address Vauxtra sees is
+the proxy's, identically for every caller, unless `FORWARDED_ALLOW_IPS` names the hop allowed
+to set `X-Forwarded-For` — so an address in those lines would be a false lead in exactly the
+investigation they exist for.
+
+Only the attempts that reach the route are recorded. Past five a minute the rate limiter
+answers 429 before anything is written, which is what stops an unauthenticated caller from
+filling the table at its own rate: a burst of guesses reads as five lines a minute, not as one
+line per request.
 
 ---
 
@@ -289,6 +311,39 @@ One case is deliberate: if the stale DNS record could not be removed, the new on
 created. AdGuard and Pi-hole will happily hold two rewrites for the same name, and the host
 would then resolve to whichever the resolver picked.
 
+### Reading the answer to an import
+
+`POST /api/services/import` takes the rows a scan found and answers with four outcomes:
+
+```json
+{
+  "imported": 3,
+  "linked": 1,
+  "skipped": ["Import passed over nas.example.lan: Vauxtra already tracks this name"],
+  "errors": ["Import skipped proxy host 91 on NPM: the provider listed no domain name for it"]
+}
+```
+
+Four, because two could not tell you anything. `imported` is a new service. `linked` is an
+existing service that gained the DNS half it was missing: a real write, and one the older
+two-field answer counted nowhere, so re-scanning after adding a rewrite reported zero.
+`skipped` is a row passed over **on purpose** — it is already tracked, or it is the second
+name on a proxy host that carries several, and a service holds a single name. It is not a
+failure and the panel does not paint it as one. `errors` is a row that is *wrong*: no domain
+name, no address, no dot to split a subdomain off, or an import that raised. Each one names
+the row, so there is something to go and fix.
+
+Apart from one fold, every row you submit lands in exactly one of the four. The fold: a DNS
+record whose name matches a proxy host **in the same payload** is the other half of that
+host, not a second service, so the two rows produce one service counted once under
+`imported`. `skipped` can also carry extra lines for names *inside* a row, so it is the one
+bucket that can outrun the row count.
+
+When two DNS providers answer for the same name, the first record is kept and the refusal
+names both providers and says which answer was imported — the other one is what you remove.
+Only refusals go to the journal one line at a time; rows passed over are summed into a
+single line, because fifty of them would bury everything else in *Recent activity*.
+
 ### Drift detection
 
 Drift occurs when provider state differs from Vauxtra's expected state (e.g., someone modified NPM directly).
@@ -329,7 +384,7 @@ scope, to anyone:
   `webhook_url_masked` (`discord://***`) and no `url` field at all. The create and update
   responses answer the same way.
 - The legacy global `webhook_url` no longer exists as a setting. It could be written, it
-  was masked on the way out, and it delivered nothing -- alerting reads the `webhooks`
+  was masked on the way out, and it delivered nothing — alerting reads the `webhooks`
   table. Any value already stored is moved into that table on the next start, as a target
   named *Global notifications (migrated)*; writing the key now returns 400 and points at
   `POST /api/webhooks`.
@@ -345,6 +400,40 @@ service a webhook points at, never the token. And restoring a *plain* backup bri
 notification targets back **disabled**, with `webhooks_needing_url` in the response saying
 how many — their names, scopes and rules survive, only the one field a secret-free file
 cannot carry is missing. Restoring a secure backup restores them working.
+
+`POST /api/restore` names two other things it could not take. `settings_not_restored` lists
+every setting in the file this version does not accept — a key an older Vauxtra wrote, or a
+newer one — and *not restored* is literal: the restore empties the settings table before
+refilling it, so such a key ends up absent rather than keeping the value this instance had.
+`domains_without_name` counts domain rows in the file with no name, which cannot be
+recreated; services that referenced one come back pointing at a domain the list no longer
+offers. Both also write a single journal line each. The keys a restore drops **on purpose**
+— the admin password hash, the setup marker, the schema version, the auth mode, the session
+epoch, and the one-shot webhook log purge marker — are never reported, because a warning
+that fires on every restore is one you learn to skip.
+
+### Who each webhook watches
+
+Every rule has a scope, which is the question *what is this one allowed to tell me about*:
+
+- **Everything** — the whole install. No target to pick.
+- **A provider** — only the services published through that provider.
+- **A service** — only that one hostname.
+
+A scoped rule is stored as a word plus a number, and the number has to name a row that exists
+when you save: pick a provider or a service that is not there and the save is refused with
+`Nothing to alert on` rather than accepted and quietly stored. The two lists number their rows
+independently — provider 4 and service 4 are unrelated — so switching a rule from one kind of
+scope to the other asks you for the new target rather than reusing the number. The panel does
+that for you; a script calling the API directly has to send `scope_ref_id` alongside the new
+`scope_type`.
+
+What a scope does **not** do is disappear with its target. Deleting a provider or a service
+never deletes or disables a webhook pointed at it: the rule stays exactly as you wrote it, and
+a journal line names every rule left watching something that is gone. That is deliberate —
+silently switching off a notification target is a worse surprise than being told — but it does
+mean the Settings list can show a rule as enabled when nothing will ever match it again. The
+journal entry is where you find out; the fix is to repoint the rule or delete it.
 
 ### Events
 
@@ -503,7 +592,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | Tool | Description |
 |---|---|
 | `get_health` | System health |
-| `get_logs` | Retrieve logs |
+| `get_logs` | Retrieve logs; needs `admin` |
 | `get_stats` | Global counters |
 | `get_certificates` | List SSL certificates |
 | `get_certificate_expiry` | Certificate expiry info |
@@ -524,7 +613,7 @@ Service Templates are pre-configured blueprints that pre-fill the service creati
 | `forward_scheme` | `http` or `https` |
 | `target_port` | Default backend port (1–65535) |
 | `websocket` | Enable WebSocket support |
-| `expose_mode` | `proxy_dns`, `dns_only`, or `tunnel` |
+| `expose_mode` | `proxy_dns` or `tunnel` |
 | `proxy_provider_id` | Pre-selected reverse proxy |
 | `dns_provider_id` | Pre-selected DNS provider |
 | `tunnel_provider_id` | Pre-selected Cloudflare Tunnel |
@@ -532,11 +621,42 @@ Service Templates are pre-configured blueprints that pre-fill the service creati
 | `domain` | Default base domain |
 | `dns_ip` | Default DNS record target |
 | `tag_ids` | Default tags to attach |
+| `environment_ids` | Default environments to attach |
 | `icon_url` | Service icon URL |
+
+### What a template refuses
+
+A template is a service payload saved for later, so it is checked with the rules of the
+service form — once, when you type it, instead of every time you apply it.
+
+| Field | Accepted values |
+|---|---|
+| `forward_scheme` | `http` or `https` |
+| `expose_mode` | `proxy_dns` or `tunnel` |
+| `public_target_mode` | `manual` or `auto` |
+| `target_port` | 1–65535 |
+| `domain` | empty, or a valid domain name |
+| `dns_ip` | empty, or an IP address or hostname |
+
+Anything else answers `422`. `domain` and `dns_ip` may be left empty on purpose — that is
+what makes a template a template — but a value that is there has to be a usable one.
+
+Every `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
+`environment_ids` entry has to name a row that exists. If one does not, the call is refused
+with `400`, the id is named, and nothing is written:
+
+```json
+{ "detail": "Nothing was created -- unknown tag 12, environment 3, provider 4" }
+```
+
+A provider or a label deleted *after* the template was saved is not an error and is never
+reported as one: the provider field empties itself, which the database does on its own, and
+the label stops being listed, whichever half it belonged to. The stored template is not
+rewritten, so putting the label back restores it.
 
 ### Using templates from the UI
 
-1. Go to **Settings → Templates → New Template**
+1. Go to **Templates → New Template**
 2. Fill in the defaults you want
 3. Save the template
 4. When creating a service, click **Apply Template** and choose a template — the form pre-fills with the stored defaults
@@ -564,8 +684,8 @@ POST /api/templates
 GET /api/templates/{id}/apply
 # Returns: forward_scheme, target_port, websocket, expose_mode,
 #          proxy_provider_id, dns_provider_id, tunnel_provider_id,
-#          public_target_mode, domain, dns_ip, tag_ids, icon_url,
-#          _template_id, _template_name
+#          public_target_mode, domain, dns_ip, tag_ids, environment_ids,
+#          icon_url, _template_id, _template_name
 ```
 
 Apply returns the template fields merged as service-creation defaults. You can POST those directly to `/api/services` (add `name`, `subdomain`, and `internal_target` to complete the service).
@@ -600,28 +720,71 @@ No `Authorization` header required. Response is `text/plain` in Prometheus text 
 
 | Metric | Labels | Description |
 |---|---|---|
-| `vauxtra_services_total` | `status` (`ok`, `error`, `unknown`) | Services by health status |
-| `vauxtra_providers_total` | `type`, `state` (`enabled`, `disabled`) | Providers by type and enabled state |
-| `vauxtra_logs_24h` | `level` (`info`, `warn`, `error`, `debug`) | Log entries in the last 24 hours |
-| `vauxtra_uptime_events_24h` | `event` (`up`, `down`) | Service uptime events in the last 24 hours |
-| `vauxtra_webhooks_total` | `state` (`enabled`, `disabled`) | Configured webhooks |
-| `vauxtra_webhook_deliveries_total` | `status` (`pending`, `delivered`, `failed`) | Webhook delivery log entries |
+| `vauxtra_services_total` | `status` (`ok`, `error`, `unknown`, `all`) | Services by health status. `all` is the sum of the other three and sits in the same family — read `all`, or add up the parts, but never `sum()` the family |
+| `vauxtra_services_enabled` | `state` (`enabled`, `disabled`) | Services by enabled state. These two do partition the estate, so their sum is the total |
+| `vauxtra_providers_total` | `type` | Providers by type |
+| `vauxtra_providers_enabled` | `type` | Enabled providers by type, a subset of the family above |
+| `vauxtra_logs_24h` | `level` (`info`, `ok`, `warning`, `error`, …) | Log entries in the last 24 hours. Those four are always published, at `0` on a quiet instance; any other level the table holds appears beside them rather than being dropped |
+| `vauxtra_uptime_events_24h` | `status` (`ok`, `error`) | Service uptime check results in the last 24 hours |
+| `vauxtra_webhooks_total` | `state` (`all`, `enabled`) | Configured webhooks. `enabled` is a subset of `all`, in the same family — the same caution as `vauxtra_services_total` |
+| `vauxtra_webhook_delivery_total` | `status` (`pending`, `delivered`, `failed`, …) | Webhook delivery log entries. Those three are always published, at `0` on an instance that has never sent one; any other status the column holds appears beside them rather than being dropped |
 | `vauxtra_templates_total` | *(none)* | Number of service templates |
 | `vauxtra_schema_version` | *(none)* | Current database schema version |
+
+The stored spelling of a log level is `warning`. Older code wrote `warn`, and `add_log` folds
+that into `warning` before the insert, so there is no `warn` series — asking for one is asking
+for a bucket nothing writes to.
+
+Certificate expiry is deliberately **not** here. Reading it means calling each proxy provider
+over the network, and a scrape must never wait on a third party. Use `GET /api/certificates`,
+the dashboard, or the `get_certificate_expiry` MCP tool for that.
 
 ### Example output
 
 ```
-# HELP vauxtra_services_total Services by status
+# HELP vauxtra_services_total Services by status; status="all" repeats their sum
 # TYPE vauxtra_services_total gauge
 vauxtra_services_total{status="ok"} 5
 vauxtra_services_total{status="error"} 1
 vauxtra_services_total{status="unknown"} 2
-# HELP vauxtra_providers_total Providers by type and state
+vauxtra_services_total{status="all"} 8
+# HELP vauxtra_services_enabled Services split by enabled/disabled state
+# TYPE vauxtra_services_enabled gauge
+vauxtra_services_enabled{state="enabled"} 6
+vauxtra_services_enabled{state="disabled"} 2
+# HELP vauxtra_providers_total Total providers grouped by type
 # TYPE vauxtra_providers_total gauge
-vauxtra_providers_total{type="npm",state="enabled"} 1
-vauxtra_providers_total{type="cloudflare",state="enabled"} 1
-vauxtra_schema_version 10
+vauxtra_providers_total{type="cloudflare"} 2
+vauxtra_providers_total{type="npm"} 1
+# HELP vauxtra_providers_enabled Enabled providers grouped by type
+# TYPE vauxtra_providers_enabled gauge
+vauxtra_providers_enabled{type="cloudflare"} 1
+vauxtra_providers_enabled{type="npm"} 1
+# HELP vauxtra_logs_24h Log entries in the last 24 hours grouped by level
+# TYPE vauxtra_logs_24h gauge
+vauxtra_logs_24h{level="error"} 1
+vauxtra_logs_24h{level="info"} 42
+vauxtra_logs_24h{level="ok"} 7
+vauxtra_logs_24h{level="warning"} 3
+# HELP vauxtra_uptime_events_24h Uptime check results in the last 24 hours
+# TYPE vauxtra_uptime_events_24h gauge
+vauxtra_uptime_events_24h{status="ok"} 120
+vauxtra_uptime_events_24h{status="error"} 4
+# HELP vauxtra_webhooks_total Webhooks; state="enabled" is a subset of state="all"
+# TYPE vauxtra_webhooks_total gauge
+vauxtra_webhooks_total{state="all"} 2
+vauxtra_webhooks_total{state="enabled"} 1
+# HELP vauxtra_webhook_delivery_total Webhook delivery log entries by status
+# TYPE vauxtra_webhook_delivery_total gauge
+vauxtra_webhook_delivery_total{status="delivered"} 58
+vauxtra_webhook_delivery_total{status="failed"} 2
+vauxtra_webhook_delivery_total{status="pending"} 1
+# HELP vauxtra_templates_total Total service templates
+# TYPE vauxtra_templates_total gauge
+vauxtra_templates_total 0
+# HELP vauxtra_schema_version Current DB schema version
+# TYPE vauxtra_schema_version gauge
+vauxtra_schema_version 11
 ```
 
 ### Prometheus scrape config
@@ -648,12 +811,28 @@ groups:
         for: 5m
         annotations:
           summary: "{{ $value }} service(s) in error state"
-      - alert: VauxtraCertExpiringSoon
+      - alert: VauxtraErrorsLogged
         expr: vauxtra_logs_24h{level="error"} > 0
         for: 1m
         annotations:
-          summary: "Check Vauxtra logs — certificate may be expiring"
+          summary: "{{ $value }} error(s) written to the Vauxtra journal in 24 h"
+      - alert: VauxtraWarningsLogged
+        expr: vauxtra_logs_24h{level="warning"} > 0
+        for: 15m
+        annotations:
+          summary: "{{ $value }} warning(s) written to the Vauxtra journal in 24 h"
+      - alert: VauxtraWebhookDeliveriesFailing
+        expr: vauxtra_webhook_delivery_total{status="failed"} > 0
+        for: 10m
+        annotations:
+          summary: "{{ $value }} webhook delivery(ies) failed"
 ```
+
+`VauxtraErrorsLogged` is named after what it measures. An earlier version of this file called
+the same rule `VauxtraCertExpiringSoon` and annotated it "certificate may be expiring", which
+it could not know: the expression counts every error line in the journal, so a failed NPM call
+or an unreachable tunnel fired an alert about certificates. There is no certificate series to
+point it at — see the note under the table.
 
 ---
 
@@ -682,17 +861,19 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services` | Create a service — 400 naming any unknown tag/environment/provider id, 409 if the hostname is taken |
 | `GET` | `/api/services/history` | Recent service activity |
 | `GET` | `/api/services/public-target/suggest` | Suggest public target IP |
-| `POST` | `/api/services/preflight` | Preflight validation |
+| `POST` | `/api/services/preflight` | Preflight validation. A check marked `blocking` is a promise that the save route refuses the same body. Add `service_id` to preflight an edit: the public target is then resolved from that service's stored row, exactly as the `PUT` resolves it. |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
-| `POST` | `/api/services/check-all` | Trigger health check for all |
-| `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation |
+| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
+| `POST` | `/api/services/bulk` | Enable, disable or delete several ids at once — `{ids: [1, 2], action: "enable"}`. Enabling and disabling are not a flag flip: each service also has its proxy host re-deployed or suspended and its DNS record added or removed, so a provider that refuses is named in `errors[]` while the rest still apply. |
+| `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
+| `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |
 | `GET` | `/api/services/{sid}/drift` | Check for drift |
 | `POST` | `/api/services/{sid}/reconcile` | Fix drift |
-| `GET` | `/api/services/{sid}/check` | Single health check |
+| `POST` | `/api/services/{sid}/check` | Single health check. The `GET` of the same path is a deprecated alias kept for one version; both need the `write` scope, because the check writes `status`, `last_checked` and an uptime event. |
 
 ### Providers
 
@@ -705,10 +886,27 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/tunnels/health` | Tunnel providers health |
 | `POST` | `/api/providers/validate-draft` | Validate before saving |
 | `PUT` | `/api/providers/{pid}` | Update a provider |
-| `DELETE` | `/api/providers/{pid}` | Delete a provider |
+| `DELETE` | `/api/providers/{pid}` | Delete a provider. `?force=true` unlinks the services still using it; add `?withdraw=true` to take its proxy hosts and DNS records down first, without it they stay published on a provider Vauxtra no longer knows about |
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |
+
+#### Direct provider access
+
+These six reach past the service table into the provider itself, which is what makes them
+useful for looking and a poor way to work. A record written here is one Vauxtra does not know
+it owns, so the next drift check reports it. Create the service instead and let the push write
+the provider rows. Each answers 404 for an unknown provider id, 400 when that provider type has
+no such capability, and 502 when the provider itself refuses.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/providers/{pid}/dns-records` | The records the provider holds, as it reports them |
+| `POST` | `/api/providers/{pid}/dns-records` | Write one record straight into the provider |
+| `DELETE` | `/api/providers/{pid}/dns-records/{domain}` | Delete one record. Add `?answer=` to pick between records sharing the domain; without it the first match is deleted |
+| `GET` | `/api/providers/{pid}/proxy-hosts` | The proxy hosts the provider holds |
+| `POST` | `/api/providers/{pid}/proxy-hosts` | Create a proxy host. Only `domain_names[0]` is used |
+| `DELETE` | `/api/providers/{pid}/proxy-hosts/{host_id}` | Delete a proxy host. `host_id` is whatever that provider calls its own — NPM numbers them, Cloudflare Tunnel addresses ingress rules by hostname, Traefik by router name — and is passed through unchanged |
 
 ### Docker
 
@@ -736,9 +934,9 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/settings` | Get settings |
 | `POST` | `/api/settings` | Update settings — send only the keys you change; 400 (and nothing written) on an invalid value |
 | `POST` | `/api/settings/test-webhook` | Send a test notification to every enabled webhook; answers `{ok, results[]}` with one entry per target |
-| `GET` | `/api/logs` | Get logs (supports `?level=` filter) |
-| `GET` | `/api/logs/stream` | SSE log stream |
-| `POST` | `/api/logs/clear` | Clear logs |
+| `GET` | `/api/logs` | Read the activity log (`admin`; supports `?level=` filter). Reading it asks the same question as emptying it, because it is the same file |
+| `GET` | `/api/logs/stream` | SSE log stream (`admin`, like the page it streams). The credential is re-read on every tick against that same scope, so a stream already open ends when the password changes, when the key is revoked, and when the key is narrowed |
+| `POST` | `/api/logs/clear` | Clear logs (`admin`; the clear is itself logged) |
 | `GET` | `/api/stats` | Global counters |
 | `GET` | `/api/health` | System health check |
 | `POST` | `/api/reset` | Factory reset (⚠️ destructive) |
@@ -781,6 +979,23 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `PUT` | `/api/environments/{eid}` | Update an environment |
 | `DELETE` | `/api/environments/{eid}` | Delete an environment |
 
+**Note on deleting a label:** nothing refuses it, and two kinds of row change with it. Every
+service carrying the label is unlinked on the spot (`service_tags` and `service_environments`
+both declare `ON DELETE CASCADE`): it keeps its hostname, stays published, and loses only the
+label you were filtering and grouping by. Every service template naming the label keeps the
+dead id in its `tag_ids` or `environment_ids` until the next read and drops it then, so a
+service created from that template afterwards starts without it. Both halves read the same
+way — a template stores an environment list beside its tag list, so an environment is dropped
+from a template exactly as a tag is. Call `GET /api/services` and `GET /api/templates` first
+if you need to know what that is before doing it; afterwards the id is gone, and the line the
+deletion writes to **Settings → Logs** is the only place the two counts are kept.
+
+**Note on label names:** a name is stripped of its surrounding spaces, refused empty and
+stopped at 32 characters, and that is the whole rule. Commas, colons and any other
+character are allowed, in a tag name and in an environment name alike, and come back
+from `GET /api/services` exactly as they were typed. Two labels of the same kind may not
+share a name (409); a tag and an environment may.
+
 ### Domains
 
 | Method | Endpoint | Description |
@@ -794,7 +1009,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/webhooks` | List webhooks (URLs masked — see [The URL is the credential](#the-url-is-the-credential)) |
-| `POST` | `/api/webhooks` | Create a webhook |
+| `POST` | `/api/webhooks` | Create a webhook (`enabled: false` creates it configured but silent) |
 | `PUT` | `/api/webhooks/{wid}` | Update a webhook |
 | `DELETE` | `/api/webhooks/{wid}` | Delete a webhook |
 | `POST` | `/api/webhooks/test-url` | Test a webhook URL |
@@ -819,9 +1034,9 @@ what it was created with. A request that falls short is refused with
 
 | Scope | Covers |
 |---|---|
-| `read` | Every `GET`, plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
-| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
-| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`. |
+| `read` | Every `GET` except three: the deprecated `GET /api/services/{sid}/check`, which writes and therefore needs `write` like its `POST`, and `GET /api/logs` with `GET /api/logs/stream`, which are `admin` for what the log holds. Plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
+| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/services/{sid}/check`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
+| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`, and the log in all three of its forms: `/api/logs`, `/api/logs/stream`, `/api/logs/clear`. The log is in this row rather than in `read` or `write` because it is where failed sign-ins, key creations with the scopes they carry, and password changes are written down. A `write` key that could empty it could erase the record of its own work; a `read` key that could page through it would learn which key to go after and when the admin is at the keyboard, neither of which it needs to read the estate. |
 
 Two things a `write` key may **not** do, because they choose a URL rather than a value,
 and the server is what goes and fetches it:
@@ -853,6 +1068,21 @@ The setup routes are the one exception to the table: while the installation wiza
 been completed they answer without any authentication at all, because there is nobody to
 authenticate yet. As soon as `setup-complete` has been stored they fall back to the scope
 listed above.
+
+One route outlives the request that opened it, and is checked accordingly. `GET /api/logs/stream`
+holds the socket and pushes every line as it is written — a refused sign-in, a key created
+and the scopes it carries, a service changed — so it asks whether the credential still holds
+on every tick rather than settling it once at connect time. The tick asks the door's own
+question, `admin`, and not a weaker "is this caller someone": a stream that settled for less
+would outlive any narrowing of the credential that opened it, which is the defect this loop
+exists to prevent, one rung lower down. Changing the admin password ends every stream opened
+with the cookie it replaces; revoking a key ends the stream that key opened, and so does
+dropping that key to `read` or `write`. A password change deliberately does **not** end a
+key's stream, for the same reason it does not revoke the key: revocation is what ends a key.
+The check runs before the read, so no line written after the credential died is sent. The
+browser that made the change reconnects once on its own and the live view comes back; any
+other browser is refused, falls back to polling, and the poll answers 401, which is what puts
+the login screen up.
 
 ---
 

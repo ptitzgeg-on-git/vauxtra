@@ -29,16 +29,16 @@ import {
   WARN_DAYS,
   certBucket,
   certDays,
+  certSourceNames,
   countBuckets,
   matchesSearch,
+  resolveProviderFilter,
   sortCertificates,
   toCertFilter,
   type CertFilter,
-  type CertificateExpiryPayload,
-  type CertificateRow,
   type CertificateSource,
 } from '@/components/features/certificates/certificates';
-import type { Provider } from '@/types/api';
+import type { Certificate, CertificateExpiryResponse, CertificateRow, Provider } from '@/types/api';
 
 /**
  * Certificates — what is about to expire, and where to go and renew it.
@@ -72,14 +72,14 @@ export function Certificates() {
     return () => window.clearInterval(id);
   }, []);
 
-  const expiryQuery = useQuery<CertificateExpiryPayload>({
+  const expiryQuery = useQuery<CertificateExpiryResponse>({
     queryKey: ['certificates-expiry'],
-    queryFn: () => api.get<CertificateExpiryPayload>('/certificates/expiry'),
+    queryFn: () => api.get<CertificateExpiryResponse>('/certificates/expiry'),
   });
 
-  const listQuery = useQuery<CertificateRow[]>({
+  const listQuery = useQuery<Certificate[]>({
     queryKey: ['certificates'],
-    queryFn: () => api.get<CertificateRow[]>('/certificates'),
+    queryFn: () => api.get<Certificate[]>('/certificates'),
     enabled: expiryQuery.isError,
   });
 
@@ -93,10 +93,20 @@ export function Certificates() {
   const usingFallback = expiryQuery.isError;
   const warnDays = expiryQuery.data?.warn_threshold_days ?? WARN_DAYS;
 
-  const certificates = useMemo(() => {
+  const certificates = useMemo<CertificateRow[]>(() => {
     const rows = usingFallback ? listQuery.data : expiryQuery.data?.certificates;
     return Array.isArray(rows) ? rows : [];
   }, [usingFallback, listQuery.data, expiryQuery.data]);
+
+  /**
+   * The certificate stores this call could not read, named so a partial page cannot pass
+   * for a complete one. Primary route only: the fallback list carries no such field, and
+   * it already draws its own banner saying the countdowns came from the browser.
+   */
+  const unreachable = useMemo(
+    () => (usingFallback ? [] : certSourceNames(expiryQuery.data?.unreachable)),
+    [usingFallback, expiryQuery.data],
+  );
 
   const providers = useMemo(
     () => (Array.isArray(providersQuery.data) ? providersQuery.data : []),
@@ -129,31 +139,34 @@ export function Certificates() {
   const providerOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const cert of certificates) {
-      const key = cert.provider_id === undefined ? cert.provider_name || cert.provider || '' : String(cert.provider_id);
+      const key = String(cert.provider_id);
       if (!key) continue;
-      const name =
-        (cert.provider_id !== undefined ? sources.get(cert.provider_id)?.name : undefined) ||
-        cert.provider_name ||
-        cert.provider ||
-        key;
+      const name = sources.get(cert.provider_id)?.name || cert.provider_name || key;
       if (!seen.has(key)) seen.set(key, name);
     }
     return [...seen.entries()].map(([value, label]) => ({ value, label }));
   }, [certificates, sources]);
 
+  /**
+   * The chosen integration, or `all` once it stops being one of the choices. An operator
+   * filters to one integration, that integration is removed or stops answering, and the id
+   * stays in state: every row is dropped by a filter the select is no longer drawing.
+   */
+  const activeProviderFilter = useMemo(
+    () => resolveProviderFilter(providerFilter, providerOptions.map((option) => option.value)),
+    [providerFilter, providerOptions],
+  );
+
   const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase();
     const rows = certificates.filter((cert) => {
       if (statusFilter !== 'all' && certBucket(certDays(cert, now), warnDays) !== statusFilter) return false;
-      if (providerFilter !== 'all') {
-        const key =
-          cert.provider_id === undefined ? cert.provider_name || cert.provider || '' : String(cert.provider_id);
-        if (key !== providerFilter) return false;
+      if (activeProviderFilter !== 'all') {
+        if (String(cert.provider_id) !== activeProviderFilter) return false;
       }
-      return matchesSearch(cert, needle);
+      return matchesSearch(cert, search);
     });
     return sortCertificates(rows, now, warnDays);
-  }, [certificates, statusFilter, providerFilter, search, now, warnDays]);
+  }, [certificates, statusFilter, activeProviderFilter, search, now, warnDays]);
 
   const setStatusFilter = (next: CertFilter) => {
     const params = new URLSearchParams(searchParams);
@@ -176,13 +189,27 @@ export function Certificates() {
     const result = await expiryQuery.refetch();
     if (result.isError) await listQuery.refetch();
     void providersQuery.refetch();
+    //: The capability map too. It is served by Vauxtra rather than by an integration, so
+    //: it costs no round-trip out there — and without it the retry below could be offered
+    //: for a failure it had no way of clearing.
+    void providerTypesQuery.refetch();
   };
 
   const loading = usingFallback ? listQuery.isPending : expiryQuery.isPending;
+  /**
+   * An empty table explains itself by naming the integrations behind it, so it may not
+   * paint before those two reads are in. The sentence it printed in the meantime was
+   * "These integrations were queried and returned nothing: ." — a plural naming nobody, a
+   * dangling colon, and a claim that a query happened. A table with rows never waits for
+   * them: a row carries its own provider name and `sources` only prettifies it.
+   */
+  const explainPending =
+    certificates.length === 0 && (providersQuery.isFetching || providerTypesQuery.isFetching);
   const refreshing = expiryQuery.isFetching || listQuery.isFetching;
   // Only a real dead end: the expiry route failed *and* the flat list could not stand in.
   const failed = expiryQuery.isError && listQuery.isError;
-  const filtersActive = statusFilter !== 'all' || providerFilter !== 'all' || search.trim().length > 0;
+  const filtersActive =
+    statusFilter !== 'all' || activeProviderFilter !== 'all' || search.trim().length > 0;
 
   const emptyState = (() => {
     if (failed) {
@@ -207,7 +234,25 @@ export function Certificates() {
         ),
       };
     }
-    if (capableProviders !== null && capableProviders.length === 0) {
+    //: Both rungs below speak about the integrations behind the table, and neither
+    //: sentence can be said without having read them. A failed read leaves the list empty,
+    //: which is how "No integration exposes a certificate store" came to be a statement
+    //: about what is configured, made by a page that had just failed to find out; and a
+    //: capability map that never arrived left the count at zero, which is how the other
+    //: one came to name nobody. Either way the page says what it knows, which is that it
+    //: could not look.
+    if (!providersQuery.isSuccess || capableProviders === null) {
+      return {
+        title: t('certificates.empty.none'),
+        description: t('certificates.empty.none_unread_hint'),
+        action: (
+          <Button variant="outline" size="sm" onClick={() => void refresh()}>
+            {t('common.retry')}
+          </Button>
+        ),
+      };
+    }
+    if (capableProviders.length === 0) {
       return {
         title: t('certificates.empty.no_integration'),
         description: t('certificates.empty.no_integration_hint'),
@@ -221,7 +266,8 @@ export function Certificates() {
     return {
       title: t('certificates.empty.none'),
       description: t('certificates.empty.none_hint', {
-        providers: (capableProviders ?? []).map((provider) => provider.name).join(', '),
+        count: capableProviders.length,
+        providers: capableProviders.map((provider) => provider.name).join(', '),
       }),
       action: (
         <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
@@ -240,7 +286,7 @@ export function Certificates() {
         icon={<Lock />}
         meta={
           <span className="text-xs text-muted-foreground">
-            {t('certificates.meta', { count: formatNumber(certificates.length), days: warnDays })}
+            {t('certificates.meta', { count: certificates.length, days: formatNumber(warnDays) })}
           </span>
         }
         actions={
@@ -270,11 +316,28 @@ export function Certificates() {
         </InlineAlert>
       )}
 
+      {unreachable.length > 0 && (
+        <InlineAlert
+          tone="warning"
+          title={t('certificates.unreachable', { count: unreachable.length })}
+          action={
+            <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              {t('certificates.empty.open_providers')}
+            </Link>
+          }
+        >
+          {t('certificates.unreachable_hint', {
+            count: unreachable.length,
+            providers: unreachable.join(', '),
+          })}
+        </InlineAlert>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label={t('certificates.stat.valid')}
-          value={counts.valid}
-          hint={t('certificates.stat.valid_hint', { days: warnDays })}
+          value={formatNumber(counts.valid)}
+          hint={t('certificates.stat.valid_hint', { days: formatNumber(warnDays) })}
           icon={<ShieldCheck />}
           tone="success"
           loading={loading}
@@ -282,8 +345,8 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.expiring')}
-          value={counts.expiring}
-          hint={t('certificates.stat.expiring_hint', { days: warnDays })}
+          value={formatNumber(counts.expiring)}
+          hint={t('certificates.stat.expiring_hint', { days: formatNumber(warnDays) })}
           icon={<Clock />}
           tone={counts.expiring > 0 ? 'warning' : 'neutral'}
           loading={loading}
@@ -291,7 +354,7 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.critical')}
-          value={counts.critical}
+          value={formatNumber(counts.critical)}
           hint={t('certificates.stat.critical_hint')}
           icon={<ShieldAlert />}
           tone={counts.critical > 0 ? 'danger' : 'neutral'}
@@ -300,7 +363,7 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.expired')}
-          value={counts.expired}
+          value={formatNumber(counts.expired)}
           hint={t('certificates.stat.expired_hint')}
           icon={<ShieldX />}
           tone={counts.expired > 0 ? 'danger' : 'neutral'}
@@ -309,7 +372,7 @@ export function Certificates() {
         />
         <StatCard
           label={t('certificates.stat.unknown')}
-          value={counts.unknown}
+          value={formatNumber(counts.unknown)}
           hint={t('certificates.stat.unknown_hint')}
           icon={<CircleHelp />}
           tone={counts.unknown > 0 ? 'warning' : 'neutral'}
@@ -327,7 +390,7 @@ export function Certificates() {
                 <Select
                   size="sm"
                   aria-label={t('certificates.provider_filter')}
-                  value={providerFilter}
+                  value={activeProviderFilter}
                   onChange={(event) => setProviderFilter(event.target.value)}
                   wrapperClassName="w-auto"
                 >
@@ -369,7 +432,7 @@ export function Certificates() {
             sources={sources}
             warnDays={warnDays}
             now={now}
-            loading={loading}
+            loading={loading || explainPending}
             empty={emptyState}
           />
         </CardContent>

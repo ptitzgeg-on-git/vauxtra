@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import traceback
+from typing import NamedTuple
 from unittest.mock import patch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,6 +61,18 @@ PROVIDERS = [
 RESULTS: list[tuple[str, str, str, str]] = []
 
 
+class Probe(NamedTuple):
+    """What one probe left behind: whether it held, and whatever it captured.
+
+    `ok` used to be dropped on the floor -- `check()` returned the captured value alone --
+    so nothing downstream could tell a probe that held from one that did not. That is how
+    phase 5 came to run against services phase 4 had just reported as never published.
+    """
+
+    ok: bool
+    value: object
+
+
 def record(phase: str, name: str, ok: bool | None, detail: str = "") -> None:
     status = {True: "PASS", False: "FAIL", None: "SKIP"}[ok]
     RESULTS.append((phase, name, status, detail))
@@ -67,15 +80,15 @@ def record(phase: str, name: str, ok: bool | None, detail: str = "") -> None:
     print(f"[{mark}] {phase:22} {name:44} {detail}"[:190], flush=True)
 
 
-def check(phase: str, name: str, fn) -> object:
+def check(phase: str, name: str, fn) -> Probe:
     """Run one probe. An exception is a failure, not a crash of the harness."""
     try:
         ok, detail, value = fn()
     except Exception as exc:  # noqa: BLE001 -- a provider raising IS the result
         record(phase, name, False, f"{exc.__class__.__name__}: {exc}")
-        return None
+        return Probe(False, None)
     record(phase, name, ok, detail)
-    return value
+    return Probe(bool(ok), value)
 
 
 # --------------------------------------------------------------------------- app boot
@@ -143,6 +156,142 @@ def wipe(spec: dict) -> tuple[bool, str, None]:
     return True, f"{removed} leftover(s) removed", None
 
 
+SPEC_BY_NAME = {spec["name"]: spec for spec in PROVIDERS}
+
+
+def rewrites_for(spec: dict, host: str) -> list[dict]:
+    """The records a provider actually holds for `host`, read from the container itself.
+
+    `bare()` rather than `live()` on purpose: this phase deletes a provider from Vauxtra and
+    then has to look at what stayed behind on it, which is precisely when the database row
+    `live()` needs no longer exists.
+    """
+    return [r for r in (bare(spec).list_rewrites() or [])
+            if str(r.get("domain", "")).lower() == host]
+
+
+def multi_sync_phase(ids: dict[str, int]) -> None:
+    """A service published on two DNS servers at once, through its whole life.
+
+    Everything before this point exercises one proxy and one DNS server per service -- the
+    two columns on the service row. `service_push_targets` holds the rest, and for a long
+    while nothing on the write paths read it: a service created with a second DNS server
+    answered `201 {"errors": []}` while that server received nothing, an edit that dropped a
+    target left it serving the hostname forever, and deleting the provider told the operator
+    the service would "stop being pushed anywhere" when its primary went on serving it.
+
+    None of that was visible to a harness that only ever names one target, which is why this
+    phase exists rather than a one-off probe script.
+    """
+    phase = "7-multisync"
+    primary_spec, extra_spec = SPEC_BY_NAME["lab-adguard"], SPEC_BY_NAME["lab-technitium"]
+    proxy_id = ids.get("lab-npm")
+    primary_id, extra_id = ids.get("lab-adguard"), ids.get("lab-technitium")
+    if not (proxy_id and primary_id and extra_id):
+        record(phase, "multi-sync lifecycle", None, "npm, adguard or technitium not registered")
+        return
+
+    sub, host = "multi", "multi.vxlab.test"
+    body = {
+        "subdomain": sub, "domain": "vxlab.test",
+        "target_ip": UPSTREAM_HOST, "target_port": UPSTREAM_PORT,
+        "forward_scheme": "http", "dns_ip": DNS_IP,
+        "proxy_provider_id": proxy_id, "dns_provider_id": primary_id,
+    }
+    state: dict = {}
+
+    def create_two_targets():
+        r = client.post("/api/services", json={**body, "extra_dns_provider_ids": [extra_id]})
+        state["sid"] = (r.json() or {}).get("id") if r.content else None
+        errors = (r.json() or {}).get("errors") or [] if r.content else []
+        return r.status_code == 201 and not errors, \
+            f"HTTP {r.status_code} id={state.get('sid')} errors={errors}", None
+
+    def on_primary():
+        hit = rewrites_for(primary_spec, host)
+        return bool(hit), f"adguard holds {len(hit)} record(s) for {host}", None
+
+    def on_extra():
+        hit = rewrites_for(extra_spec, host)
+        return bool(hit), f"technitium holds {len(hit)} record(s) for {host}", None
+
+    def drift_clean():
+        r = client.get(f"/api/services/{state['sid']}/drift")
+        b = r.json()
+        return bool(b.get("ok")), f"issues={[i['type'] for i in b.get('issues', [])]}", None
+
+    def edit(extras: list[int]):
+        r = client.put(f"/api/services/{state['sid']}",
+                       json={**body, "extra_dns_provider_ids": extras})
+        return r.status_code == 200, f"HTTP {r.status_code} {r.text[:110]}", None
+
+    def off_extra():
+        hit = rewrites_for(extra_spec, host)
+        return not hit, f"technitium holds {len(hit)} record(s) for {host}", None
+
+    def refuse_removal():
+        r = client.delete(f"/api/providers/{extra_id}")
+        detail = (r.json() or {}).get("detail") if r.content else None
+        state["conflict"] = detail if isinstance(detail, dict) else {}
+        return r.status_code == 409, f"HTTP {r.status_code} {str(detail)[:120]}", None
+
+    def message_tells_the_truth():
+        """The service has a second DNS server; it does not go dark, and must not be told so."""
+        message = str(state.get("conflict", {}).get("message") or "")
+        services = state.get("conflict", {}).get("services") or []
+        kept = [s for s in services if s.get("still_published")]
+        lying = "stop being pushed anywhere" in message
+        return bool(kept) and not lying, \
+            f"still_published={[s.get('fqdn') for s in kept]} message={message[:90]!r}", None
+
+    def remove_with_withdraw():
+        r = client.delete(f"/api/providers/{extra_id}?force=true&withdraw=true")
+        b = r.json() if r.content else {}
+        return r.status_code == 200 and b.get("ok") and b.get("withdrawn"), \
+            f"HTTP {r.status_code} {str(b)[:120]}", None
+
+    def delete_service():
+        r = client.delete(f"/api/services/{state['sid']}")
+        return r.status_code in (200, 204), f"HTTP {r.status_code} {r.text[:110]}", None
+
+    created = check(phase, "create with a second dns server", create_two_targets)
+    if not state.get("sid"):
+        record(phase, "(rest of the multi-sync lifecycle)", None, "service not created")
+        return
+    primary_landed = check(phase, "record on the primary (adguard)", on_primary)
+    check(phase, "record on the extra target (technitium)", on_extra)
+    check(phase, "drift clean on both", drift_clean)
+
+    # The edit half. Dropping a target has to take its record down, and -- the control that
+    # makes the previous line mean something -- must not touch the primary's.
+    dropped = check(phase, "edit drops the extra target", lambda: edit([]))
+    if dropped.ok:
+        check(phase, "record withdrawn from the dropped target", off_extra)
+        check(phase, "primary untouched by the drop (control)", on_primary)
+        readded = check(phase, "edit adds the extra target back", lambda: edit([extra_id]))
+        if readded.ok:
+            check(phase, "record back on the re-added target", on_extra)
+    else:
+        record(phase, "(withdrawal on edit)", None, "the edit itself failed")
+
+    # The removal half. Only worth asking once the extra really is a second live target:
+    # a 409 that describes an empty dependency is a different question altogether.
+    if not (created.ok and primary_landed.ok):
+        record(phase, "(provider removal)", None, "the service never reached both targets")
+        check(phase, "delete the service", delete_service)
+        return
+    refused = check(phase, "removing the extra provider is refused (409)", refuse_removal)
+    if refused.ok:
+        check(phase, "the refusal does not claim the service goes dark", message_tells_the_truth)
+    else:
+        record(phase, "the refusal does not claim the service goes dark", None, "no 409 to read")
+    check(phase, "force + withdraw removes the provider", remove_with_withdraw)
+    check(phase, "record taken off the removed provider", off_extra)
+    check(phase, "primary still serves it (control)", on_primary)
+    check(phase, "drift still clean on the primary alone", drift_clean)
+    check(phase, "delete the service", delete_service)
+
+
 def main() -> int:
     ids: dict[str, int] = {}
 
@@ -160,9 +309,9 @@ def main() -> int:
                 return False, f"HTTP {r.status_code} {r.text[:120]}", None
             return True, f"id={r.json()['id']}", r.json()["id"]
 
-        pid = check("1-register", spec["name"], register)
-        if pid:
-            ids[spec["name"]] = pid
+        registered = check("1-register", spec["name"], register)
+        if registered.ok and registered.value:
+            ids[spec["name"]] = registered.value
 
     # ------------------------------------------------------------------ 2. connection
     for spec in PROVIDERS:
@@ -363,18 +512,39 @@ def main() -> int:
         if not state.get("sid"):
             record("4-service", f"{label} (rest of lifecycle)", None, "not created")
             continue
-        check("4-service", f"{label} route on proxy", route_present)
-        check("4-service", f"{label} rewrite on dns", rewrite_present)
-        check("5-drift", f"{label} clean after push", drift_clean)
-        check("5-drift", f"{label} break dns behind vauxtra", break_dns)
-        check("5-drift", f"{label} drift detects missing rewrite", drift_sees_dns)
-        check("5-drift", f"{label} reconcile", reconcile)
-        check("5-drift", f"{label} break proxy origin behind vauxtra", break_proxy)
-        check("5-drift", f"{label} drift detects origin mismatch", drift_sees_proxy)
-        check("5-drift", f"{label} reconcile again", reconcile)
+        on_proxy = check("4-service", f"{label} route on proxy", route_present)
+        on_dns = check("4-service", f"{label} rewrite on dns", rewrite_present)
+
+        # Phase 5 ran unconditionally, and that made it a witness of nothing. `drift detects
+        # missing rewrite` asserts that the drift report names `missing_dns_rewrite` after the
+        # record is deleted behind Vauxtra's back -- but a record the push never wrote is
+        # missing too, so on a service that never landed the probe passed while measuring the
+        # failure of phase 4 instead of the success of the drift engine. It has to run on a
+        # service that was seen published on both providers, or not at all.
+        if not (on_proxy.ok and on_dns.ok):
+            record("5-drift", f"{label} (drift and reconcile)", None,
+                   "never published on both providers: breaking what is already broken proves nothing")
+        else:
+            check("5-drift", f"{label} clean after push", drift_clean)
+            broke_dns = check("5-drift", f"{label} break dns behind vauxtra", break_dns)
+            if broke_dns.ok:
+                check("5-drift", f"{label} drift detects missing rewrite", drift_sees_dns)
+            else:
+                record("5-drift", f"{label} drift detects missing rewrite", None,
+                       "the rewrite is still there: there is no drift to detect")
+            check("5-drift", f"{label} reconcile", reconcile)
+            broke_proxy = check("5-drift", f"{label} break proxy origin behind vauxtra", break_proxy)
+            if broke_proxy.ok:
+                check("5-drift", f"{label} drift detects origin mismatch", drift_sees_proxy)
+            else:
+                record("5-drift", f"{label} drift detects origin mismatch", None,
+                       "the origin was not changed: there is no drift to detect")
+            check("5-drift", f"{label} reconcile again", reconcile)
         check("6-delete", f"{label} delete service", delete_service)
         check("6-delete", f"{label} route gone from proxy", route_gone)
         check("6-delete", f"{label} rewrite gone from dns", rewrite_gone)
+
+    multi_sync_phase(ids)
 
     # ------------------------------------------------------------------ summary
     print()

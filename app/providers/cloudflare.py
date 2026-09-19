@@ -15,6 +15,7 @@ import requests
 
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import DNSProvider
+from app.text import plural
 
 try:
     import cloudflare as _cf
@@ -138,22 +139,43 @@ class CloudflareProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
+        """Every A, AAAA and CNAME record in every zone this token can reach.
+
+        No handler, deliberately. The sweep used to sit inside one broad `except` that
+        passed, with `return results` after it, so an API error partway through handed back
+        the records collected so far and the caller had no way to tell a short answer from
+        a complete one. What a short answer means at each caller is "that record is not
+        there", which is the one thing a failed listing does not establish.
+
+        Every caller had already written the honest branch. The two record routes answer
+        502, the drift check raises a `dns_check_failed` issue, the scan logs the provider
+        that failed, and the removal path falls back to the address Vauxtra stored. The
+        handler is what made all five unreachable.
+
+        The one tolerant reading, a zone this token can list but not read, is what PowerDNS
+        keeps on purpose and explains over `_zone_rrsets`. It keeps it because it can tell
+        that case apart from a listing that failed; one handler wrapped around the whole
+        sweep cannot, so it read every failure as the harmless one.
+        """
+        zone_ids: list[str] = []
+        if self._configured_zone_id:
+            zone_ids = [self._configured_zone_id]
+        else:
+            # Discover all visible zones
+            for zone in self._client.zones.list(per_page=50):
+                zone_ids.append(zone.id)
         results: list[dict] = []
-        try:
-            zone_ids: list[str] = []
-            if self._configured_zone_id:
-                zone_ids = [self._configured_zone_id]
-            else:
-                # Discover all visible zones
-                for zone in self._client.zones.list(per_page=50):
-                    zone_ids.append(zone.id)
-            for zid in zone_ids:
-                for rtype in ("A", "AAAA", "CNAME"):
-                    for r in self._client.dns.records.list(zone_id=zid, type=rtype):
-                        results.append({"domain": r.name, "answer": r.content, "type": rtype, "proxied": r.proxied})
-        except Exception:
-            # API error during listing; return partial results collected so far
-            pass
+        for zid in zone_ids:
+            for rtype in ("A", "AAAA", "CNAME"):
+                for r in self._client.dns.records.list(zone_id=zid, type=rtype):
+                    results.append(
+                        {
+                            "domain": r.name,
+                            "answer": r.content,
+                            "type": rtype,
+                            "proxied": r.proxied,
+                        }
+                    )
         return results
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
@@ -268,7 +290,7 @@ class CloudflareProvider(DNSProvider):
                 _add(
                     "zones_access",
                     True,
-                    f"Can access {zone_count} zone(s) via token - auto-detection will work",
+                    f"Can access {plural(zone_count, 'zone')} via token - auto-detection will work",
                     False,
                     code="zones_listed",
                     count=zone_count,

@@ -17,7 +17,8 @@ import ipaddress
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, ProviderListingRefused, TimeoutSession
+from app.text import plural
 
 DEFAULT_SERVER_ID = "localhost"
 DEFAULT_TTL = 3600
@@ -70,15 +71,24 @@ class PowerDNSProvider(DNSProvider):
 
     # ── Zones ─────────────────────────────────────────────────────────────
 
-    def _list_zones(self) -> list[dict]:
+    def _list_zones(self) -> list[dict] | None:
+        """Every zone this API key can see, or None when the API refused to say.
+
+        The same three answers `_zone_rrsets` keeps, one level up, and for the same
+        reason: an empty server and a server that would not answer send `_find_zone` in
+        opposite directions. The callers decide what to do with None -- the diagnostics
+        report it, `list_rewrites` and `_find_zone` raise.
+        """
         try:
             r = self.session.get(self._api("/zones"))
             if r.status_code != 200:
-                return []
+                return None
             data = r.json()
-            return [z for z in data if isinstance(z, dict) and z.get("name")] if isinstance(data, list) else []
         except (requests.RequestException, ValueError):
-            return []
+            return None
+        if not isinstance(data, list):
+            return None
+        return [z for z in data if isinstance(z, dict) and z.get("name")]
 
     def _zone_id(self, zone: dict) -> str:
         """The zone's own id when it has one, its name otherwise.
@@ -90,10 +100,18 @@ class PowerDNSProvider(DNSProvider):
         return str(zone.get("id") or self._fqdn(zone.get("name", "")))
 
     def _find_zone(self, domain: str) -> str | None:
-        """The id of the longest zone that contains *domain*, or None."""
+        """The id of the longest zone that contains *domain*, or None when none does.
+
+        Raises when the zones could not be listed at all. None has to keep meaning "no
+        zone on this server covers the name", because that is what `add_rewrite` and
+        `delete_rewrite` turn into a refusal to write.
+        """
+        zones = self._list_zones()
+        if zones is None:
+            raise ProviderListingRefused("PowerDNS would not list its zones")
         target = self._relative(domain)
         best: tuple[int, str] | None = None
-        for zone in self._list_zones():
+        for zone in zones:
             name = self._relative(zone.get("name", ""))
             if not name:
                 continue
@@ -185,11 +203,24 @@ class PowerDNSProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
+        """Every managed record in every zone this API key can read.
+
+        A zone this key cannot read used to contribute nothing, on the reasoning that
+        listing is read-only and the distinction was therefore safely ignorable here. It
+        is not: what reads this listing is the push, which creates the record it does not
+        find, and the drift check, which reports the record it does not find as missing.
+        A zone skipped in silence is a zone Vauxtra believes to be empty.
+        """
+        zones = self._list_zones()
+        if zones is None:
+            raise ProviderListingRefused("PowerDNS would not list its zones")
         records: list[dict] = []
-        for zone in self._list_zones():
-            # A zone this token cannot read contributes nothing here. That is the one
-            # place the distinction is safely ignorable: listing is read-only.
-            for rrset in self._zone_rrsets(self._zone_id(zone)) or []:
+        for zone in zones:
+            zone_id = self._zone_id(zone)
+            rrsets = self._zone_rrsets(zone_id)
+            if rrsets is None:
+                raise ProviderListingRefused(f"PowerDNS would not read zone {zone_id}")
+            for rrset in rrsets:
                 rtype = rrset.get("type")
                 if rtype not in MANAGED_TYPES:
                     continue
@@ -285,10 +316,19 @@ class PowerDNSProvider(DNSProvider):
             return {"ok": False, "checks": checks, "warnings": warnings}
 
         zones = self._list_zones()
+        if zones is None:
+            _add(
+                "List zones",
+                False,
+                "PowerDNS would not list its zones",
+                "zones_error",
+                error="PowerDNS would not list its zones",
+            )
+            return {"ok": False, "checks": checks, "warnings": warnings}
         _add(
             "List zones",
             True,
-            f"{len(zones)} zone(s) accessible" if zones else "No zones found",
+            f"{plural(len(zones), 'zone')} accessible" if zones else "No zones found",
             "zones_found" if zones else "zones_none",
             blocking=False,
             count=len(zones),
@@ -335,5 +375,5 @@ class PowerDNSProvider(DNSProvider):
         return {
             "ok": ok,
             "status": "healthy" if ok else "down",
-            "zones_visible": len(self._list_zones()) if ok else 0,
+            "zones_visible": len(self._list_zones() or []) if ok else 0,
         }

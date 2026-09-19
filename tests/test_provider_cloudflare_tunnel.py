@@ -1,10 +1,11 @@
 """Unit tests for CloudflareTunnelProvider — all HTTP calls are mocked."""
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import requests
 
+from app.providers.base import ProviderListingRefused
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
 
 
@@ -73,8 +74,17 @@ class TestCFTunnelResolveId(unittest.TestCase):
     def test_resolve_returns_empty_for_multiple_tunnels(self):
         self.p.tunnel_id = ""
         self._mock_request([{"id": "t1", "name": "T1"}, {"id": "t2", "name": "T2"}])
-        result = self.p._resolve_tunnel_id()
+        # `add_log` writes a row. Left alone it writes it into the journal of whatever
+        # database this checkout runs on, which is the operator's -- see tests/conftest.py.
+        # Patching it also lets the warning be checked: it is the only thing this branch
+        # produces for the operator, and it names the tunnels so the choice can be made.
+        with patch("app.models.add_log") as add_log:
+            result = self.p._resolve_tunnel_id()
         self.assertEqual(result, "")
+        level, message = add_log.call_args.args[:2]
+        self.assertEqual(level, "warning")
+        self.assertIn("T1, T2", message)
+        self.assertIn("tunnel_id", message)
 
     def test_resolve_returns_empty_when_api_fails(self):
         self.p.tunnel_id = ""
@@ -274,8 +284,15 @@ class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
         methods = [c.args[0] for c in self.p.session.request.call_args_list]
         self.assertNotIn("PUT", methods)
 
-    def test_list_hosts_is_empty_but_does_not_pretend_on_read_failure(self):
+    def test_a_config_that_could_not_be_read_is_not_a_tunnel_serving_nothing(self):
+        """The helper already refuses to conflate the two; the caller must not undo it."""
         self.p._get_configuration = MagicMock(return_value=None)
+        with self.assertRaises(ProviderListingRefused):
+            self.p.list_hosts()
+
+    def test_a_tunnel_with_no_ingress_still_answers_the_empty_list(self):
+        """An ingress holding nothing is an answer, and it stays an empty list."""
+        self.p._get_configuration = MagicMock(return_value={"ingress": []})
         self.assertEqual(self.p.list_hosts(), [])
 
     def test_delete_dns_record_fails_when_zone_cannot_be_resolved(self):

@@ -1,75 +1,342 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
 
-/* ---------------------------------------------------------------------------
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-background: rgb(var(--vx-bg));
+  --color-foreground: rgb(var(--vx-fg));
+  --color-card: rgb(var(--vx-card));
+  --color-card-foreground: rgb(var(--vx-fg));
+  --color-card-elevated: rgb(var(--vx-card-elevated));
+  --color-border: rgb(var(--vx-border));
+  --color-input: rgb(var(--vx-input));
+  --color-ring: rgb(var(--vx-ring));
+  --color-muted: rgb(var(--vx-muted));
+  --color-muted-foreground: rgb(var(--vx-muted-fg));
+  --color-accent: rgb(var(--vx-accent));
+  --color-accent-foreground: rgb(var(--vx-accent-fg));
+  --color-primary: rgb(var(--vx-primary));
+  --color-primary-foreground: rgb(var(--vx-primary-fg));
+  --color-primary-glow: rgb(var(--vx-primary-glow));
+  --color-secondary: rgb(var(--vx-secondary));
+  --color-secondary-foreground: rgb(var(--vx-secondary-fg));
+  --color-destructive: rgb(var(--vx-destructive));
+  --color-destructive-foreground: rgb(var(--vx-destructive-fg));
+  --color-popover: rgb(var(--vx-popover));
+  --color-popover-foreground: rgb(var(--vx-popover-fg));
+  --color-success: rgb(var(--vx-success));
+  --color-success-foreground: rgb(var(--vx-success-fg));
+  --color-warning: rgb(var(--vx-warning));
+  --color-warning-foreground: rgb(var(--vx-warning-fg));
+  --color-info: rgb(var(--vx-info));
+  --color-info-foreground: rgb(var(--vx-info-fg));
+
+  --font-sans:
+    Inter Variable, Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto,
+    Oxygen, Ubuntu, Cantarell, Fira Sans, Droid Sans, Helvetica Neue, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md:
+    0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  --shadow-card: var(--vx-shadow-card);
+  --shadow-elevated: var(--vx-shadow-elevated);
+  --shadow-glow:
+    0 0 0 1px rgb(var(--vx-primary) / 0.25),
+    0 8px 24px -8px rgb(var(--vx-primary) / 0.45);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-fade-in: fadeIn 250ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-fade-in-up: fadeInUp 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-zoom-in-95: zoomIn95 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-in-from-left: slideInLeft 250ms cubic-bezier(0.16, 1, 0.3, 1)
+    both;
+  --animate-slide-in-from-right: slideInRight 250ms
+    cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-pulse-soft: pulseSoft 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-progress-indeterminate: progressIndeterminate 1.4s ease-in-out
+    infinite;
+
+  @keyframes fadeIn {
+    0% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+  @keyframes fadeInUp {
+    0% {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes zoomIn95 {
+    0% {
+      transform: scale(0.95);
+      opacity: 0;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+  @keyframes slideInLeft {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(0);
+    }
+  }
+  @keyframes slideInRight {
+    0% {
+      transform: translateX(100%);
+    }
+    100% {
+      transform: translateX(0);
+    }
+  }
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+  @keyframes pulseSoft {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
+  @keyframes progressIndeterminate {
+    0% {
+      left: -33%;
+    }
+    100% {
+      left: 100%;
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+@utility animate-in {
+  /* Composable enter animation: `animate-in` + fade-in / fade-in-up / zoom-in-95 /
+   * slide-in-from-*. Modifiers only set variables, so they stack. */
+  animation-name: vx-enter;
+  animation-duration: var(--vx-animate-duration, 250ms);
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  --vx-enter-opacity: 1;
+  --vx-enter-scale: 1;
+  --vx-enter-x: 0;
+  --vx-enter-y: 0;
+}
+
+@utility fade-in {
+  --vx-enter-opacity: 0;
+}
+
+@utility fade-in-up {
+  --vx-enter-opacity: 0;
+  --vx-enter-y: 8px;
+}
+
+@utility zoom-in-95 {
+  --vx-enter-scale: 0.95;
+}
+
+@utility slide-in-from-left {
+  --vx-enter-x: -100%;
+}
+
+@utility slide-in-from-right {
+  --vx-enter-x: 100%;
+}
+
+@utility slide-in-from-bottom {
+  --vx-enter-y: 100%;
+}
+
+@utility slide-in-from-top {
+  --vx-enter-y: -100%;
+}
+
+@utility animate-duration-150 {
+  --vx-animate-duration: 150ms;
+}
+
+@utility animate-duration-200 {
+  --vx-animate-duration: 200ms;
+}
+
+@utility animate-duration-300 {
+  --vx-animate-duration: 300ms;
+}
+
+@utility animate-duration-500 {
+  --vx-animate-duration: 500ms;
+}
+
+@utility bg-aurora {
+  /* Radial "aurora" wash for hero areas: brand indigo, violet and a touch of sky. */
+  background-image:
+    radial-gradient(
+      60% 50% at 10% 0%,
+      rgb(var(--vx-primary) / 0.16) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      50% 40% at 90% 10%,
+      rgb(var(--vx-primary-glow) / 0.14) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      40% 40% at 50% 100%,
+      rgb(var(--vx-info) / 0.08) 0%,
+      transparent 60%
+    );
+}
+
+@utility bg-gradient-primary {
+  background-image: linear-gradient(
+    135deg,
+    rgb(var(--vx-primary)) 0%,
+    rgb(var(--vx-primary-glow)) 100%
+  );
+}
+
+@utility text-gradient-primary {
+  background-image: linear-gradient(
+    135deg,
+    rgb(var(--vx-primary)) 0%,
+    rgb(var(--vx-primary-glow)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility nums {
+  /* Tailwind ships `tabular-nums` already; `nums` is the short alias used in stats. */
+  font-variant-numeric: tabular-nums;
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer utilities {
+  /* ---------------------------------------------------------------------------
  * Design tokens — RGB triplets so Tailwind can apply `<alpha-value>`.
  * Light: warm off-white ground, white cards, slate text, indigo → violet brand.
  * Dark: deep navy/charcoal ground (never pure black), slightly lifted cards,
  * soft borders, a lighter indigo that keeps ≥ 4.5:1 on cards.
  * ------------------------------------------------------------------------- */
-:root {
-  --vx-bg: 248 247 244;
-  --vx-fg: 15 23 42;
-  --vx-card: 255 255 255;
-  --vx-card-elevated: 255 255 255;
-  --vx-border: 228 228 231;
-  --vx-input: 255 255 255;
-  --vx-muted: 244 244 245;
-  --vx-muted-fg: 100 116 139;
-  --vx-accent: 241 245 249;
-  --vx-accent-fg: 30 41 59;
-  --vx-primary: 79 70 229;
-  --vx-primary-fg: 255 255 255;
-  --vx-primary-glow: 139 92 246;
-  --vx-secondary: 241 245 249;
-  --vx-secondary-fg: 30 41 59;
-  --vx-destructive: 220 38 38;
-  --vx-destructive-fg: 255 255 255;
-  --vx-popover: 255 255 255;
-  --vx-popover-fg: 15 23 42;
-  --vx-success: 4 120 87;
-  --vx-success-fg: 255 255 255;
-  --vx-warning: 180 83 9;
-  --vx-warning-fg: 255 255 255;
-  --vx-info: 3 105 161;
-  --vx-info-fg: 255 255 255;
-  --vx-ring: 79 70 229;
+  :root {
+    --vx-bg: 248 247 244;
+    --vx-fg: 15 23 42;
+    --vx-card: 255 255 255;
+    --vx-card-elevated: 255 255 255;
+    --vx-border: 228 228 231;
+    --vx-input: 255 255 255;
+    --vx-muted: 244 244 245;
+    --vx-muted-fg: 100 116 139;
+    --vx-accent: 241 245 249;
+    --vx-accent-fg: 30 41 59;
+    --vx-primary: 79 70 229;
+    --vx-primary-fg: 255 255 255;
+    --vx-primary-glow: 139 92 246;
+    --vx-secondary: 241 245 249;
+    --vx-secondary-fg: 30 41 59;
+    --vx-destructive: 220 38 38;
+    --vx-destructive-fg: 255 255 255;
+    --vx-popover: 255 255 255;
+    --vx-popover-fg: 15 23 42;
+    --vx-success: 4 120 87;
+    --vx-success-fg: 255 255 255;
+    --vx-warning: 180 83 9;
+    --vx-warning-fg: 255 255 255;
+    --vx-info: 3 105 161;
+    --vx-info-fg: 255 255 255;
+    --vx-ring: 79 70 229;
 
-  --vx-shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.05);
-  --vx-shadow-elevated: 0 4px 6px -2px rgb(15 23 42 / 0.06), 0 12px 32px -8px rgb(15 23 42 / 0.14);
-}
+    --vx-shadow-card:
+      0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.05);
+    --vx-shadow-elevated:
+      0 4px 6px -2px rgb(15 23 42 / 0.06), 0 12px 32px -8px rgb(15 23 42 / 0.14);
+  }
 
-html.dark {
-  --vx-bg: 11 15 25;
-  --vx-fg: 226 232 240;
-  --vx-card: 17 24 39;
-  --vx-card-elevated: 24 32 50;
-  --vx-border: 41 50 69;
-  --vx-input: 13 18 31;
-  --vx-muted: 30 38 56;
-  --vx-muted-fg: 148 163 184;
-  --vx-accent: 30 38 56;
-  --vx-accent-fg: 226 232 240;
-  --vx-primary: 129 140 248;
-  --vx-primary-fg: 15 23 42;
-  --vx-primary-glow: 167 139 250;
-  --vx-secondary: 30 38 56;
-  --vx-secondary-fg: 226 232 240;
-  --vx-destructive: 248 113 113;
-  --vx-destructive-fg: 15 23 42;
-  --vx-popover: 24 32 50;
-  --vx-popover-fg: 226 232 240;
-  --vx-success: 52 211 153;
-  --vx-success-fg: 6 40 30;
-  --vx-warning: 251 191 36;
-  --vx-warning-fg: 69 26 3;
-  --vx-info: 56 189 248;
-  --vx-info-fg: 8 47 73;
-  --vx-ring: 129 140 248;
+  html.dark {
+    --vx-bg: 11 15 25;
+    --vx-fg: 226 232 240;
+    --vx-card: 17 24 39;
+    --vx-card-elevated: 24 32 50;
+    --vx-border: 41 50 69;
+    --vx-input: 13 18 31;
+    --vx-muted: 30 38 56;
+    --vx-muted-fg: 148 163 184;
+    --vx-accent: 30 38 56;
+    --vx-accent-fg: 226 232 240;
+    --vx-primary: 129 140 248;
+    --vx-primary-fg: 15 23 42;
+    --vx-primary-glow: 167 139 250;
+    --vx-secondary: 30 38 56;
+    --vx-secondary-fg: 226 232 240;
+    --vx-destructive: 248 113 113;
+    --vx-destructive-fg: 15 23 42;
+    --vx-popover: 24 32 50;
+    --vx-popover-fg: 226 232 240;
+    --vx-success: 52 211 153;
+    --vx-success-fg: 6 40 30;
+    --vx-warning: 251 191 36;
+    --vx-warning-fg: 69 26 3;
+    --vx-info: 56 189 248;
+    --vx-info-fg: 8 47 73;
+    --vx-ring: 129 140 248;
 
-  --vx-shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.35), 0 1px 3px 0 rgb(0 0 0 / 0.3);
-  --vx-shadow-elevated: 0 4px 8px -2px rgb(0 0 0 / 0.45), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+    --vx-shadow-card:
+      0 1px 2px 0 rgb(0 0 0 / 0.35), 0 1px 3px 0 rgb(0 0 0 / 0.3);
+    --vx-shadow-elevated:
+      0 4px 8px -2px rgb(0 0 0 / 0.45), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+  }
 }
 
 @layer base {
@@ -99,7 +366,7 @@ html.dark {
 
   /* One focus ring for everything the keyboard can reach. Form controls override it below. */
   :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+    @apply outline-hidden ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 
   input:not([type='checkbox']):not([type='radio']):not([type='range']),
@@ -114,7 +381,7 @@ html.dark {
   input:not([type='checkbox']):not([type='radio']):not([type='range']):focus-visible,
   select:focus-visible,
   textarea:focus-visible {
-    @apply outline-none ring-2 ring-primary/25 ring-offset-0 border-primary;
+    @apply outline-hidden ring-2 ring-primary/25 ring-offset-0 border-primary;
   }
 
   /* Reduced motion: keep the state changes, drop the choreography. */
@@ -127,86 +394,6 @@ html.dark {
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
     }
-  }
-}
-
-@layer utilities {
-  /* Composable enter animation: `animate-in` + fade-in / fade-in-up / zoom-in-95 /
-   * slide-in-from-*. Modifiers only set variables, so they stack. */
-  .animate-in {
-    animation-name: vx-enter;
-    animation-duration: var(--vx-animate-duration, 250ms);
-    animation-fill-mode: both;
-    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-    --vx-enter-opacity: 1;
-    --vx-enter-scale: 1;
-    --vx-enter-x: 0;
-    --vx-enter-y: 0;
-  }
-  .fade-in {
-    --vx-enter-opacity: 0;
-  }
-  .fade-in-up {
-    --vx-enter-opacity: 0;
-    --vx-enter-y: 8px;
-  }
-  .zoom-in-95 {
-    --vx-enter-scale: 0.95;
-  }
-  .slide-in-from-left {
-    --vx-enter-x: -100%;
-  }
-  .slide-in-from-right {
-    --vx-enter-x: 100%;
-  }
-  .slide-in-from-bottom {
-    --vx-enter-y: 100%;
-  }
-  .slide-in-from-top {
-    --vx-enter-y: -100%;
-  }
-  .animate-duration-150 {
-    --vx-animate-duration: 150ms;
-  }
-  .animate-duration-200 {
-    --vx-animate-duration: 200ms;
-  }
-  .animate-duration-300 {
-    --vx-animate-duration: 300ms;
-  }
-  .animate-duration-500 {
-    --vx-animate-duration: 500ms;
-  }
-
-  /* Radial "aurora" wash for hero areas: brand indigo, violet and a touch of sky. */
-  .bg-aurora {
-    background-image:
-      radial-gradient(60% 50% at 10% 0%, rgb(var(--vx-primary) / 0.16) 0%, transparent 60%),
-      radial-gradient(50% 40% at 90% 10%, rgb(var(--vx-primary-glow) / 0.14) 0%, transparent 60%),
-      radial-gradient(40% 40% at 50% 100%, rgb(var(--vx-info) / 0.08) 0%, transparent 60%);
-  }
-
-  .bg-gradient-primary {
-    background-image: linear-gradient(135deg, rgb(var(--vx-primary)) 0%, rgb(var(--vx-primary-glow)) 100%);
-  }
-
-  .text-gradient-primary {
-    background-image: linear-gradient(135deg, rgb(var(--vx-primary)) 0%, rgb(var(--vx-primary-glow)) 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-
-  /* Tailwind ships `tabular-nums` already; `nums` is the short alias used in stats. */
-  .nums {
-    font-variant-numeric: tabular-nums;
-  }
-
-  .scrollbar-none {
-    scrollbar-width: none;
-  }
-  .scrollbar-none::-webkit-scrollbar {
-    display: none;
   }
 }
 

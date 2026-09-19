@@ -8,26 +8,25 @@ import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
 import { MIN_PASSWORD_DISTINCT_CHARS, MIN_PASSWORD_LENGTH, isPasswordStrongEnough } from '@/constants';
 import { Button, Checkbox, Field, InlineAlert, Input, SkeletonCard, buttonVariants } from '@/components/ui';
-import type { AuthStatus } from '@/types/api';
+import { AUTH_STATUS_KEY, useAuthStatus } from '@/hooks/useAuthStatus';
+import type { ApiKey } from '@/types/api';
 import { SettingsSection } from './SettingsSection';
 
 /** The admin password: set one when the instance runs open, change it otherwise. */
 export function SecurityTab() {
   const t = useT();
-  const authQuery = useQuery<AuthStatus>({
-    queryKey: ['auth-me'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-  });
+  const authQuery = useAuthStatus();
 
   /**
    * Which card is shown is decided by the data, and only by the data.
    *
    * The error branch used to come first. `/auth/me` is refetched in the background -- on
-   * window focus, like every query here -- and a refetch that failed swapped whatever card
-   * was on screen for an alert. React Query keeps the last good data through that, so
-   * nothing was actually unknown; but the card was gone, and with it the password somebody
-   * was halfway through typing. The retry then mounted a fresh, empty one. A blip behind a
-   * reverse proxy was enough, and the operator did nothing to cause it.
+   * every remount while it is stale, and whenever anything invalidates it -- and a refetch
+   * that failed swapped whatever card was on screen for an alert. React Query keeps the last
+   * good data through that, so nothing was actually unknown; but the card was gone, and with
+   * it the password somebody was halfway through typing. The next fetch that succeeded
+   * mounted a fresh, empty one. A blip behind a reverse proxy was enough, and the operator
+   * did nothing to cause it.
    *
    * So a failure that still has data behind it is reported *above* the form rather than in
    * place of it. The alert is a sibling of the card, not a branch around it: rendering
@@ -102,8 +101,7 @@ function SetPasswordCard() {
   const setPasswordMutation = useMutation({
     mutationFn: (value: string) => api.post('/auth/setup-password', { password: value }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
-      queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
       setPassword('');
       setConfirmPassword('');
       setTouched(false);
@@ -205,6 +203,30 @@ function EnvManagedPasswordCard() {
 
 function ChangePasswordCard() {
   const t = useT();
+
+  /**
+   * How far the change reaches, said before the button rather than discovered after it.
+   *
+   * Measured against a running instance rather than read off the SQL: after a change, the
+   * browser that made it keeps its session, every other one is refused and has its cookie
+   * cleared, the old password stops opening a new session -- and an API key minted before
+   * the change still answers 200 on every admin route. The first three are the point of the
+   * button. The fourth is the one nobody is told, and it is the one that matters in the only
+   * situation that makes somebody press it: a password changed because the old one may have
+   * leaked ends nothing at all while the keys that leaked with it are still valid.
+   *
+   * So the count is fetched and the sentence names it. `['api-keys']` is the key the API
+   * keys tab already uses, so moving between the two tabs costs no extra request, and a
+   * revocation there is reflected here. A count of zero prints no sentence: an instance with
+   * no keys has nothing to revoke, and a permanent warning about an empty list is how a
+   * warning stops being read.
+   */
+  const keysQuery = useQuery<ApiKey[]>({
+    queryKey: ['api-keys'],
+    queryFn: () => api.get<ApiKey[]>('/settings/api-keys'),
+  });
+  const keyCount = keysQuery.data?.length ?? 0;
+
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -249,6 +271,28 @@ function ChangePasswordCard() {
           </Button>
         }
       >
+        <InlineAlert
+          tone="info"
+          title={t('settings.security.change_scope_title')}
+          action={
+            keyCount > 0 || keysQuery.isError ? (
+              <Link to="/settings?tab=apikeys" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+                {t('settings.security.api_keys_cta')}
+              </Link>
+            ) : undefined
+          }
+        >
+          <p>{t('settings.security.change_scope_sessions')}</p>
+          {keyCount > 0 && <p className="mt-1">{t('settings.security.change_scope_keys', { count: keyCount })}</p>}
+          {/* `keyCount` is `data?.length ?? 0`, so a failed request and an empty list were
+              the same 0 -- and this warning, the only place the screen says a password
+              change leaves API keys working, disappeared exactly when it could not be
+              checked. The two are mutually exclusive: on an error there is no data to
+              count. */}
+          {keysQuery.isError && (
+            <p className="mt-1">{t('settings.security.change_scope_keys_unknown')}</p>
+          )}
+        </InlineAlert>
         <Field
           label={t('settings.auth.current_password')}
           required

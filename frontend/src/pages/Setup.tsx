@@ -10,9 +10,9 @@
  * sessionStorage). The keys it owns are listed once, in `SETUP_SESSION_KEYS`.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Monitor, Moon, Sun } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/api/client';
@@ -21,18 +21,21 @@ import { IconButton, Select, useConfirmDialog } from '@/components/ui';
 import { getErrorDetail, getHttpStatus, translateApiError } from '@/lib/errors';
 import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
-import type { SyncResult } from '@/types/api';
+import type { ImportResult, SyncResult } from '@/types/api';
 import {
   emptyForm,
   type ProviderFormState,
   type ProviderValidationResult as ValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { ProviderDeleteConflictBody } from '@/components/features/providers/ProviderDeleteConflictBody';
 import {
-  describeDeleteConflict,
+  createWithdrawChoice,
   isProviderDeleteConflict,
+  providerConflictTitleKey,
   useProviderMutations,
 } from '@/hooks/useProviderMutations';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { AUTH_STATUS_KEY, authStatusQuery } from '@/hooks/useAuthStatus';
 import {
   DockerStep,
   DoneStep,
@@ -121,8 +124,28 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   // Password step
   const [skipPassword, setSkipPassword] = useSessionState<boolean | null>('skipPassword', null);
 
-  // Providers step
-  const [providers, setProviders] = useState<ProviderItem[]>([]);
+  /**
+   * Providers step.
+   *
+   * Nine screens read this list through the shared cache; this one used to keep its own
+   * `useState([])` filled by an imperative fetch on the password → providers transition, and
+   * two things followed. The wizard survives a reload by design (`useSessionState`) but the
+   * list did not and nothing refetched it, so an operator who had just connected three
+   * integrations came back to "No integration yet", a footer reading "Skip for now", an import
+   * screen that skipped the scan on `providers.length === 0`, and a closing summary counting
+   * zero of them. And the `['providers']` invalidation every provider write already fires
+   * reached every screen except this one, which had to refetch by hand to keep up.
+   *
+   * `GET /api/providers` is `require_auth_or_setup`, like the types query two lines below, so
+   * reading it from the first screen of the wizard asks nothing new of the caller.
+   */
+  const providersQuery = useQuery<ProviderItem[]>({
+    queryKey: ['providers'],
+    queryFn: () => api.get<ProviderItem[]>('/providers'),
+  });
+  //: `data` is undefined until the first answer, and a fresh [] on every render would
+  //: re-run the two memos below with it.
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const [formData, setFormData] = useSessionState<ProviderFormState>('formData', emptyForm, withoutProviderSecrets);
   const [wizardMode, setWizardMode] = useSessionState<'guided' | 'expert' | null>('wizardMode', null);
   const [guidedStepIndex, setGuidedStepIndex] = useSessionState('guidedStepIndex', 0);
@@ -130,7 +153,12 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   // Import
   const [importableServices, setImportableServices] = useState<ImportableService[]>([]);
-  const [loadingImportable, setLoadingImportable] = useState(false);
+  /**
+   * True from the moment the wizard lands on the import step until a scan has answered —
+   * not from the moment the request goes out. Those two are a paint apart, and the rung
+   * that paint used to land on is a green tick reading "No services found to import".
+   */
+  const [loadingImportable, setLoadingImportable] = useState(true);
   /**
    * The scan came back with nothing because it failed. Without this, it came back with
    * nothing exactly like a provider that has nothing to import — and the wizard drew a
@@ -145,21 +173,12 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   /* ─────────────────── API Calls ─────────────────── */
 
-  const refreshProviders = useCallback(async () => {
-    try {
-      setProviders(await api.get<ProviderItem[]>('/providers'));
-    } catch { /* ignore */ }
-  }, []);
-
-  const goToProviders = () => {
-    setStep('providers');
-    void refreshProviders();
-  };
+  const goToProviders = () => setStep('providers');
 
   const handleSetPassword = async (password: string) => {
     try {
       await api.post('/auth/setup-password', { password });
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
       toast.success(t('setup.toast.password_set'));
       goToProviders();
     } catch (err: unknown) {
@@ -178,6 +197,8 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     setImportScanFailed(false);
     if (providers.length === 0) {
       setImportableServices([]);
+      //: Nothing to scan is an answer, and the flag above starts life waiting for one.
+      setLoadingImportable(false);
       return;
     }
     setLoadingImportable(true);
@@ -236,6 +257,46 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     }
   }, [providers.length, providerTypeById, t]);
 
+  /**
+   * The scan is what the import step is, so it follows the step. It used to be fired by the
+   * one transition that leads there, and `step` is session-persisted: a reload on that
+   * screen replayed no transition, so nothing scanned, and the ladder in `ImportStep` fell
+   * through to its last rung -- a green tick reading "No services found to import", on the
+   * screen whose primary button ends setup. That is the claim the file already refuses to
+   * make for a scan that failed; a scan that never ran has no more right to it.
+   *
+   * The gate is `isSuccess` rather than "data is no longer undefined", because the scan is
+   * skipped when there is no provider to scan and a list still being read is not a list
+   * that came back empty. Leaving the step arms it again, so walking back and forward
+   * rescans exactly as the transition used to.
+   */
+  const importScanRun = useRef(false);
+  useEffect(() => {
+    if (step !== 'import') {
+      importScanRun.current = false;
+      return;
+    }
+    if (!providersQuery.isSuccess || importScanRun.current) return;
+    importScanRun.current = true;
+    void loadImportableServices();
+  }, [step, providersQuery.isSuccess, loadImportableServices]);
+
+  /** The one retry on that screen answers for two reads; rerun whichever of them failed. */
+  const retryImport = () => {
+    if (providersQuery.isError) {
+      importScanRun.current = false;
+      void providersQuery.refetch();
+      return;
+    }
+    void loadImportableServices();
+  };
+
+  //: The operator has one question about that list -- empty because there is nothing to
+  //: import, or empty because a read failed -- so one verdict covers both reads behind it.
+  //: `isFetching` keeps the failure off the screen while a retry is still in the air.
+  const importReadFailed = importScanFailed || (providersQuery.isError && !providersQuery.isFetching);
+  const importBusy = loadingImportable || providersQuery.isFetching;
+
   const handleImportAndFinish = async () => {
     const selected = importableServices.filter((s) => s.selected);
     if (selected.length > 0) {
@@ -245,11 +306,18 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
           proxy_hosts: selected.filter((s) => s.kind === 'proxy').map((s) => s.raw),
           dns_rewrites: selected.filter((s) => s.kind === 'dns').map((s) => s.raw),
         };
-        const result = await api.post<{ imported: number; errors?: string[] }>('/services/import', payload);
+        const result = await api.post<ImportResult>('/services/import', payload);
+        // The wizard reported refusals under the word "skipped", which is the name of the
+        // other outcome: a row set aside because it was already tracked is the nominal
+        // case of this screen and not something to go and fix. They are separate counts
+        // on the wire and are separate lines here, and `linked` -- an existing service
+        // that just gained its DNS record -- was not reported at all.
+        const skipped = result.skipped?.length ?? 0;
+        const refused = result.errors?.length ?? 0;
         if (result.imported > 0) toast.success(t('setup.toast.imported', { count: result.imported }));
-        if (result.errors && result.errors.length > 0) {
-          toast.error(t('setup.toast.import_skipped', { count: result.errors.length }));
-        }
+        if (result.linked > 0) toast.success(t('setup.toast.import_linked', { count: result.linked }));
+        if (skipped > 0) toast(t('setup.toast.import_skipped', { count: skipped }));
+        if (refused > 0) toast.error(t('setup.toast.import_errors', { count: refused }));
       } catch (err) {
         if (import.meta.env.DEV) console.error('Import error:', err);
         toast.error(translateApiError(err, t, t('setup.toast.import_failed')));
@@ -266,7 +334,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   const handleRestoreFinish = async (summary: { secretsIncluded: boolean }) => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] }),
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY }),
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
       queryClient.invalidateQueries({ queryKey: ['services'] }),
       queryClient.invalidateQueries({ queryKey: ['domains'] }),
@@ -284,7 +352,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     // spinner, nothing more.
     try {
       await Promise.all([
-        queryClient.fetchQuery({ queryKey: ['auth-status'], queryFn: () => api.get('/auth/me') }),
+        queryClient.fetchQuery(authStatusQuery),
         queryClient.fetchQuery({ queryKey: ['providers'], queryFn: () => api.get('/providers') }),
         queryClient.fetchQuery({ queryKey: ['services'], queryFn: () => api.get('/services'), staleTime: 0 }),
         queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),
@@ -310,8 +378,13 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     formData,
     setValidationResult,
     {
-      onCreated: async () => { await refreshProviders(); resetProviderForm(); setStep('providers'); },
-      onDeleted: () => { void refreshProviders(); },
+      // The mutation has already invalidated `['providers']`; this waits for the answer so the
+      // list the operator lands back on is the one that now holds what they just added.
+      onCreated: async () => {
+        await queryClient.refetchQueries({ queryKey: ['providers'], type: 'active' });
+        resetProviderForm();
+        setStep('providers');
+      },
     },
   );
 
@@ -324,22 +397,21 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const handleDeleteProvider = async (id: number) => {
     const name = providers.find((p) => p.id === id)?.name ?? '';
     try {
-      await deleteProviderMutation.mutateAsync({ id });
+      await deleteProviderMutation.mutateAsync({ id, name });
     } catch (error: unknown) {
       // Anything else has already been reported by the mutation's own `onError`.
       const detail = getErrorDetail(error);
       if (getHttpStatus(error) !== 409 || !isProviderDeleteConflict(detail)) return;
+      // The checkbox lives inside the dialog and `confirm()` only ever answers yes or no;
+      // this box is how its state gets back out. Same flow as the Integrations page.
+      const choiceRef = createWithdrawChoice();
       const force = await confirm({
-        title: t('providers.delete.deps_title'),
-        message: t('providers.delete.deps_message', {
-          count: detail.services.length,
-          name,
-          list: describeDeleteConflict(detail, t),
-        }),
+        title: t(providerConflictTitleKey(detail)),
+        message: <ProviderDeleteConflictBody name={name} detail={detail} choiceRef={choiceRef} />,
         confirmLabel: t('providers.delete.force_confirm'),
         variant: 'warning',
       });
-      if (force) deleteProviderMutation.mutate({ id, force: true });
+      if (force) deleteProviderMutation.mutate({ id, name, force: true, withdraw: choiceRef.current });
     }
   };
 
@@ -453,6 +525,9 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
               <ProvidersStep
                 providers={providers}
                 providerTypes={providerTypes}
+                loading={providersQuery.isLoading}
+                loadFailed={providersQuery.isError}
+                onRetry={() => void providersQuery.refetch()}
                 onAdd={() => { resetProviderForm(); setStep('provider-form'); }}
                 onDelete={(id) => void handleDeleteProvider(id)}
                 deleteIsPending={deleteProviderMutation.isPending}
@@ -490,7 +565,9 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
             {step === 'docker' && (
               <DockerStep
                 onBack={() => setStep('notifications')}
-                onContinue={() => { setStep('import'); void loadImportableServices(); }}
+                // The effect above owns the scan now. This only says the list on screen is
+                // the previous visit's, so the step does not paint it as this visit's.
+                onContinue={() => { setLoadingImportable(true); setStep('import'); }}
               />
             )}
 
@@ -498,13 +575,13 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
               <ImportStep
                 providers={providers}
                 importableServices={importableServices}
-                loadingImportable={loadingImportable}
-                scanFailed={importScanFailed}
+                loadingImportable={importBusy}
+                scanFailed={importReadFailed}
                 importing={importing}
                 onToggle={(idx) => setImportableServices((prev) => prev.map((svc, i) => (i === idx ? { ...svc, selected: !svc.selected } : svc)))}
                 onSelectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: true })))}
                 onDeselectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: false })))}
-                onRetry={() => void loadImportableServices()}
+                onRetry={retryImport}
                 onImportAndFinish={() => void handleImportAndFinish()}
                 onBack={() => setStep('docker')}
               />

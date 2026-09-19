@@ -98,9 +98,9 @@ export function CertificateTable({
             const days = certDays(cert, now);
             const bucket = certBucket(days, warnDays);
             const raw = certExpiry(cert);
-            const source = cert.provider_id === undefined ? undefined : sources.get(cert.provider_id);
+            const source = sources.get(cert.provider_id);
             const consoleUrl = providerConsoleUrl(source);
-            const providerName = source?.name || cert.provider_name || cert.provider || null;
+            const providerName = source?.name || cert.provider_name || null;
             const countdown =
               days === null
                 ? EM_DASH
@@ -137,7 +137,6 @@ export function CertificateTable({
                         <span className="font-mono">{t('certificates.more_domains', { count: domains.length - 1 })}</span>
                       </Tooltip>
                     )}
-                    {cert.issuer && <span className="truncate">{t('certificates.issuer', { issuer: cert.issuer })}</span>}
                     {cert.use_dns && <span>{t('certificates.dns_challenge')}</span>}
                   </div>
                 </td>
@@ -177,7 +176,7 @@ export function CertificateTable({
                       target="_blank"
                       rel="noreferrer noopener"
                       title={t('certificates.open_console', { provider: providerName ?? '' })}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                     >
                       <ExternalLink className="h-4 w-4" aria-hidden />
                       <span className="sr-only">{t('certificates.open_console', { provider: providerName ?? '' })}</span>

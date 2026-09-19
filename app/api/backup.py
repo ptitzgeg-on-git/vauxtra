@@ -13,6 +13,7 @@ from app.config import decrypt_from_backup, decrypt_secret, encrypt_for_backup, 
 from app.limiter import limiter
 from app.models import add_log, get_db
 from app.security import mask_secret_url, validate_password_strength
+from app.text import plural, verb
 
 router = APIRouter()
 
@@ -45,8 +46,11 @@ def _table_exists(conn, table_name: str) -> bool:
 #     `webhooks`, so a queued send left behind kept firing at a webhook the restored set
 #     does not contain.
 #   - `scheduler_state` keys its alert bookkeeping by (service_id, webhook_id).
-#   - `service_templates` is in neither export, so it survived a restore with its provider
-#     columns blanked by the cascade and `tag_ids_json` naming other people's tags.
+#   - `service_templates` is exported now; back then it was in neither export, so it
+#     survived a restore with its provider columns blanked by the cascade and
+#     `tag_ids_json` naming other people's tags. It stays in the wipe either way: the
+#     restore re-inserts templates by explicit id like everything else, and a survivor
+#     does not dangle, it silently re-points at whatever template now holds its id.
 #   - `uptime_events` was already emptied by its ON DELETE CASCADE on services; it is listed
 #     anyway so the wipe does not depend on a pragma being on.
 _RESTORE_WIPE_TABLES = (
@@ -72,6 +76,42 @@ _RESTORE_WIPE_TABLES = (
 # decision rather than an oversight. `settings` is wiped separately, down to the protected
 # keys; `api_keys` is never touched.
 _RESTORE_KEEPS = frozenset({"settings", "api_keys"})
+
+# Wiped by a restore and carried by no export, on purpose. Four tables are the history and
+# the bookkeeping of the instance that produced them, not of the file: the journal, the
+# uptime stream, the webhook send queue and the scheduler's alert cursor. Restoring those
+# onto another instance would date its journal with someone else's outages and re-arm
+# notifications for services it never watched.
+#
+# `service_templates` used to be a fifth, by accident rather than by decision. It is the
+# only table the operator fills in by hand that no export carried, so a backup taken to
+# survive a reinstall gave back every service and not one template to build the next one
+# with -- and the restore answered `ok: true`. `_every_wiped_table_is_exported` now holds
+# the wipe list and the export together, so a table added to one has to be added to the
+# other or named here.
+_NOT_EXPORTED_ON_PURPOSE = frozenset({
+    "logs",
+    "scheduler_state",
+    "uptime_events",
+    "webhook_delivery_log",
+})
+
+# Settings a backup file carries and a restore does NOT take, on purpose, so that they are
+# never reported as lost.
+#
+# `_PROTECTED_SETTINGS` is the set the wipe above leaves standing: the admin password hash,
+# the setup marker, the schema version, the auth mode, the session epoch. Those belong to the
+# instance in front of you and not to the file -- restoring a five-month-old `schema_version`
+# would tell the migrations that work already done is still pending, and restoring an old
+# `session_epoch` would revive sessions the operator revoked.
+#
+# `webhook_log_purge_done` is a one-shot marker for a security migration that deletes webhook
+# URLs out of old log lines. Losing it costs one idempotent re-run at the next boot, which is
+# the safe direction.
+#
+# Anything else in the file that `_VALID_SETTINGS` does not accept is a setting the operator
+# configured and is not getting back, and that is what gets named.
+_RESTORE_DROPS_ON_PURPOSE = frozenset(_PROTECTED_SETTINGS) | {"webhook_log_purge_done"}
 
 
 _BACKUP_VERSION = "8"  # Version 8 encrypts the webhook URLs too, and says which fields
@@ -147,6 +187,7 @@ def export_backup(request: Request):
                 ).fetchall()
             ],
             "docker_endpoints":    [dict(r) for r in conn.execute("SELECT * FROM docker_endpoints").fetchall()],
+            "service_templates":   [dict(r) for r in conn.execute("SELECT * FROM service_templates").fetchall()],
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
                 for r in conn.execute("SELECT id, name, prefix, scopes, created_at FROM api_keys").fetchall()
@@ -241,6 +282,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             "service_alerts":      [dict(r) for r in conn.execute("SELECT * FROM service_alerts").fetchall()],
             "settings":            settings_rows,
             "docker_endpoints":    docker_endpoints,
+            "service_templates":   [dict(r) for r in conn.execute("SELECT * FROM service_templates").fetchall()],
             "api_keys":            [
                 {"id": r["id"], "name": r["name"], "prefix": r["prefix"], "scopes": r["scopes"], "created_at": r["created_at"]}
                 for r in conn.execute("SELECT id, name, prefix, scopes, created_at FROM api_keys").fetchall()
@@ -295,7 +337,15 @@ def import_backup(request: Request, body: RestoreRequest):
         try:
             return decrypt_from_backup(value, body.passphrase, salt)
         except Exception as e:
-            raise HTTPException(400, f"Failed to decrypt {label}. Wrong passphrase? ({e})")
+            # `InvalidToken`, the expected failure here, carries no message at all: `str(e)`
+            # is empty and the brackets meant to hold the reason printed as a bare "()".
+            # Anything else that comes through says something worth keeping.
+            reason = str(e).strip() or type(e).__name__
+            raise HTTPException(
+                400,
+                f"Failed to decrypt {label}. The passphrase does not match the one "
+                f"this backup was written with ({reason}).",
+            )
 
     # Dry run BEFORE destroying anything: a wrong passphrase must fail with the database
     # untouched. Decryption is the only expensive validation, so it runs first -- and it
@@ -313,6 +363,10 @@ def import_backup(request: Request, body: RestoreRequest):
     conn = get_db()
     try:
         conn.execute("BEGIN EXCLUSIVE")
+        # Counted before the wipe empties it: a file written by a version whose export did
+        # not carry templates has none to put back, and that is a loss the operator has to
+        # be told about rather than discover on the Templates page.
+        templates_before = conn.execute("SELECT COUNT(*) FROM service_templates").fetchone()[0]
         # One execute() per table, NOT executescript(): executescript() issues an implicit
         # COMMIT before running, which would close the transaction opened above and make the
         # rollback handlers below no-ops on an already-destroyed database.
@@ -354,10 +408,18 @@ def import_backup(request: Request, body: RestoreRequest):
                 (env.get("id"), env.get("name"), env.get("color", "blue"), env.get("created_at")),
             )
 
+        domains_without_name = 0
+        settings_not_restored: list[str] = []
+
         for dom in data.get("domains", []):
             name = dom.get("name") if isinstance(dom, dict) else dom
             created_at = dom.get("created_at") if isinstance(dom, dict) else None
             if not name:
+                # Counted rather than passed over. A domain row with no name cannot be
+                # written, and every service that referenced it comes back pointing at a
+                # domain the list no longer offers -- which the operator discovers on the
+                # next edit, not here, unless the count says so.
+                domains_without_name += 1
                 continue
             if created_at:
                 conn.execute(
@@ -478,6 +540,43 @@ def import_backup(request: Request, body: RestoreRequest):
                  sa.get("on_up", 1), sa.get("on_down", 1), sa.get("min_down_minutes", 0)),
             )
 
+        # After the providers and the tags it points at: `proxy_provider_id`,
+        # `dns_provider_id` and `tunnel_provider_id` are real foreign keys, and the
+        # connection runs with `foreign_keys=ON`. Explicit ids everywhere else in this
+        # function mean the columns land on the same rows they named in the export, and
+        # the two label columns need no remapping for the same reason.
+        for tpl in data.get("service_templates", []):
+            conn.execute(
+                """INSERT OR REPLACE INTO service_templates
+                   (id, name, description, forward_scheme, target_port, websocket,
+                    expose_mode, proxy_provider_id, dns_provider_id, tunnel_provider_id,
+                    public_target_mode, domain, dns_ip, tag_ids_json,
+                    environment_ids_json, icon_url, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    tpl.get("id"),
+                    tpl.get("name"),
+                    tpl.get("description", ""),
+                    tpl.get("forward_scheme", "http"),
+                    tpl.get("target_port"),
+                    tpl.get("websocket", 0),
+                    tpl.get("expose_mode", "proxy_dns"),
+                    tpl.get("proxy_provider_id"),
+                    tpl.get("dns_provider_id"),
+                    tpl.get("tunnel_provider_id"),
+                    tpl.get("public_target_mode", "manual"),
+                    tpl.get("domain", ""),
+                    tpl.get("dns_ip", ""),
+                    tpl.get("tag_ids_json", "[]"),
+                    # An export taken before templates carried environments has no such key.
+                    # Defaulting it to the empty list restores exactly what that template
+                    # held: no environment, because none could be chosen.
+                    tpl.get("environment_ids_json", "[]"),
+                    tpl.get("icon_url", ""),
+                    tpl.get("created_at"),
+                ),
+            )
+
         for setting in data.get("settings", []):
             # Whitelist: `_VALID_SETTINGS` is the same list `POST /api/settings` writes
             # through, so an imported file reaches no key an operator could not set by
@@ -493,6 +592,14 @@ def import_backup(request: Request, body: RestoreRequest):
             # `detect_server_public_ip` refuses an answer that is not publicly routable.
             key = setting.get("key")
             if key not in _VALID_SETTINGS:
+                # Named, unless the drop is one the restore makes on purpose. A key that is
+                # neither accepted nor deliberately dropped is configuration the operator
+                # saved and is not getting back: a setting this version has retired, or a
+                # file written by a newer Vauxtra. The restore still succeeds -- refusing the
+                # whole file over one unknown key would be worse -- but it stops being the
+                # kind of success that hides a loss.
+                if key and key not in _RESTORE_DROPS_ON_PURPOSE:
+                    settings_not_restored.append(str(key))
                 continue
             value = setting.get("value")
             if key == "webhook_url":
@@ -530,13 +637,55 @@ def import_backup(request: Request, body: RestoreRequest):
 
     conn.close()
     add_log("info", f"Backup restored (version {data.get('version')})")
+    # One line each, and only when there is something to say. A restore writes a single
+    # "Backup restored" line by design, and two more that appeared on every run would make
+    # the three of them read as ceremony.
+    if settings_not_restored:
+        n = len(settings_not_restored)
+        add_log(
+            "warning",
+            "Backup restored: "
+            + plural(n, "setting")
+            + " in the file "
+            + verb(n, "is", "are")
+            + " not accepted by this version, and "
+            + verb(n, "was", "were")
+            + " dropped rather than restored ("
+            + ", ".join(sorted(settings_not_restored))
+            + ")",
+        )
+    if domains_without_name:
+        add_log(
+            "warning",
+            "Backup restored: "
+            + plural(domains_without_name, "domain")
+            + " in the file carried no name and could not be recreated",
+        )
+    tpl_count = len(data.get("service_templates", []))
+    if templates_before and not tpl_count:
+        # Not a failure, and not silence either. Every file written before the export
+        # carried templates lands here, and the operator who restores one has to hear that
+        # the Templates page is empty because of the file, not because of a bug.
+        add_log(
+            "warning",
+            "Backup restored: "
+            + plural(templates_before, "service template")
+            + " "
+            + verb(templates_before, "was", "were")
+            + " emptied and the file carried none to put back "
+            + "(it was written by a version whose export did not include them)",
+        )
     svc_count = len(data.get("services", []))
     prv_count = len(data.get("providers", []))
     # Reported, not buried: without this the operator has no way of knowing that some
-    # notification targets came back switched off.
+    # notification targets came back switched off, that a setting did not survive the file,
+    # or that a domain row in it had no name to be recreated under.
     return {
         "ok": True,
         "services": svc_count,
         "providers": prv_count,
+        "templates": tpl_count,
         "webhooks_needing_url": webhooks_needing_url,
+        "settings_not_restored": sorted(settings_not_restored),
+        "domains_without_name": domains_without_name,
     }

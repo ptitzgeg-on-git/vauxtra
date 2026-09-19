@@ -24,7 +24,13 @@ The API is available at `http://localhost:8888`. Interactive docs at `http://loc
 
 ### Frontend (React + Vite)
 
-> Requires **Node.js 22+**
+> Requires **Node.js `^22.22.2 || ^24.15.0 || >=26.0.0`**
+
+`frontend/package.json` declares that range, so `npm` checks your interpreter against it at
+install time rather than leaving a sentence to do it. It is the intersection of every
+`engines.node` field in `frontend/package-lock.json` — today `jsdom`'s own range, the
+tightest in the tree. The gaps are not arbitrary: caret ranges over the even-numbered
+releases exclude all of 23.x and 25.x. CI builds on 26.
 
 ```bash
 cd frontend
@@ -127,7 +133,7 @@ Scopes: `providers`, `services`, `scheduler`, `auth`, `docker`, `mcp`, `frontend
 Create `app/providers/myprovider.py` and implement the `DNSProvider` abstract class from `app/providers/base.py`:
 
 ```python
-from app.providers.base import DNSProvider
+from app.providers.base import DNSProvider, ProviderListingRefused
 
 class MyProvider(DNSProvider):
     def __init__(self, url: str, username: str, password: str): ...
@@ -137,6 +143,15 @@ class MyProvider(DNSProvider):
     def delete_rewrite(self, domain: str, ip: str) -> bool: ...
     # update_rewrite() is inherited from base (add-first, then delete)
 ```
+
+**`list_rewrites` must never hand back a list it could not finish building.** An empty
+list is an answer -- it says the provider holds nothing -- and the callers act on it:
+the push creates the record it does not find, the drift check reports one missing, the
+record routes answer `404`. A call that failed, or a zone that would not open partway
+through a sweep, says nothing about what the provider holds, so raise
+`ProviderListingRefused` (or let your client's own exception out) instead of returning
+the part you collected. Every caller wraps the call and reports the failure; what they
+cannot do is tell a short list from a complete one.
 
 ### 2. Register in `app/providers/factory.py`
 

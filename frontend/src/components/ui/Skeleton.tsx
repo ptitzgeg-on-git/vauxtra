@@ -12,7 +12,7 @@ export const Skeleton = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement
       aria-hidden="true"
       className={cn(
         'rounded-lg bg-muted animate-shimmer',
-        'bg-[linear-gradient(90deg,rgb(var(--vx-muted))_0%,rgb(var(--vx-accent))_50%,rgb(var(--vx-muted))_100%)] bg-[length:200%_100%]',
+        'bg-[linear-gradient(90deg,rgb(var(--vx-muted))_0%,rgb(var(--vx-accent))_50%,rgb(var(--vx-muted))_100%)] bg-size-[200%_100%]',
         className,
       )}
       {...rest}
@@ -65,7 +65,7 @@ export function SkeletonRow({ columns = 4, className, ...rest }: SkeletonRowProp
   return (
     <div aria-hidden="true" className={cn('flex items-center gap-4 px-4 py-3', className)} {...rest}>
       {Array.from({ length: columns }, (_, i) => (
-        <Skeleton key={i} className={cn('h-4', i === 0 ? 'flex-[2]' : 'flex-1')} />
+        <Skeleton key={i} className={cn('h-4', i === 0 ? 'flex-2' : 'flex-1')} />
       ))}
     </div>
   );

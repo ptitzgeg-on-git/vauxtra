@@ -101,12 +101,7 @@ export function Field({
           {error}
         </p>
       )}
-      {hint && !error && (
-        <p id={hintId} className="text-xs text-muted-foreground">
-          {hint}
-        </p>
-      )}
-      {hint && error && (
+      {hint && (
         <p id={hintId} className="text-xs text-muted-foreground">
           {hint}
         </p>

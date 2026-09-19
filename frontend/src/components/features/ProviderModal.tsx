@@ -10,6 +10,7 @@ import {
   getGuidedSteps,
   isUrlOptional,
   requiresUsername,
+  seedFormForType,
 } from '@/components/features/providers/providerConstants';
 import { StepCredentials, StepTypeSelector, type WizardMode } from '@/components/features/provider-modal';
 import { useProviderMutations } from '@/hooks/useProviderMutations';
@@ -133,12 +134,8 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
 
   const chooseProviderType = (type: string, meta: ProviderTypeMeta) => {
     setIsDockerMode(false);
-    setFormData((prev) => ({
-      ...prev,
-      type,
-      name: prev.type === type && prev.name.trim() ? prev.name : String(meta.label || type),
-      url: prev.type === type && prev.url.trim() ? prev.url : String(meta.placeholder_url || ''),
-    }));
+    // `seedFormForType` carries the rule that the URL is never seeded from `placeholder_url`.
+    setFormData((prev) => seedFormForType(prev, type, String(meta.label || type)));
     setGuidedStepIndex(0);
     setValidationResult(null);
   };
@@ -281,6 +278,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
               }}
               placeholder={t('provider_modal.docker.name_placeholder')}
               autoComplete="off"
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
               autoFocus
             />
           </Field>
@@ -291,15 +289,15 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
               <span className="block space-y-1">
                 <span className="block">
                   <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_local')}</span>{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">unix:///var/run/docker.sock</code>
+                  <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">unix:///var/run/docker.sock</code>
                 </span>
                 <span className="block">
                   <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_tcp')}</span>{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">tcp://192.168.1.10:2375</code>
+                  <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">tcp://192.168.1.10:2375</code>
                 </span>
                 <span className="block">
                   <span className="font-semibold text-foreground">{t('provider_modal.docker.hint_ssh')}</span>{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">ssh://user@host</code>
+                  <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">ssh://user@host</code>
                 </span>
               </span>
             }

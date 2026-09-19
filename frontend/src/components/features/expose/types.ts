@@ -1,12 +1,16 @@
-import type { Service, TemplateApplyResult } from '@/types/api';
+import type {
+  PreflightCheck,
+  Provider,
+  ProviderTypesResponse,
+  Service,
+  TemplateApplyResult,
+} from '@/types/api';
+import { providerHasCapability } from '@/lib/providers';
 
-export type Provider = {
-  id: number;
-  name: string;
-  type: string;
-  url: string;
-  enabled: boolean | number;
-};
+//: the modal reads whole `GET /api/providers` rows; this module used to declare a
+//: five-key `Provider` of its own, so the name meant two things in one panel.
+export type { Provider };
+
 
 export type UiExposeMode = 'dns_only' | 'dns_proxy' | 'tunnel';
 
@@ -117,7 +121,8 @@ export const toFormState = (service?: Service | null): FormState => {
 
 /**
  * A fresh form seeded from `GET /api/templates/{id}/apply`: the template decides scheme,
- * port, mode, providers, domain and tags; subdomain and target stay for the user to fill.
+ * port, mode, providers, domain and both halves of the label control; subdomain and target
+ * stay for the user to fill.
  */
 export const templateToFormState = (
   tpl: TemplateApplyResult | Record<string, unknown> | null | undefined,
@@ -141,7 +146,11 @@ export const templateToFormState = (
     proxy_provider_id: proxyId,
     dns_provider_id: dnsId,
     dns_ip: String(record.dns_ip || ''),
+    // Both halves, and both through `toIdList`: a template written before environments
+    // were storable answers with no `environment_ids` key at all, which reads here as the
+    // empty list it means rather than throwing on the way in.
     tag_ids: toIdList(record.tag_ids),
+    environment_ids: toIdList(record.environment_ids),
     icon_url: String(record.icon_url || ''),
   };
 };
@@ -153,4 +162,86 @@ export const fqdnOf = (formData: Pick<FormState, 'subdomain' | 'domain'>): strin
 // The capability rule this file used to carry a third copy of now lives in `lib/providers.ts`.
 // That copy had no `supports_tunnel` branch, so both call sites patched around it inline and a
 // provider offered by the Templates picker could go missing from this one. One table now.
-export { providerHasCapability } from '@/lib/providers';
+export { providerHasCapability };
+
+/**
+ * The one place that decides what a form means by "find the public target automatically".
+ *
+ * An automatic target needs a DNS provider that can resolve one, and a provider that says it
+ * cannot sends the target back to manual and the automatic update with it. A provider the
+ * list cannot resolve says nothing at all: it was deleted, or the catalogue has not answered
+ * yet. Unknown is not `false` here, and leaving the saved setting alone is what keeps a
+ * catalogue that failed to load from dropping an operator's automatic update on the next
+ * save -- the same reason `CAPABILITY_FALLBACK` exists in `lib/providers.ts`.
+ *
+ * The three answers come back together because the form drew one of them and the payload
+ * sent another. They agreed on every input where the switch is on screen, which is why this
+ * was never visible; they disagreed on exactly the two where it is hidden.
+ */
+export const autoPublicTarget = (
+  formData: Pick<FormState, 'public_target_mode' | 'auto_update_dns' | 'dns_provider_id'>,
+  selectedDns: Pick<Provider, 'type'> | undefined,
+  providerTypes: ProviderTypesResponse,
+): { mode: FormState['public_target_mode']; autoUpdateDns: boolean; canOfferAuto: boolean } => {
+  const supportsAuto = selectedDns
+    ? providerHasCapability(selectedDns, 'supports_auto_public_target', providerTypes)
+    : false;
+  const isExternal = selectedDns ? providerHasCapability(selectedDns, 'public_dns', providerTypes) : false;
+  const mode =
+    formData.public_target_mode === 'auto' && formData.dns_provider_id && selectedDns && !supportsAuto
+      ? 'manual'
+      : formData.public_target_mode;
+  return {
+    mode,
+    autoUpdateDns: mode === 'auto' ? formData.auto_update_dns : false,
+    /** Whether the automatic-update switch has anything true to say, so it is drawn at all. */
+    canOfferAuto: isExternal && supportsAuto,
+  };
+};
+
+/**
+ * Where a resolved public target came from, in the reader's language.
+ *
+ * `resolve_public_target` answers a wire word beside the address -- `manual`, `auto`,
+ * `current`, `proxy_provider_host`, `server_public_ip` -- and the preflight printed it into
+ * its sentence untouched, so a French panel read "Cible DNS 10.0.0.99 (manual)". It is the
+ * same half-translated line `healthStatusLabel` was written for. A word the build does not
+ * know is returned as it came, so a newer API never blanks the line.
+ */
+export function publicTargetSourceLabel(
+  source: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  const word = String(source || '').trim();
+  if (!word) return '';
+  const key = `expose.dry_run.source.${word}`;
+  const line = t(key);
+  return line === key ? word : line;
+}
+
+
+/**
+ * One preflight line, in the reader's language.
+ *
+ * Two things had to travel together for this sentence to be right. The `detail_key` picks
+ * the translation, and an unknown one falls back to the English `detail` the server sent
+ * rather than printing a bare key. And `source` inside `detail_params` is a wire word, so
+ * substituted raw it left "Cible DNS publique : 10.0.0.99 (auto)" -- the same
+ * half-translated line the dry run was fixed for, one step earlier in the flow.
+ */
+export function preflightDetailText(
+  check: Pick<PreflightCheck, 'detail' | 'detail_key' | 'detail_params'>,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string {
+  const fallback = String(check.detail || '');
+  if (!check.detail_key) return fallback;
+  const key = `expose.preflight.detail.${check.detail_key}`;
+  const params = check.detail_params;
+  const line = t(
+    key,
+    params?.source === undefined
+      ? params
+      : { ...params, source: publicTargetSourceLabel(String(params.source), t) },
+  );
+  return line === key ? fallback : line;
+}

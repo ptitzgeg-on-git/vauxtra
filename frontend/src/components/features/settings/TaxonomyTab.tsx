@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { Check, Layers, Pencil, Plus, Tag, X } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -19,8 +20,11 @@ import {
   Skeleton,
   useConfirmDialog,
 } from '@/components/ui';
-import type { Environment, Tag as TagType } from '@/types/api';
+import { fqdnOf } from '@/components/features/services/helpers';
+import type { Environment, Service, Tag as TagType, Template } from '@/types/api';
+import type { Dependent } from './DependentList';
 import { SettingsSection } from './SettingsSection';
+import { TaxonomyDeleteBody } from './TaxonomyDeleteBody';
 
 /** CSS colour names the backend stores as-is; the label of each one is translated. */
 const TAG_COLORS = ['blue', 'teal', 'green', 'red', 'orange', 'purple', 'cyan', 'yellow', 'pink', 'lime', 'indigo'] as const;
@@ -43,6 +47,16 @@ const KINDS: Record<Kind, KindConfig> = {
 
 type Item = TagType | Environment;
 
+/** What a label is still holding: rows that keep working after it is deleted. */
+interface Dependents {
+  services: Dependent[];
+  /** Templates naming the tag. Always empty for an environment, which no template names. */
+  templates: Dependent[];
+}
+
+/** One shared empty object rather than a fresh `{ services: [], templates: [] }` per chip per render. */
+const NO_DEPENDENTS: Dependents = { services: [], templates: [] };
+
 /** Tags and environments: the two labels a service can carry, edited the same way. */
 export function TaxonomyTab() {
   return (
@@ -63,6 +77,7 @@ function swatchStyle(color: string) {
 
 function TaxonomyEditor({ kind }: { kind: Kind }) {
   const t = useT();
+  const { formatNumber } = useFormat();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const cfg = KINDS[kind];
@@ -79,6 +94,66 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
     queryFn: () => api.get<Item[]>(cfg.endpoint),
   });
   const items = useMemo(() => listQuery.data ?? [], [listQuery.data]);
+
+  // What holds each label. Nothing in the API counts this, so it is counted here from the
+  // rows themselves: `GET /api/services` already carries every service's `tags` and
+  // `environments` in full, and `GET /api/templates` carries `tag_ids` and
+  // `environment_ids`. Both keys are the ones `DnsTab` reads for the same purpose, so the
+  // two tabs share one cache entry each.
+  const servicesQuery = useQuery<Service[]>({
+    queryKey: ['services'],
+    queryFn: () => api.get<Service[]>('/services'),
+  });
+  // Both halves. A template names tags and environments alike (`TemplateIn`,
+  // `frontend/src/types/api.ts`), so both editors have the same question to ask. This used
+  // to be fetched for tags only, and correctly: the environment half had nowhere to be
+  // stored, so there was nothing to count.
+  const templatesQuery = useQuery<Template[]>({
+    queryKey: ['templates'],
+    queryFn: () => api.get<Template[]>('/templates'),
+  });
+
+  const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
+  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+
+  // Both reads were `data = []` with nothing destructured to notice a failure. An empty
+  // `dependents` is what the plain "Delete this label?" question is for, so a `/services`
+  // that failed, or had simply not landed yet, asked that question over a label seven
+  // services carried, and `DELETE /api/tags/{id}` takes `service_tags` with it: the label
+  // reads the holders only to journal them, and refuses nothing. Neither is the count beside
+  // each chip a reading of the labels -- it is a reading of the services -- so it went quiet
+  // on the same emptiness.
+  const usageUnknown =
+    servicesQuery.isPending ||
+    servicesQuery.isError ||
+    templatesQuery.isPending ||
+    templatesQuery.isError;
+  const usageFailed = servicesQuery.isError || templatesQuery.isError;
+  const usageError = servicesQuery.error ?? templatesQuery.error;
+
+  const dependents = useMemo(() => {
+    const byId = new Map<number, Dependents>();
+    const slot = (id: number) => {
+      let entry = byId.get(id);
+      if (!entry) byId.set(id, (entry = { services: [], templates: [] }));
+      return entry;
+    };
+    for (const service of services) {
+      for (const label of kind === 'tags' ? service.tags : service.environments) {
+        slot(label.id).services.push({ id: service.id, label: fqdnOf(service) });
+      }
+    }
+    for (const template of templates) {
+      for (const id of kind === 'tags' ? template.tag_ids : template.environment_ids) {
+        slot(id).templates.push({ id: template.id, label: template.name });
+      }
+    }
+    for (const entry of byId.values()) {
+      entry.services.sort((a, b) => a.label.localeCompare(b.label));
+      entry.templates.sort((a, b) => a.label.localeCompare(b.label));
+    }
+    return byId;
+  }, [kind, services, templates]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: [...cfg.queryKey] });
@@ -137,13 +212,44 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
     update.mutate({ id: editing.id, name: editCandidate, color: editing.color });
   };
 
+  // The plain question is kept for a label nothing holds, because there is nothing to say
+  // about it: no service changes, no template changes, and asking twice about a label
+  // created by mistake a minute ago is how a confirmation stops being read.
   const requestDelete = async (item: Item) => {
-    const ok = await confirm({
-      title: t('settings.taxonomy.delete_title'),
-      message: t('settings.taxonomy.delete_message', { name: item.name }),
-      confirmLabel: t('common.delete'),
-      variant: 'danger',
-    });
+    const held = dependents.get(item.id) ?? NO_DEPENDENTS;
+    const inUse = held.services.length + held.templates.length > 0;
+    const ok = await confirm(
+      usageUnknown
+        ? {
+            // Not "nothing carries it": nobody knows. The deletion stays available -- this
+            // tab must not be stranded on a read it may never get -- but it stops being
+            // asked as though the answer had come back empty.
+            title: t('settings.taxonomy.unknown_title'),
+            message: t('settings.taxonomy.unknown_message', { name: item.name }),
+            confirmLabel: t('common.delete'),
+            variant: 'danger',
+          }
+        : inUse
+        ? {
+            title: t('settings.taxonomy.in_use_title'),
+            message: (
+              <TaxonomyDeleteBody
+                name={item.name}
+                kind={kind}
+                services={held.services}
+                templates={held.templates}
+              />
+            ),
+            confirmLabel: t('common.delete'),
+            variant: 'warning',
+          }
+        : {
+            title: t('settings.taxonomy.delete_title'),
+            message: t('settings.taxonomy.delete_message', { name: item.name }),
+            confirmLabel: t('common.delete'),
+            variant: 'danger',
+          },
+    );
     if (ok) remove.mutate(item.id);
   };
 
@@ -185,7 +291,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
           leftIcon={<Plus />}
           loading={create.isPending}
           disabled={!candidate || duplicate}
-          className="sm:mt-[1.375rem]"
+          className="sm:mt-5.5"
         >
           {t('common.add')}
         </Button>
@@ -193,6 +299,28 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
 
       {items.length > SEARCH_THRESHOLD && (
         <SearchInput value={search} onChange={setSearch} placeholder={t('settings.taxonomy.search_placeholder')} />
+      )}
+
+      {usageFailed && (
+        <InlineAlert
+          tone="warning"
+          title={t('settings.taxonomy.usage_failed')}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              loading={servicesQuery.isFetching || templatesQuery.isFetching}
+              onClick={() => {
+                void servicesQuery.refetch();
+                void templatesQuery.refetch();
+              }}
+            >
+              {t('ui.error.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(usageError, t, t('common.error'))}
+        </InlineAlert>
       )}
 
       {listQuery.isLoading ? (
@@ -219,79 +347,94 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
         <EmptyState compact title={t('settings.taxonomy.no_match')} />
       ) : (
         <ul className="flex flex-wrap items-center gap-2" aria-label={t(`${cfg.prefix}.title`)}>
-          {visible.map((item) =>
-            editing?.id === item.id ? (
-              <li key={item.id} className="w-full">
-                <form
-                  onSubmit={submitEdit}
-                  aria-label={t('settings.taxonomy.edit_form_aria', { name: item.name })}
-                  className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/40 p-2"
-                >
-                  <Input
-                    size="sm"
-                    autoFocus
-                    autoComplete="off"
-                    value={editing.name}
-                    maxLength={32}
-                    invalid={editDuplicate}
-                    aria-label={t('settings.taxonomy.name_label')}
-                    onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') setEditing(null);
-                    }}
-                    className="w-full sm:w-48"
-                  />
-                  <Select
-                    size="sm"
-                    value={editing.color}
-                    aria-label={t(`${cfg.prefix}.color_aria`)}
-                    onChange={(e) => setEditing({ ...editing, color: e.target.value })}
-                    wrapperClassName="w-full sm:w-40"
+          {visible.map((item) => {
+            if (editing?.id === item.id) {
+              return (
+                <li key={item.id} className="w-full">
+                  <form
+                    onSubmit={submitEdit}
+                    aria-label={t('settings.taxonomy.edit_form_aria', { name: item.name })}
+                    className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/40 p-2"
                   >
-                    {TAG_COLORS.map((c) => (
-                      <option key={c} value={c}>
-                        {t(`settings.color.${c}`)}
-                      </option>
-                    ))}
-                  </Select>
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-3 w-3 shrink-0 rounded-full border"
-                    style={swatchStyle(editing.color)}
-                  />
-                  <IconButton
-                    type="submit"
-                    variant="primary"
-                    label={t('common.save')}
-                    icon={<Check />}
-                    tooltip
-                    loading={update.isPending}
-                    disabled={!canSaveEdit}
-                    className="h-8 w-8"
-                  />
-                  <IconButton
-                    label={t('common.cancel')}
-                    icon={<X />}
-                    tooltip
-                    disabled={update.isPending}
-                    onClick={() => setEditing(null)}
-                    className="h-8 w-8"
-                  />
-                  {editDuplicate && (
-                    <span role="alert" className="text-xs font-medium text-destructive">
-                      {t('settings.taxonomy.exists')}
-                    </span>
-                  )}
-                </form>
-              </li>
-            ) : (
+                    <Input
+                      size="sm"
+                      // eslint-disable-next-line jsx-a11y/no-autofocus -- the inline edit form appears on click; focus follows it
+                      autoFocus
+                      autoComplete="off"
+                      value={editing.name}
+                      maxLength={32}
+                      invalid={editDuplicate}
+                      aria-label={t('settings.taxonomy.name_label')}
+                      onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setEditing(null);
+                      }}
+                      className="w-full sm:w-48"
+                    />
+                    <Select
+                      size="sm"
+                      value={editing.color}
+                      aria-label={t(`${cfg.prefix}.color_aria`)}
+                      onChange={(e) => setEditing({ ...editing, color: e.target.value })}
+                      wrapperClassName="w-full sm:w-40"
+                    >
+                      {TAG_COLORS.map((c) => (
+                        <option key={c} value={c}>
+                          {t(`settings.color.${c}`)}
+                        </option>
+                      ))}
+                    </Select>
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-3 w-3 shrink-0 rounded-full border"
+                      style={swatchStyle(editing.color)}
+                    />
+                    <IconButton
+                      type="submit"
+                      variant="primary"
+                      label={t('common.save')}
+                      icon={<Check />}
+                      tooltip
+                      loading={update.isPending}
+                      disabled={!canSaveEdit}
+                      className="h-8 w-8"
+                    />
+                    <IconButton
+                      label={t('common.cancel')}
+                      icon={<X />}
+                      tooltip
+                      disabled={update.isPending}
+                      onClick={() => setEditing(null)}
+                      className="h-8 w-8"
+                    />
+                    {editDuplicate && (
+                      <span role="alert" className="text-xs font-medium text-destructive">
+                        {t('settings.taxonomy.exists')}
+                      </span>
+                    )}
+                  </form>
+                </li>
+              );
+            }
+            const held = dependents.get(item.id) ?? NO_DEPENDENTS;
+            return (
               <li
                 key={item.id}
                 className="inline-flex items-center gap-1.5 rounded-full border py-1 pl-2.5 pr-1 text-xs font-medium"
                 style={swatchStyle(item.color)}
               >
                 <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-                <span className="max-w-[12rem] truncate">{item.name}</span>
+                <span className="max-w-48 truncate">{item.name}</span>
+                {held.services.length > 0 && (
+                  <span className="rounded-full bg-foreground/10 px-1.5 leading-4 tabular-nums">
+                    <span aria-hidden="true">{formatNumber(held.services.length)}</span>
+                    {/* The bare number is the hint; the sentence is what the delete dialog then
+                        spends four paragraphs on, and is what a screen reader should hear here. */}
+                    <span className="sr-only">
+                      {t('settings.taxonomy.usage_count', { count: held.services.length })}
+                    </span>
+                  </span>
+                )}
                 <button
                   type="button"
                   aria-label={t(`${cfg.prefix}.edit_aria`, { name: item.name })}
@@ -299,7 +442,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                   onClick={() => setEditing({ id: item.id, name: item.name, color: item.color })}
                   className={cn(
                     'inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors hover:bg-foreground/10',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+                    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                   )}
                 >
                   <Pencil aria-hidden="true" className="h-3 w-3" />
@@ -311,14 +454,14 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                   onClick={() => void requestDelete(item)}
                   className={cn(
                     'inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors hover:bg-foreground/10',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+                    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
                   )}
                 >
                   <X aria-hidden="true" className="h-3 w-3" />
                 </button>
               </li>
-            ),
-          )}
+            );
+          })}
         </ul>
       )}
       {ConfirmDialogElement}

@@ -70,12 +70,14 @@ Restart container after change.
 Symptoms:
 
 - Integrations card shows failed test/validation
+- A provider is drawn as enabled and nothing publishes through it
 
 Checks:
 
-1. Reachability from Vauxtra runtime to provider URL.
-2. Correct credentials/token.
-3. Correct URL format for provider type.
+1. The provider is enabled the way the rest of the code asks. Everything downstream reads `WHERE enabled=1`, while the panel draws the switch from whether the value is truthy, so a row saved by a version before this fix holding any other number looks connected and is used by nothing -- no sync, no certificate lookup, no Docker discovery, and absent from the multi-sync target list. `SELECT id, name, enabled FROM providers WHERE enabled NOT IN (0, 1);` lists them, and saving each one again from the editor puts it back in range. The same versions could rename a provider to the empty string; those are `SELECT id, type FROM providers WHERE trim(name) = '';` and need a name typed back in.
+2. Reachability from Vauxtra runtime to provider URL.
+3. Correct credentials/token.
+4. Correct URL format for provider type.
 
 Provider URL notes:
 
@@ -113,16 +115,35 @@ Symptoms:
 
 - Push fails
 - Drift always reported
+- A disabled service is reported as still served
+- A hostname answers nothing while every screen says the service is published and in sync
+- A hostname still answers after the provider was cleared from the service
+- A second DNS server, or a second proxy, still answers for a service it was removed from
+- Two services answer for one hostname, and each undoes the other's push
+- A save was refused after the providers had already been called
+- A service stopped alerting and nothing was reported
+- A route is reported missing, and it is still there on the provider
+- A service exposed through a tunnel is reported in sync, and its hostname answers nothing
 
 Checks:
 
 1. Provider write permissions still valid.
 2. Service target and domain fields valid.
 3. Provider type supports writes (Traefik is read-only; Zoraxy only manages host rules, and a rule renamed in Zoraxy is reported as drift).
+4. The service is enabled. A push converges the providers on the record, so pushing a **disabled** service withdraws it instead of publishing it: the primary proxy host is suspended, everything else is removed. Drift on a disabled service asks the opposite question and reports what still answers (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than what is missing.
+5. No provider was dropped from the service while it was published. Emptying the proxy or the DNS field in the editor, and removing a target from the multi-sync list, both withdraw that provider's route as the service saves. If the provider refuses the withdrawal the save answers with it -- `Former target: ...`, in the warning the editor shows beside *Service updated* -- and writes the same thing to the journal. Act on it then: the target row is unlinked regardless, and the columns the route would be found through are the ones just emptied, so nothing in Vauxtra can reach that route afterwards. It has to be removed on the provider itself. The same is true of any route left over from before these fixes.
+6. The proxy host is not suspended. Disabling a service suspends its primary proxy host rather than deleting it, so a route can exist and answer nothing -- and a failed re-enable leaves exactly that. Drift reports it as `proxy_route_suspended`, and a push lifts the suspension as it updates the host. If a disable reports `Failed to suspend the proxy host`, the host is still there and still serving: the provider refused the call, and Vauxtra stops rather than deleting a host it was only asked to switch off. The three ways to disable -- the push, the `enabled` field on `PUT /api/services/{sid}`, and the bulk action -- all report it the same way. Fix the provider (an expired token is the usual cause) and disable again.
+7. No two services carry one hostname in two spellings. An import made before this fix stored the name the way the provider spelled it, so `NAS.maison.lan` and `nas.maison.lan` were two rows the unique index on `(subdomain, domain)` could not tell apart -- and both push, and drift, under `nas.maison.lan`, because the public hostname is derived lowercased. Vauxtra says so at startup (`Duplicate service hostnames prevent the uniqueness index`) and this lists them: `SELECT lower(subdomain || '.' || domain) AS h, count(*) FROM services GROUP BY h HAVING count(*) > 1;`. Merge what you need out of the extra row, delete it, and restart so the index is created.
+8. A save that answered `409` after the providers had already been called. Both write endpoints check the hostname before they touch a provider and store the row after, so a second operator saving the same hostname in between passes the same check and the unique index refuses whichever write lands second. The refusal names the service that won, and the journal carries what the refused save had already done: `<host> was published on <providers> and then refused` for a creation, `Service #<id> was reconfigured for <host> ... run a drift check` for a rename. Act on the journal line, not only on the refusal. Nothing is withdrawn on purpose -- the winning service holds that hostname on those same providers now, so a withdrawal keyed on the name would remove its records instead of the orphaned ones. After a refused creation there is no service row at all, so the providers the line names have to be cleaned by hand; after a refused rename the row still spells its old hostname while its providers answer for the new one, and a push puts the two back in step.
+9. An alert list replaced with nothing. `POST /api/services/{sid}/alerts` replaces every rule of the service, so a body that did not carry its `alerts` key -- an empty body, or one whose key was misspelled -- used to delete them all and answer `ok`, and an entry inside the list that had lost its `webhook_id` used to be skipped, which after the deletion means removed. Both are refused now, with a `422` naming the field, and the stored rules are left alone. If a service went quiet before this version, open its alert tab: an empty list there is the symptom, and the rules have to be added back. Clearing them deliberately is still one request, and it is `{"alerts": []}`. An id naming no row is answered before anything is deleted -- `404 Service not found` for the service, or a `400` naming every unknown webhook at once -- so a refused request never costs you the rules you already had.
+
+10. A route reported missing that is still on the provider. A drift check reads a listing with no matching record as a route that has disappeared, so a provider that refused the listing used to produce exactly that report, with a Reconcile button beside it whose only meaning would have been "publish it again". Four providers answered an empty list for a read that had failed -- NPM, Traefik, Zoraxy and Cloudflare Tunnel -- and they no longer do: a listing that could not be finished is reported as `proxy_check_failed`, naming the provider and what it said. If you see `route_missing` now, the provider answered and the record really is absent. If you see `proxy_check_failed`, fix the provider first (an expired token or a restarted container is the usual cause) and re-run the check before reconciling anything.
+
+11. A tunnel service reported in sync while nothing answers on its hostname. Before this version every service was read as if it were in `proxy_dns` mode, because the test that asked the row which mode it was in could only ever answer "no". A tunnel service has no `proxy_provider_id`, so it was compared against no provider at all, and the silence was reported as agreement: `mode: proxy_dns`, `ok: true`, `issues: []`, with a dry-run beside it saying `would_change: false`. Upgrade first, then re-run the drift check on every service exposed through a tunnel: the ones that were never actually published now report `route_missing` on the tunnel provider, and a push creates the ingress rule. Two related symptoms have the same origin. A tunnel service whose `tunnel_hostname` differs from `subdomain.domain` was read, compared and withdrawn under the wrong name, so a delete or a disable made before this version may have left a live ingress rule behind -- check the tunnel's configuration for the hostname the service actually served. And a service set to resolve its public target automatically was pushed as if it were set to the manual address: if its DNS record has been pointing at a stale address, one push now re-resolves it and the journal says where the new value came from.
 
 Actions:
 
-1. Use dry-run push first (`/api/services/{sid}/push/dry-run`).
+1. Use dry-run push first (`/api/services/{sid}/push/dry-run`). Its `withheld` field says which of the two plans you are reading.
 2. Inspect logs for precise provider-side error.
 3. Reconcile only after validation succeeds.
 

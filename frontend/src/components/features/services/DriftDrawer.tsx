@@ -22,11 +22,16 @@ export interface DriftDrawerProps {
 }
 
 /** `services.drift.type.<type>` for the known issue types; the raw type otherwise. */
+// A disabled service expects the opposite of a published one, so the two `*_still_served`
+// types read the same drawer backwards: what is still answering rather than what is missing.
 const KNOWN_ISSUE_TYPES = new Set([
   'missing_proxy_route',
+  'proxy_route_still_served',
+  'proxy_route_suspended',
   'proxy_origin_mismatch',
   'proxy_check_failed',
   'missing_dns_rewrite',
+  'dns_rewrite_still_served',
   'dns_target_mismatch',
   'dns_check_failed',
 ]);
@@ -74,7 +79,7 @@ function IssueList({ issues }: { issues: DriftIssue[] }) {
                 <span className="text-sm font-medium text-foreground">{issueLabel(t, issue)}</span>
                 {issue.provider && <span className="text-xs text-muted-foreground">· {issue.provider}</span>}
               </div>
-              {detail && <p className="break-words text-xs text-muted-foreground">{detail}</p>}
+              {detail && <p className="wrap-break-word text-xs text-muted-foreground">{detail}</p>}
             </div>
           </li>
         );
@@ -99,7 +104,10 @@ function DriftSummary({ drift }: { drift: DriftResult }) {
       tone={errors > 0 ? 'danger' : 'warning'}
       title={t('services.drift.out_of_sync_title', { count: drift.issues.length })}
     >
-      {t('services.drift.out_of_sync_body', { errors, warnings: warns })}
+      {t('services.drift.out_of_sync_body', {
+        errors: t('services.drift.errors', { count: errors }),
+        warnings: t('services.drift.warnings', { count: warns }),
+      })}
     </InlineAlert>
   );
 }
@@ -166,7 +174,7 @@ function ReconcileSummary({ result }: { result: ReconcileResult }) {
           <p className="text-xs font-medium text-destructive">{t('services.drift.push_errors')}</p>
           <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
             {pushErrors.map((error, index) => (
-              <li key={index} className="break-words">
+              <li key={index} className="wrap-break-word">
                 {error}
               </li>
             ))}

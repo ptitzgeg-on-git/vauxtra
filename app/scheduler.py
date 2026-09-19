@@ -6,6 +6,7 @@ import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.expiry import parse_expiry
 from app.models import add_log, get_db
 from app.providers.factory import certificate_provider_types, create_provider
 from app.public_target import (
@@ -14,6 +15,7 @@ from app.public_target import (
     resolve_public_target,
 )
 from app.security import mask_secret_url
+from app.text import plural, time_to_expiry
 
 _scheduler = BackgroundScheduler(daemon=True)
 _lock      = threading.Lock()
@@ -250,29 +252,68 @@ def _sync_npm_once() -> None:
 
 
 def _purge_history(conn) -> None:
-    """Drop monitoring history, logs and settled webhook rows past their retention."""
-    monitoring_retention_days = _read_retention_days(conn, "monitoring_retention_days", 14)
-    log_retention_days = _read_retention_days(conn, "log_retention_days", 30)
-    webhook_retry_retention_days = _read_retention_days(
-        conn, "webhook_retry_retention_days", 7, min_days=1, max_days=90
-    )
-    conn.execute(
-        "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)",
-        (f"-{monitoring_retention_days} days",),
-    )
-    conn.execute(
-        "DELETE FROM logs WHERE created_at < datetime('now', ?)",
-        (f"-{log_retention_days} days",),
-    )
-    try:
-        conn.execute(
-            """DELETE FROM webhook_delivery_log
-               WHERE status IN ('delivered', 'failed')
-                 AND updated_at < datetime('now', ?)""",
-            (f"-{webhook_retry_retention_days} days",),
-        )
-    except Exception:
-        pass
+    """Drop monitoring history, logs and settled webhook rows past their retention.
+
+    Three sweeps, each with its own handler, because they fail independently and because
+    this function is the only thing that bounds the three tables: a sweep that stops
+    working without saying so is a table that grows until the disk notices. One of them
+    used to carry `except Exception: pass` and the other two carried nothing at all,
+    which is one defect read from either end -- the first could never report a failure,
+    and the other two reported it by taking the rest of the cycle down with them.
+
+    The handler belongs here rather than around the call, because of what follows the
+    call. `run_health_checks` dispatches this cycle's alerts after the purge, and
+    `_provider_last_status` has already advanced to the status those alerts describe, so
+    an exception leaving this function does not delay an integration alert, it drops it:
+    the next cycle compares the new status against itself and finds no transition to
+    report. APScheduler logs what reaches it and keeps the job, so the cycle survives;
+    what does not survive is the round of notifications it was holding.
+    """
+    for table, sql, setting, default_days, bounds in (
+        (
+            "uptime_events",
+            "DELETE FROM uptime_events WHERE created_at < datetime('now', ?)",
+            "monitoring_retention_days",
+            14,
+            {},
+        ),
+        (
+            "logs",
+            "DELETE FROM logs WHERE created_at < datetime('now', ?)",
+            "log_retention_days",
+            30,
+            {},
+        ),
+        (
+            # Settled rows only: a `pending` row is still the retry queue's work,
+            # however old the attempt that queued it is.
+            "webhook_delivery_log",
+            "DELETE FROM webhook_delivery_log"
+            " WHERE status IN ('delivered', 'failed')"
+            " AND updated_at < datetime('now', ?)",
+            "webhook_retry_retention_days",
+            7,
+            {"max_days": 90},
+        ),
+    ):
+        try:
+            days = _read_retention_days(conn, setting, default_days, **bounds)
+            conn.execute(sql, (f"-{days} days",))
+        except Exception:
+            import traceback
+            detail = traceback.format_exc()
+            try:
+                # On this connection, for the reason spelt out over `_run_cert_expiry_alerts`:
+                # a second one opened here would wait on our own uncommitted write and raise
+                # "database is locked" from inside the handler that came to record a failure.
+                add_log("error", f"[Purge] {table} sweep failed: {detail}", conn)
+            except Exception:
+                # The end of the line, and the one place in this function where silence is
+                # the answer. Recording the failure needs the same database that just refused
+                # the sweep, so the states that break a purge hardest -- a locked base, a full
+                # disk -- are the ones that also break the record of it. Raising here would
+                # hand the cycle the exact fate the handler above exists to prevent.
+                pass
 
 
 def run_health_checks() -> None:
@@ -573,18 +614,16 @@ def _run_cert_expiry_alerts(conn) -> None:
                 if cert_id is None:
                     continue
 
-                expires_raw = (cert.get("expires_on") or "").strip()
-                if not expires_raw:
-                    continue
-
-                try:
-                    # Strip timezone info for naïve comparison with utcnow()
-                    normalized = expires_raw.replace("Z", "").split("+")[0].split(".")[0]
-                    expires = _dt.datetime.fromisoformat(normalized)
-                except Exception:
+                expires = parse_expiry(cert.get("expires_on"))
+                if expires is None:
                     continue
 
                 days_left = (expires - now_utc).days
+                # Measured by its own subtraction rather than by negating `days_left`:
+                # `timedelta.days` floors, so the countdown above never overstates the
+                # time left, and that same floor applied to a lapsed certificate would
+                # overstate how long it has been down. See `time_to_expiry`.
+                days_overdue = (now_utc - expires).days if days_left < 0 else 0
                 key = (provider_id, cert_id)
                 seen_keys.add(key)
 
@@ -592,13 +631,13 @@ def _run_cert_expiry_alerts(conn) -> None:
                     level = "error"
                     msg = (
                         f"[CertExpiry] CRITICAL: '{cert.get('nice_name')}' (ID {cert_id}) "
-                        f"expires in {days_left} day(s)"
+                        f"{time_to_expiry(days_left, days_overdue)}"
                     )
                 elif days_left < 30:
                     level = "warn"
                     msg = (
                         f"[CertExpiry] WARNING: '{cert.get('nice_name')}' (ID {cert_id}) "
-                        f"expires in {days_left} day(s)"
+                        f"{time_to_expiry(days_left, days_overdue)}"
                     )
                 else:
                     _cert_alert_state.pop(key, None)
@@ -620,7 +659,13 @@ def _run_cert_expiry_alerts(conn) -> None:
 
     except Exception:
         import traceback
-        add_log("error", f"[CertExpiry] Check failed: {traceback.format_exc()}")
+        # On this connection, not on a new one. The alerts above are written through
+        # `conn` and committed once per provider, so when this handler runs there may
+        # be an uncommitted write of ours holding the database's write lock. Opening a
+        # second connection to record the failure then waits on the first and raises
+        # "database is locked" from inside the handler, which loses the traceback it
+        # came here to write and takes the rest of the maintenance round with it.
+        add_log("error", f"[CertExpiry] Check failed: {traceback.format_exc()}", conn)
 
 
 # ── Webhook retry ─────────────────────────────────────────────────────────
@@ -639,8 +684,10 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
     import apprise as _apprise
     a = _apprise.Apprise()
     # The URL carries the token. `add_log` writes straight into the `logs` table, which
-    # `GET /api/logs` and its SSE stream hand to any key -- masking here is what keeps a
-    # transient Discord outage from persisting the secret in normal operation.
+    # `GET /api/logs` and its SSE stream read back and the Logs tab shows in full -- masking
+    # here is what keeps a transient Discord outage from persisting the secret in normal
+    # operation. Both readers ask for `admin`, which narrows who sees a leaked token and
+    # does nothing about its being written.
     safe_url = mask_secret_url(url)
     if not a.add(url):
         add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {safe_url}")
@@ -1060,7 +1107,7 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
         if not webhooks:
             return
 
-        lines = [f"Auto-reconcile corrected {len(corrected)} service(s):"]
+        lines = [f"Auto-reconcile corrected {plural(len(corrected), 'service')}:"]
         lines.extend(f"  ✓ {fqdn}" for fqdn in corrected)
         if errors:
             lines.append(f"Errors ({len(errors)}):")

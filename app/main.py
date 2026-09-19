@@ -54,7 +54,7 @@ async def _lifespan(_app: FastAPI):
     elif not has_password_configured():
         _logger.warning(
             "SECURITY: no admin password is configured. Every request reaching this instance "
-            "is granted the admin scope, with no credential. Set one in Settings > API keys, "
+            "is granted the admin scope, with no credential. Set one in Settings > Security, "
             "or through APP_PASSWORD, before exposing port 8888 to anything but localhost."
         )
 

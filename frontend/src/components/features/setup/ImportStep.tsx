@@ -3,6 +3,13 @@
  * offered as a checklist. The rows keep the existing `setup.import.*` wording; what is new is
  * the master checkbox (with its indeterminate state) and real checkboxes on each row.
  *
+ * Two reads stand between this screen and its list: the provider list it filters on, and the
+ * scan over it. `loadingImportable` and `scanFailed` are the page's verdict on both at once,
+ * because the operator has one question — is this empty because there is nothing to import,
+ * or because something failed. The first is true from the moment the wizard lands here, not
+ * from the moment a request goes out: those two are a paint apart, and the rung that paint
+ * lands on is a green tick reading "No services found to import".
+ *
  * Provider colours come from `toneClasses`, never from the `provider_color` the API sends —
  * that field carries raw palette classes and would be the only hardcoded colour on the screen.
  */
@@ -20,7 +27,6 @@ import {
   type Tone,
 } from '@/components/ui';
 import { fallbackIconByType } from '@/components/features/providers/providerConstants';
-import { useFormat } from '@/hooks/useFormat';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 import type { ImportableService, ProviderItem } from './types';
@@ -29,7 +35,12 @@ interface ImportStepProps {
   providers: ProviderItem[];
   importableServices: ImportableService[];
   loadingImportable: boolean;
-  /** The scan came back empty because it failed, not because there is nothing to import. */
+  /**
+   * The list is empty because a read failed, not because there is nothing to import. Either
+   * read counts: the scan, or the provider list it runs over — a scan that could not start
+   * did not complete either, and `setup.import.scan_failed_hint` already states the failure
+   * in exactly those words.
+   */
   scanFailed?: boolean;
   onToggle: (index: number) => void;
   onSelectAll: () => void;
@@ -56,7 +67,6 @@ export function ImportStep({
   importing = false,
 }: ImportStepProps) {
   const t = useT();
-  const { formatNumber } = useFormat();
 
   const total = importableServices.length;
   const selected = importableServices.filter((s) => s.selected).length;
@@ -77,7 +87,30 @@ export function ImportStep({
         loading: importing,
       }}
     >
-      {loadingImportable ? (
+      {scanFailed ? (
+        // This used to land in the "nothing to import" state below — under a green tick, on
+        // the one screen where the next button ends setup. The toast that said otherwise was
+        // gone in a few seconds; the tick stayed, and the operator finished a wizard having
+        // been told there was nothing to bring in.
+        //
+        // It outranks the two rungs below it rather than sitting between them. A provider list
+        // that could not be read leaves `providers` empty, so "No providers configured." would
+        // have answered for it — a statement about what is configured, made by a screen
+        // that had just failed to find out. The busy rung is below it for the same reason: a
+        // read that failed never settles, so nothing would ever lift the skeleton off it.
+        <InlineAlert
+          tone="danger"
+          icon={<CloudOff />}
+          title={t('setup.import.scan_failed')}
+          action={
+            <Button variant="outline" size="sm" onClick={onRetry} leftIcon={<RefreshCw />}>
+              {t('setup.import.retry')}
+            </Button>
+          }
+        >
+          {t('setup.import.scan_failed_hint')}
+        </InlineAlert>
+      ) : loadingImportable ? (
         <div className="space-y-2" role="status" aria-live="polite">
           <p className="text-sm text-muted-foreground">{t('setup.import.scanning')}</p>
           {[0, 1, 2].map((row) => (
@@ -91,23 +124,6 @@ export function ImportStep({
           title={t('setup.import.no_providers')}
           description={t('setup.import.no_providers_hint')}
         />
-      ) : scanFailed ? (
-        // This used to land in the "nothing to import" state below — under a green tick, on
-        // the one screen where the next button ends setup. The toast that said otherwise was
-        // gone in a few seconds; the tick stayed, and the operator finished a wizard having
-        // been told there was nothing to bring in.
-        <InlineAlert
-          tone="danger"
-          icon={<CloudOff />}
-          title={t('setup.import.scan_failed')}
-          action={
-            <Button variant="outline" size="sm" onClick={onRetry} leftIcon={<RefreshCw />}>
-              {t('setup.import.retry')}
-            </Button>
-          }
-        >
-          {t('setup.import.scan_failed_hint')}
-        </InlineAlert>
       ) : total === 0 ? (
         <EmptyState
           compact
@@ -135,7 +151,7 @@ export function ImportStep({
             />
             <span className="nums text-xs text-muted-foreground">
               {t('setup.import.found', { count: total })}
-              {selected > 0 && <> · {t('setup.import.selected_count', { count: formatNumber(selected) })}</>}
+              {selected > 0 && <> · {t('setup.import.selected_count', { count: selected })}</>}
             </span>
           </div>
 

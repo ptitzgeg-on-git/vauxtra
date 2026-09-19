@@ -3,11 +3,13 @@ import json
 import re
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
-from app.auth import require_auth
+from app.auth import is_authorized, require_auth
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
-from app.validators import is_valid_domain, normalize_domain
+from app.text import name_list, plural, verb
+from app.validators import DOMAIN_REASONS, domain_problem, normalize_domain
 
 try:
     from sse_starlette.sse import EventSourceResponse as _SSEResponse
@@ -204,6 +206,24 @@ def get_settings(request: Request):
     }
 
 
+def _not_applied(collected: list[str], key: str, exc: Exception) -> None:
+    """Record a setting that was written but could not be handed to the running scheduler.
+
+    The row is committed before either of these calls, so there are only two honest answers
+    left once one of them raises, and the code used to give neither. Letting the exception
+    out answers `500` for a setting that *was* saved, so the operator retries a write that
+    already happened. Swallowing it answers `{"ok": true, "saved": ["check_interval"]}` for
+    a value that is in the database and not in the scheduler, which is the more expensive of
+    the two: the settings page reads the stored value back and shows the new interval, while
+    the health checks go on running at the old one until the next restart quietly fixes it.
+
+    So the value stands, the answer names the key under `not_applied`, and the journal gets
+    the reason -- the same channel `_refuse_import` uses for a row it could not take.
+    """
+    collected.append(key)
+    add_log("warning", f"Saved {key}, but it could not be applied now: {type(exc).__name__}: {exc}")
+
+
 @router.post("/api/settings")
 def save_settings(request: Request, body: dict):
     require_auth(request, scope="write")
@@ -245,12 +265,22 @@ def save_settings(request: Request, body: dict):
         )
     conn.commit()
     conn.close()
+    # Applied to the running scheduler below. Anything that cannot be applied is named in
+    # the answer rather than dropped -- see `_not_applied`.
+    not_applied: list[str] = []
+
     if "check_interval" in accepted:
+        # `_validate_setting` stores `str(number)` or refuses the whole payload, so the
+        # conversion here cannot fail and is not what this guards. `configure` is: it talks
+        # to APScheduler, and the old `except (ImportError, TypeError, ValueError): pass`
+        # caught two exceptions this line cannot raise and let the scheduler's own through,
+        # while hiding the one that mattered -- a missing scheduler module, which left the
+        # interval stored and never running under a `{"ok": true}`.
         try:
             from app.scheduler import configure
             configure(int(accepted["check_interval"]))
-        except (ImportError, TypeError, ValueError):
-            pass
+        except Exception as exc:  # noqa: BLE001 -- named in the answer, not swallowed
+            _not_applied(not_applied, "check_interval", exc)
 
     if {"auto_reconcile_enabled", "auto_reconcile_interval"} & set(accepted):
         # Applied now rather than at the next restart, the same way `check_interval` is.
@@ -269,22 +299,44 @@ def save_settings(request: Request, body: dict):
                 cfg.get("auto_reconcile_enabled") == "true",
                 int(cfg.get("auto_reconcile_interval") or 0),
             )
-        except (ImportError, TypeError, ValueError):
-            pass
+        except Exception as exc:  # noqa: BLE001 -- named in the answer, not swallowed
+            # `int()` is kept inside the guard here, unlike above: this value is read back
+            # out of the database rather than from the payload just validated, and a row
+            # written before `_SETTING_RANGES` existed can still hold a word. Both keys are
+            # named because either of them can be the one that moved.
+            _not_applied(not_applied, "auto_reconcile", exc)
 
-    return {"ok": True, "saved": sorted(accepted), "ignored": sorted(ignored)}
+    return {
+        "ok": True,
+        "saved": sorted(accepted),
+        "ignored": sorted(ignored),
+        "not_applied": sorted(not_applied),
+    }
 
 
 @router.get("/api/stats")
 def get_stats(request: Request):
     require_auth(request)
     conn  = get_db()
+    # `services`, `providers`, `logs` and `tags` are sizes of the estate and count everything.
+    # `services_ok` and `services_error` are health, and health is only measured on services
+    # the scheduler actually checks: it reads `WHERE enabled=1` (app/scheduler.py), and
+    # disabling a service never clears its `status` column -- the only writer is
+    # `UPDATE services SET enabled=?`. So a service disabled while failing keeps `status`
+    # 'error' for good, and counting it here reported a fault nobody was watching and nobody
+    # could clear. `serviceStatus()` in frontend/src/components/features/monitoring/uptime.ts
+    # is where the product answers this question -- `if (!service.enabled) return 'disabled'`,
+    # a state of its own, neither ok nor error -- and these two counters now answer it the
+    # same way. The Dashboard reads them in front of its own list
+    # (`stats?.services_ok ?? servicesOk`), and that list counts enabled services only, so
+    # before this the same tile showed a different number depending on whether this route had
+    # answered, and could read "2 enabled, 2 ok, 2 error".
     stats = {
         "services":       conn.execute("SELECT COUNT(*) FROM services").fetchone()[0],
         "providers":      conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0],
         "logs":           conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0],
-        "services_ok":    conn.execute("SELECT COUNT(*) FROM services WHERE status='ok'").fetchone()[0],
-        "services_error": conn.execute("SELECT COUNT(*) FROM services WHERE status='error'").fetchone()[0],
+        "services_ok":    conn.execute("SELECT COUNT(*) FROM services WHERE status='ok' AND enabled=1").fetchone()[0],
+        "services_error": conn.execute("SELECT COUNT(*) FROM services WHERE status='error' AND enabled=1").fetchone()[0],
         "tags":           conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
     }
     conn.close()
@@ -293,7 +345,21 @@ def get_stats(request: Request):
 
 @router.get("/api/logs")
 def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = ""):
-    require_auth(request)
+    """Read the activity log. `admin`, for the same reason emptying it is.
+
+    `POST /api/logs/clear` was raised to `admin` because of what this table holds, and
+    everything that argument says about erasing it says about reading it. The rows are
+    "Sign-in refused: wrong password", "Signed in", "Admin password changed", "Secure
+    backup exported with encrypted secrets", and "API key created: deploy (scopes:
+    admin)" -- the name and the reach of every key on the instance.
+
+    A `read` key is what an operator mints for a status page, a dashboard or an agent they
+    do not entirely trust. At `read` that key could page through the whole file at 200 rows
+    a call and learn which key to go after, when the admin is at the keyboard, and whether
+    somebody else was already guessing at the password. None of that is needed to read the
+    estate, which is what the key was for.
+    """
+    require_auth(request, scope="admin")
     page     = max(1, page)
     per_page = min(200, max(1, per_page))
     offset   = (page - 1) * per_page
@@ -333,7 +399,18 @@ def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = "
 
 @router.post("/api/logs/clear")
 def clear_logs(request: Request):
-    require_auth(request, scope="write")
+    """Empty the activity log. `admin`, and the emptying is itself recorded."""
+    # Not `write`, though the verb says so. This table is where a failed sign-in, an API
+    # key created and the scopes it was given, a key revoked and a password change are
+    # written down; `write` is the scope a deployment script or a home-automation job
+    # carries, and at `write` such a key could erase the record of its own work and of
+    # somebody guessing at the panel password. Every other operation that reaches the whole
+    # instance rather than one service is already `admin` -- backup, restore, factory reset,
+    # the credentials, and the settings keys that aim the scheduler at a host of the caller's
+    # choosing -- and the scope table in docs/HOWTO.md calls that row "credentials and the
+    # whole instance". The log is both. The line below means an admin cannot erase the fact
+    # of having erased.
+    require_auth(request, scope="admin")
     conn = get_db()
     conn.execute("DELETE FROM logs")
     conn.commit()
@@ -445,12 +522,24 @@ def list_domains(request: Request):
     return [r["name"] for r in rows]
 
 
+class DomainIn(BaseModel):
+    """The body of `POST /api/domains`.
+
+    `normalize_domain` lowercases and strips, so it needed a string in order to be handed
+    one; a number reached it and raised. Everything a domain can be wrong about is still
+    answered by `domain_problem`, in the sentence `DOMAIN_REASONS` already writes.
+    """
+
+    name: str
+
+
 @router.post("/api/domains", status_code=201)
-def add_domain(request: Request, body: dict):
+def add_domain(request: Request, body: DomainIn):
     require_auth(request, scope="write")
-    name = normalize_domain(body.get("name", ""))
-    if not is_valid_domain(name, require_dot=True):
-        raise HTTPException(400, "Invalid domain name")
+    name = normalize_domain(body.name)
+    problem = domain_problem(name, require_dot=True)
+    if problem:
+        raise HTTPException(400, f"Invalid domain name: {DOMAIN_REASONS[problem]}")
     conn = get_db()
     conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (name,))
     conn.commit()
@@ -458,42 +547,147 @@ def add_domain(request: Request, body: dict):
     return {"name": name}
 
 
+def _log_domain_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
+    """The only trace a domain deletion leaves, so it carries what still holds the name.
+
+    An operator who removes a root domain and comes back a week later has the Logs screen and
+    nothing else: the pickers no longer list the name, and the rows still built on it never
+    said where it came from. The name also returns on its own -- `INSERT OR IGNORE INTO
+    domains` runs in the Docker discovery (`app/api/docker.py`) and in both provider imports
+    (`app/api/sync.py`) -- so the list can disagree with itself between two visits with no
+    record of why.
+    """
+    total = len(services) + len(templates)
+    if not total:
+        add_log("info", f"Domain deleted: {name}", conn)
+        return
+    holders = []
+    if services:
+        holders.append(plural(len(services), "service"))
+    if templates:
+        holders.append(plural(len(templates), "service template"))
+    names = name_list(services + templates)
+    add_log(
+        "warn",
+        f"Domain deleted: {name} -- {' and '.join(holders)} still "
+        f"{verb(total, 'uses', 'use')} the name and {verb(total, 'keeps', 'keep')} "
+        f"working ({names})",
+        conn,
+    )
+
+
 @router.delete("/api/domains/{name:path}")
 def delete_domain(name: str, request: Request):
+    """Delete a root domain by name. 404 when there is nothing by that name.
+
+    Two things were missing here and each hid the other. `add_domain` above stores
+    `normalize_domain(...)` -- trimmed, lower-cased, no trailing dot -- while this route put
+    the raw path segment into the DELETE, so `Example.test` matched nothing on an instance
+    holding `example.test`. And with no lookup and no read of the row count, matching nothing
+    was indistinguishable from deleting something: the answer was `{"ok": true}` either way.
+    The MCP bridge (`vauxtra_mcp/tools/admin.py::delete_domain`) hands that `ok` straight back
+    to its caller, so an assistant reports a domain removed that is still in the list. It is
+    the receipt-for-nothing `delete_webhook` closed in `app/api/webhooks.py`, and this was the
+    last DELETE route in the API still without the lookup the other ten do.
+    """
     require_auth(request, scope="write")
+    wanted = normalize_domain(name)
     conn = get_db()
-    conn.execute("DELETE FROM domains WHERE name=?", (name,))
-    conn.commit()
+    try:
+        if not conn.execute("SELECT name FROM domains WHERE name=?", (wanted,)).fetchone():
+            raise HTTPException(404, "Domain not found")
+        # Nothing is refused and nothing else is touched. `services.domain` and
+        # `service_templates.domain` hold the name as text with no reference declared, and no
+        # runtime path reads this table: the scheduler, the DNS push and the proxy push all
+        # work off `services.domain`, and the only readers of `domains` are the list route
+        # above, the three pickers it feeds and the backup. A service on a deleted domain goes
+        # on routing exactly as it did -- which is why these two lists are collected for the
+        # journal rather than for a refusal.
+        services = [
+            # `.strip(".")` the way every other fqdn in the API is built: an apex route
+            # stores an empty subdomain, and the naive join names it `.example.test`.
+            f"{r['subdomain']}.{r['domain']}".strip(".")
+            for r in conn.execute(
+                "SELECT subdomain, domain FROM services WHERE domain=? ORDER BY subdomain",
+                (wanted,),
+            )
+        ]
+        templates = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM service_templates WHERE domain=? ORDER BY name", (wanted,)
+            )
+        ]
+        conn.execute("DELETE FROM domains WHERE name=?", (wanted,))
+        _log_domain_removal(conn, wanted, services, templates)
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+async def _log_stream(request: Request):
+    """Push every log line written from now on, for as long as the credential holds.
+
+    Module level rather than a closure inside the route so the loop can be driven without
+    an HTTP client. It is the only place in this API where authorisation is a question
+    asked more than once, and `tests/test_session_and_headers.py` asks it here.
+    """
+    conn = get_db()
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()
     conn.close()
-    return {"ok": True}
+    last_id: int = row[0]
+
+    while True:
+        if await request.is_disconnected():
+            break
+        # Every other route settles authorisation once because it answers once. This one
+        # holds the socket open for as long as the browser keeps it and pushes every line
+        # the instance writes: a refused sign-in, a key created and the scopes it carries,
+        # a service changed. Settling it once at connect time meant the one move an
+        # operator makes after "I think someone has my session" -- changing the password,
+        # which raises the stored epoch and refuses that cookie on every later request --
+        # left the thief's live feed running until they closed the tab, and revoking a key
+        # did the same to a key. Asking again each tick re-reads both: the epoch, and the
+        # key row revocation deletes. It costs one small read of a local file every 2 s.
+        #
+        # Before the read, not after it, so no line written after the credential died is
+        # sent. The browser sees the stream end, falls back to polling, and the poll comes
+        # back 401, which is what puts the login screen up.
+        #
+        # `scope="admin"` and not a bare "is this caller someone", which is what this asked
+        # while the door below asked the same weak question. Now that both ask for `admin`,
+        # a tick that settled for less would be a gate that reopens two seconds after it
+        # closes: the stream would outlive any narrowing of the credential that opened it,
+        # which is the whole defect this loop exists to prevent, one rung lower down.
+        if not is_authorized(request, scope="admin"):
+            break
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, level, message, created_at FROM logs "
+            "WHERE id > ? ORDER BY id ASC LIMIT 50",
+            (last_id,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            last_id = r["id"]
+            yield {"data": json.dumps(dict(r))}
+        await asyncio.sleep(2)
 
 
 @router.get("/api/logs/stream")
 async def stream_logs(request: Request):
-    """Server-Sent Events stream: pushes new log rows every 2 s."""
-    require_auth(request)
+    """Server-Sent Events stream: pushes new log rows every 2 s.
+
+    Checked here so a caller with no credential gets a 401 rather than an empty stream,
+    and checked again on every tick inside `_log_stream`, which is what ends a stream the
+    password change or the key revocation was meant to end.
+
+    `admin`, like `GET /api/logs` it streams and like `POST /api/logs/clear` that empties
+    it: this is the live form of the same file, and a scope that would be wrong to hand the
+    file to is no more right for a feed of it as it is written.
+    """
+    require_auth(request, scope="admin")
     if not _HAS_SSE:
         raise HTTPException(500, "Package 'sse-starlette' not installed — rebuild the Docker image.")
-
-    async def generator():
-        conn = get_db()
-        row  = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()
-        conn.close()
-        last_id: int = row[0]
-
-        while True:
-            if await request.is_disconnected():
-                break
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT id, level, message, created_at FROM logs "
-                "WHERE id > ? ORDER BY id ASC LIMIT 50",
-                (last_id,),
-            ).fetchall()
-            conn.close()
-            for r in rows:
-                last_id = r["id"]
-                yield {"data": json.dumps(dict(r))}
-            await asyncio.sleep(2)
-
-    return _SSEResponse(generator())
+    return _SSEResponse(_log_stream(request))

@@ -372,5 +372,167 @@ class BulkDeleteMatchesTheSingleDeleteTests(_DeleteTestCase):
         self.assertIn("NPM", result["errors"][0])
 
 
+class WebhooksAimedAtTheServiceAreNamedTests(_DeleteTestCase):
+    """A notification rule pointed at this service, and the deletion left it aimed at a ghost.
+
+    `service_alerts` names a service with a real foreign key and `ON DELETE CASCADE` takes
+    those rows out with it. `webhooks.scope_ref_id` names one without: a bare INTEGER, no
+    clause, nothing fires. The row outlives the service still holding its id,
+    `_service_matches_scope` answers False for every service from then on, and the Settings
+    list goes on showing it enabled. Dead, and indistinguishable from working.
+
+    Deleting a service has no "something still depends on this" dialog to put that in -- the
+    confirmation is built in the browser before any request is sent -- so the journal is the
+    only place it can be said, and `test_the_row_survives_with_its_dead_scope` is why it has
+    to be said at all.
+    """
+
+    def _add_webhook(self, name: str, sid, *, scope_type="service", enabled=1) -> int:
+        conn = models.get_db()
+        cur = conn.execute(
+            """INSERT INTO webhooks (name, url, enabled, scope_type, scope_ref_id)
+               VALUES (?, 'json://hook.test/x', ?, ?, ?)""",
+            (name, enabled, scope_type, sid),
+        )
+        wid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return wid
+
+    def _bulk_delete(self, ids):
+        body = services_api._BulkActionBody(ids=ids, action="delete")
+        return services_api.bulk_action(body, _request("POST"))
+
+    def _webhook_lines(self) -> list[str]:
+        return [m for m in self._messages() if "notification webhook" in m]
+
+    def test_the_journal_names_the_webhook_the_deletion_silenced(self):
+        sid = self._add_service()
+        self._add_webhook("on-call", sid)
+
+        services_api.delete_service(sid, _request())
+
+        lines = self._webhook_lines()
+        self.assertEqual(len(lines), 1, self._messages())
+        self.assertIn(self.HOST, lines[0])
+        self.assertIn("on-call", lines[0])
+        self.assertIn("1 notification webhook was scoped to it", lines[0])
+
+    def test_two_of_them_agree_with_the_number(self):
+        sid = self._add_service()
+        self._add_webhook("on-call", sid)
+        self._add_webhook("pager", sid)
+
+        services_api.delete_service(sid, _request())
+
+        line = self._webhook_lines()[0]
+        self.assertIn("2 notification webhooks were scoped to it", line)
+        self.assertIn("match nothing", line)
+        self.assertIn("on-call", line)
+        self.assertIn("pager", line)
+
+    def test_a_webhook_aimed_at_another_service_is_left_out_of_it(self):
+        """Without this the census could be a constant and every test above would pass."""
+        sid = self._add_service()
+        other = self._add_service(subdomain="other")
+        self._add_webhook("elsewhere", other)
+
+        services_api.delete_service(sid, _request())
+
+        self.assertEqual(self._webhook_lines(), [], self._messages())
+
+    def test_a_webhook_scoped_to_everything_is_not_named_either(self):
+        """`scope_type='all'` never named a service. Reading the id without the word beside
+        it would have claimed this one the moment a service happened to carry a matching
+        id -- and a warning that fires on every deletion is not a warning."""
+        sid = self._add_service()
+        self._add_webhook("everything", None, scope_type="all")
+
+        services_api.delete_service(sid, _request())
+
+        self.assertEqual(self._webhook_lines(), [], self._messages())
+
+    def test_a_webhook_scoped_to_a_provider_is_not_this_deletion_business(self):
+        """Same id space, different meaning. `scope_ref_id = 1` under `scope_type='provider'`
+        is provider 1, and deleting service 1 has nothing to do with it."""
+        sid = self._add_service()
+        self._add_webhook("provider-watch", sid, scope_type="provider")
+
+        services_api.delete_service(sid, _request())
+
+        self.assertEqual(self._webhook_lines(), [], self._messages())
+
+    def test_the_row_survives_with_its_dead_scope_which_is_why_it_is_said(self):
+        """The measurement the journal line rests on, next to the one that does cascade.
+
+        `service_alerts` declared its reference and the schema cleans it up. `webhooks`
+        did not, and nothing does. If this ever starts failing because the deletion removes
+        or disables the webhook, the journal line has to be rewritten: it tells the operator
+        the rule is still there, still on, and still pointing at nothing.
+        """
+        sid = self._add_service()
+        wid = self._add_webhook("on-call", sid)
+        conn = models.get_db()
+        conn.execute(
+            "INSERT INTO service_alerts (service_id, webhook_id) VALUES (?,?)", (sid, wid)
+        )
+        conn.commit()
+        conn.close()
+
+        services_api.delete_service(sid, _request())
+
+        conn = models.get_db()
+        row = conn.execute(
+            "SELECT enabled, scope_type, scope_ref_id FROM webhooks WHERE id=?", (wid,)
+        ).fetchone()
+        alerts = conn.execute("SELECT COUNT(*) AS n FROM service_alerts").fetchone()["n"]
+        conn.close()
+        self.assertEqual(alerts, 0, "the declared reference cascades, as designed")
+        self.assertIsNotNone(row, "the undeclared one does not")
+        self.assertEqual(row["enabled"], 1, "still on")
+        self.assertEqual(row["scope_ref_id"], sid, "still pointing at the service that is gone")
+
+    def test_the_bulk_delete_leaves_the_same_trace(self):
+        """Selecting rows in the table has to say what deleting them one by one would."""
+        sid = self._add_service()
+        self._add_webhook("on-call", sid)
+
+        self._bulk_delete([sid])
+
+        lines = self._webhook_lines()
+        self.assertEqual(len(lines), 1, self._messages())
+        self.assertIn("on-call", lines[0])
+        self.assertIn("1 notification webhook was scoped to it", lines[0])
+
+    def test_two_webhooks_from_one_batch_share_a_single_line(self):
+        """Ten rows selected in the table with a rule each are one thing that happened.
+
+        A webhook holds one `scope_ref_id`, so no rule can be named twice by a batch. What
+        can go wrong is the line: written inside the loop it becomes one warning per service,
+        and the operator scrolls past nine of them to learn the same fact once."""
+        first = self._add_service()
+        second = self._add_service(subdomain="second")
+        self._add_webhook("on-call", first)
+        self._add_webhook("pager", second)
+
+        self._bulk_delete([first, second])
+
+        lines = self._webhook_lines()
+        self.assertEqual(len(lines), 1, self._messages())
+        self.assertIn("2 notification webhooks were scoped to it", lines[0])
+        self.assertIn("on-call", lines[0])
+        self.assertIn("pager", lines[0])
+
+    def test_a_deletion_with_no_webhook_at_all_stays_quiet(self):
+        """The other half of a warning that means something: it is absent when nothing is
+        wrong. Three deletions above would read the same if this line were unconditional."""
+        sid = self._add_service()
+
+        services_api.delete_service(sid, _request())
+
+        self.assertEqual(self._webhook_lines(), [], self._messages())
+        self.assertIn(f"Service deleted: {self.HOST}", self._messages())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

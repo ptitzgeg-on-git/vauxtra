@@ -7,7 +7,7 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 ## Prerequisites
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
-2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`; `write` covers every tool except the admin ones (`change_password`, backup/restore, factory reset, API key management).
+2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `get_logs`, `clear_logs`, `stream_logs_snapshot`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, and `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches.
 3. Python 3.12+ with dependencies installed:
 
 ```bash
@@ -109,7 +109,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `toggle_service` | Enable or disable a service without touching its provider routes |
 | `check_service_health` | Run a live health/TCP and DNS check for one service |
 | `get_services_history` | Last 24 h of uptime history for every service |
-| `bulk_service_action` | Enable, disable or delete several services at once |
+| `bulk_service_action` | Enable, disable or delete several services at once (`action` is one of those three words) |
 | `suggest_public_targets` | Suggest WAN/public DNS targets from current connectivity |
 | `sync_services_from_providers` | Discover services already configured in the providers |
 | `import_services_from_sync` | Import what `sync_services_from_providers` found |
@@ -139,7 +139,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `get_provider_types` | Supported provider types, their capabilities and required fields |
 | `create_provider` | Add a provider integration |
 | `update_provider` | Update a provider; only the fields you send are changed |
-| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them) |
+| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them, `withdraw=True` also takes their records down at the provider first) |
 | `test_provider` | Test a provider's connection and validate its credentials |
 | `test_provider_connection` | Same test, returning structured diagnostics |
 | `validate_provider_draft` | Validate a provider's settings before creating it (no DB write) |
@@ -160,14 +160,14 @@ provider rows follow, so reaching underneath them is a way to manufacture drift.
 | `create_template` | Create a template |
 | `update_template` | Replace a template's settings (full replacement, not a patch) |
 | `delete_template` | Delete a template; services already created from it are untouched |
-| `apply_template` | Create a service from a template |
+| `apply_template` | Create a service from a template; refuses when neither the call nor the template supplies a domain and a port |
 
 ### Monitoring (`tools/monitoring.py`)
 
 | Tool | Description |
 |---|---|
 | `get_health` | DB status, latency, disk usage, version |
-| `get_logs` | Recent operational logs, filterable by level |
+| `get_logs` | Recent operational logs, filterable by level; needs `admin`, like the file it reads |
 | `get_certificates` | TLS certificates held by the proxy providers |
 | `get_certificate_expiry` | The same certificates with days remaining, sorted by urgency |
 | `check_all_services` | Trigger a health-check pass over every service |
@@ -211,7 +211,7 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 | Tool | Description |
 |---|---|
 | `list_webhooks` | List targets; URLs come back masked (`discord://***`) and cannot be written back |
-| `create_webhook` | Create a notification target |
+| `create_webhook` | Create a notification target; `enabled=False` creates one that is configured but silent |
 | `update_webhook` | Update a target; omitted fields keep their stored value |
 | `delete_webhook` | Delete a target |
 | `test_webhook_url` | Test an Apprise URL without creating anything |
@@ -232,8 +232,8 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 
 | Tool | Description |
 |---|---|
-| `clear_logs` | Delete every log entry |
-| `stream_logs_snapshot` | Read a bounded slice of the SSE log stream; a quiet instance answers `timed_out: true` with whatever it collected |
+| `clear_logs` | Delete every log entry; needs `admin`, and records the clear |
+| `stream_logs_snapshot` | Read a bounded slice of the SSE log stream; needs `admin` like `get_logs`; a quiet instance answers `timed_out: true` with whatever it collected |
 
 **Backup and reset**
 
@@ -243,6 +243,67 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 | `create_secure_backup` | Export a backup with credentials encrypted by a passphrase |
 | `restore_backup` | Restore from a backup payload — this replaces current data |
 | `reset_all_data` | Delete all application data |
+
+---
+
+## What the tools refuse before calling
+
+A tool's parameters are its whole contract. FastMCP builds the schema from the function
+signature, and a normal install publishes no OpenAPI document to derive one from
+(`DEBUG` is false, so `openapi_url` is None), so whatever the route enforces has to be
+repeated here by hand. Where that had not been done the bridge sent bodies the API refused
+-- and, in one case, a body it accepted that nobody had asked for.
+
+| Parameter | Accepted values | Tools |
+|---|---|---|
+| `forward_scheme` | `http`, `https` | `create_service`, `update_service`, `create_template`, `update_template`, `run_preflight` |
+| `expose_mode` | `proxy_dns`, `tunnel` | `create_service`, `create_template`, `update_template`, `run_preflight` |
+| `public_target_mode` | `auto`, `manual` | the same four, plus `create_service` |
+| `target_port` | 1 to 65535 | every tool that takes a port |
+| `action` | `enable`, `disable`, `delete` | `bulk_service_action` |
+| `type` | the ten provider types | `create_provider`, `validate_provider_draft` |
+| `color` | the fourteen tag colours | `create_tag`, `update_tag` |
+| `scopes` | `read`, `write`, `admin`, at least one | `create_api_key` |
+
+A value outside one of these sets is refused by the schema, before any request is built.
+Two of them are worth knowing about specifically:
+
+- `bulk_service_action` used to take any string and let the API answer 400. `delete` is one
+  of the three words, so the round trip now being saved is one that deletes services.
+- a tag colour the API does not know is not refused by the API: it is quietly stored as
+  blue, with a 200 and no mention of the substitution. The bridge is the only place that
+  can tell you the colour you asked for does not exist.
+
+`apply_template` is the one place where the tool is deliberately looser than the route.
+`POST /api/services` requires a domain and a port, and a template may legitimately carry
+neither -- that is what lets one template serve several domains. So both stay optional on
+the tool and are taken from the template when the call omits them; when neither side has a
+value, the call is refused and nothing is sent. It used to fall back to `or 80` and `or ""`.
+The empty domain came back as a 422, but port 80 did not, because 80 is a valid port: a
+call that named no port, against a template that sets none, created a service pointing at a
+port nobody had chosen, and reported success.
+
+Labels are set on a service, not added to it. `create_service`, `update_service`,
+`create_template` and `update_template` all take `tag_ids` and `environment_ids`, and
+`PUT /api/services` replaces both lists rather than merging: `tag_ids=[3]` on a service
+carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]` strips every label. To add
+one, read the service back with `get_service` and send its ids plus the new one; omitting
+the argument keeps what is already there. An id that names no row is refused with 400, and
+the route names it, so a typo creates nothing rather than a service missing a label.
+
+Neither parameter used to exist. `create_service` sent an empty list it declared no way to
+fill and `update_service` declared neither at all, so every service the bridge created was
+unlabelled and nothing could label it afterwards: the eight tools for building tags and
+environments had nowhere to put one except a template, and `apply_template` froze whatever
+the template carried at the moment it was applied.
+
+One rule no parameter schema can carry: `expose_mode: tunnel` also needs a
+`tunnel_provider_id`. That is a rule about a pair of fields, and a schema describes one
+field at a time, so the route is still what decides.
+
+`scripts/check_api_mcp_parity.py` compares every tool's parameters against the model its
+route validates -- names, required or optional, types, value sets, bounds -- and fails the
+build on any difference that is not in its commented exemption list.
 
 ---
 
@@ -257,6 +318,60 @@ ApiError: POST /api/settings -> 400: Nothing was saved -- check_interval: must b
 `raise_for_status()` used to produce `Client error '400 Bad Request' for url ...`, which
 threw the `detail` away — and since 1.1 the detail is the useful part: which setting was
 refused and why, which provider still holds a service, that a hostname is already taken.
+
+A `403` is the one worth reading differently. It says nothing about the request: it says the
+key does not carry the scope the route asks for, and the detail names which one.
+
+```
+ApiError: POST /api/logs/clear -> 403: Insufficient scope: 'admin' required
+```
+
+Retrying will not help, and neither will changing the arguments. The tools that need `admin`
+are named under **Prerequisites** above; every other tool needs `write`. Ask for a key with the
+scope the detail names, or use the panel, where a signed-in session is always admin.
+
+---
+
+## When a call half-succeeds
+
+Some calls do part of what they were asked and answer success anyway. Storing a service
+and publishing it are separate steps, and so are writing a setting and handing it to the
+running scheduler: the first can succeed while the second is refused. The answer says so
+— but not in its status code, and not reliably in `ok`. It says so in a list.
+
+`POST /api/services` is the only route that marks it in the status at all, answering 207
+instead of 201 when the row was stored but the tunnel route, the proxy host or the DNS
+record was refused. `check()` passes a 207 through as a normal answer, which is right —
+the call did do something — so a caller that reads only the id and the fqdn reports a
+service created and reachable while nothing routes to that hostname. No other route gives
+any sign in its status code.
+
+`ok` is no better as a signal, because the two deletion routes mean opposite things by it.
+`DELETE /api/services/{id}` answers `ok: true` even when a provider refused, since the
+service really is gone from Vauxtra and a false `ok` would only invite a retry that can
+now answer nothing but 404. `DELETE /api/providers/{id}` answers `ok: false` in the same
+situation, since the provider row is deleted either way and a false `ok` there means
+"deleted, but something is still published". Read the list, not the flag.
+
+Fourteen answers across eleven tools carry one:
+
+| Key | Answered by | What a non-empty one means |
+| --- | --- | --- |
+| `errors` | `create_service`, `apply_template`, `update_service`, `toggle_service`, `delete_service`, `bulk_service_action`, `delete_provider`, `import_docker_containers`, `import_services_from_sync` | A record Vauxtra could not publish, or could not withdraw. After a deletion those are still live on their provider, still resolving, with nothing left in Vauxtra pointing at them. |
+| `not_applied` | `save_settings` | The value is in the database and the settings page reads it back, but the running scheduler never received it: the checks go on at the old cadence until Vauxtra restarts. |
+| `unreachable` | `get_certificate_expiry` | Enabled providers this call could not read. The counts cover only the rest, so the answer is partial rather than reassuring. |
+| `skipped` | `import_docker_containers`, `import_services_from_sync` | Nothing to do: a name Vauxtra already tracks, or the 2nd..Nth hostname of a proxy host that answers for several. The normal result of re-importing a scan. |
+| `ignored` | `save_settings` | Read-only keys handed back untouched, `schema_version` and `setup_completed`. Never a refusal. |
+
+Those last two rows are the distinction worth keeping. A `skipped` line needs no action, an
+`errors` line names something a person has to go and fix, and folding them together into
+"some failed" is wrong in both directions: it invents work that does not exist and it
+buries work that does.
+
+All of this is written on the tools themselves, because FastMCP publishes the signature
+and the docstring and nothing else — there is no other place an agent can read it.
+`scripts/check_api_mcp_parity.py` fails the build when a route can answer with one of
+these keys and a tool serving that route never names it.
 
 ---
 
@@ -281,7 +396,10 @@ Once connected to Claude Desktop or Cursor:
   itself like a password.
 - Scopes are hierarchical: `admin` satisfies `write`, `write` satisfies `read`. A `read`
   key is refused with `403 Insufficient scope` on anything that changes state or sends
-  something outward, including the test-send and preflight tools.
+  something outward, including the test-send and preflight tools, and on the three log
+  tools. `get_logs`, `stream_logs_snapshot` and `clear_logs` read, follow and erase one
+  file, and that file holds refused sign-ins, password changes, and the name and the reach
+  of every key on the instance.
 - Never commit the key to git — pass it via environment variable only.
 - The MCP server runs locally (stdio) by default, so the key never leaves your machine.
 - For HTTP mode, secure the endpoint (reverse proxy + TLS + IP allowlist).

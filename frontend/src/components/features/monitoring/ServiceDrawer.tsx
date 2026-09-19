@@ -11,6 +11,8 @@ import {
   EmptyState,
   InlineAlert,
   Separator,
+  Skeleton,
+  SkeletonRow,
   Tab,
   TabList,
   TabPanel,
@@ -82,9 +84,13 @@ export interface ServiceDrawerProps {
   history: ServiceHistoryPoint[];
   /** The history request failed; an empty `history` says nothing about the service. */
   historyError?: boolean;
+  /** The history request has not answered yet; an empty `history` says nothing either. */
+  historyLoading?: boolean;
   logs: LogEntry[];
   /** Same, for the log request behind the third tab. */
   logsError?: boolean;
+  /** Same, for that request. */
+  logsLoading?: boolean;
   probe: LatencyProbe | undefined;
   checking: boolean;
   onCheck: (serviceId: number) => void;
@@ -97,8 +103,10 @@ export function ServiceDrawer({
   service,
   history,
   historyError = false,
+  historyLoading = false,
   logs,
   logsError = false,
+  logsLoading = false,
   probe,
   checking,
   onCheck,
@@ -211,6 +219,7 @@ export function ServiceDrawer({
 
         <UptimeStrip
           summary={summary}
+          emptyLabel={historyError ? t('monitoring.uptime.history_failed') : undefined}
           heightClass="h-7"
           label={
             availability
@@ -235,7 +244,13 @@ export function ServiceDrawer({
           </TabList>
 
           <TabPanel value="timeline" className="pt-4">
-            {runs.length === 0 && historyError && !tunnel ? (
+            {historyLoading ? (
+              <div className="space-y-3">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : runs.length === 0 && historyError && !tunnel ? (
               <InlineAlert tone="warning" title={t('monitoring.history.load_failed')}>
                 {t('monitoring.history.load_failed_hint')}
               </InlineAlert>
@@ -294,7 +309,13 @@ export function ServiceDrawer({
           </TabPanel>
 
           <TabPanel value="logs" className="pt-4">
-            {logs.length === 0 && logsError ? (
+            {logsLoading ? (
+              <div className="divide-y divide-border/60 rounded-xl border border-border">
+                {Array.from({ length: 4 }, (_, i) => (
+                  <SkeletonRow key={i} columns={2} />
+                ))}
+              </div>
+            ) : logs.length === 0 && logsError ? (
               <InlineAlert tone="warning" title={t('monitoring.logs.load_failed')}>
                 {t('monitoring.logs.load_failed_hint')}
               </InlineAlert>
@@ -318,7 +339,7 @@ export function ServiceDrawer({
                       <span className={cn('text-[11px] font-semibold uppercase', logTone(log.level))}>{log.level}</span>
                       <span className="text-[11px] text-muted-foreground">{formatDateTime(log.created_at)}</span>
                     </div>
-                    <p className="break-words text-xs leading-relaxed text-foreground">{log.message}</p>
+                    <p className="wrap-break-word text-xs leading-relaxed text-foreground">{log.message}</p>
                   </li>
                 ))}
               </ul>

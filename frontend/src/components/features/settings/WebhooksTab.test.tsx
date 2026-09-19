@@ -1,0 +1,348 @@
+/**
+ * A rule that is switched on and can never fire.
+ *
+ * `webhooks.scope_ref_id` names a provider or a service through a bare INTEGER column: no
+ * foreign key, so deleting the target cascades nothing and blanks nothing. The row survives
+ * with its scope intact, the scheduler's scope match answers false from then on for ever,
+ * and this tab used to render it as "Choose a provider" -- word for word the line a rule
+ * nobody had finished configuring gets. Two opposite states, one sentence.
+ *
+ * The trap in fixing that is the third state. Before the providers query answers, its list
+ * is empty too, and an id that matches nothing in an empty list is not a deleted provider:
+ * it is a provider nobody has fetched yet. Claiming "deleted" there would be a false alarm
+ * on every single load of the page, which is worse than the silence it replaced. So the
+ * claim is gated on `isSuccess`, and the loading case is a test of its own below.
+ *
+ * The fourth block below is about the list itself rather than one row's scope. `webhooks` is
+ * `data ?? []`, so until the request answers it is the same empty array an instance with no
+ * webhook has -- and this tab stated "No webhooks configured" from it on every cold load.
+ *
+ * `t()` gives back the key here -- `renderWithProviders` leaves out `I18nProvider` on
+ * purpose -- so these assertions survive any rewording in the eight locale files.
+ */
+
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { fireEvent, screen, within } from '@testing-library/react';
+import { renderWithProviders } from '@/test/render';
+import type { Provider, Service, Webhook } from '@/types/api';
+
+let webhookRows: Webhook[] = [];
+let providerRows: Provider[] = [];
+let serviceRows: Service[] = [];
+/** A query that never settles, which is what the first paint of this tab actually has. */
+let providersPending = false;
+/** A query that settles into `isError`, the other way a list is not an answer about anything. */
+let providersFail = false;
+let servicesPending = false;
+let servicesFail = false;
+/** The list this whole tab is made of, in flight. It is the first paint of every load. */
+let webhooksPending = false;
+let webhooksFail = false;
+
+vi.mock('@/api/client', () => ({
+  api: {
+    get: vi.fn((path: string) => {
+      if (path === '/webhooks') {
+        if (webhooksPending) return new Promise(() => {});
+        if (webhooksFail) return Promise.reject(new Error('webhooks unavailable'));
+        return Promise.resolve(webhookRows);
+      }
+      if (path === '/services') {
+        if (servicesPending) return new Promise(() => {});
+        if (servicesFail) return Promise.reject(new Error('services unavailable'));
+        return Promise.resolve(serviceRows);
+      }
+      if (path === '/providers') {
+        if (providersPending) return new Promise(() => {});
+        if (providersFail) return Promise.reject(new Error('providers unavailable'));
+        return Promise.resolve(providerRows);
+      }
+      return Promise.resolve([]);
+    }),
+    post: vi.fn(() => Promise.resolve({ ok: true })),
+    put: vi.fn(() => Promise.resolve({ ok: true })),
+    delete: vi.fn(() => Promise.resolve({ ok: true })),
+  },
+}));
+
+const { WebhooksTab } = await import('./WebhooksTab');
+
+const PROVIDER: Provider = {
+  id: 42,
+  name: 'cloudflare-home',
+  type: 'cloudflare',
+  url: 'https://api.cloudflare.com',
+  username: '',
+  enabled: true,
+  extra: {},
+  created_at: '2026-01-01T00:00:00Z',
+};
+
+const SERVICE: Service = {
+  id: 7,
+  subdomain: 'git',
+  domain: 'example.test',
+  target_ip: '10.0.0.10',
+  target_port: 3000,
+  forward_scheme: 'http',
+  websocket: false,
+  expose_mode: 'proxy_dns',
+  public_target_mode: 'manual',
+  auto_update_dns: false,
+  tunnel_hostname: '',
+  dns_ip: '',
+  npm_host_id: null,
+  dns_provider_id: null,
+  proxy_provider_id: null,
+  tunnel_provider_id: null,
+  enabled: true,
+  status: 'ok',
+  last_checked: null,
+  created_at: '2026-01-01T00:00:00Z',
+  tags: [],
+  environments: [],
+};
+
+function webhook(over: Partial<Webhook> = {}): Webhook {
+  return {
+    id: 1,
+    name: 'on-call',
+    url_masked: 'json://',
+    enabled: true,
+    created_at: '2026-01-01T00:00:00Z',
+    scope_type: 'provider',
+    scope_ref_id: PROVIDER.id,
+    repeat_interval_minutes: 0,
+    alert_on_any_down: false,
+    alert_on_any_up: false,
+    alert_on_integration_down: false,
+    alert_on_integration_up: false,
+    min_down_minutes: 0,
+    ...over,
+  };
+}
+
+/** The row itself, awaited, so nothing below races the three queries. */
+const row = () => screen.findByText('on-call');
+const brokenBadge = () => screen.queryByText('settings.webhooks.scope_gone_badge');
+
+describe('WebhooksTab, a scope whose target is gone', () => {
+  beforeEach(() => {
+    webhookRows = [webhook()];
+    providerRows = [PROVIDER];
+    serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
+    providersPending = false;
+    providersFail = false;
+    servicesPending = false;
+    servicesFail = false;
+    vi.clearAllMocks();
+  });
+
+  it('names the provider while the provider is still there', async () => {
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(screen.getByText('settings.webhooks.scope_provider_named')).toBeInTheDocument();
+    expect(brokenBadge()).toBeNull();
+  });
+
+  it('says the provider is gone once the list has come back without it', async () => {
+    providerRows = [];
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    // The enabled badge next to this one is telling the truth -- the rule is switched on --
+    // and that is exactly the problem: on its own it reads as a rule that works.
+    expect(await screen.findByText('settings.webhooks.scope_provider_gone')).toBeInTheDocument();
+    expect(brokenBadge()).not.toBeNull();
+  });
+
+  it('says the same about a service that was deleted under it', async () => {
+    webhookRows = [webhook({ scope_type: 'service', scope_ref_id: SERVICE.id })];
+    serviceRows = [];
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(await screen.findByText('settings.webhooks.scope_service_gone')).toBeInTheDocument();
+    expect(brokenBadge()).not.toBeNull();
+  });
+});
+
+describe('WebhooksTab, what is not a deleted target', () => {
+  beforeEach(() => {
+    webhookRows = [webhook()];
+    providerRows = [PROVIDER];
+    serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
+    providersPending = false;
+    providersFail = false;
+    servicesPending = false;
+    servicesFail = false;
+    vi.clearAllMocks();
+  });
+
+  it('claims nothing while the providers have not answered yet', async () => {
+    // The false alarm this gate exists for: an empty list is the first paint of every load,
+    // and an unmatched id in it means "not fetched", never "deleted".
+    providersPending = true;
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(screen.queryByText('settings.webhooks.scope_provider_gone')).toBeNull();
+    expect(brokenBadge()).toBeNull();
+    expect(screen.getByText('settings.webhooks.choose_provider')).toBeInTheDocument();
+  });
+
+  it('leaves a scope nobody has chosen yet alone', async () => {
+    // A NULL target is a rule half configured, not a rule pointed at something deleted. It
+    // keeps the placeholder it always had, and gets no warning.
+    webhookRows = [webhook({ scope_ref_id: null })];
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(screen.getByText('settings.webhooks.choose_provider')).toBeInTheDocument();
+    expect(brokenBadge()).toBeNull();
+  });
+
+  it('says nothing at all about a rule scoped to everything', async () => {
+    webhookRows = [webhook({ scope_type: 'all', scope_ref_id: null })];
+    providerRows = [];
+    serviceRows = [];
+    renderWithProviders(<WebhooksTab />);
+    // Read inside the row: "All services and integrations" is also an option in the add
+    // form above, and a match there would say nothing about what the row claims.
+    const card = (await row()).closest('li') as HTMLElement;
+
+    expect(within(card).getByText('settings.webhooks.scope_all')).toBeInTheDocument();
+    expect(brokenBadge()).toBeNull();
+  });
+});
+
+describe('WebhooksTab, a scope with nothing to point at', () => {
+  beforeEach(() => {
+    webhookRows = [webhook()];
+    providerRows = [PROVIDER];
+    serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
+    providersPending = false;
+    providersFail = false;
+    servicesPending = false;
+    servicesFail = false;
+    vi.clearAllMocks();
+  });
+
+  it('says the instance has none once the list has come back without any', async () => {
+    providerRows = [];
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(await screen.findByText('settings.webhooks.scope_no_providers')).toBeInTheDocument();
+    expect(screen.queryByText('settings.webhooks.scope_providers_unknown')).toBeNull();
+  });
+
+  it('claims nothing about the instance while the list is still in flight', async () => {
+    // What this tab used to say on every single load, about an instance nobody had asked yet.
+    providersPending = true;
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(await screen.findByText('settings.webhooks.scope_providers_unknown')).toBeInTheDocument();
+    expect(screen.queryByText('settings.webhooks.scope_no_providers')).toBeNull();
+  });
+
+  it('claims nothing about the instance when the list could not be loaded', async () => {
+    // And this is the state it used to say it in for good, with no request left to correct it.
+    providersFail = true;
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(await screen.findByText('settings.webhooks.scope_providers_unknown')).toBeInTheDocument();
+    expect(screen.queryByText('settings.webhooks.scope_no_providers')).toBeNull();
+  });
+
+  it('says the same about the endpoints, which are a second list of their own', async () => {
+    servicesFail = true;
+    renderWithProviders(<WebhooksTab />);
+    await row();
+
+    expect(await screen.findByText('settings.webhooks.scope_services_unknown')).toBeInTheDocument();
+    expect(screen.queryByText('settings.webhooks.scope_no_services')).toBeNull();
+  });
+
+  it('leaves the option shut either way, so no rule is saved pointing at nothing', async () => {
+    // Only the sentence changes. An unread list gives `firstRefFor` nothing to return, so
+    // opening the option here would save `scope_ref_id: null` and mute the rule instead.
+    providersFail = true;
+    renderWithProviders(<WebhooksTab />);
+    await row();
+    await screen.findByText('settings.webhooks.scope_providers_unknown');
+
+    expect(screen.getByRole('option', { name: 'settings.webhooks.scope_provider' })).toBeDisabled();
+  });
+
+  it('refuses the scope even when the shut option is set past the browser', async () => {
+    // The disabled attribute is the braces; `scopeUnavailable` in the change handler is the
+    // belt, and it is the one that decides what gets saved. Nothing in this file tested it
+    // on an unread list, which is the state this wave adds.
+    providersFail = true;
+    renderWithProviders(<WebhooksTab />);
+    await row();
+    await screen.findByText('settings.webhooks.scope_providers_unknown');
+
+    const select = screen
+      .getByRole('option', { name: 'settings.webhooks.scope_provider' })
+      .closest('select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'provider' } });
+
+    expect(select.value).toBe('all');
+  });
+});
+
+describe('WebhooksTab, the list itself before it has been read', () => {
+  beforeEach(() => {
+    webhookRows = [webhook()];
+    providerRows = [PROVIDER];
+    serviceRows = [SERVICE];
+    webhooksPending = false;
+    webhooksFail = false;
+    providersPending = false;
+    providersFail = false;
+    servicesPending = false;
+    servicesFail = false;
+    vi.clearAllMocks();
+  });
+
+  it('does not say the instance has no webhook while the list is in flight', async () => {
+    // The four sibling tabs on this screen paint a skeleton at this rung. This one went
+    // straight from the header to the empty state, so the sentence an operator read first
+    // on every cold load was a statement about an instance nobody had asked yet.
+    webhooksPending = true;
+    renderWithProviders(<WebhooksTab />);
+    await screen.findByText('settings.webhooks.title');
+
+    expect(screen.queryByText('settings.webhooks.empty')).toBeNull();
+    // And not by rendering nothing either: something has to hold the place of the list.
+    expect(document.querySelectorAll('.animate-shimmer').length).toBeGreaterThan(0);
+  });
+
+  it('still says it once the list has come back with nothing in it', async () => {
+    // The claim is not withdrawn, only postponed until there is an answer behind it.
+    webhookRows = [];
+    renderWithProviders(<WebhooksTab />);
+
+    expect(await screen.findByText('settings.webhooks.empty')).toBeInTheDocument();
+    expect(document.querySelectorAll('.animate-shimmer')).toHaveLength(0);
+  });
+
+  it('says the request failed rather than that there is nothing to show', async () => {
+    webhooksFail = true;
+    renderWithProviders(<WebhooksTab />);
+
+    expect(await screen.findByText('settings.webhooks.load_failed')).toBeInTheDocument();
+    expect(screen.queryByText('settings.webhooks.empty')).toBeNull();
+  });
+});

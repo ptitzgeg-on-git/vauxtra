@@ -3,15 +3,23 @@
  * download: a ring that pulses out, a check that draws itself once the component mounts, and a
  * dozen absolutely positioned chips that fall. `index.css` already neutralises every animation
  * under `prefers-reduced-motion`, so none of this needs a `motion-reduce:` variant.
+ *
+ * Two of the four summary rows are counted from a read this screen fires itself, and both used
+ * to print `formatNumber(rows.length)` whatever the read did. A request that never answered
+ * left a zero beside "Notification targets" on the one screen whose whole job is to tell the
+ * operator what they just configured, three steps after they configured it. `StatRow` settled
+ * the rule for this repo -- zero and "we could not ask" look identical as a number, and only
+ * one of them means everything is fine -- and six tiles on the dashboard already follow it.
  */
 
 import { useEffect, useState } from 'react';
 import { ArrowRight, Bell, BookOpen, Container, GitMerge, Lock, Settings, Unlock } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Badge, Button, Card, cn, toneClasses, type Tone } from '@/components/ui';
+import { Badge, Button, Card, InlineAlert, cn, toneClasses, type Tone } from '@/components/ui';
 import { useDockerEndpoints } from '@/hooks/useDockerEndpoints';
 import { useWebhookActions } from '@/hooks/useWebhookActions';
 import { useFormat } from '@/hooks/useFormat';
+import { EM_DASH } from '@/lib/format';
 import { useT } from '@/i18n';
 import type { ProviderItem } from './types';
 
@@ -82,9 +90,16 @@ function Celebration({ drawn }: { drawn: boolean }) {
 export function DoneStep({ skipPassword, providers, onFinish, finishing }: DoneStepProps) {
   const t = useT();
   const { formatNumber } = useFormat();
-  const { endpoints } = useDockerEndpoints();
-  const { webhooks } = useWebhookActions();
+  const { endpoints, endpointsQuery } = useDockerEndpoints();
+  const { webhooks, webhooksQuery } = useWebhookActions();
   const [drawn, setDrawn] = useState(false);
+
+  // A read still in flight is unknown too: the celebration mounts the instant the wizard
+  // finishes, so both requests are typically still open on the first paint, and a figure that
+  // settles a moment later is better than a zero that was never true.
+  const webhooksUnread = webhooksQuery.isLoading || webhooksQuery.isError;
+  const endpointsUnread = endpointsQuery.isLoading || endpointsQuery.isError;
+  const anyUnread = webhooksQuery.isError || endpointsQuery.isError;
 
   useEffect(() => {
     const id = window.requestAnimationFrame(() => setDrawn(true));
@@ -96,7 +111,10 @@ export function DoneStep({ skipPassword, providers, onFinish, finishing }: DoneS
       key: 'password',
       icon: skipPassword ? <Unlock /> : <Lock />,
       tone: (skipPassword ? 'warning' : 'success') as Tone,
-      label: skipPassword ? t('setup.done.summary_open') : t('setup.done.summary_password'),
+      // One label, because both branches said "Panel access" in all eight locales.
+      // What changes with `skipPassword` is the value beside it, and the icon and the
+      // tone around it.
+      label: t('setup.done.summary_access'),
       value: skipPassword ? t('setup.done.value_open') : t('setup.done.value_protected'),
       active: true,
     },
@@ -113,16 +131,16 @@ export function DoneStep({ skipPassword, providers, onFinish, finishing }: DoneS
       icon: <Bell />,
       tone: 'info' as Tone,
       label: t('setup.done.summary_webhooks'),
-      value: formatNumber(webhooks.length),
-      active: webhooks.length > 0,
+      value: webhooksUnread ? EM_DASH : formatNumber(webhooks.length),
+      active: !webhooksUnread && webhooks.length > 0,
     },
     {
       key: 'docker',
       icon: <Container />,
       tone: 'info' as Tone,
       label: t('setup.done.summary_docker'),
-      value: formatNumber(endpoints.length),
-      active: endpoints.length > 0,
+      value: endpointsUnread ? EM_DASH : formatNumber(endpoints.length),
+      active: !endpointsUnread && endpoints.length > 0,
     },
   ];
 
@@ -163,6 +181,31 @@ export function DoneStep({ skipPassword, providers, onFinish, finishing }: DoneS
             );
           })}
         </dl>
+
+        {anyUnread && (
+          /* Only a failed read draws this, not one still in flight: the dash is enough while
+             the request is open, and a notice that appears for a moment on every visit would
+             be noise on the one screen meant to feel finished. */
+          <InlineAlert
+            className="mt-4"
+            tone="warning"
+            title={t('setup.done.counts_unread')}
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (webhooksQuery.isError) void webhooksQuery.refetch();
+                  if (endpointsQuery.isError) void endpointsQuery.refetch();
+                }}
+              >
+                {t('common.retry')}
+              </Button>
+            }
+          >
+            {t('setup.done.counts_unread_hint')}
+          </InlineAlert>
+        )}
       </Card>
 
       <div className="flex flex-col items-center gap-3">

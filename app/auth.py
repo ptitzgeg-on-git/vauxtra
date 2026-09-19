@@ -289,6 +289,14 @@ def get_session(request: Request) -> dict:
 
 # Scope hierarchy: admin > write > read. A granted scope satisfies any required
 # scope at its level or below (e.g. admin satisfies write; write satisfies read).
+# These keys are the third written copy of the scope vocabulary, and the only one that
+# decides anything at request time: `VALID_SCOPES` and the `Literal[...]` on
+# `ApiKeyCreate.scopes` (both in `app/api/api_keys.py`) guard what may be *created*, while
+# this dict is what `_scope_satisfies` weighs a stored scope against. A name that reaches
+# this dict without reaching those two cannot be granted; a name that reaches those two
+# without reaching this dict is read as -1 and satisfies nothing, so a key created with it
+# would authorize no route at all. `tests/test_api_key_scope_vocabulary.py` compares the
+# three as sets and names the file to fix when one drifts.
 _SCOPE_LEVEL = {"read": 0, "write": 1, "admin": 2}
 
 
@@ -329,12 +337,64 @@ def _get_auth_context(request: Request) -> dict | None:
             from app.api.api_keys import verify_api_key
             key_info = verify_api_key(token)
             if key_info:
-                return {"kind": "api_key", "scopes": list(key_info.get("scopes") or [])}
+                # This list is built in another file: `app.api.api_keys.verify_api_key` runs
+                # the stored column through `_split_scopes`, and nothing here reads that
+                # column. The seam is load-bearing and silent -- with that call replaced by a
+                # bare `split(",")`, a row holding `"read, write "` arrives as
+                # `["read", " write "]` and `_scope_satisfies(..., "write")` answers False, so
+                # the key keeps passing this branch while quietly losing a scope it was
+                # granted. `tests/test_api_key_scope_residues.py::ScopeReadingIsCoupled` pins
+                # both ends: the normalizing call there, and the refusal below.
+                scopes = list(key_info.get("scopes") or [])
+                # Weighed against `_SCOPE_LEVEL`, not against emptiness. A key granted
+                # nothing authenticates nothing, and so does a key whose only granted scope
+                # is a word this build has never heard of: `_scope_satisfies` already reads
+                # unknown values as -1, below every requirement, so such a key satisfies no
+                # scoped route -- but `require_auth(request)` with no scope never reaches
+                # `_scope_satisfies` at all, and used to accept it on every route that only
+                # asks "are you someone". A row holding `""` is what the creation hole wrote
+                # before it was closed; a row holding `"readd"` takes a direct write to the
+                # table, since creation validates against `VALID_SCOPES`.
+                known = [s for s in scopes if s in _SCOPE_LEVEL]
+                if not known:
+                    # Say which failure this is: from the caller the 401 is otherwise
+                    # indistinguishable from a revoked key.
+                    _logger.warning(
+                        "API key '%s' carries no scope this build knows (stored: %s), so it "
+                        "can authorize nothing and is refused. Revoke it and create a "
+                        "replacement granting at least one of %s.",
+                        key_info.get("name", "?"),
+                        scopes or "nothing",
+                        sorted(_SCOPE_LEVEL),
+                    )
+                    return None
+                return {"kind": "api_key", "scopes": scopes}
     return None
 
 
+def is_authorized(request: Request, scope: str | None = None) -> bool:
+    """`require_auth` asked as a question rather than raised as a refusal.
+
+    One caller needs the answer instead of the exception. `GET /api/logs/stream` holds the
+    socket open and re-asks on every tick, and what it must re-ask is the question its own
+    door asked -- not a weaker one. A tick that settles for "are you someone" behind a door
+    that demanded "are you admin" is a gate that reopens two seconds after it closed.
+
+    So the scope argument is spelt the same way here as in `require_auth`, and both go
+    through `_get_auth_context` and `_scope_satisfies`. There is no second reading of a
+    credential in this file for the two to disagree about.
+    """
+    ctx = _get_auth_context(request)
+    if ctx is None:
+        return False
+    if scope is None:
+        return True
+    return _scope_satisfies(ctx["scopes"], scope)
+
+
 def is_authenticated(request: Request) -> bool:
-    return _get_auth_context(request) is not None
+    """True when the caller presents any credential this build accepts, whatever its reach."""
+    return is_authorized(request)
 
 
 def require_auth(request: Request, scope: str | None = None) -> None:

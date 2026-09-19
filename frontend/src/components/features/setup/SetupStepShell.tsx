@@ -76,6 +76,7 @@ export function SetupStepShell({
   };
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a keyboard shortcut on the step container; it has no pointer affordance to match
     <div
       onKeyDown={handleKeyDown}
       className={cn('animate-in fade-in-up space-y-6', className)}

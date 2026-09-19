@@ -21,7 +21,7 @@ export function BrandMark({ size = 'md', withWordmark = false, className }: Bran
     <span className={cn('inline-flex select-none items-center gap-2.5', className)}>
       <svg
         viewBox="0 0 32 32"
-        className={cn('shrink-0 drop-shadow-sm', SIZES[size].box)}
+        className={cn('shrink-0 drop-shadow-xs', SIZES[size].box)}
         aria-hidden="true"
         focusable="false"
       >

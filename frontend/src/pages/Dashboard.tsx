@@ -6,6 +6,7 @@ import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { Button, InlineAlert, PageHeader } from '@/components/ui';
+import { certificateUrgency } from '@/components/features/certificates/certificates';
 import { ExposeModal } from '@/components/features/expose/ExposeModal';
 import { ProviderModal } from '@/components/features/ProviderModal';
 import { StatusPill } from '@/components/features/dashboard/StatusPill';
@@ -14,8 +15,8 @@ import { NeedsAttention, type AttentionItem } from '@/components/features/dashbo
 import { RecentActivity } from '@/components/features/dashboard/RecentActivity';
 import { IntegrationsGlance } from '@/components/features/dashboard/IntegrationsGlance';
 import { QuickActions } from '@/components/features/dashboard/QuickActions';
+import { useAuthStatus } from '@/hooks/useAuthStatus';
 import type {
-  AuthStatus,
   CertificateExpiryResponse,
   LogsResponse,
   Provider,
@@ -138,12 +139,7 @@ export function Dashboard() {
     refetchInterval: 60_000,
   });
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 120_000,
-    retry: false,
-  });
+  const { data: authStatus } = useAuthStatus();
 
   // -- Session cache (survives a reload within the tab) ----------------------
   useEffect(() => {
@@ -182,6 +178,17 @@ export function Dashboard() {
   const expiringCerts = certExpiry?.expiring_soon_count ?? 0;
   const totalCerts = certExpiry?.total ?? certExpiry?.certificates?.length ?? 0;
   const warnDays = certExpiry?.warn_threshold_days ?? 30;
+  /**
+   * Which half of that figure is a renewal falling due and which half has already lapsed.
+   * One triage row saying "3 certificates expire within 30 days" had to carry a hint
+   * admitting some of them already had -- an apology for a sentence that was not true of
+   * what it counted. Two rows say it instead, and the one about certificates that are
+   * already broken is drawn the way every other live failure on this page is drawn.
+   */
+  const certUrgency = useMemo(
+    () => certificateUrgency(certExpiry?.certificates, expiringCerts, Date.now(), warnDays),
+    [certExpiry?.certificates, expiringCerts, warnDays],
+  );
 
   const todayKey = formatDate(now, 'short');
   const todayItems = Array.isArray(todayLogsResp?.items) ? todayLogsResp.items : [];
@@ -223,9 +230,7 @@ export function Dashboard() {
       id: 'services-error',
       tone: 'danger',
       icon: <AlertTriangle />,
-      title: t(servicesInError === 1 ? 'dashboard.attention.services_error_one' : 'dashboard.attention.services_error_other', {
-        count: formatNumber(servicesInError),
-      }),
+      title: t('dashboard.attention.services_error', { count: servicesInError }),
       hint: t('dashboard.attention.services_error_hint'),
       to: '/services?status=error',
     });
@@ -235,9 +240,7 @@ export function Dashboard() {
       id: 'providers-failing',
       tone: 'danger',
       icon: <PlugZap />,
-      title: t(providersFailing === 1 ? 'dashboard.attention.providers_failing_one' : 'dashboard.attention.providers_failing_other', {
-        count: formatNumber(providersFailing),
-      }),
+      title: t('dashboard.attention.providers_failing', { count: providersFailing }),
       to: '/providers',
     });
   } else if (providersHealthError && enabledProviders > 0) {
@@ -259,18 +262,30 @@ export function Dashboard() {
       hint: t('dashboard.attention.certs_unknown_hint'),
       to: '/certificates',
     });
-  } else if (expiringCerts > 0) {
-    attentionItems.push({
-      id: 'certs-expiring',
-      tone: 'warning',
-      icon: <ShieldAlert />,
-      title: t(expiringCerts === 1 ? 'dashboard.attention.certs_expiring_one' : 'dashboard.attention.certs_expiring_other', {
-        count: formatNumber(expiringCerts),
-        days: formatNumber(warnDays),
-      }),
-      hint: t('dashboard.attention.certs_expiring_hint'),
-      to: '/certificates',
-    });
+  } else {
+    if (certUrgency.expired > 0) {
+      attentionItems.push({
+        id: 'certs-expired',
+        tone: 'danger',
+        icon: <ShieldAlert />,
+        title: t('dashboard.attention.certs_expired', { count: certUrgency.expired }),
+        hint: t('dashboard.attention.certs_expired_hint'),
+        to: '/certificates?status=expired',
+      });
+    }
+    if (certUrgency.soon > 0) {
+      attentionItems.push({
+        id: 'certs-expiring',
+        tone: 'warning',
+        icon: <ShieldAlert />,
+        title: t('dashboard.attention.certs_expiring', {
+          count: certUrgency.soon,
+          days: formatNumber(warnDays),
+        }),
+        hint: t('dashboard.attention.certs_expiring_hint'),
+        to: '/certificates',
+      });
+    }
   }
   if (authStatus?.auth_mode === 'open') {
     attentionItems.push({
@@ -357,6 +372,7 @@ export function Dashboard() {
         }}
         certificates={{
           expiring: expiringCerts,
+          expired: certUrgency.expired,
           total: totalCerts,
           thresholdDays: warnDays,
           failed: certExpiryFailed,

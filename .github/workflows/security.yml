@@ -36,6 +36,9 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 46s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -51,18 +54,27 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "26"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # Both requirement files, because nothing else here reaches the second one.
+      # `vauxtra_mcp/requirements.txt` declares fastmcp and httpx, and neither name appears
+      # in `requirements.txt`. The image scan cannot see them -- the bridge is deliberately
+      # not in the image. Syft cannot either: it drops every line that is not an exact pin,
+      # which is both of them, so they are absent from the SBOM Grype reads. And this step
+      # named one file. That left the bridge's whole dependency tree -- authlib, joserfc,
+      # pyjwt and mcp among them -- audited by nothing, in the one component an operator
+      # points at their panel holding an API key.
       - name: pip-audit (Python dependencies)
         run: |
           python -m pip install pip-audit
-          python -m pip_audit --requirement requirements.txt
+          python -m pip_audit --requirement requirements.txt \
+                              --requirement vauxtra_mcp/requirements.txt
 
       # Through a runner, because `npm audit` exits 1 both when the registry reports a
       # high-severity advisory and when the registry reports nothing at all. The runner
@@ -84,10 +96,10 @@ jobs:
   # moment: on a tag, after tests and this scan had both gone green, with the version
   # already public in git and no image to go with it. And every scanner here reads the
   # *source tree* -- Trivy over the working copy, Grype over an SBOM of the working copy --
-  # so the thing operators actually run was the one thing nobody looked at. `python:
-  # 3.13-slim` is a Debian userland: a critical openssl or zlib advisory lands in the
-  # shipped image without touching a single line of this repository, and none of the steps
-  # below the source scan would have said a word about it.
+  # so the thing operators actually run was the one thing nobody looked at.
+  # `python:3.14-slim` is a Debian userland: a critical openssl or zlib advisory lands in
+  # the shipped image without touching a single line of this repository, and none of the
+  # steps below the source scan would have said a word about it.
   #
   # One platform on purpose. This proves the build and scans the userland, both of which
   # are architecture-independent here; the multi-arch build stays where the publish is, and
@@ -95,6 +107,9 @@ jobs:
   image-scan:
     name: Image build & scan
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 70s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -141,6 +156,9 @@ jobs:
   vuln-scan:
     name: Vulnerability scan (Trivy + Grype)
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 109s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -173,7 +191,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       # Syft's requirements.txt parser drops every line whose constraint is not an exact
       # pin, and its default config sets GuessUnpinnedRequirements to false. All thirteen

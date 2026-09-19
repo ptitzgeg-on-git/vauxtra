@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import requests
 
+from app.providers.base import ProviderListingRefused
 from app.providers.traefik import TraefikProvider
 
 
@@ -154,9 +155,11 @@ class TestTraefikListHosts(unittest.TestCase):
         self._mock_responses(routers=routers_no_host)
         self.assertEqual(self.tr.list_hosts(), [])
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    def test_a_network_error_is_not_an_empty_router_list(self):
+        """[] is counted as "0 routers readable" one layer up, with a tick beside it."""
         self.tr.session.get = MagicMock(side_effect=requests.RequestException("err"))
-        self.assertEqual(self.tr.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.tr.list_hosts()
 
     def test_list_hosts_includes_middlewares(self):
         self._mock_responses()
@@ -191,6 +194,42 @@ class TestTraefikReadOnly(unittest.TestCase):
 
     def test_find_best_certificate_returns_none(self):
         self.assertIsNone(self.tr.find_best_certificate("example.com"))
+
+
+class TheTraefikCheckCannotPassOnAReadThatFailedTests(unittest.TestCase):
+    """The check counted a list the listing had already emptied on its way out.
+
+    `validate_permissions` wraps `len(self.list_hosts())` in an `except` so that a refused
+    read reports `proxy_read_failed`. But `list_hosts` caught `RequestException` itself and
+    answered [], so the `except` never fired: a Traefik that refused the call was reported
+    as "0 routers readable", ticked, blocking nothing. The check that exists to catch this
+    failure was the thing hiding it.
+    """
+
+    def setUp(self):
+        self.tr = TraefikProvider("http://traefik:8080", "", "")
+        self.tr.test_connection = MagicMock(return_value=True)
+
+    def _validate(self):
+        return self.tr.validate_permissions()
+
+    def test_a_refused_router_list_fails_the_check(self):
+        self.tr.session.get = MagicMock(return_value=_response(200, []))
+        self.tr.list_hosts = MagicMock(
+            side_effect=ProviderListingRefused("Traefik would not list its routers: 503")
+        )
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["checks"][-1]["detail_code"], "proxy_read_failed")
+        self.assertTrue(result["checks"][-1]["blocking"])
+
+    def test_a_traefik_holding_no_routers_still_passes(self):
+        """Nothing routed is a real answer, and it must stay distinguishable from a refusal."""
+        self.tr.session.get = MagicMock(return_value=_response(200, []))
+        self.tr.list_hosts = MagicMock(return_value=[])
+        result = self._validate()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][-1]["detail_code"], "proxy_read_ok")
 
 
 if __name__ == "__main__":

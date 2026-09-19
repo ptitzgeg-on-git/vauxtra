@@ -13,6 +13,7 @@ import {
   Monitor,
   Moon,
   Plus,
+  RefreshCw,
   Search,
   ShieldCheck,
   Sun,
@@ -21,7 +22,7 @@ import { api } from '@/api/client';
 import { SUPPORTED_LANGUAGES, useI18n } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
 import { cn } from '@/lib/cn';
-import { Kbd } from '@/components/ui';
+import { Button, InlineAlert, Kbd } from '@/components/ui';
 import { SETTINGS_TABS } from '@/components/features/settings/tabs';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { slugId, useScrollLock } from '@/components/ui/_internal';
@@ -93,17 +94,26 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
 
-  const { data: services } = useQuery<Service[]>({
+  const servicesQuery = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
     staleTime: 30_000,
   });
 
-  const { data: providers } = useQuery<Provider[]>({
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     staleTime: 30_000,
   });
+
+  // These two lists are the only place the palette learns what the estate holds, so an unread
+  // one leaves it with nothing to match against: type the name of an endpoint that exists and
+  // the box answers "No matches." -- a statement about the estate, made from a list nobody
+  // read. Both states have to reach the screen, because the sentence is the same either way.
+  const services = servicesQuery.data;
+  const providers = providersQuery.data;
+  const listsPending = servicesQuery.isLoading || providersQuery.isLoading;
+  const listsFailed = servicesQuery.isError || providersQuery.isError;
 
   // `useModalDialog` focuses the box so a screen reader reads its name; the field is the
   // better landing spot here and this effect runs after the hook's.
@@ -258,14 +268,14 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[10vh] sm:pt-[14vh]">
-      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-background/60 backdrop-blur-sm animate-in fade-in animate-duration-150" />
+      <div aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-background/60 backdrop-blur-xs animate-in fade-in animate-duration-150" />
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t('palette.title')}
         className={cn(
-          'relative flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-border bg-popover text-popover-foreground shadow-elevated outline-none',
+          'relative flex w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-border bg-popover text-popover-foreground shadow-elevated outline-hidden',
           'animate-in fade-in zoom-in-95 animate-duration-200',
         )}
       >
@@ -296,9 +306,34 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
           </Kbd>
         </div>
 
+        {listsFailed && (
+          <InlineAlert
+            banner
+            tone="danger"
+            title={t('palette.lists_failed')}
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                leftIcon={<RefreshCw />}
+                onClick={() => {
+                  if (servicesQuery.isError) void servicesQuery.refetch();
+                  if (providersQuery.isError) void providersQuery.refetch();
+                }}
+              >
+                {t('common.retry')}
+              </Button>
+            }
+          >
+            {t('palette.lists_failed_hint')}
+          </InlineAlert>
+        )}
+
         <div ref={listRef} id={listId} role="listbox" aria-label={t('palette.title')} className="max-h-[60vh] overflow-y-auto p-2">
           {flat.length === 0 ? (
-            <div className="px-3 py-10 text-center text-sm text-muted-foreground">{t('palette.empty')}</div>
+            <div className="px-3 py-10 text-center text-sm text-muted-foreground">
+              {listsFailed ? t('palette.empty_unread') : listsPending ? t('palette.loading') : t('palette.empty')}
+            </div>
           ) : (
             grouped.map((group) => (
               <div key={group.key} role="group" aria-labelledby={`${listId}-${group.key}`} className="pb-1">
@@ -310,6 +345,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
                   const index = runningIndex;
                   const isActive = index === activeIndex;
                   return (
+                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus -- combobox option; the keys live on the input, which names this one via aria-activedescendant
                     <div
                       key={item.id}
                       id={optionId(item)}
@@ -360,6 +396,11 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
             <Kbd size="sm">Esc</Kbd>
             <span className="ml-0.5">{t('palette.hint.close')}</span>
           </span>
+          {listsPending && flat.length > 0 && (
+            <span role="status" className="ml-auto">
+              {t('palette.loading')}
+            </span>
+          )}
         </div>
       </div>
     </div>,

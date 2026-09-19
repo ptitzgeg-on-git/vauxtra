@@ -14,36 +14,21 @@
 
 import type { Tone } from '@/components/ui';
 import { parseBackendTimestamp } from '@/lib/format';
+import type {
+  Certificate,
+  CertificateExpiryResponse,
+  CertificateRow,
+  UnreachableCertificateSource,
+} from '@/types/api';
 
-export interface CertificateRow {
-  /** NPM uses an integer id, Zoraxy the certificate file name. */
-  id: number | string;
-  provider_id?: number;
-  provider_name?: string;
-  /** Legacy spelling from `GET /api/certificates` before providers were named. */
-  provider?: string;
-  nice_name?: string;
-  domains?: string[];
-  domain_names?: string[];
-  expires_on?: string | null;
-  expiry_date_raw?: string | null;
-  days_remaining?: number | null;
-  /** Zoraxy computes its own countdown. */
-  remaining_days?: number | null;
-  expiring_soon?: boolean;
-  expired?: boolean;
-  issuer?: string | null;
-  use_dns?: boolean;
-  is_fallback?: boolean;
-}
-
-export interface CertificateExpiryPayload {
-  certificates: CertificateRow[];
-  total: number;
-  expiring_soon_count: number;
-  /** `_EXPIRY_WARN_DAYS` in `app/api/certificates.py`; 30 at the time of writing. */
-  warn_threshold_days: number;
-}
+//: These three used to be declared here instead, each one wider than the route it reads:
+//: the row said every key was optional and added an `issuer` and a `provider` that no
+//: provider sends, and the payload was a second spelling of `CertificateExpiryResponse`
+//: that the Sidebar and the Dashboard already read this same route through. One
+//: declaration each now, in `types/api.ts`, re-exported here so nothing that imports them
+//: from this module has to move.
+export type { Certificate, CertificateRow };
+export type { CertificateExpiryResponse as CertificateExpiryPayload };
 
 /** Days below which a certificate stops being a reminder and becomes an incident. */
 export const CRITICAL_DAYS = 7;
@@ -58,6 +43,17 @@ export const CERT_FILTERS = ['all', ...CERT_BUCKETS] as const;
 
 export function toCertFilter(raw: string | null | undefined): CertFilter {
   return (CERT_FILTERS as readonly string[]).includes(raw ?? '') ? (raw as CertFilter) : 'all';
+}
+
+/**
+ * The integration filter, reconciled against the integrations that actually answered. The
+ * same reconciliation `toCertFilter` does for the status in the address bar, for the same
+ * reason: an id naming nothing hides every row, and the control cannot say so -- with no
+ * matching `<option>` the select draws blank, and below two integrations it is not drawn
+ * at all. A filter nobody can see and nobody can clear is worse than no filter.
+ */
+export function resolveProviderFilter(raw: string, offered: readonly string[]): string {
+  return raw === 'all' || offered.includes(raw) ? raw : 'all';
 }
 
 export const BUCKET_TONE: Record<CertBucket, Tone> = {
@@ -78,11 +74,15 @@ export const BUCKET_LABEL_KEY: Record<CertBucket, string> = {
 
 /** Stable across providers: two providers can both hand back a certificate numbered 1. */
 export function certKey(cert: CertificateRow): string {
-  return `${cert.provider_id ?? cert.provider_name ?? 'p'}:${cert.id}`;
+  return `${cert.provider_id}:${cert.id}`;
 }
 
 export function certDomains(cert: CertificateRow): string[] {
-  const domains = cert.domain_names ?? cert.domains ?? [];
+  //: `domain_names` is back-filled from `domains` on every row, so the fallback is only
+  //: there for a provider added later that forgets one of the two spellings. The
+  //: `Array.isArray` guard is the same bet: the route hands these straight through from
+  //: whatever the appliance answered.
+  const domains = cert.domain_names ?? cert.domains;
   return Array.isArray(domains) ? domains.filter((d): d is string => typeof d === 'string' && d.length > 0) : [];
 }
 
@@ -107,12 +107,20 @@ export function certExpiry(cert: CertificateRow): string | null {
  * Days until expiry, negative once past. The backend already did the arithmetic on
  * `/expiry`; the fallback route has not, so the date is parsed here with the same floor
  * Python's `timedelta.days` applies.
+ *
+ * `days_remaining` is the backend's own count and is null exactly when it had no date to
+ * count from, so it can be read on sight. `remaining_days` is the provider's, and cannot:
+ * Zoraxy states `-1` for a certificate whose expiry it could not read and the same -1 for
+ * one that expired yesterday. The date is the tiebreaker -- `expires_on` is empty exactly
+ * when it would not parse -- so no date means no count, whatever number came with it. That
+ * row used to be drawn in red as expired one day ago beside a column saying it had no
+ * expiry date at all; it now reads unknown, which is what is known about it.
  */
 export function certDays(cert: CertificateRow, now: number): number | null {
   if (typeof cert.days_remaining === 'number' && Number.isFinite(cert.days_remaining)) return cert.days_remaining;
-  if (typeof cert.remaining_days === 'number' && Number.isFinite(cert.remaining_days)) return cert.remaining_days;
   const raw = certExpiry(cert);
   if (!raw) return null;
+  if (typeof cert.remaining_days === 'number' && Number.isFinite(cert.remaining_days)) return cert.remaining_days;
   // The fallback route serves a naive UTC timestamp (`YYYY-MM-DD HH:MM:SS`, no `Z`), which
   // `new Date()` reads as *local* time -- so a cert expiring at 01:00 UTC could be counted a
   // day late east of Greenwich and a day early west of it. `parseBackendTimestamp` pins UTC.
@@ -153,10 +161,35 @@ export function sortCertificates(certs: CertificateRow[], now: number, warnDays 
   });
 }
 
-export function matchesSearch(cert: CertificateRow, needle: string): boolean {
+/**
+ * The search box, read against the hosts, the file name and the integration. The needle is
+ * lowered here rather than by the caller: the helper of the same name in
+ * `features/services/helpers.ts` lowers its own, and one name under two conventions is a
+ * search that silently matches nothing the first time somebody types a capital letter.
+ */
+export function matchesSearch(cert: CertificateRow, search: string): boolean {
+  const needle = search.trim().toLowerCase();
   if (!needle) return true;
-  const haystack = [...certDomains(cert), cert.nice_name || '', cert.provider_name || cert.provider || ''];
+  const haystack = [...certDomains(cert), cert.nice_name || '', cert.provider_name || ''];
   return haystack.some((value) => value.toLowerCase().includes(needle));
+}
+
+/**
+ * The names of the certificate stores the route could not read, in the order it named
+ * them. Anything that is not a usable name is dropped rather than drawn: the alert exists
+ * to tell the operator which integration to go and look at, and a blank entry or a bare
+ * `undefined` in that sentence tells them nothing while making the page look broken. The
+ * argument is typed `unknown` on purpose -- on the fallback route there is no payload at
+ * all, and in the tests every stubbed response field is missing.
+ */
+export function certSourceNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const entry of raw as UnreachableCertificateSource[]) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 /** A provider row, reduced to what a certificate link needs. */
@@ -177,4 +210,58 @@ export function providerConsoleUrl(source: CertificateSource | undefined): strin
   if (!base || !/^https?:\/\//i.test(base)) return null;
   if ((source?.type || '').toLowerCase() === 'npm') return `${base}/nginx/certificates`;
   return base;
+}
+
+/**
+ * What the sidebar badge and the dashboard tile are allowed to say about the estate.
+ *
+ * `expiring_soon_count` is one number answering two questions. The route builds it as
+ * "still valid but inside the warning window" *plus* "already past expiry", which is the
+ * right figure for a badge -- both need the same action -- but it cannot say which kind it
+ * is made of, and the two are not equally urgent. A certificate that lapsed three weeks ago
+ * is not a renewal due this month: every client reaching that host over HTTPS is being shown
+ * a certificate error right now. The Certificates page has always drawn that row red, under
+ * its own `expired` bucket. The badge and the tile drew the same estate amber, the tile's
+ * hint named the size of the whole estate under a figure that was not about the estate, and
+ * the triage row said those certificates "expire within 30 days" -- then bolted on a hint
+ * admitting some of them already had.
+ *
+ * The split is read off the rows, which is the only place it exists, and the total stays the
+ * route's own: two readers of one payload that disagreed on the headline figure is the
+ * defect this exists to avoid, not one to introduce. `soon` is therefore what the route
+ * counted minus what the rows show as gone, clamped -- it is a subtraction between two
+ * halves of a single response and cannot go negative, and a clamp is cheaper than a card
+ * that prints a minus sign if it ever does.
+ */
+export interface CertificateUrgency {
+  /** Past expiry. Not a renewal due soon -- a host answering with a broken certificate. */
+  expired: number;
+  /** Still valid, inside the warning window. */
+  soon: number;
+  /** What the badge and the tile show: everything that needs renewing. */
+  needRenewal: number;
+  /** True once anything has actually lapsed, which is what raises the tone to danger. */
+  breached: boolean;
+  tone: Tone;
+}
+
+export function certificateUrgency(
+  certs: CertificateRow[] | undefined,
+  needRenewal: number,
+  now: number,
+  warnDays = WARN_DAYS,
+): CertificateUrgency {
+  const expired = (certs ?? []).reduce(
+    (count, cert) => (certBucket(certDays(cert, now), warnDays) === 'expired' ? count + 1 : count),
+    0,
+  );
+  const soon = Math.max(0, needRenewal - expired);
+  const breached = expired > 0;
+  return {
+    expired,
+    soon,
+    needRenewal,
+    breached,
+    tone: breached ? 'danger' : needRenewal > 0 ? 'warning' : 'neutral',
+  };
 }

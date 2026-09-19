@@ -8,7 +8,14 @@ import re
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider, TimeoutSession
+from app.providers.base import (
+    ProviderListingRefused,
+    ProxyProvider,
+    TimeoutSession,
+    login_check,
+    reachability_check,
+)
+from app.text import plural
 
 log = logging.getLogger(__name__)
 
@@ -81,10 +88,11 @@ def _split_origin(origin: str, scheme: str) -> tuple[str, int]:
 def _iso_expiry(raw) -> str:
     """Zoraxy's `2006-01-02 15:04:05` expiry as the ISO form Vauxtra parses, or "".
 
-    Both consumers of `expires_on` are strict: `certificates._parse_expiry` accepts only
-    `%Y-%m-%dT%H:%M:%SZ` (and the fractional and date-only variants), and the scheduler
-    strips a trailing `Z` before `fromisoformat`. The trailing `Z` is honest as well as
-    convenient, since Go formats `NotAfter` in UTC. Zoraxy writes "Unknown" when the
+    `app.expiry.parse_expiry` reads the whole ISO 8601 range, so neither the `T` nor the
+    trailing `Z` is what makes this parseable any more: Zoraxy's own space-separated form
+    would be read correctly. They stay because the `Z` is honest -- Go formats `NotAfter`
+    in UTC -- and a stamp that says which zone it is in cannot be misread as local time by
+    anything downstream less forgiving than we are. Zoraxy writes "Unknown" when the
     certificate did not parse; that and anything unexpected become "" so the callers skip
     the entry rather than choke on it.
     """
@@ -243,6 +251,35 @@ class ZoraxyProvider(ProxyProvider):
             return False
         return isinstance(self._get("/api/proxy/list", {"type": "host"}), list)
 
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        """Reachability, then credentials, then the rule list.
+
+        Worth separating here more than anywhere else: Zoraxy answers HTTP 200 to a login
+        with the wrong password and says so only in the body, so `_ensure_auth` is the only
+        thing that knows, and `test_connection` folds its answer together with a host that
+        never replied. The fallback in `_provider_diagnostics` called both
+        `connection_failed`.
+        """
+        checks = [reachability_check(self.session, f"{self.base_url}/login.html")]
+        if not checks[0]["ok"]:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        authenticated = self._ensure_auth()
+        checks.append(login_check(authenticated))
+        if not authenticated:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        rules = self._get("/api/proxy/list", {"type": "host"})
+        read_ok = isinstance(rules, list)
+        checks.append({
+            "name": "List rules",
+            "ok": read_ok,
+            "detail": f"{plural(len(rules), 'rule')} readable" if read_ok else "Zoraxy did not return its rule list",
+            "detail_code": "proxy_read_ok" if read_ok else "proxy_read_failed",
+            "blocking": not read_ok,
+        })
+        return {"ok": read_ok, "checks": checks, "warnings": []}
+
     @staticmethod
     def _normalize_rule(rule: dict) -> dict:
         """Vauxtra's host shape for one Zoraxy rule.
@@ -284,11 +321,21 @@ class ZoraxyProvider(ProxyProvider):
         }
 
     def list_hosts(self) -> list[dict]:
+        """Every host rule Zoraxy holds.
+
+        Raises rather than answering []. `_get` returns None for a refused session, a
+        non-200 and a body that is not JSON alike, and turning that None into an empty
+        list hands the drift check the one sentence it reads as `route_missing` with a
+        Reconcile button beside it. `validate_permissions` above gets this right -- it
+        asks `_get` itself and tests `isinstance(rules, list)` -- so the panel could say
+        "rules unreadable" while the drift check, on the same failure, said "the route
+        is gone". Only one of those two was ever true.
+        """
         if not self._ensure_auth():
-            return []
+            raise ProviderListingRefused("Zoraxy refused the credentials")
         rules = self._get("/api/proxy/list", {"type": "host"})
         if not isinstance(rules, list):
-            return []
+            raise ProviderListingRefused("Zoraxy would not list its proxy rules")
         return [
             self._normalize_rule(rule)
             for rule in rules
@@ -591,12 +638,18 @@ class ZoraxyProvider(ProxyProvider):
             if _HOSTNAME.match(as_hostname) and as_hostname.lower() != common_name.lower():
                 domains.append(as_hostname)
             remaining = c.get("RemainingDays")
+            expires_on = _iso_expiry(c.get("ExpireDate"))
             result.append({
                 "id":             filename,
                 "nice_name":      filename,
                 "domains":        domains,
-                "expires_on":     _iso_expiry(c.get("ExpireDate")),
-                "remaining_days": remaining if isinstance(remaining, int) else None,
+                "expires_on":     expires_on,
+                # The countdown only travels with the date it was counted from. Zoraxy
+                # states `RemainingDays: -1` for a certificate whose `ExpireDate` it could
+                # not read, and states the same -1 for one that expired yesterday: the
+                # number alone cannot tell those apart, and the panel believed the second.
+                # No date, no count -- the row then reads as unknown, which it is.
+                "remaining_days": remaining if expires_on and isinstance(remaining, int) else None,
                 "use_dns":        bool(c.get("UseDNS")),
                 "is_fallback":    bool(c.get("IsFallback")),
             })

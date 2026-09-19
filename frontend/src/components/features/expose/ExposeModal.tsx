@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useId, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
@@ -18,6 +18,14 @@ import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { cn } from '@/lib/cn';
 import { translateApiError, isHttpStatus } from '@/lib/errors';
 import {
+  domainProblem,
+  domainProblemKey,
+  fqdnProblem,
+  fqdnProblemKey,
+  subdomainProblem,
+  subdomainProblemKey,
+} from '@/lib/hostname';
+import {
   Badge,
   Button,
   InlineAlert,
@@ -25,6 +33,7 @@ import {
   Modal,
   ProviderLogo,
   SectionHeading,
+  type Tone,
   useConfirmDialog,
 } from '@/components/ui';
 import type {
@@ -33,6 +42,8 @@ import type {
   PreflightCheck,
   PreflightRequest,
   PreflightResult,
+  PushPlanDnsAction,
+  PushPlanProxyAction,
   PushResult,
   Service,
   ServicePayload,
@@ -40,7 +51,17 @@ import type {
   Template,
   TemplateIn,
 } from '@/types/api';
-import { type FormState, type Provider, fqdnOf, initialForm, providerHasCapability, toFormState } from './types';
+import {
+  type FormState,
+  type Provider,
+  autoPublicTarget,
+  fqdnOf,
+  initialForm,
+  providerHasCapability,
+  publicTargetSourceLabel,
+  preflightDetailText,
+  toFormState,
+} from './types';
 import { ServiceForm } from './ServiceForm';
 import { ServicePreview } from './ServicePreview';
 
@@ -111,6 +132,40 @@ const CHECK_ICONS: Record<CheckTone, ReactNode> = {
   danger: <CircleAlert className="h-4 w-4 text-destructive" />,
 };
 
+// A withdrawal is not the same kind of write as a publication, and reading the badge colour
+// as "this is routine" would be the wrong reading on a plan that removes routes. Anything the
+// map does not name falls back to `info`, so a new action word from the API is rendered rather
+// than swallowed.
+const PLAN_ACTION_TONE: Partial<Record<PushPlanProxyAction['action'] | PushPlanDnsAction['action'], Tone>> = {
+  skip_read_only: 'neutral',
+  suspend: 'warning',
+  delete: 'warning',
+  // A resume is a repair rather than a routine write: the route is down right now, which is
+  // the same thing the drift report says one panel away.
+  resume: 'warning',
+};
+
+/** The finished sentence, with every mention of the hostname set in mono.
+ *
+ * `t` returns a plain string, so a sentence that names the host cannot carry markup of its
+ * own and the emphasis has to be put back here. Splitting on the host rather than writing
+ * it out after the sentence is what lets each locale keep it where its grammar wants it:
+ * English and French open on the hostname, and the sentence used to be rendered with the
+ * placeholder still in it because nothing filled it.
+ */
+function withHostHighlighted(sentence: string, host: string): ReactNode[] {
+  return sentence.split(host).flatMap((part, index) =>
+    index === 0
+      ? [part]
+      : [
+          <span key={`host-${index}`} className="font-mono text-foreground">
+            {host}
+          </span>,
+          part,
+        ],
+  );
+}
+
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
   Boolean(value) && typeof value === 'object' && Array.isArray((value as { errors?: unknown }).errors);
 
@@ -133,13 +188,30 @@ export function ExposeModal({
   const [formData, setFormData] = useState<FormState>(seedForm);
   const [step, setStep] = useState<Step>('configure');
   const [formError, setFormError] = useState<string | null>(null);
+  const formErrorRef = useRef<HTMLDivElement | null>(null);
+
+  // The banner sits at the top of a body that scrolls, and "Continue" sits at the bottom of
+  // it, so the answer to a click could land entirely off screen. Bring it back into view.
+  useEffect(() => {
+    if (formError) formErrorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [formError]);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [dryRun, setDryRun] = useState<DryRunPlan | null>(null);
   const [saveOutcome, setSaveOutcome] = useState<{ host: string; errors: string[] } | null>(null);
   const [templateDraftName, setTemplateDraftName] = useState('');
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
 
-  const { data: providers = [], isLoading: isLoadingProviders } = useQuery<Provider[]>({
+  // Whole, like the three reads under it. This is the list the proxy, the DNS provider and
+  // the tunnel are each picked from, and the form is what writes the route: a read that
+  // failed arrived here as an empty array and the section below said, in its own words,
+  // that this instance has no proxy at all.
+  const {
+    data: providers = [],
+    isLoading: isLoadingProviders,
+    isError: providersError,
+    isFetching: isFetchingProviders,
+    refetch: refetchProviders,
+  } = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     enabled: isOpen,
@@ -209,9 +281,14 @@ export function ExposeModal({
     Boolean(formData.dns_provider_id) &&
     selectedDnsSupportsAuto;
 
+  // `detect_server_public_ip` makes a real outbound call, so this read is both slow and
+  // failable. Without `isError` a lookup that never answered arrived as the same empty
+  // string as a proxy that genuinely has no public target, and the form then said the
+  // second out loud.
   const {
     data: targetSuggestion,
     isFetching: isFetchingTargetSuggestion,
+    isError: targetSuggestionError,
     refetch: refetchTargetSuggestion,
   } = useQuery<TargetSuggestion>({
     queryKey: ['public-target-suggest', formData.proxy_provider_id],
@@ -222,10 +299,9 @@ export function ExposeModal({
 
   const fqdnPreview = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
 
-  const effectivePublicTargetMode =
-    formData.public_target_mode === 'auto' && formData.dns_provider_id && selectedDnsProvider && !selectedDnsSupportsAuto
-      ? 'manual'
-      : formData.public_target_mode;
+  // What the payload sends and what the form draws are the same call, so the two cannot
+  // answer differently for a provider the catalogue has not resolved.
+  const publicTarget = autoPublicTarget(formData, selectedDnsProvider, providerTypeMap);
 
   /** Every payload rule lives here: what the API receives on create, edit and preflight. */
   const buildPayload = (): ServicePayload => {
@@ -237,8 +313,6 @@ export function ExposeModal({
         ? formData.target_ip.trim()
         : '';
 
-    const effectiveAutoUpdateDns = effectivePublicTargetMode === 'auto' ? formData.auto_update_dns : false;
-
     return {
       subdomain: formData.subdomain.trim().toLowerCase(),
       domain: formData.domain.trim().toLowerCase(),
@@ -247,8 +321,8 @@ export function ExposeModal({
       forward_scheme: formData.forward_scheme,
       websocket: formData.websocket,
       expose_mode: formData.expose_mode,
-      public_target_mode: formData.expose_mode === 'proxy_dns' ? effectivePublicTargetMode : 'manual',
-      auto_update_dns: formData.expose_mode === 'proxy_dns' ? effectiveAutoUpdateDns : false,
+      public_target_mode: formData.expose_mode === 'proxy_dns' ? publicTarget.mode : 'manual',
+      auto_update_dns: formData.expose_mode === 'proxy_dns' ? publicTarget.autoUpdateDns : false,
       tunnel_provider_id:
         formData.expose_mode === 'tunnel' && formData.tunnel_provider_id ? Number(formData.tunnel_provider_id) : null,
       tunnel_hostname: formData.expose_mode === 'tunnel' ? tunnelHostname : '',
@@ -278,6 +352,16 @@ export function ExposeModal({
     if (!formData.domain || !formData.subdomain || !formData.target_ip) {
       return t('expose.validation.required_fields');
     }
+    // The same rules as `app/validators.py`. Without them "Continue" sent the name anyway and
+    // came back with a 422 the panel could only describe as "the checks could not run".
+    const badSubdomain = subdomainProblem(formData.subdomain, { allowWildcard: true });
+    if (badSubdomain) return t(subdomainProblemKey(badSubdomain));
+    const badDomain = domainProblem(formData.domain);
+    if (badDomain) return t(domainProblemKey(badDomain));
+    // Last of the three, because it is the only one that needs both halves to be sound
+    // first: two legal halves can still make a name no zone will carry.
+    const badFqdn = fqdnProblem(formData.subdomain, formData.domain);
+    if (badFqdn) return t(fqdnProblemKey(badFqdn));
     if (formData.expose_mode === 'tunnel' && !formData.tunnel_provider_id) {
       return t('expose.validation.tunnel_provider_required');
     }
@@ -297,17 +381,28 @@ export function ExposeModal({
     const suggestedDnsTarget = String(targetSuggestion?.recommended || '').trim();
 
     if (formData.expose_mode === 'proxy_dns' && formData.dns_provider_id) {
-      if (effectivePublicTargetMode === 'manual' && !manualDnsTarget) {
-        // DNS-only: target_ip is used automatically, nothing else to ask for.
+      if (publicTarget.mode === 'manual' && !manualDnsTarget) {
         if (formData.ui_expose_mode === 'dns_only') {
+          // A local resolver may answer with the service's own LAN address, and that is what
+          // `localDnsFallback` publishes. A public zone must not carry one, so `target_ip`
+          // gives it nothing: without a target of its own there is simply nothing to write.
           if (!formData.target_ip.trim()) return t('expose.validation.target_required_dns_only');
+          if (selectedDnsIsExternal && !suggestedDnsTarget) {
+            return t('expose.validation.dns_target_external_required');
+          }
         } else if (selectedDnsIsExternal) {
           return t('expose.validation.dns_target_external_required');
         } else if (selectedDnsIsLocal) {
           return t('expose.validation.dns_target_local_required');
         }
       }
-      if (effectivePublicTargetMode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
+      if (publicTarget.mode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
+        // Three states reach here as the same empty string: a lookup that failed, one still
+        // in flight, and one that answered with nothing. Only the last is a fact about the
+        // proxy -- the other two are facts about a question that has no answer yet, and
+        // saying "this proxy cannot" of them sends the operator to check the wrong thing.
+        if (targetSuggestionError) return t('expose.validation.auto_target_unread');
+        if (isFetchingTargetSuggestion) return t('expose.validation.auto_target_pending');
         return t('expose.validation.no_auto_target');
       }
     }
@@ -321,7 +416,14 @@ export function ExposeModal({
       setStep('review');
     },
     onError: (err: unknown) => {
-      toast.error(translateApiError(err, t, t('expose.preflight.failed')), { duration: 5000 });
+      // A 422 is the body being refused, not the checks failing to run, and saying the second
+      // about the first sends an operator looking at their providers over a typed character.
+      const fallback = isHttpStatus(err, 422) ? t('expose.preflight.rejected') : t('expose.preflight.failed');
+      const message = translateApiError(err, t, fallback);
+      // Also in the form's own banner: a toast lasts five seconds in the opposite corner, and
+      // the wizard stays on this step with nothing else to say why.
+      setFormError(message);
+      toast.error(message, { duration: 5000 });
     },
   });
 
@@ -354,7 +456,10 @@ export function ExposeModal({
           : `${result.payload.subdomain}.${result.payload.domain}`;
 
       if (allErrors.length === 0) {
-        toast.success(isEditMode ? t('expose.toast.updated') : t('expose.toast.created'), { duration: 4500 });
+        toast.success(
+          isEditMode ? t('expose.toast.updated', { host }) : t('expose.toast.created', { host }),
+          { duration: 4500 },
+        );
       } else {
         const summary = allErrors.slice(0, 2).join('; ');
         const more = allErrors.length > 2 ? t('expose.toast.more', { count: allErrors.length - 2 }) : '';
@@ -414,6 +519,11 @@ export function ExposeModal({
       domain: payload.domain,
       dns_ip: payload.dns_ip,
       tag_ids: payload.tag_ids,
+      // Both halves of the label control, because the form offers both. The tags used to
+      // travel alone from here: the environments were chosen on the form, left out of this
+      // body, and had no column waiting for them either -- so a template saved from a
+      // finished exposure came back naming fewer labels than the exposure it was taken from.
+      environment_ids: payload.environment_ids,
       icon_url: payload.icon_url,
     };
   };
@@ -500,13 +610,7 @@ export function ExposeModal({
    * `detail` and the short code it was written from in `detail_key`; the code wins when this
    * build knows it, and the sentence stands in otherwise.
    */
-  const checkDetail = (check: PreflightCheck): string => {
-    const fallback = String(check.detail || '');
-    if (!check.detail_key) return fallback;
-    const key = `expose.preflight.detail.${check.detail_key}`;
-    const line = t(key, check.detail_params);
-    return line === key ? fallback : line;
-  };
+  const checkDetail = (check: PreflightCheck): string => preflightDetailText(check, t);
 
   const blockingFailures = preflight?.summary.blocking_failures ?? 0;
   const warningCount = preflight?.summary.warnings ?? 0;
@@ -587,9 +691,11 @@ export function ExposeModal({
       {step === 'configure' && (
         <form id={formId} onSubmit={handleContinue} className="space-y-8 animate-in fade-in animate-duration-200">
           {formError && (
-            <InlineAlert tone="danger" onDismiss={() => setFormError(null)}>
-              {formError}
-            </InlineAlert>
+            <div ref={formErrorRef}>
+              <InlineAlert tone="danger" onDismiss={() => setFormError(null)}>
+                {formError}
+              </InlineAlert>
+            </div>
           )}
 
           <ServiceForm
@@ -597,6 +703,9 @@ export function ExposeModal({
             setFormData={setFormData}
             providers={providers}
             domains={domains}
+            providersError={providersError}
+            isRefetchingProviders={providersError && isFetchingProviders}
+            refetchProviders={() => void refetchProviders()}
             domainsError={domainsError}
             tagsError={tagsError}
             environmentsError={environmentsError}
@@ -605,6 +714,7 @@ export function ExposeModal({
             providerTypeMap={providerTypeMap}
             targetSuggestion={targetSuggestion}
             isFetchingTargetSuggestion={isFetchingTargetSuggestion}
+            targetSuggestionError={targetSuggestionError}
             refetchTargetSuggestion={refetchTargetSuggestion}
             tags={tags}
             environments={environments}
@@ -662,7 +772,7 @@ export function ExposeModal({
         <div className="space-y-6 animate-in fade-in animate-duration-200">
           {blockingFailures > 0 ? (
             <InlineAlert tone="danger" title={t('expose.preflight.blocked_title', { count: blockingFailures })}>
-              {t('expose.preflight.blocked_body')}
+              {t('expose.preflight.blocked_body', { count: blockingFailures })}
             </InlineAlert>
           ) : warningCount > 0 ? (
             <InlineAlert tone="warning" title={t('expose.preflight.warnings_title', { count: warningCount })}>
@@ -683,18 +793,33 @@ export function ExposeModal({
             >
               <span className="text-xs text-muted-foreground">
                 {t('expose.preflight.summary', {
-                  total: preflight.summary.total,
-                  blocking: blockingFailures,
-                  warnings: warningCount,
+                  checks: t('expose.preflight.checks_count', { count: preflight.summary.total }),
+                  blocking: t('expose.preflight.blocking_count', { count: blockingFailures }),
+                  warnings: t('expose.preflight.warnings_count', { count: warningCount }),
                 })}
               </span>
             </SectionHeading>
             <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-              {preflight.checks.map((check) => {
+              {preflight.checks.map((check, index) => {
                 const tone = checkTone(check);
                 const detail = checkDetail(check);
                 return (
-                  <li key={check.name} className="flex items-start gap-3 px-4 py-3">
+                  // The name is not a key: the server emits one `extra_proxy_provider` line
+                  // per extra proxy and one `extra_dns_provider` line per extra DNS server,
+                  // so a route published on two spare proxies really does produce two list
+                  // items called the same thing. Measured on React 19.2.8: both <li> render,
+                  // so nothing vanishes from the panel -- but React logs "Encountered two
+                  // children with the same key", warns that such children "may be duplicated
+                  // and/or omitted", and calls the behaviour unsupported. What a shared key
+                  // costs today is identity, which is the only thing a key is for: with one
+                  // key for two rows the reconciler fell back to matching by position, so
+                  // swapping the two lines left each row's state and DOM node on the other
+                  // line, and a later change of keys left a stale third <li> standing for two
+                  // lines of data. A panel whose whole job is to say what the save will touch
+                  // cannot afford a row that belongs to a different target. The list is
+                  // rebuilt whole on every preflight and never reordered, so the index is
+                  // stable enough to carry the name.
+                  <li key={`${check.name}:${index}`} className="flex items-start gap-3 px-4 py-3">
                     <span aria-hidden="true" className="mt-0.5 shrink-0">
                       {CHECK_ICONS[tone]}
                     </span>
@@ -749,10 +874,17 @@ export function ExposeModal({
                     <span className="font-mono text-xs text-muted-foreground">{dryRun.public_host}</span>
                     {dryRun.dns_target && (
                       <span className="text-xs text-muted-foreground">
-                        {t('expose.dry_run.dns_target', { target: dryRun.dns_target, source: dryRun.dns_target_source })}
+                        {t('expose.dry_run.dns_target', {
+                          target: dryRun.dns_target,
+                          source: publicTargetSourceLabel(dryRun.dns_target_source, t),
+                        })}
                       </span>
                     )}
                   </div>
+
+                  {dryRun.withheld && (
+                    <InlineAlert tone="info" title={t('expose.dry_run.withheld')} />
+                  )}
 
                   {dryRun.proxy_actions.length > 0 && (
                     <div className="space-y-2">
@@ -764,7 +896,7 @@ export function ExposeModal({
                           <li key={`proxy-${action.provider_id}`} className="flex items-center gap-2 text-sm">
                             <ProviderLogo type={action.provider_type} className="h-4 w-4" />
                             <span className="font-medium text-foreground">{action.provider_name}</span>
-                            <Badge size="sm" tone={action.action === 'skip_read_only' ? 'neutral' : 'info'}>
+                            <Badge size="sm" tone={PLAN_ACTION_TONE[action.action] ?? 'info'}>
                               {t(`expose.dry_run.action.${action.action}`)}
                             </Badge>
                             <span className="truncate font-mono text-xs text-muted-foreground">
@@ -787,11 +919,12 @@ export function ExposeModal({
                           <li key={`dns-${action.provider_id}`} className="flex items-center gap-2 text-sm">
                             <ProviderLogo type={action.provider_type} className="h-4 w-4" />
                             <span className="font-medium text-foreground">{action.provider_name}</span>
-                            <Badge size="sm" tone="info">
+                            <Badge size="sm" tone={PLAN_ACTION_TONE[action.action] ?? 'info'}>
                               {t(`expose.dry_run.action.${action.action}`)}
                             </Badge>
                             <span className="truncate font-mono text-xs text-muted-foreground">
-                              {action.domain} → {action.target}
+                              {action.domain}
+                              {action.target ? ` → ${action.target}` : ''}
                             </span>
                           </li>
                         ))}
@@ -867,7 +1000,7 @@ export function ExposeModal({
               {isEditMode ? t('expose.done.updated_title') : t('expose.done.created_title')}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {t('expose.done.body')} <span className="font-mono text-foreground">{saveOutcome.host}</span>
+              {withHostHighlighted(t('expose.done.body', { host: saveOutcome.host }), saveOutcome.host)}
             </p>
           </div>
           {saveOutcome.errors.length > 0 && (

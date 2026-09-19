@@ -142,7 +142,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 
 > **⚠️ Important**: Do not change `SECRET_KEY` after adding providers. All stored credentials are encrypted with this key.
 
-> **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
+> **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Security → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
 >
 > ```bash
 > sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"
@@ -270,7 +270,7 @@ Add an equivalent server block to your MCP client configuration:
 
 ### Available MCP tools
 
-See [docs/HOWTO.md](docs/HOWTO.md#10-mcp-integration) for the full list. Summary:
+See [docs/HOWTO.md](docs/HOWTO.md#11-mcp-integration) for the full list. Summary:
 
 **Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
 
@@ -332,7 +332,7 @@ The frontend dev server (`npm run dev`) proxies `/api/*` to the FastAPI backend 
 docker compose up --build
 ```
 
-The Dockerfile uses a multi-stage build: Node 22 for the frontend, Python 3.13-slim for the final image.
+The Dockerfile uses a multi-stage build: Node 26 for the frontend, Python 3.14-slim for the final image.
 
 ---
 

@@ -7,7 +7,19 @@ import { Globe, GlobeLock, Shield, Server, Box, Database, ShieldCheck, Waypoints
 import type { ComponentType } from 'react';
 import type { TranslateFn } from '@/i18n';
 import { metaHasCapability } from '@/lib/providers';
-import type { ProviderCapability, ProviderTypeMeta, ProviderTypesResponse } from '@/types/api';
+import type {
+  GuidedStep,
+  ProviderCapability,
+  ProviderTypeMeta,
+  ProviderTypesResponse,
+  ProviderValidationResult,
+} from '@/types/api';
+
+//: `POST /providers/validate-draft` answers this, and so do the two `/test` routes. This
+//: file used to declare its own copy; the copy never gained the `detail_code` and
+//: `detail_params` the API has been sending since diagnostics were translated, so every
+//: reader that went through this module was told those two fields did not exist.
+export type { ProviderValidationResult };
 
 /**
  * The locale value for `key`, or `raw` when the key is not translated.
@@ -34,7 +46,17 @@ export type ProviderFormState = {
   tunnel_id: string;
 };
 
-export type GuidedField = {
+/**
+ * One field of a wizard step as the panel renders it.
+ *
+ * This is not `GuidedStepField` from `types/api.ts`: the API spells its keys `input_type`
+ * and lets `key` be any string, while the panel needs a `key` that names a field of the form
+ * it is filling. `parseApiSteps` converts one into the other, and the two used to share the
+ * name `GuidedStep` -- so which shape a reader was holding depended on which file they were
+ * standing in, and a third copy of the API shape lived here too and had already drifted
+ * (`input_type?: string` against the API's three literals).
+ */
+export type WizardField = {
   key: keyof ProviderFormState;
   label: string;
   placeholder?: string;
@@ -43,40 +65,11 @@ export type GuidedField = {
   optional?: boolean;
 };
 
-export type GuidedStep = {
+/** One step of the wizard as the panel renders it. */
+export type WizardStep = {
   title: string;
   body: string;
-  fields?: GuidedField[];
-};
-
-export type ProviderValidationResult = {
-  ok: boolean;
-  validation?: {
-    checks?: Array<{ name?: string; ok?: boolean; detail?: string; blocking?: boolean }>;
-    warnings?: Array<string>;
-  };
-  health?: {
-    ok?: boolean;
-    status?: string;
-    error?: string;
-  };
-};
-
-/** Raw guided step field as returned by the backend API (snake_case keys). */
-export type ApiGuidedField = {
-  key: string;
-  label: string;
-  placeholder?: string;
-  hint?: string;
-  input_type?: string;
-  optional?: boolean;
-};
-
-/** Raw guided step as returned by the backend API. */
-export type ApiGuidedStep = {
-  title: string;
-  body: string;
-  fields?: ApiGuidedField[];
+  fields?: WizardField[];
 };
 
 /**
@@ -135,7 +128,7 @@ export const descByType: Record<string, string> = {
   cloudflare: 'DNS records via Cloudflare API',
   cloudflare_tunnel: 'Cloudflare Zero Trust Tunnel',
   pihole: 'Local DNS & ad filtering',
-  npm: 'Nginx Proxy Manager',
+  npm: "Reverse proxy with Let's Encrypt certificates",
   traefik: 'Dynamic reverse proxy (read-only)',
   zoraxy: 'Zoraxy reverse proxy',
   adguard: 'DNS sinkhole & filtering',
@@ -172,8 +165,8 @@ export function getPassLabel(type: string, meta: ProviderTypeMeta | undefined, t
 
 // ─── Guided wizard steps ────────────────────────────────────────
 
-/** Convert API guided steps (snake_case) to frontend GuidedStep[] (camelCase). */
-function parseApiSteps(apiSteps: ApiGuidedStep[]): GuidedStep[] {
+/** Convert API guided steps (snake_case) to the panel's wizard steps (camelCase). */
+function parseApiSteps(apiSteps: GuidedStep[]): WizardStep[] {
   return apiSteps.map((s) => ({
     title: s.title,
     body: s.body,
@@ -182,7 +175,7 @@ function parseApiSteps(apiSteps: ApiGuidedStep[]): GuidedStep[] {
       label: f.label,
       placeholder: f.placeholder,
       hint: f.hint,
-      inputType: (f.input_type || 'text') as GuidedField['inputType'],
+      inputType: (f.input_type || 'text') as WizardField['inputType'],
       optional: f.optional,
     })),
   }));
@@ -197,7 +190,7 @@ function parseApiSteps(apiSteps: ApiGuidedStep[]): GuidedStep[] {
  * written from. A placeholder that is a URL, an e-mail or a UUID has no key on purpose: it
  * stays as it is in every language.
  */
-function localizeSteps(type: string, steps: GuidedStep[], t?: TranslateFn): GuidedStep[] {
+function localizeSteps(type: string, steps: WizardStep[], t?: TranslateFn): WizardStep[] {
   if (!t) return steps;
   return steps.map((step, index) => {
     const base = `provider_guide.${type}.step_${index + 1}`;
@@ -226,7 +219,7 @@ function localizeSteps(type: string, steps: GuidedStep[], t?: TranslateFn): Guid
  * middle of onboarding. An empty list means "the types have not arrived yet" and the caller
  * shows its loading state or the expert form, never placeholder copy.
  */
-export function getGuidedSteps(type: string, meta?: ProviderTypeMeta, t?: TranslateFn): GuidedStep[] {
+export function getGuidedSteps(type: string, meta?: ProviderTypeMeta, t?: TranslateFn): WizardStep[] {
   if (!meta?.guided_steps?.length) return [];
   return localizeSteps(type, parseApiSteps(meta.guided_steps), t);
 }
@@ -250,6 +243,28 @@ export function getProjectUrl(type: string, meta?: ProviderTypeMeta): string | u
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
+
+/**
+ * The form state after the user picks a type in the Integrations modal.
+ *
+ * `url` is the whole reason this is a function rather than a spread. The type metadata carries
+ * a `placeholder_url`, and seeding the field from it puts a value in the box that is
+ * indistinguishable from the grey hint, because it IS the hint: the same string is the
+ * placeholder. Nine of the twelve types name `http://192.168.1.10:3000`, the tenth address of
+ * the commonest home range, where a real machine usually answers. Left untouched by someone
+ * who read a filled box as empty, the username and password are sent there. So a type change
+ * clears the URL, a re-pick of the same type keeps what was typed, and nothing else may ever
+ * put a value in it. The first-run wizard has only ever seeded the name.
+ */
+export function seedFormForType(prev: ProviderFormState, type: string, label: string): ProviderFormState {
+  const sameType = prev.type === type;
+  return {
+    ...prev,
+    type,
+    name: sameType && prev.name.trim() ? prev.name : label,
+    url: sameType ? prev.url : '',
+  };
+}
 
 export function buildPayload(formData: ProviderFormState) {
   return {

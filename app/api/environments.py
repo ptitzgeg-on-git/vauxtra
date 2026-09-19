@@ -1,15 +1,53 @@
-from fastapi import APIRouter, HTTPException, Request
+import sqlite3
 
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+from app.api.templates import templates_naming_label
 from app.auth import require_auth
-from app.models import get_db
+from app.models import add_log, get_db
+from app.text import name_list, plural, verb
 
 router = APIRouter()
 
 _VALID_COLORS = {"blue","teal","green","red","orange","purple","cyan","yellow","pink","lime","indigo","azure"}
 
+# `TagIn` stops a tag name at 32 characters (app/api/tags.py). Environments are typed into the
+# same field of the same panel, so they answer to the same ceiling, and with the 422 FastAPI
+# already answers for a tag body it refuses. One rule, one reply, whichever list is edited.
+_MAX_NAME_LENGTH = 32
+
+
+class EnvironmentIn(BaseModel):
+    """The body both environment write routes accept.
+
+    `TagIn` next door refuses its two fields in validators; this carries the types and leaves
+    every sentence to `_read_name_and_color` below, because the two lists are edited through
+    one field of one panel and `tests/test_environments_parity.py` measures them together.
+    What the model adds is the case neither list had an answer for: a `name` that is not a
+    string at all reached `.strip()` and came back as a 500.
+    """
+
+    name: str
+    color: str = "blue"
+
+
+def _read_name_and_color(body: dict) -> tuple[str, str]:
+    """Validate a body the way `TagIn` does, the model above carrying only the types."""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Name is required")
+    if len(name) > _MAX_NAME_LENGTH:
+        raise HTTPException(422, f"Name too long (max {_MAX_NAME_LENGTH} characters)")
+    color = body.get("color", "blue")
+    if color not in _VALID_COLORS:
+        color = "blue"
+    return name, color
+
 
 @router.get("/api/environments")
 def list_environments(request: Request):
+    """Return all environments ordered by name."""
     require_auth(request)
     conn = get_db()
     try:
@@ -20,52 +58,140 @@ def list_environments(request: Request):
 
 
 @router.post("/api/environments", status_code=201)
-def add_environment(request: Request, body: dict):
+def add_environment(request: Request, body: EnvironmentIn):
+    """Create a new environment. Returns 409 if the name is already taken."""
     require_auth(request, scope="write")
-    name  = body.get("name", "").strip()
-    color = body.get("color", "blue")
-    if not name:
-        raise HTTPException(400, "Name is required")
-    if color not in _VALID_COLORS:
-        color = "blue"
+    name, color = _read_name_and_color(body.model_dump())
     conn = get_db()
     try:
-        cur = conn.execute(
-            "INSERT INTO environments (name, color) VALUES (?,?)", (name, color)
-        )
-        env_id = cur.lastrowid
-        conn.commit()
+        # Asked before writing, so that a duplicate is the only thing answered as a duplicate.
+        # The INSERT used to report it through the UNIQUE index, under a bare `except Exception`
+        # that told a locked base and a full disk they were duplicates too.
+        existing = conn.execute("SELECT id FROM environments WHERE name=?", (name,)).fetchone()
+        if existing:
+            raise HTTPException(409, "An environment with this name already exists")
+        try:
+            cur = conn.execute(
+                "INSERT INTO environments (name, color) VALUES (?,?)", (name, color)
+            )
+            env_id = cur.lastrowid
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # The lookup above and this INSERT are two statements: another writer can store
+            # the name in between, and then the UNIQUE index is the only thing that still
+            # knows. Same refusal, same sentence. Narrow on purpose -- an `OperationalError`
+            # for a locked base or a full disk is ours, and keeps its 500.
+            raise HTTPException(409, "An environment with this name already exists")
         return {"id": env_id, "name": name, "color": color}
-    except Exception:
-        raise HTTPException(409, "Environment already exists")
     finally:
         conn.close()
 
 
 @router.put("/api/environments/{eid}")
-def update_environment(eid: int, request: Request, body: dict):
+def update_environment(eid: int, request: Request, body: EnvironmentIn):
+    """Update an environment by ID. 404 if it is gone, 409 if the name belongs to another one."""
     require_auth(request, scope="write")
-    name  = body.get("name", "").strip()
-    color = body.get("color", "blue")
-    if not name:
-        raise HTTPException(400, "Name is required")
-    if color not in _VALID_COLORS:
-        color = "blue"
+    name, color = _read_name_and_color(body.model_dump())
     conn = get_db()
     try:
-        conn.execute("UPDATE environments SET name=?, color=? WHERE id=?", (name, color, eid))
-        conn.commit()
+        row = conn.execute("SELECT id FROM environments WHERE id=?", (eid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Environment not found")
+        conflict = conn.execute(
+            "SELECT id FROM environments WHERE name=? AND id!=?", (name, eid)
+        ).fetchone()
+        if conflict:
+            raise HTTPException(409, "An environment with this name already exists")
+        try:
+            conn.execute("UPDATE environments SET name=?, color=? WHERE id=?", (name, color, eid))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # The window `add_environment` documents, on the rename rather than the creation.
+            # Same two statements, same index, and the 500 it used to answer contradicted the
+            # 409 the creation answers for the very same collision.
+            raise HTTPException(409, "An environment with this name already exists")
+        # The row is echoed back rather than tags' `{"ok": True}`: the MCP bridge returns this
+        # reply to its own caller (vauxtra_mcp/tools/admin.py), while the panel only refetches.
         return {"id": eid, "name": name, "color": color}
     finally:
         conn.close()
 
 
+def holders_of_environment(conn, eid: int) -> tuple[list[str], list[str]]:
+    """The services set to the environment and the templates naming it, both already sorted.
+
+    The exact sibling of `holders_of_tag` (`app/api/tags.py`), down to the two tables it has
+    to ask separately. `service_environments` declares `ON DELETE CASCADE` (`app/models.py`),
+    so a deleted environment unlinks its services and the rows themselves are untouched.
+    `service_templates.environment_ids_json` is TEXT holding a JSON array, which no
+    constraint reaches: the id survives the delete and is dropped on the next read by
+    `_drop_dead_labels` (`app/api/templates.py`).
+
+    This had one holder where the tag half had two, and the docstring said why: a template
+    named tags and never named an environment. That was true of the storage and false of the
+    panel, which offered both halves and kept one. Now that the column exists, so does the
+    second holder, and an environment deletion has the same two things to report.
+    """
+    services = [
+        # `.strip(".")` the way every other fqdn in the API is built: an apex route stores
+        # an empty subdomain, and the naive join names it `.example.test`.
+        f"{r['subdomain']}.{r['domain']}".strip(".")
+        for r in conn.execute(
+            "SELECT s.subdomain, s.domain FROM services s "
+            "JOIN service_environments se ON se.service_id = s.id "
+            "WHERE se.environment_id=? ORDER BY s.domain, s.subdomain",
+            (eid,),
+        )
+    ]
+    return services, templates_naming_label(conn, "environment_ids", eid)
+
+
+def _log_environment_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
+    """The only trace an environment deletion leaves, so it carries what was set to it.
+
+    The sibling of `_log_tag_removal` in `app/api/tags.py`, for the same reason and with the
+    same shape: both join tables declare `ON DELETE CASCADE`, the services go on working,
+    and the label they were grouped and filtered by is gone with no record that it ever
+    applied to them.
+    """
+    if not services and not templates:
+        add_log("info", f"Environment deleted: {name}", conn)
+        return
+    # A sentence each, rather than one count over both. They are not the same event: the
+    # services lose a label and go on routing, the templates change what they will build
+    # next.
+    said = []
+    if services:
+        said.append(
+            f"{plural(len(services), 'service')} "
+            f"{verb(len(services), 'was', 'were')} set to it and "
+            f"{verb(len(services), 'keeps', 'keep')} working without it "
+            f"({name_list(services)})"
+        )
+    if templates:
+        said.append(
+            f"{plural(len(templates), 'service template')} named it and "
+            f"{verb(len(templates), 'drops', 'drop')} it on the next read, so a service "
+            f"built from one starts without the environment ({name_list(templates)})"
+        )
+    add_log("warn", f"Environment deleted: {name} -- {'. '.join(said)}", conn)
+
+
 @router.delete("/api/environments/{eid}")
 def delete_environment(eid: int, request: Request):
+    """Delete an environment by ID. Associated services are unlinked, not deleted."""
     require_auth(request, scope="write")
     conn = get_db()
     try:
+        row = conn.execute("SELECT name FROM environments WHERE id=?", (eid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Environment not found")
+        # Read before the DELETE: the cascade takes `service_environments` with it and the
+        # next template read drops the id, so after the commit nothing is left that knows
+        # which services were set to this one or which templates named it.
+        services, templates = holders_of_environment(conn, eid)
         conn.execute("DELETE FROM environments WHERE id=?", (eid,))
+        _log_environment_removal(conn, row["name"], services, templates)
         conn.commit()
         return {"ok": True}
     finally:

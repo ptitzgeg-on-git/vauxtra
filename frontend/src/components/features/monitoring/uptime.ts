@@ -9,7 +9,8 @@
  *
  * Two things the table has to be honest about:
  *  - there is no latency column in `uptime_events`. Latency exists only in the answer of
- *    `GET /api/services/{sid}/check`, which measures one service on demand.
+ *    `POST /api/services/{sid}/check`, which measures one service on demand, and in
+ *    the `results` of `POST /api/services/check-all`, which measures every one of them.
  *  - `expose_mode === 'tunnel'` services are skipped by both the scheduler and
  *    `POST /api/services/check-all` (TCP against a tunnel target always fails), so they
  *    have no history and no `last_checked` — that is expected, not a fault.
@@ -65,6 +66,39 @@ export function serviceTarget(service: Service): string {
 export function serviceStatus(service: Service): MonitoringStatus {
   if (!service.enabled) return 'disabled';
   return service.status === 'ok' || service.status === 'error' ? service.status : 'unknown';
+}
+
+// ---------------------------------------------------------------------------
+// The scheduler's cadence
+// ---------------------------------------------------------------------------
+
+/** What the page may say about the scheduler, and nothing more than it can prove. */
+export type AutoCheckCadence =
+  | { state: 'unknown' }
+  | { state: 'off' }
+  | { state: 'every'; minutes: number };
+
+/**
+ * What `check_interval` says about the scheduler.
+ *
+ * `0` is the value that turns it off -- `app/settings.py` ranges it over (0, 1440) with the
+ * comment "0 disables automatic health checks" -- which is exactly the value a `Number(x) || 5`
+ * swallows. The one number carrying a meaning was the one the fallback replaced, so a page
+ * whose scheduler was off announced checks every five minutes.
+ *
+ * The other way this line used to be decided was `services.some((s) => s.last_checked)`. That
+ * column is written by the manual checks too (`app/api/services.py`), so clicking "Check every
+ * service" once made the header claim a scheduler was running. A trace left by a human is not
+ * evidence about a scheduler; the setting is, and it is the only thing read here.
+ *
+ * Anything unreadable -- settings not loaded yet, an empty string, a value that is not a number
+ * -- answers `unknown`, and the page then says nothing at all. Silence is never wrong.
+ */
+export function autoCheckCadence(raw: string | number | null | undefined): AutoCheckCadence {
+  if (raw === null || raw === undefined || raw === '') return { state: 'unknown' };
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes < 0) return { state: 'unknown' };
+  return minutes === 0 ? { state: 'off' } : { state: 'every', minutes };
 }
 
 /** Tunnel endpoints are never TCP-checked; the Cloudflare API is what says they are up. */
@@ -200,7 +234,7 @@ export function overallAvailability(
 // On-demand latency
 // ---------------------------------------------------------------------------
 
-/** One `GET /api/services/{sid}/check` result, kept for as long as the page is open. */
+/** One measurement, from either check route, kept for as long as the page is open. */
 export interface LatencyProbe {
   /** Null when the target never answered — the check says `error`, not "0 ms". */
   latencyMs: number | null;

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { Bell, ChevronDown, ExternalLink, Plus, Send, Trash2 } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import { useWebhookActions } from '@/hooks/useWebhookActions';
@@ -18,6 +19,7 @@ import {
   Input,
   SearchInput,
   Select,
+  SkeletonRow,
   Switch,
   useConfirmDialog,
 } from '@/components/ui';
@@ -51,19 +53,24 @@ interface TestAllResult {
 /** Notification webhooks: add, test, scope and alert rules, enable, delete. */
 export function WebhooksTab() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
   const hook = useWebhookActions(true);
   const { webhooks, webhooksQuery, name, setName, url, setUrl, testResult, setTestResult } = hook;
 
-  const { data: providers = [] } = useQuery<Provider[]>({
+  // Kept whole rather than destructured to a default: `scopeSummary` has to tell an empty
+  // list apart from a list that has not arrived yet, and `data = []` erases that difference.
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
   });
-  const { data: services = [] } = useQuery<Service[]>({
+  const servicesQuery = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
+  const services = useMemo(() => servicesQuery.data ?? [], [servicesQuery.data]);
 
   const enabledProviders = useMemo(() => providers.filter((p) => !!p.enabled), [providers]);
   const enabledServices = useMemo(() => services.filter((s) => !!s.enabled), [services]);
@@ -106,14 +113,35 @@ export function WebhooksTab() {
    * A scope with nothing to point at is a dead end: `firstRefFor` returns null, the rule is
    * saved with `scope_ref_id: null`, and the webhook matches nothing instead of matching one
    * provider. So the option is disabled and the field says why.
+   *
+   * Disabling it is right in all three states -- none enabled, not fetched yet, fetch failed
+   * -- because all three leave `firstRefFor` nothing to return. Saying *why* is not. An empty
+   * list is also the first paint of every load, so the hint announced that this instance has
+   * no enabled integration before anyone had asked it, and went on saying so for good if the
+   * request failed. `scopeSummary` below already writes this rule down and obeys it; up here
+   * it was written and not obeyed. `isSuccess` is what makes an empty list a fact about the
+   * instance rather than a fact about the request.
    */
   const noProviders = enabledProviders.length === 0;
   const noServices = enabledServices.length === 0;
+  const providersUnread = noProviders && !providersQuery.isSuccess;
+  const servicesUnread = noServices && !servicesQuery.isSuccess;
   const scopeUnavailable = (type: ScopeType) =>
     (type === 'provider' && noProviders) || (type === 'service' && noServices);
+  /** Why a scope is closed -- kept in one place so the hint and the toast cannot disagree. */
+  const scopeBlockedReason = (type: ScopeType): string => {
+    if (type === 'provider') {
+      return providersUnread
+        ? t('settings.webhooks.scope_providers_unknown')
+        : t('settings.webhooks.scope_no_providers');
+    }
+    return servicesUnread
+      ? t('settings.webhooks.scope_services_unknown')
+      : t('settings.webhooks.scope_no_services');
+  };
   const scopeHints = [
-    noProviders ? t('settings.webhooks.scope_no_providers') : null,
-    noServices ? t('settings.webhooks.scope_no_services') : null,
+    noProviders ? scopeBlockedReason('provider') : null,
+    noServices ? scopeBlockedReason('service') : null,
   ].filter((line): line is string => line !== null);
   const scopeHint = scopeHints.length > 0 ? scopeHints.join(' ') : undefined;
 
@@ -164,11 +192,7 @@ export function WebhooksTab() {
     if (patch.scope_type !== undefined && patch.scope_type !== current.scope_type) {
       // Nothing to point at: saving would blank the target and quietly mute the webhook.
       if (scopeUnavailable(patch.scope_type)) {
-        toast.error(
-          patch.scope_type === 'provider'
-            ? t('settings.webhooks.scope_no_providers')
-            : t('settings.webhooks.scope_no_services'),
-        );
+        toast.error(scopeBlockedReason(patch.scope_type));
         return;
       }
       next.scope_ref_id = firstRefFor(patch.scope_type);
@@ -211,20 +235,48 @@ export function WebhooksTab() {
       return next;
     });
 
-  const scopeSummary = (webhook: Webhook): string => {
+  /**
+   * What a row says about its own scope, and whether that is a warning.
+   *
+   * `webhooks.scope_ref_id` carries no foreign key, so deleting the integration or the
+   * endpoint a rule watches leaves the id behind: the row keeps its name, its URL and its
+   * switch, and matches nothing from then on. This used to fall back to the placeholder --
+   * "Choose a provider" -- which is the text of a row nobody has finished configuring yet.
+   * A rule that has gone dead and a rule that was never set up read identically, and only
+   * one of them is a thing to act on.
+   *
+   * `isSuccess` is what keeps it honest: an empty list is also what the first render sees
+   * while the query is in flight, and a warning that fires on every page load until the
+   * data lands is not a warning. A NULL target is the genuinely unconfigured case, and it
+   * keeps the placeholder it always had.
+   */
+  const scopeSummary = (webhook: Webhook): { text: string; broken: boolean } => {
     if (webhook.scope_type === 'provider') {
       const provider = providers.find((p) => p.id === webhook.scope_ref_id);
-      return provider
-        ? t('settings.webhooks.scope_provider_named', { name: provider.name })
-        : t('settings.webhooks.choose_provider');
+      if (provider) {
+        return { text: t('settings.webhooks.scope_provider_named', { name: provider.name }), broken: false };
+      }
+      const gone = providersQuery.isSuccess && webhook.scope_ref_id != null;
+      return {
+        text: t(gone ? 'settings.webhooks.scope_provider_gone' : 'settings.webhooks.choose_provider'),
+        broken: gone,
+      };
     }
     if (webhook.scope_type === 'service') {
       const service = services.find((s) => s.id === webhook.scope_ref_id);
-      return service
-        ? t('settings.webhooks.scope_service_named', { host: `${service.subdomain}.${service.domain}` })
-        : t('settings.webhooks.choose_service');
+      if (service) {
+        return {
+          text: t('settings.webhooks.scope_service_named', { host: `${service.subdomain}.${service.domain}` }),
+          broken: false,
+        };
+      }
+      const gone = servicesQuery.isSuccess && webhook.scope_ref_id != null;
+      return {
+        text: t(gone ? 'settings.webhooks.scope_service_gone' : 'settings.webhooks.choose_service'),
+        broken: gone,
+      };
     }
-    return t('settings.webhooks.scope_all');
+    return { text: t('settings.webhooks.scope_all'), broken: false };
   };
 
   const needle = search.trim().toLowerCase();
@@ -384,7 +436,7 @@ export function WebhooksTab() {
           <>
             {webhooks.length > 0 && (
               <Badge tone={enabledCount > 0 ? 'success' : 'neutral'} dot>
-                {t('settings.webhooks.enabled_count', { enabled: enabledCount, total: webhooks.length })}
+                {t('settings.webhooks.enabled_count', { count: enabledCount, total: formatNumber(webhooks.length) })}
               </Badge>
             )}
             <Button
@@ -424,7 +476,17 @@ export function WebhooksTab() {
           <SearchInput value={search} onChange={setSearch} placeholder={t('settings.webhooks.search_placeholder')} />
         )}
 
-        {webhooksQuery.isError ? (
+        {webhooksQuery.isLoading ? (
+          /* The four other tabs on this screen paint this rung; this one skipped it, so an
+             unread list and an instance with no webhook were the same sentence. */
+          <ul className="space-y-3">
+            {Array.from({ length: 3 }, (_, i) => (
+              <li key={i} className="rounded-xl border border-border bg-card">
+                <SkeletonRow columns={3} />
+              </li>
+            ))}
+          </ul>
+        ) : webhooksQuery.isError ? (
           <InlineAlert
             tone="danger"
             title={t('settings.webhooks.load_failed')}
@@ -447,6 +509,7 @@ export function WebhooksTab() {
               const outcome = outcomes[webhook.id];
               const enabled = !!webhook.enabled;
               const scopeType: ScopeType = webhook.scope_type ?? 'all';
+              const scope = scopeSummary(webhook);
               return (
                 <li
                   key={webhook.id}
@@ -462,6 +525,13 @@ export function WebhooksTab() {
                         <Badge size="sm" tone={enabled ? 'success' : 'neutral'} dot>
                           {enabled ? t('settings.webhooks.enabled') : t('settings.webhooks.disabled')}
                         </Badge>
+                        {scope.broken && (
+                          /* The badge above says "Enabled" and is telling the truth: the rule is
+                             switched on and will never fire. This is the half it cannot say. */
+                          <Badge size="sm" tone="danger">
+                            {t('settings.webhooks.scope_gone_badge')}
+                          </Badge>
+                        )}
                         {outcome && (
                           <Badge size="sm" tone={outcome.ok ? 'success' : 'danger'}>
                             {outcome.ok ? t('settings.webhooks.test_ok') : t('settings.webhooks.test_ko')}
@@ -469,7 +539,9 @@ export function WebhooksTab() {
                         )}
                       </div>
                       <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {scopeSummary(webhook)}
+                        <span className={scope.broken ? 'font-medium text-destructive' : undefined}>
+                          {scope.text}
+                        </span>
                         <span aria-hidden="true"> · </span>
                         <code className="font-mono">{webhook.url_masked}</code>
                       </p>

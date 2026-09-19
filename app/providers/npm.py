@@ -3,7 +3,14 @@
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider, TimeoutSession
+from app.providers.base import (
+    ProviderListingRefused,
+    ProxyProvider,
+    TimeoutSession,
+    login_check,
+    reachability_check,
+)
+from app.text import plural
 
 
 def _numeric_host_id(host_id) -> int | None:
@@ -68,9 +75,54 @@ class NPMProvider(ProxyProvider):
     def test_connection(self) -> bool:
         return self._ensure_auth()
 
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        """Reachability first, credentials second.
+
+        `test_connection` here is `_ensure_auth`, which is `False` for an NPM that is down
+        and `False` for one that refused the email and password. Reported through the
+        fallback in `_provider_diagnostics` both came out as `connection_failed`, which
+        points the operator at the network when the account is what needs looking at.
+
+        The third check is the one NPM was missing while every other provider had it. A
+        token that authenticates is not a token that can read: NPM gives a user per-object
+        permissions, and one whose `proxy_hosts` visibility is off signs in perfectly and
+        is then refused the list Vauxtra manages. Stopping at "Login OK" made that account
+        look ready, and the refusal surfaced later as a push that saved nothing.
+        """
+        checks = [reachability_check(self.session, f"{self.api_url}/tokens")]
+        if not checks[0]["ok"]:
+            return {"ok": False, "checks": checks, "warnings": []}
+        authenticated = self._ensure_auth()
+        checks.append(login_check(authenticated))
+        if not authenticated:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        try:
+            count = len(self.list_hosts())
+            read_ok, detail = True, f"{plural(count, 'host')} readable"
+        except Exception as exc:
+            read_ok, detail = False, str(exc)
+        checks.append({
+            "name": "List hosts",
+            "ok": read_ok,
+            "detail": detail,
+            "detail_code": "proxy_read_ok" if read_ok else "proxy_read_failed",
+            "blocking": not read_ok,
+        })
+        return {"ok": read_ok, "checks": checks, "warnings": []}
+
     def list_hosts(self) -> list[dict]:
+        """Every proxy host NPM holds.
+
+        Raises rather than answering []. A request that failed says nothing about what NPM
+        holds, and every caller acts on the difference: the drift check reads no matching
+        host as `route_missing` and offers a Reconcile button, `_service_proxy_state` reads
+        it as a service that was never published. NPM refusing the list for a moment is not
+        the same answer as NPM holding nothing, and each caller already wraps this call,
+        so the honest answer arrives as `proxy_check_failed` instead of a route to republish.
+        """
         if not self._ensure_auth():
-            return []
+            raise ProviderListingRefused("NPM refused the credentials")
         try:
             r = self.session.get(
                 f"{self.api_url}/nginx/proxy-hosts",
@@ -93,8 +145,8 @@ class NPMProvider(ProxyProvider):
                 }
                 for h in hosts
             ]
-        except requests.RequestException:
-            return []
+        except requests.RequestException as exc:
+            raise ProviderListingRefused(f"NPM would not list its proxy hosts: {exc}") from exc
 
     def create_host(self, domain: str, ip: str, port: int,
                     scheme: str = "http", websocket: bool = False,
@@ -171,8 +223,29 @@ class NPMProvider(ProxyProvider):
         except requests.RequestException:
             return False
 
+    def _host_enabled(self, host_id: int) -> bool | None:
+        """Whether NPM serves this host right now, or None when the state could not be read."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
+                timeout=PROVIDER_TIMEOUT,
+            )
+            if r.status_code != 200:
+                return None
+            return bool(r.json().get("enabled"))
+        except (requests.RequestException, ValueError):
+            return None
+
     def toggle_host(self, host_id: int | str, enabled: bool) -> bool:
-        """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints."""
+        """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints.
+
+        NPM answers 400 "Host is already enabled" when the host is in the state being asked
+        for, so the status code alone cannot tell a refusal apart from a no-op. Every push
+        resumes the host it just updated, and almost every host it updates is already
+        running, so reading the code alone reported the ordinary case as a refused push.
+        Read the host back instead and answer on the state it is actually in, which is what
+        the caller asked about; only a host still in the wrong state is a real refusal.
+        """
         host_id = _numeric_host_id(host_id)
         if host_id is None or not self._ensure_auth():
             return False
@@ -182,7 +255,9 @@ class NPMProvider(ProxyProvider):
                 f"{self.api_url}/nginx/proxy-hosts/{host_id}/{action}",
                 timeout=PROVIDER_TIMEOUT,
             )
-            return r.status_code == 200
+            if r.status_code == 200:
+                return True
+            return self._host_enabled(host_id) == enabled
         except requests.RequestException:
             return False
 

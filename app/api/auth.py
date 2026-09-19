@@ -17,7 +17,7 @@ from app.auth import (
     require_auth_or_setup,
 )
 from app.limiter import limiter
-from app.models import get_db
+from app.models import add_log, get_db
 from app.security import validate_password_strength
 
 router = APIRouter()
@@ -95,11 +95,22 @@ def auth_login(request: Request, body: LoginBody):
     if not check_password(body.password):
         # Add delay on failed attempt to slow brute-force
         time.sleep(0.5)
+        # Somebody guessing at the password was the one thing this instance never recorded.
+        # No address in the line: `request.client.host` is the reverse proxy for every
+        # caller unless `FORWARDED_ALLOW_IPS` is set (app/limiter.py says why), so an
+        # address here would be a false lead in the investigation it is written for.
+        #
+        # Only the attempts that reach this branch are written. The 429s the limiter raises
+        # above them are not, and that is what bounds this to five lines a minute: a line
+        # per refused request would let an unauthenticated caller fill the table at its own
+        # rate.
+        add_log("warn", "Sign-in refused: wrong password")
         raise HTTPException(401, "Invalid password")
 
     session = get_session(request)
     session["authenticated"] = True
     session["epoch"] = current_session_epoch()
+    add_log("info", "Signed in")
     return {"ok": True}
 
 
@@ -136,6 +147,7 @@ def setup_password(request: Request, body: SetPasswordBody):
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')"
         )
         mark_password_configured(conn)
+        add_log("info", "Admin password set from the setup wizard", conn)
         conn.commit()
     finally:
         conn.close()
@@ -189,6 +201,7 @@ def change_password(request: Request, body: ChangePasswordBody):
         # changing it after a suspected compromise, and until now it did not happen: the
         # thief's cookie kept working for the remaining days of its seven.
         bump_session_epoch(conn)
+        add_log("info", "Admin password changed, and every other session was signed out", conn)
         conn.commit()
     finally:
         conn.close()

@@ -174,6 +174,7 @@ def init_db() -> None:
             domain             TEXT    NOT NULL DEFAULT '',
             dns_ip             TEXT    NOT NULL DEFAULT '',
             tag_ids_json       TEXT    NOT NULL DEFAULT '[]',
+            environment_ids_json TEXT  NOT NULL DEFAULT '[]',
             icon_url           TEXT    NOT NULL DEFAULT '',
             created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
         );
@@ -246,6 +247,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
         "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
         "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
+        # A template carried only half of the label control the form shows. The other
+        # half is added here rather than in a rebuild because the column has a default:
+        # every template written before this reads back as naming no environment, which
+        # is exactly what it named.
+        "ALTER TABLE service_templates ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]'",
     ]:
         try:
             conn.execute(sql)
@@ -271,10 +277,11 @@ def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
     """Deleting a webhook left its queued sends behind, and the retry job kept firing them.
 
     `webhook_delivery_log.webhook_id` named a webhook without referencing one, so
-    `DELETE FROM webhooks WHERE id=?` -- the whole body of `delete_webhook` -- removed the
-    row and nothing else. The retry job reads the destination off the log row rather than
-    off `webhooks`, so Vauxtra went on POSTing to a URL the operator had just revoked, for
-    the full length of the backoff: up to twenty-four hours after the delete.
+    `DELETE FROM webhooks WHERE id=?` -- the one statement in `delete_webhook` that removes
+    anything, next to a lookup that answers 404 and a commit -- took the row and left the
+    queue standing. The retry job reads the destination off the log row rather than off
+    `webhooks`, so Vauxtra went on POSTing to a URL the operator had just revoked, for the
+    full length of the backoff: up to twenty-four hours after the delete.
 
     Two things are needed and neither replaces the other. The cascade stops it happening
     again; the copy below drops the rows it has already happened to, which no cascade can
@@ -542,6 +549,26 @@ def is_setup_done() -> bool:
 #: filter on "warning" is not silently missing rows.
 _LEVEL_ALIASES = {"warn": "warning"}
 
+#: The spellings a reader may assume exist even when the last 24 hours produced none of
+#: them, in the order a human reads them. `/metrics` zero-fills these so a quiet instance
+#: reports `0` rather than dropping the series: an absent series and a count of zero are
+#: the same picture to a person and opposite answers to `absent()`. This is the stored
+#: vocabulary, after the fold above -- `warn` is not a member, it is an alias of one.
+LOG_LEVELS = ("info", "ok", "warning", "error")
+
+#: The `status` a row of `webhook_delivery_log` can hold. `scheduler.py` writes exactly
+#: these three: the column defaults to `pending`, a send that succeeds becomes `delivered`,
+#: and one that runs out of attempts becomes `failed`.
+#:
+#: Here for the same reason as `LOG_LEVELS` above, and with the same consequence. `/metrics`
+#: zero-fills these, so an instance that has never sent a webhook publishes the family at
+#: zero instead of not publishing it. It used to be emitted only when the table had rows,
+#: and `docs/HOWTO.md` declared the closed vocabulary `pending, delivered, failed` next to
+#: it -- a promise kept only on an instance that happened to hold all three at once. An
+#: alarm on failed deliveries read no-data on the instance that had never failed, which is
+#: the one answer it must never give.
+WEBHOOK_DELIVERY_STATUSES = ("pending", "delivered", "failed")
+
 
 def normalise_log_level(level: str) -> str:
     """The spelling stored for `level`: lowercased, trimmed, `warn` folded into `warning`."""
@@ -562,33 +589,67 @@ def add_log(level: str, message: str, conn: sqlite3.Connection | None = None) ->
         conn.close()
 
 
-def parse_tags(tags_raw: str | None) -> list[dict]:
-    if not tags_raw:
-        return []
-    result = []
-    for chunk in tags_raw.split(","):
-        parts = chunk.split(":")
-        if len(parts) == 3:
-            result.append({"name": parts[0], "color": parts[1], "id": int(parts[2])})
-    return result
+def labels_by_service(
+    conn: sqlite3.Connection, service_ids: list[int]
+) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
+    """The tags, then the environments, of each service, keyed by service id.
+
+    Read as rows, one per link. The service queries used to ask SQLite for
+    `GROUP_CONCAT(DISTINCT t.name || ':' || t.color || ':' || t.id)` and take the answer
+    back apart on "," and then on ":", keeping the chunks that came out in three pieces.
+    Nothing refuses either character in a name: `TagIn` (`app/api/tags.py`) and
+    `EnvironmentIn` (`app/api/environments.py`) strip the name, refuse it empty and stop it
+    at 32 characters, and that is the whole rule.
+
+    Measured on this build, with four tags on one service named `prod`, `a,b`, `web:prod`
+    and `zeta`, `GET /api/services` answered with three of them: `prod`, `b` and `zeta`.
+    `a,b` split into `a` and `b:blue:2`; the first was dropped for having one part and the
+    second was kept, so a tag the base has never held appeared on the service under the
+    right id and a name nobody typed. `web:prod` came out in four parts and vanished
+    without trace. A name ending in a comma is the third face of it: `a,` yields `a` and
+    `:blue:1`, a label whose name is the empty string.
+
+    Rows carry their own boundaries, so none of that has anywhere to happen. The order is
+    the one `GET /api/tags` and `GET /api/environments` already answer in, by name, which
+    `GROUP_CONCAT DISTINCT` never promised.
+    """
+    tags: dict[int, list[dict]] = {}
+    envs: dict[int, list[dict]] = {}
+    if not service_ids:
+        return tags, envs
+    placeholders = ",".join(["?"] * len(service_ids))
+    for out, table, link, column in (
+        (tags, "tags", "service_tags", "tag_id"),
+        (envs, "environments", "service_environments", "environment_id"),
+    ):
+        rows = conn.execute(
+            f"""SELECT l.service_id AS service_id, x.id AS id, x.name AS name,
+                       x.color AS color
+                  FROM {link} l
+                  JOIN {table} x ON x.id = l.{column}
+                 WHERE l.service_id IN ({placeholders})
+                 ORDER BY x.name, x.id""",
+            service_ids,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["service_id"], []).append(
+                {"id": r["id"], "name": r["name"], "color": r["color"]}
+            )
+    return tags, envs
 
 
-def parse_environments(envs_raw: str | None) -> list[dict]:
-    if not envs_raw:
-        return []
-    result = []
-    for chunk in envs_raw.split(","):
-        parts = chunk.split(":")
-        if len(parts) == 3:
-            result.append({"name": parts[0], "color": parts[1], "id": int(parts[2])})
-    return result
+def row_to_service(
+    row, tags: list[dict] | None = None, environments: list[dict] | None = None
+) -> dict:
+    """Convert a services DB row to a serializable dict, carrying the labels handed to it.
 
-
-def row_to_service(row, tags_raw: str | None = None) -> dict:
-    """Convert a services DB row to a serializable dict with parsed tags/environments."""
+    The labels come from `labels_by_service`, not from the row: a service query no longer
+    joins the two label tables at all, so it no longer fans out and no longer needs a
+    `GROUP BY` to fold itself back up.
+    """
     d = dict(row)
-    d["tags"]         = parse_tags(tags_raw or d.pop("tags_raw", None))
-    d["environments"] = parse_environments(d.pop("envs_raw", None))
+    d["tags"]         = tags or []
+    d["environments"] = environments or []
     return d
 
 

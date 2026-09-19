@@ -1,5 +1,5 @@
 """MCP tools — provider management and health checks."""
-from typing import Any
+from typing import Any, Literal
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -24,7 +24,18 @@ def get_provider_types() -> list[dict[str, Any]]:
 @mcp.tool()
 def create_provider(
     name: str,
-    type: str,
+    type: Literal[
+        "adguard",
+        "cloudflare",
+        "cloudflare_tunnel",
+        "desec",
+        "npm",
+        "pihole",
+        "powerdns",
+        "technitium",
+        "traefik",
+        "zoraxy",
+    ],
     url: str = "",
     username: str = "",
     password: str = "",
@@ -35,8 +46,12 @@ def create_provider(
 
     Args:
         name: Display name for this provider.
-        type: Provider type (npm, zoraxy, traefik, cloudflare, cloudflare_tunnel, pihole, adguard, technitium).
-        url: Connection URL (e.g. http://npm:81 or https://api.cloudflare.com).
+        type: One of the ten types the API knows. The list used to be repeated in this
+            docstring and had lost `powerdns` and `desec`, which the API has accepted for
+            two releases; it is a `Literal` now, so the schema and the route cannot drift.
+        url: Connection URL (e.g. http://npm:81). May be left empty for `cloudflare`,
+            `cloudflare_tunnel` and `desec`, whose API endpoint the route fills in; every
+            other type is refused with 422 without one.
         username: Username or email for authentication.
         password: Password or API token.
         extra: Additional provider-specific config (e.g. zone_id, account_id, tunnel_id).
@@ -94,15 +109,36 @@ def update_provider(
 
 
 @mcp.tool()
-def delete_provider(provider_id: int, force: bool = False) -> dict[str, Any]:
+def delete_provider(
+    provider_id: int, force: bool = False, withdraw: bool = False
+) -> dict[str, Any]:
     """Delete a provider by ID.
 
     Refuses with 409 while services still reference it, and the error carries the list
     (`detail.services`, each with `id`, `fqdn` and the `roles` it fills). Call again with
-    `force=True` to delete anyway: those services keep their public hostname but lose the
-    link, so nothing is pushed for them until another provider is chosen.
+    `force=True` to delete anyway.
+
+    `withdraw` decides what happens to the records the provider is still serving, and it is
+    the whole question. Without it those services keep their public hostname and lose only
+    the link, which means the proxy host and the DNS record stay live on a provider Vauxtra
+    no longer knows about -- reachable, pointing wherever they pointed, and no longer
+    managed by anything. With `withdraw=True` the route takes this provider's own records
+    down first, touching only its own: the other targets of a multi-sync service are not
+    this deletion's business.
+
+    The answer says what became of each part. `unlinked_services`, `unlinked_templates` and
+    `orphaned_webhooks` are the ids left holding a reference to a provider that is gone;
+    `withdrawn` is whether the records were actually taken down; `errors` names each record
+    that could not be, one sentence per record, and those are still live. `ok` is false when
+    `errors` is non-empty -- the provider row is deleted either way, so a false `ok` here
+    means "deleted, but something is still published", not "nothing happened".
     """
-    r = client.delete(f"/providers/{provider_id}", params={"force": "true"} if force else None)
+    params: dict[str, str] = {}
+    if force:
+        params["force"] = "true"
+    if withdraw:
+        params["withdraw"] = "true"
+    r = client.delete(f"/providers/{provider_id}", params=params or None)
     client.check(r)
     return r.json()
 
@@ -129,15 +165,33 @@ def test_provider_connection(provider_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def validate_provider_draft(
-    type: str,
-    url: str,
+    type: Literal[
+        "adguard",
+        "cloudflare",
+        "cloudflare_tunnel",
+        "desec",
+        "npm",
+        "pihole",
+        "powerdns",
+        "technitium",
+        "traefik",
+        "zoraxy",
+    ],
+    url: str = "",
     username: str = "",
     password: str = "",
     extra: dict[str, Any] | None = None,
     hostname_hint: str = "",
     write_probe: bool = False,
 ) -> dict[str, Any]:
-    """Validate a provider draft before creation (no DB write)."""
+    """
+    Validate a provider draft before creation (no DB write).
+
+    Same fields as `create_provider` minus the name, which nothing stores here. `url` is
+    optional for the same reason and in the same three cases: `cloudflare`,
+    `cloudflare_tunnel` and `desec` have a known endpoint the route fills in. Declaring it
+    required here would have forced a caller to type an address the API already knows.
+    """
     r = client.post("/providers/validate-draft", json={
         "type": type,
         "url": url,

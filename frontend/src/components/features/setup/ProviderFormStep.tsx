@@ -33,12 +33,13 @@ import {
   getPassLabel,
   getProviderGroup,
   getUserLabel,
-  type GuidedStep,
+  type WizardStep,
   type ProviderFormState,
   type ProviderGroup,
   type ProviderTypeMeta,
   type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { checkDetailText, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 
@@ -74,7 +75,7 @@ const GROUP_TONE: Record<ProviderGroup, Tone> = {
 };
 
 /** True when a guided step still has a required field the user has not filled. */
-function stepIncomplete(step: GuidedStep | undefined, formData: ProviderFormState): boolean {
+function stepIncomplete(step: WizardStep | undefined, formData: ProviderFormState): boolean {
   if (!step?.fields) return false;
   return step.fields.some((f) => !f.optional && !formData[f.key]?.trim());
 }
@@ -145,7 +146,7 @@ export function ProviderFormStep({
       aria-label={revealed[key] ? t('provider_modal.field.hide_password') : t('provider_modal.field.show_password')}
       aria-pressed={Boolean(revealed[key])}
       tabIndex={-1}
-      className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
     >
       {revealed[key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
     </button>
@@ -234,16 +235,15 @@ export function ProviderFormStep({
                 ) : (
                   <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
                 )}
-                <span>
-                  <span className="font-medium">{check.name || t('provider_modal.validation.check_fallback')}</span>
-                  {check.detail ? ` — ${check.detail}` : ''}
-                </span>
+                {/* Same rule as the Integrations modal: the reader gets the translated
+                    sentence, never the server's identifier for the check. */}
+                <span>{checkDetailText(check, t) || t('provider_modal.validation.check_fallback')}</span>
               </li>
             ))}
         </ul>
       )}
       {validationResult.health?.status && (
-        <p className="mt-1">{t('provider_modal.validation.health', { status: validationResult.health.status })}</p>
+        <p className="mt-1">{t('provider_modal.validation.health', { status: healthStatusLabel(validationResult.health.status, t) })}</p>
       )}
     </InlineAlert>
   ) : null;
@@ -285,7 +285,7 @@ export function ProviderFormStep({
                         key={type}
                         type="button"
                         onClick={() => chooseProviderType(type, String(meta.label || type))}
-                        className="flex items-start gap-3 rounded-xl border border-border bg-card p-4 text-left shadow-card transition-[transform,box-shadow,border-color] duration-200 ease-out-expo hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="flex items-start gap-3 rounded-xl border border-border bg-card p-4 text-left shadow-card transition-[transform,box-shadow,border-color] duration-200 ease-out-expo hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-elevated focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <span className={cn('grid h-11 w-11 shrink-0 place-items-center rounded-lg border', tone.bg, tone.text, tone.border)}>
                           <ProviderLogo type={type} className="h-5 w-5" fallback={<FallbackIcon className="h-5 w-5" />} />
@@ -313,7 +313,7 @@ export function ProviderFormStep({
               setWizardMode('guided');
               setGuidedStepIndex(0);
             }}
-            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-primary/30 bg-primary/5 p-5 text-left transition-colors hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-primary/30 bg-primary/5 p-5 text-left transition-colors hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
               <BookOpen className="h-5 w-5" />
@@ -333,7 +333,7 @@ export function ProviderFormStep({
           <button
             type="button"
             onClick={() => setWizardMode('expert')}
-            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-transparent bg-muted/50 p-5 text-left transition-colors hover:border-border hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-transparent bg-muted/50 p-5 text-left transition-colors hover:border-border hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-border bg-muted text-muted-foreground">
               <Zap className="h-5 w-5" />

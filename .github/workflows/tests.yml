@@ -39,6 +39,9 @@ jobs:
   backend:
     name: Backend (Python)
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 149s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 20
     steps:
       # The hygiene gate judges the identity of every commit in the history, and
       # `checkout` fetches exactly one by default. On that default the gate would read
@@ -51,7 +54,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
@@ -67,8 +70,63 @@ jobs:
       - name: API-MCP parity gate
         run: python scripts/check_api_mcp_parity.py
 
+      # The gate above holds the MCP bridge to the models; this one holds the panel, which
+      # posts to the same routes and was held to nothing. Pydantic drops a key it does not
+      # declare and still answers 200, so a field the form sends and the model never learned
+      # about is lost without a word. It reads TypeScript, and runs here rather than in the
+      # frontend job because the models it compares against are Python.
+      - name: Panel contract gate
+        run: python scripts/check_panel_contract.py
+
+      # The gate above holds what the panel sends; this one holds what it believes it gets
+      # back. No route in app/ sets a response_model and api.get<T> casts through unknown,
+      # so a declared answer shape is checked by nothing at either end. Two files reading
+      # one route can therefore disagree about it for a year in silence -- which is how a
+      # certificates table came to render an "issued by" chip no provider has ever filled.
+      - name: Read contract gate
+        run: python scripts/check_read_contract.py
+
       - name: Repo hygiene gate
         run: python scripts/check_repo_hygiene.py
+
+      # A short code travels from a provider check to the panel, which looks up a locale
+      # key named after it. Nothing joins the two ends, and a missing key does not break
+      # the page: the panel prints the English sentence the API sent alongside the code,
+      # so the only symptom is one untranslated line in an otherwise translated panel.
+      - name: Detail code parity gate
+        run: python scripts/check_detail_code_parity.py
+
+      # A base image bump that lands in the Dockerfile alone leaves every job here
+      # installing the runtime the image used to have, and nothing goes red: the suite
+      # passes, the image is signed, and the two no longer describe each other.
+      - name: Runtime parity gate
+        run: python scripts/check_runtime_parity.py
+
+      # The panel asks "can this integration do X?" through one table that stands in for
+      # GET /providers/types whenever that read has not answered, and a capability the table
+      # never names reads as false rather than unknown. It had drifted from the backend in
+      # five cells, so a failed catalogue read told the expose form that Cloudflare cannot
+      # resolve a public target -- which silently dropped an operator's automatic DNS update.
+      - name: Capability parity gate
+        run: python scripts/check_capability_parity.py
+
+      # An empty list is the sentence the drift check reads as "this route is gone", and
+      # four providers said it when they had merely failed to ask. Two swallowed an
+      # exception, two turned an honest None from their own helper into [] one line later,
+      # which is why looking inside except handlers found only half of them. The rule is
+      # about the returned value instead: a listing never writes an empty answer as a
+      # literal, it raises.
+      - name: Listing contract gate
+        run: python scripts/check_listing_contract.py
+
+      # `"expose_mode" in svc` reads like a question about the schema and is not one: a
+      # sqlite3.Row is a sequence, so `in` walks its values. No column ever holds the string
+      # "expose_mode", so six sites answered False for every row that ever reached them and
+      # nothing contradicted them. Tunnel services were read as proxy_dns and collected
+      # against no provider at all, so the drift check said "in sync" about a route that had
+      # never been published. A guard that always answers no is not a guard.
+      - name: Row membership gate
+        run: python scripts/check_row_membership.py
 
       - name: Run tests
         run: python -m pytest tests/ -v
@@ -76,12 +134,15 @@ jobs:
   frontend:
     name: Frontend (Node)
     runs-on: ubuntu-latest
+    # A job with no ceiling can hold its concurrency group for GitHub's default of six
+    # hours. Measured at 57s; this sits far enough above that a slow run still passes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "26"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -91,8 +152,14 @@ jobs:
       - name: ESLint
         run: cd frontend && npm run lint
 
+      # `tsc --noEmit` was checking nothing at all. The root tsconfig.json carries
+      # `"files": []` and two project references, and plain `tsc` does not build references:
+      # the step resolved zero source files and reported success unconditionally, for as long
+      # as it has existed. `-b --force` builds both referenced projects and ignores the
+      # incremental cache, so a type error fails here rather than three steps later in the
+      # build -- or not at all, if the build is ever changed to skip `tsc -b`.
       - name: TypeScript check
-        run: cd frontend && npx tsc --noEmit
+        run: cd frontend && npx tsc -b --force
 
       - name: Build
         run: cd frontend && npm run build

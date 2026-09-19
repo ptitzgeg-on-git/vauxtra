@@ -30,8 +30,17 @@ export interface ConfirmDialogProps {
   cancelLabel?: string;
   variant?: ConfirmVariant;
   /**
-   * The exact text the user has to type before the confirm button enables -- for the
-   * actions that cannot be undone (reset, restore, deleting a provider with services).
+   * The exact text the user has to type before the confirm button enables.
+   *
+   * It guards the actions that destroy more than the one object on screen: the two that
+   * empty the database (`POST /api/reset` and `POST /api/restore`, same sixteen tables)
+   * ask for RESET and RESTORE, and a bulk deletion asks for the number of routes it is
+   * about to delete. Deleting one service, one provider or one domain does not: the dialog
+   * names the thing, and the thing is what goes.
+   *
+   * This comment used to say "restore" while the restore dialog passed nothing, which is
+   * how a whole database sat behind one unguarded click. Add the action here only when the
+   * call site actually passes the word.
    */
   requireText?: string;
   /** While true the confirm button spins and neither Escape, the backdrop nor the buttons close the dialog. */
@@ -66,8 +75,9 @@ const VARIANT_STYLES: Record<ConfirmVariant, { icon: string; variant: ButtonVari
 /**
  * Styled confirmation dialog in place of `window.confirm()`.
  *
- * Danger opens with focus on Cancel so a stray Enter cannot delete anything; the other
- * variants focus Confirm. Escape, the backdrop and the close button all cancel, unless
+ * Anything that removes something opens with focus on Cancel, so a stray Enter cannot destroy
+ * what the dialog is asking about; only `info`, which adds, opens on Confirm. Escape, the
+ * backdrop and the close button all cancel, unless
  * `loading` says the confirmed action is still running. The panel is mounted fresh on
  * every opening, so the typed confirmation text never carries over.
  */
@@ -120,12 +130,18 @@ function ConfirmDialogPanel({
   useScrollLock(true);
 
   // useModalDialog focuses the box first (so the title is announced); the safest control next.
+  // The test is "does confirming destroy something", not "which colour is the icon".
+  // `warning` is not a gentler `danger` here: it is what the worse confirmations use -- the
+  // forced removal of an integration services still depend on, a domain that is in use, a
+  // reconcile that writes to a live provider. Keying the focus on `danger` alone armed the
+  // destructive button on exactly those. Only `info`, which adds without removing, opens on
+  // Confirm.
   useEffect(() => {
     const target = requireText
       ? inputRef.current
-      : variant === 'danger'
-        ? cancelRef.current
-        : confirmRef.current;
+      : variant === 'info'
+        ? confirmRef.current
+        : cancelRef.current;
     target?.focus({ preventScroll: true });
   }, [requireText, variant]);
 
@@ -154,8 +170,9 @@ function ConfirmDialogPanel({
   const hasMessage = message !== undefined && message !== null && message !== '';
 
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- the backdrop; the keyboard path out of a dialog is Escape, handled by useModalDialog
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm animate-in fade-in animate-duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-xs animate-in fade-in animate-duration-150"
       onClick={handleBackdropClick}
     >
       <div
@@ -165,7 +182,7 @@ function ConfirmDialogPanel({
         aria-labelledby={titleId}
         aria-describedby={hasMessage ? messageId : undefined}
         aria-busy={loading || undefined}
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-elevated outline-none animate-in zoom-in-95 fade-in animate-duration-200"
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-elevated outline-hidden animate-in zoom-in-95 fade-in animate-duration-200"
       >
         <div className="flex items-start gap-4 p-5">
           <div className={`shrink-0 rounded-xl p-2.5 ${styles.icon}`} aria-hidden="true">

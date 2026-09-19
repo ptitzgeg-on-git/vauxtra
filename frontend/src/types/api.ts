@@ -234,8 +234,16 @@ export interface ProviderIn {
   extra: Record<string, unknown>;
 }
 
-/** Body of `PUT /api/providers/{pid}` (every field optional; empty password keeps the stored one); answers `{ok}`. */
-export interface ProviderUpdate extends Partial<ProviderIn> {
+/**
+ * Body of `PUT /api/providers/{pid}` (every field optional; empty password keeps the stored
+ * one); answers `{ok}`.
+ *
+ * `type` is omitted rather than optional. The route reads `row["type"]` to normalise the URL
+ * and never writes the column, so a provider is whatever kind it was created as. Declaring it
+ * here made the panel able to send a field the server drops without a word -- `tsc` agreed,
+ * the save answered `200`, and the kind never moved.
+ */
+export interface ProviderUpdate extends Omit<Partial<ProviderIn>, 'type'> {
   enabled?: boolean | number;
 }
 
@@ -251,18 +259,69 @@ export interface ProviderDependent {
   fqdn: string;
   /** `proxy`, `dns`, `tunnel`, or `extra proxy` / `extra dns` for push targets. */
   roles: string[];
+  /**
+   * Another provider still publishes this hostname once this one is gone. False means the
+   * service keeps its public name and nothing serves it: that is the case worth warning
+   * about, and the one the dialog used to claim for every dependent.
+   */
+  still_published?: boolean;
 }
 
-/** The 409 `detail` of `DELETE /api/providers/{pid}` when services depend on it and `?force=` was not set. */
+/**
+ * A service template still naming a provider about to be deleted
+ * (`DELETE /api/providers/{pid}` -> 409 `detail.templates[]`).
+ *
+ * Not a `ProviderDependent`: a template publishes nothing, so it has no hostname, nothing
+ * goes dark when the provider leaves, and there is no record to withdraw. What it loses is
+ * the provider choice somebody typed into it.
+ */
+export interface ProviderTemplateDependent {
+  id: number;
+  name: string;
+  /** `proxy`, `dns` or `tunnel` -- which of the template's three slots named this provider. */
+  roles: string[];
+}
+
+/**
+ * A notification webhook scoped to a provider about to be deleted
+ * (`DELETE /api/providers/{pid}` -> 409 `detail.webhooks[]`).
+ *
+ * The only one of the three that the deletion does not change at all. A service is blanked
+ * and a template is blanked, both by the foreign key; `webhooks.scope_ref_id` has none, so
+ * the row keeps its name, its URL, its scope and its `enabled` flag, and simply stops
+ * matching anything. Hence `enabled`: an operator needs to know which of these still wear a
+ * green badge in Settings while matching nothing.
+ */
+export interface ProviderWebhookDependent {
+  id: number;
+  name: string;
+  /** Still switched on, so it goes on reading as armed until the scope is changed. */
+  enabled: boolean;
+}
+
+/** The 409 `detail` of `DELETE /api/providers/{pid}` when anything depends on it and `?force=` was not set. */
 export interface ProviderDeleteConflict {
   message: string;
   services: ProviderDependent[];
+  /** Absent on an instance older than the release that added the template half of this check. */
+  templates?: ProviderTemplateDependent[];
+  /** Absent on an instance older than the release that added the webhook half of this check. */
+  webhooks?: ProviderWebhookDependent[];
 }
 
 /** `DELETE /api/providers/{pid}?force=true`. */
 export interface ProviderDeleteResult {
+  /** False when `withdraw=true` was asked for and at least one record could not be taken off. */
   ok: boolean;
   unlinked_services: number[];
+  /** Templates whose provider slot was blanked by the deletion; the Templates cache is stale. */
+  unlinked_templates?: number[];
+  /** Webhooks left scoped to an id that is gone. Nothing blanked them; they match nothing. */
+  orphaned_webhooks?: number[];
+  /** `withdraw=true` was honoured: the records were taken off the provider before it went. */
+  withdrawn?: boolean;
+  /** One `fqdn: reason` per record the withdrawal could not remove; it is still live there. */
+  errors?: string[];
 }
 
 /** Body of `POST /api/providers/{pid}/validate`. */
@@ -378,6 +437,13 @@ export interface Service {
   extra_proxy_provider_ids?: number[];
   extra_dns_provider_ids?: number[];
   public_host?: string;
+  /**
+   * Only on the answer to `PUT /api/services/{sid}`: what the save could not carry out on a
+   * provider. The list rows from `GET /api/services` never carry it. A provider that refuses
+   * to suspend a host, or a former target that would not give a route back, lands here and
+   * nowhere else -- the save itself succeeded, so there is no error status to read.
+   */
+  errors?: string[];
 }
 
 export interface PushTarget {
@@ -425,8 +491,17 @@ export interface PreflightRequest extends ServicePayload {
 /**
  * One preflight check. Known names: `public_host_conflict`, `target_reachable`,
  * `https_port_hint`, `tunnel_health` (data = the tunnel's health dict),
- * `provider_target_required`, `proxy_connection`, `dns_target_resolution`
- * (data = `{resolved_target, source}`), and one per provider role that was checked.
+ * `provider_target_required`, `proxy_connection`, `dns_connection`,
+ * `dns_target_resolution` (data = `{resolved_target, source}`), `extra_proxy_provider`,
+ * `extra_dns_provider`, and one per provider role that was checked
+ * (`proxy_provider`, `dns_provider`, `tunnel_provider`).
+ *
+ * `name` is not unique within a result: `extra_proxy_provider` and `extra_dns_provider` are
+ * emitted once per extra target, so a route with two spare proxies carries two lines under
+ * the same name. Anything keying on the name has to add the index.
+ *
+ * `tests/test_preflight_symmetry.py` drives the API and fails when it emits a name this
+ * list does not hold.
  */
 export interface PreflightCheck {
   name: string;
@@ -456,7 +531,7 @@ export interface PreflightResult {
   summary: PreflightSummary;
 }
 
-/** `GET /api/services/{sid}/check` — one on-demand health check. */
+/** `POST /api/services/{sid}/check` — one on-demand health check. */
 export interface ServiceCheckResult {
   id: number;
   status: ServiceStatus;
@@ -465,11 +540,24 @@ export interface ServiceCheckResult {
   dns_resolved: string[] | null;
 }
 
+/** One line of `CheckAllResult.results`: what the fleet probe measured for one service. */
+export interface CheckAllEntry {
+  id: number;
+  status: ServiceStatus;
+  /** Null when the target never answered. */
+  latency_ms: number | null;
+}
+
 /** `POST /api/services/check-all`. */
 export interface CheckAllResult {
   checked: number;
   ok: number;
   error: number;
+  /**
+   * One entry per service actually probed — so `results.length` is `checked` minus the
+   * tunnel services, which are skipped. Absent on instances older than 1.5.0.
+   */
+  results?: CheckAllEntry[];
 }
 
 export type BulkAction = 'enable' | 'disable' | 'delete';
@@ -534,7 +622,12 @@ export interface PushPlanProxyAction {
   provider_id: number;
   provider_name: string;
   provider_type: ProviderType;
-  action: 'update' | 'create' | 'skip_read_only';
+  /**
+   * `suspend` and `delete` only ever appear on a withheld plan -- see `withheld`.
+   * `resume` is the opposite case on a published one: the host is there and suspended, so
+   * the push updates it and switches it back on, which `update` alone did not say.
+   */
+  action: 'update' | 'create' | 'resume' | 'skip_read_only' | 'suspend' | 'delete';
   target_host: string;
   target_origin?: string;
 }
@@ -544,7 +637,7 @@ export interface PushPlanDnsAction {
   provider_id: number;
   provider_name: string;
   provider_type: ProviderType;
-  action: 'upsert';
+  action: 'upsert' | 'delete';
   domain: string;
   target: string;
 }
@@ -571,6 +664,8 @@ export interface DryRunPlan {
   dns_target_source: string;
   would_change: boolean;
   ok: boolean;
+  /** The service is disabled, so the push withdraws it instead of publishing it. */
+  withheld: boolean;
 }
 
 /** `POST /api/services/{sid}/push`. */
@@ -681,8 +776,17 @@ export interface AppSettings {
 /** `POST /api/settings`. A 400 with "Nothing was saved -- key: reason; …" means every key was rejected. */
 export interface SettingsSaveResult {
   ok: boolean;
+  /** Written to the database. */
   saved: string[];
+  /** Refused: not written, and the old value still stands. */
   ignored: string[];
+  /**
+   * Written, but the running process could not be told -- rescheduling the health check or
+   * the reconciler raised. Neither `saved` nor `ignored` is the truth here: the value is in
+   * the database and will be read at the next start, and until then the behaviour on screen
+   * is still the old one. Reported apart because only this one needs a restart.
+   */
+  not_applied: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -738,33 +842,87 @@ export interface ServiceAlertsConfig {
 // Certificates
 // ---------------------------------------------------------------------------
 
+/**
+ * One row of `GET /api/certificates`, and the base of every `/expiry` row.
+ *
+ * Both routes spread whatever the provider's `get_certificates()` built and add
+ * `provider_id`, `provider_name` and `domain_names` on top, so the first seven keys are on
+ * every row of both routes. The last three come from Zoraxy only; NPM rows carry none of
+ * them, and the Cloudflare Tunnel and Traefik providers return no certificates at all.
+ *
+ * This declaration used to say `id: number`, `provider: string` and `issuer?: string`, and
+ * left out `domains`, `provider_id` and `provider_name` entirely. Zoraxy ids are file
+ * names, and no route has ever sent `provider` or `issuer`. Nothing imported the interface
+ * -- the page read a second, closer copy declared beside it -- so nothing ever contradicted
+ * it, which is how a declaration drifts this far from the route it names.
+ */
 export interface Certificate {
-  id: number;
-  provider: string;
-  domain_names: string[];
-  expires_on: string;
-  nice_name?: string;
-  issuer?: string;
-}
-
-export interface CertificateExpiry {
-  id: number;
+  //: NPM answers an integer, Zoraxy the certificate filename -- `id` is whichever the
+  //: provider that owns the row uses, and the panel only ever passes it back.
+  id: number | string;
   provider_id: number;
   provider_name: string;
-  domain_names?: string[];
-  domains?: string[];
+  nice_name: string;
+  //: `domains` is what the providers build; `domain_names` is back-filled from it by
+  //: `_with_domain_names` when a provider omits it, so both are on every row.
+  domains: string[];
+  domain_names: string[];
+  //: `""` when the provider could not parse a date -- never null, never absent.
   expires_on: string;
+  //: Zoraxy states its own countdown and these two flags; NPM rows carry neither.
+  remaining_days?: number | null;
+  use_dns?: boolean;
+  is_fallback?: boolean;
+}
+
+/** One row of `GET /api/certificates/expiry`: the same row, with the arithmetic done. */
+export interface CertificateExpiry extends Certificate {
   days_remaining: number | null;
   expiring_soon: boolean;
   expired: boolean;
+  //: `expiry_date` or `expires_on` or `valid_to`, so null only when all three are empty.
+  expiry_date_raw: string | null;
+}
+
+/**
+ * A certificate row as the page handles it, from whichever of the two routes answered.
+ *
+ * `/expiry` is the page's source of truth and `/certificates` is its fallback, so the four
+ * keys `/expiry` adds are the only optional ones. This used to be declared the other way
+ * round -- every key optional, plus an `issuer` and a `provider` no provider sends -- which
+ * made the table render a chip that could never appear and hid that `days_remaining` is
+ * always there on the route the page actually calls.
+ */
+export interface CertificateRow extends Certificate {
+  days_remaining?: number | null;
+  expiring_soon?: boolean;
+  expired?: boolean;
   expiry_date_raw?: string | null;
+}
+
+/**
+ * An enabled certificate store the route could not read on this call.
+ *
+ * Only the identity travels. The error itself is written to the journal rather than sent
+ * here, because a provider error string routinely carries the console URL and sometimes
+ * the credential that failed, and neither belongs on a page.
+ */
+export interface UnreachableCertificateSource {
+  id: number;
+  name: string;
+  type: string;
 }
 
 export interface CertificateExpiryResponse {
   certificates: CertificateExpiry[];
   total: number;
+  //: Everything that needs renewing: inside the warning window *plus* already past expiry.
+  //: Which of the two a certificate is in lives on its row, never here -- `certificateUrgency`
+  //: is what splits the figure apart again for a badge that has to choose a colour.
   expiring_soon_count: number;
   warn_threshold_days: number;
+  //: Empty on a complete answer. Non-empty means every count above is partial.
+  unreachable: UnreachableCertificateSource[];
 }
 
 // ---------------------------------------------------------------------------
@@ -780,28 +938,65 @@ export interface DockerEndpoint {
   created_at: string;
 }
 
+/**
+ * The suggestion block `GET /api/docker/containers` builds for every container.
+ *
+ * `target_port` is `null` when the container publishes no port and no label names one, and
+ * `analyze_container` fills every other field on every row, so none of them is optional.
+ */
 export interface ContainerSuggestion {
   subdomain: string;
-  target_port: number;
+  target_port: number | null;
   forward_scheme: ForwardScheme;
+  websocket: boolean;
   confidence: 'high' | 'medium' | 'low';
-  source: 'traefik_label' | 'vauxtra_label' | 'port_heuristic' | 'none';
+  source: 'vauxtra_label' | 'traefik_label' | 'port_heuristic';
+  middlewares: string[];
+  tls_resolver: string | null;
 }
 
+/**
+ * One row of `GET /api/docker/containers`.
+ *
+ * This declaration used to describe a route that no longer existed: it claimed a `ports` array
+ * the handler has never sent, left out eight keys it does send, and made `suggestion` nullable
+ * when every row carries one. Nothing imported it -- the discovery panel read a second, correct
+ * copy declared inside the hook -- so the two never had to agree, and the wrong one was the copy
+ * sitting in the file a reader looks in first. There is now one declaration, here, and the hook
+ * re-exports it the same way it re-exports `DockerEndpoint`.
+ */
 export interface DockerContainer {
   id: string;
   name: string;
   image: string;
   status: string;
+  target_ip: string;
+  target_port: number | null;
   labels: Record<string, string>;
-  ports: Array<{ private_port: number; public_port?: number; type: string }>;
-  suggestion: ContainerSuggestion | null;
+  //: kept for older panels; `suggestion` carries the same three values.
+  suggested_subdomain: string;
+  suggested_scheme: ForwardScheme;
+  websocket: boolean;
+  suggestion: ContainerSuggestion;
+  endpoint_id: number | null;
+  endpoint_name: string;
+  existing_service?: { id: number; fqdn: string } | null;
 }
 
-/** `POST /api/docker/import`. */
+/**
+ * `POST /api/docker/import`.
+ *
+ * `skipped` was an integer standing for two outcomes that have nothing in common: a container
+ * Vauxtra already tracks, which is the ordinary result of ticking a whole page, and one this
+ * route refused. It is now the first of those alone, and a list, because a count gives the
+ * operator nothing to go and fix. Sentences, already named and already translated server-side
+ * -- render `.length` through the plural keys, not the strings themselves.
+ */
 export interface DockerImportResult {
   imported: number;
-  skipped: number;
+  /** Passed over on purpose: already tracked under that hostname. One sentence per container. */
+  skipped: string[];
+  /** Refused: no address, no usable port, or the insert raised. One sentence per container. */
   errors: string[];
 }
 
@@ -868,9 +1063,17 @@ export interface SyncResult {
   [key: string]: unknown;
 }
 
-/** `POST /api/services/import`. */
+/**
+ * `POST /api/services/import`. Four outcomes, and one run can hold several of them: a
+ * batch can create two services, attach a DNS record to a third that already existed,
+ * pass over a fourth that was already tracked and refuse a fifth. `skipped` is not a
+ * failure -- "Quick import" sends the whole scan back, tracked rows included -- and
+ * `errors` is, so they are separate lists rather than one with a colour guessed from it.
+ */
 export interface ImportResult {
   imported: number;
+  linked: number;
+  skipped: string[];
   errors: string[];
 }
 
@@ -880,7 +1083,9 @@ export interface ImportResult {
 
 /**
  * Body of `POST /api/templates` and `PUT /api/templates/{tid}` (`TemplateIn`). Every field
- * but `name` has a server default; `name` ≤ 64 chars, unique (409 on a duplicate).
+ * but `name` has a server default; `name` ≤ 64 chars, unique (409 on a duplicate). Unknown
+ * keys are refused with 422 rather than ignored, so a misspelt field is a failed save and
+ * not a template quietly missing it.
  */
 export interface TemplateIn {
   name: string;
@@ -897,6 +1102,7 @@ export interface TemplateIn {
   domain: string;
   dns_ip: string;
   tag_ids: number[];
+  environment_ids: number[];
   icon_url: string;
 }
 
@@ -927,6 +1133,7 @@ export interface TemplateApplyResult {
   domain: string;
   dns_ip: string;
   tag_ids: number[];
+  environment_ids: number[];
   icon_url: string;
   _template_id: number;
   _template_name: string;
@@ -946,8 +1153,6 @@ export interface AuthStatus {
    *  written through the interface would ever be read. */
   password_source?: 'environment' | 'database';
 }
-
-export type AuthMe = AuthStatus;
 
 /** Body of `POST /api/auth/login`; answers `{ok}`. */
 export interface LoginRequest {
@@ -1006,12 +1211,21 @@ export interface RestoreRequest {
   passphrase?: string;
 }
 
-/** `POST /api/restore`. `webhooks_needing_url` counts webhooks whose URL could not be restored and must be re-entered. */
+/**
+ * `POST /api/restore`. Three of these are things the operator has to act on and none of
+ * them is an error: `webhooks_needing_url` counts notification targets that came back
+ * disabled because a backup without secrets carries no URL, `settings_not_restored` names
+ * the settings the file did not bring back, and `domains_without_name` counts domain rows
+ * in it that had no name to be recreated under.
+ */
 export interface RestoreResult {
   ok: boolean;
   services: number;
   providers: number;
+  templates: number;
   webhooks_needing_url: number;
+  settings_not_restored: string[];
+  domains_without_name: number;
 }
 
 // ---------------------------------------------------------------------------

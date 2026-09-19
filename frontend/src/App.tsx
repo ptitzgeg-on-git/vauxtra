@@ -1,5 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { RefreshCw } from 'lucide-react';
@@ -10,7 +10,7 @@ import { Button } from './components/ui/Button';
 import { api } from './api/client';
 import { translateApiError } from './lib/errors';
 import { useT } from './i18n';
-import type { AuthStatus } from './types/api';
+import { AUTH_STATUS_KEY, useAuthStatus } from './hooks/useAuthStatus';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const Services = lazy(() => import('./pages/Services').then((m) => ({ default: m.Services })));
@@ -21,6 +21,7 @@ const Certificates = lazy(() => import('./pages/Certificates').then((m) => ({ de
 const Templates = lazy(() => import('./pages/Templates').then((m) => ({ default: m.Templates })));
 const Login = lazy(() => import('./pages/Login').then((m) => ({ default: m.Login })));
 const Setup = lazy(() => import('./pages/Setup').then((m) => ({ default: m.Setup })));
+const NotFound = lazy(() => import('./pages/NotFound').then((m) => ({ default: m.NotFound })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -92,16 +93,11 @@ function AuthGate() {
     isFetching,
     error,
     refetch,
-  } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 60_000,
-    retry: false,
-  });
+  } = useAuthStatus();
 
   // Listen for 401 events from Axios interceptor
   useEffect(() => {
-    const handler = () => qc.invalidateQueries({ queryKey: ['auth-status'] });
+    const handler = () => qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
     window.addEventListener('vauxtra:auth-expired', handler);
     return () => window.removeEventListener('vauxtra:auth-expired', handler);
   }, [qc]);
@@ -119,7 +115,7 @@ function AuthGate() {
 
   // Show login if password is required and not authenticated
   if (auth.auth_required && !auth.authenticated) {
-    return <Login onSuccess={() => qc.invalidateQueries({ queryKey: ['auth-status'] })} />;
+    return <Login onSuccess={() => qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY })} />;
   }
 
   // Show setup wizard if server says setup is required
@@ -130,7 +126,7 @@ function AuthGate() {
           // Mark setup as complete on server
           await api.post('/auth/setup-complete');
           // Invalidate all queries that may have been created during setup
-          qc.invalidateQueries({ queryKey: ['auth-status'] });
+          qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
           qc.invalidateQueries({ queryKey: ['providers'] });
           qc.invalidateQueries({ queryKey: ['services'] });
           qc.invalidateQueries({ queryKey: ['tags'] });
@@ -145,7 +141,8 @@ function AuthGate() {
   return <AppRoutes />;
 }
 
-function AppRoutes() {
+/** The route table, exported so a test can ask it what an unknown address answers. */
+export function AppRoutes() {
   const t = useT();
 
   return (
@@ -159,7 +156,7 @@ function AppRoutes() {
           <Route path="monitoring" element={<RouteErrorBoundary page={t('nav.monitoring')}><Monitoring /></RouteErrorBoundary>} />
           <Route path="settings" element={<RouteErrorBoundary page={t('nav.settings')}><Settings /></RouteErrorBoundary>} />
           <Route path="certificates" element={<RouteErrorBoundary page={t('nav.certificates')}><Certificates /></RouteErrorBoundary>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<RouteErrorBoundary page={t('notfound.title')}><NotFound /></RouteErrorBoundary>} />
         </Route>
       </Routes>
     </Suspense>

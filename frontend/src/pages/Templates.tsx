@@ -2,9 +2,10 @@
  * Templates — the presets a service is created from.
  *
  * A template holds everything the service form repeats (forward scheme, port, providers,
- * domain, tags) and nothing that is unique to one service (subdomain, target IP). "Use
- * template" hands the id to the Services page through `?template=<id>`, which fetches
- * `GET /api/templates/{id}/apply` and opens a pre-filled create form.
+ * domain, both halves of the label control) and nothing that is unique to one service
+ * (subdomain, target IP). "Use template" hands the id to the Services page through
+ * `?template=<id>`, which fetches `GET /api/templates/{id}/apply` and opens a pre-filled
+ * create form.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -18,7 +19,7 @@ import { TemplateModal } from '@/components/features/templates/TemplateModal';
 import {
   duplicateName,
   searchHaystack,
-  tagTone,
+  labelFacets,
   toTemplateForm,
   toTemplateIn,
 } from '@/components/features/templates/types';
@@ -34,9 +35,11 @@ import {
   SkeletonCard,
   useConfirmDialog,
 } from '@/components/ui';
+import { labelDotClass, labelDotStyle, labelTone } from '@/lib/labels';
 import { useT } from '@/i18n';
+import { useFormat } from '@/hooks/useFormat';
 import { translateApiError } from '@/lib/errors';
-import type { OkResponse, Provider, Tag, Template } from '@/types/api';
+import type { Environment, OkResponse, Provider, Tag, Template } from '@/types/api';
 
 type RouteModal = { mode: 'create' } | { mode: 'edit'; id: number };
 
@@ -49,6 +52,7 @@ const isEditable = (target: EventTarget | null): boolean => {
 
 export function Templates() {
   const t = useT();
+  const { formatNumber } = useFormat();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
@@ -57,6 +61,7 @@ export function Templates() {
 
   const [search, setSearch] = useState('');
   const [activeTagIds, setActiveTagIds] = useState<number[]>([]);
+  const [activeEnvironmentIds, setActiveEnvironmentIds] = useState<number[]>([]);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<number | null>(null);
 
@@ -98,51 +103,101 @@ export function Templates() {
     queryKey: ['templates'],
     queryFn: () => api.get<Template[]>('/templates'),
   });
-  const { data: providers = [] } = useQuery<Provider[]>({
+  // The three reads beside the templates, all of them destructured as `data = []` until
+  // now. Nothing on this page is a template on its own: the chips, the filter row and the
+  // provider line under every card are these three resolved against ids the template
+  // stores, and an empty map answered every one of those lookups with a miss. The filter
+  // row vanished without a word, the chips came off cards that carry labels, and the
+  // provider line went further than silence -- it said "integration deleted", in warning
+  // colour, about integrations that were never touched.
+  const providersQuery = useQuery<Provider[]>({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
   });
-  const { data: tags = [] } = useQuery<Tag[]>({
+  const tagsQuery = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
   });
+  const environmentsQuery = useQuery<Environment[]>({
+    queryKey: ['environments'],
+    queryFn: () => api.get<Environment[]>('/environments'),
+  });
 
   const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
+  const tags = useMemo(() => tagsQuery.data ?? [], [tagsQuery.data]);
+  const environments = useMemo(() => environmentsQuery.data ?? [], [environmentsQuery.data]);
   const providersById = useMemo(() => new Map(providers.map((p) => [p.id, p])), [providers]);
   const tagsById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
+  const environmentsById = useMemo(() => new Map(environments.map((env) => [env.id, env])), [environments]);
+
+  // Pending counts as unread: these three start at the same moment `/templates` does, and
+  // the cards are painted the instant it answers, which is not the instant they do.
+  const providersUnread = providersQuery.isPending || providersQuery.isError;
+  const contextQueries = [providersQuery, tagsQuery, environmentsQuery];
+  const contextFailed = contextQueries.some((query) => query.isError);
+  const contextError = contextQueries.find((query) => query.isError)?.error;
+  // Only the failed ones count as refreshing. `loading` disables the button it is on,
+  // so reading `isFetching` off all three would have let a sibling that never answers
+  // hold the retry of the one that did fail shut.
+  const contextRefreshing = contextQueries.some((query) => query.isError && query.isFetching);
+  const retryContext = () => {
+    for (const query of contextQueries) {
+      if (query.isError) void query.refetch();
+    }
+  };
 
   // --- filtering ----------------------------------------------------------
-  const tagFacets = useMemo(() => {
-    const counts = new Map<number, number>();
-    for (const template of templates) {
-      for (const id of template.tag_ids ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .map(([id, count]) => ({ tag: tagsById.get(id), id, count }))
-      .filter((facet) => Boolean(facet.tag))
-      .sort((a, b) => (a.tag?.name ?? '').localeCompare(b.tag?.name ?? ''));
-  }, [templates, tagsById]);
+  // Both halves of the label control filter, and they filter separately: a chip row per
+  // half, an active list per half. Two labels of different kinds may share a name (the
+  // server only refuses a duplicate within one kind), so one shared list would filter on
+  // whichever happened to be clicked.
+  const tagFacets = useMemo(() => labelFacets(templates, 'tag_ids', tagsById), [templates, tagsById]);
+  const environmentFacets = useMemo(
+    () => labelFacets(templates, 'environment_ids', environmentsById),
+    [templates, environmentsById],
+  );
 
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
+    const namesOf = (
+      template: Template,
+      key: 'tag_ids' | 'environment_ids',
+      byId: ReadonlyMap<number, Tag | Environment>,
+    ) => (template[key] ?? []).map((id) => byId.get(id)?.name ?? '');
     return templates.filter((template) => {
       if (activeTagIds.length > 0 && !activeTagIds.every((id) => (template.tag_ids ?? []).includes(id))) {
         return false;
       }
+      if (
+        activeEnvironmentIds.length > 0 &&
+        !activeEnvironmentIds.every((id) => (template.environment_ids ?? []).includes(id))
+      ) {
+        return false;
+      }
       if (!needle) return true;
-      const tagNames = (template.tag_ids ?? []).map((id) => tagsById.get(id)?.name ?? '');
-      return searchHaystack(template, tagNames).includes(needle);
+      return searchHaystack(template, [
+        ...namesOf(template, 'tag_ids', tagsById),
+        ...namesOf(template, 'environment_ids', environmentsById),
+      ]).includes(needle);
     });
-  }, [templates, search, activeTagIds, tagsById]);
+  }, [templates, search, activeTagIds, activeEnvironmentIds, tagsById, environmentsById]);
 
   const toggleTag = useCallback((tagId: number) => {
     setActiveTagIds((prev) => (prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]));
   }, []);
 
-  const isFiltering = search.trim().length > 0 || activeTagIds.length > 0;
+  const toggleEnvironment = useCallback((environmentId: number) => {
+    setActiveEnvironmentIds((prev) =>
+      prev.includes(environmentId) ? prev.filter((id) => id !== environmentId) : [...prev, environmentId],
+    );
+  }, []);
+
+  const isFiltering = search.trim().length > 0 || activeTagIds.length > 0 || activeEnvironmentIds.length > 0;
   const clearFilters = useCallback(() => {
     setSearch('');
     setActiveTagIds([]);
+    setActiveEnvironmentIds([]);
   }, []);
 
   // --- mutations ----------------------------------------------------------
@@ -231,8 +286,7 @@ export function Templates() {
   const isLoading = templatesQuery.isLoading;
   const loadFailed = templatesQuery.isError;
   const total = templates.length;
-  const countLabel =
-    total === 1 ? t('templates.count_one', { count: total }) : t('templates.count_other', { count: total });
+  const countLabel = t('templates.count', { count: total });
 
   return (
     <div className="space-y-6 pb-8 animate-in fade-in duration-200">
@@ -246,7 +300,7 @@ export function Templates() {
             <>
               <span className="tabular-nums">{countLabel}</span>
               {isFiltering && (
-                <span className="tabular-nums">{t('templates.count_filtered', { count: visible.length, total })}</span>
+                <span className="tabular-nums">{t('templates.count_filtered', { count: visible.length, total: formatNumber(total) })}</span>
               )}
             </>
           ) : undefined
@@ -275,6 +329,26 @@ export function Templates() {
           }
         >
           {translateApiError(templatesQuery.error, t, t('templates.error_description'))}
+        </InlineAlert>
+      )}
+
+      {contextFailed && (
+        <InlineAlert
+          tone="warning"
+          title={t('templates.context_failed')}
+          action={
+            <Button
+              size="sm"
+              variant="outline"
+              leftIcon={<RefreshCw />}
+              loading={contextRefreshing}
+              onClick={retryContext}
+            >
+              {t('templates.retry')}
+            </Button>
+          }
+        >
+          {translateApiError(contextError, t, t('templates.context_failed_hint'))}
         </InlineAlert>
       )}
 
@@ -326,22 +400,44 @@ export function Templates() {
               )}
             </div>
 
-            {tagFacets.length > 0 && (
+            {(tagFacets.length > 0 || environmentFacets.length > 0) && (
               <div className="flex flex-wrap items-center gap-2">
-                <ChipGroup label={t('templates.filter_tags')}>
-                  {tagFacets.map((facet) => (
-                    <Chip
-                      key={facet.id}
-                      size="sm"
-                      tone={tagTone(facet.tag?.color)}
-                      selected={activeTagIds.includes(facet.id)}
-                      count={facet.count}
-                      onClick={() => toggleTag(facet.id)}
-                    >
-                      {facet.tag?.name}
-                    </Chip>
-                  ))}
-                </ChipGroup>
+                {tagFacets.length > 0 && (
+                  <ChipGroup label={t('templates.filter_tags')}>
+                    {tagFacets.map((facet) => (
+                      <Chip
+                        key={facet.id}
+                        size="sm"
+                        tone={labelTone('tag')}
+                        icon={<span className={labelDotClass('tag')} style={labelDotStyle(facet.label.color)} />}
+                        selected={activeTagIds.includes(facet.id)}
+                        count={facet.count}
+                        onClick={() => toggleTag(facet.id)}
+                      >
+                        {facet.label.name}
+                      </Chip>
+                    ))}
+                  </ChipGroup>
+                )}
+                {environmentFacets.length > 0 && (
+                  <ChipGroup label={t('templates.filter_environments')}>
+                    {environmentFacets.map((facet) => (
+                      <Chip
+                        key={facet.id}
+                        size="sm"
+                        tone={labelTone('environment')}
+                        icon={
+                          <span className={labelDotClass('environment')} style={labelDotStyle(facet.label.color)} />
+                        }
+                        selected={activeEnvironmentIds.includes(facet.id)}
+                        count={facet.count}
+                        onClick={() => toggleEnvironment(facet.id)}
+                      >
+                        {facet.label.name}
+                      </Chip>
+                    ))}
+                  </ChipGroup>
+                )}
                 {isFiltering && (
                   <Button size="sm" variant="ghost" onClick={clearFilters}>
                     {t('templates.clear_filters')}
@@ -370,9 +466,13 @@ export function Templates() {
                   key={template.id}
                   template={template}
                   providersById={providersById}
+                  providersUnread={providersUnread}
                   tagsById={tagsById}
+                  environmentsById={environmentsById}
                   activeTagIds={activeTagIds}
                   onToggleTag={toggleTag}
+                  activeEnvironmentIds={activeEnvironmentIds}
+                  onToggleEnvironment={toggleEnvironment}
                   onUse={() => navigate(`/services?template=${encodeURIComponent(String(template.id))}`)}
                   onEdit={() => openEdit(template.id)}
                   onDuplicate={() => handleDuplicate(template)}

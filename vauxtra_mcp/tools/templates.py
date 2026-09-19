@@ -1,6 +1,8 @@
 """MCP tools — service template CRUD."""
 
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -26,17 +28,18 @@ def get_template(template_id: int) -> dict[str, Any]:
 def create_template(
     name: str,
     description: str = "",
-    forward_scheme: str = "http",
-    target_port: int | None = None,
+    forward_scheme: Literal["http", "https"] = "http",
+    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
     websocket: bool = False,
-    expose_mode: str = "proxy_dns",
+    expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
     tunnel_provider_id: int | None = None,
-    public_target_mode: str = "manual",
+    public_target_mode: Literal["auto", "manual"] = "manual",
     domain: str = "",
     dns_ip: str = "",
     tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
     icon_url: str = "",
 ) -> dict[str, Any]:
     """
@@ -44,6 +47,21 @@ def create_template(
 
     Templates capture the common settings for a class of services
     (e.g. 'Standard HTTPS app' = HTTPS scheme, port 443, AdGuard DNS, NPM proxy).
+
+    Constrained fields, refused with 422 otherwise: `forward_scheme` is http or https,
+    `expose_mode` is proxy_dns or tunnel, `public_target_mode` is manual or auto,
+    `target_port` is 1-65535. `domain` and `dns_ip` may be left empty -- that is what makes
+    a template a template -- but a value that is present must be a valid one. Every
+    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
+    `environment_ids` entry has to name a row that exists; the route refuses the whole call
+    with 400 and names the id. A key the model does not declare is refused with 422 rather
+    than dropped, so a misspelt field never stores a template quietly missing it.
+
+    The first three are declared as `Literal` and the port as a bounded `int`, so the schema
+    carries what the prose above says and a wrong value is refused here rather than after a
+    round trip. Nothing derives them from `TemplateIn`: FastMCP reads this signature, and a
+    normal install publishes no OpenAPI document. `scripts/check_api_mcp_parity.py` fails the
+    build if they drift from the model.
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -59,6 +77,7 @@ def create_template(
         "domain": domain,
         "dns_ip": dns_ip,
         "tag_ids": tag_ids or [],
+        "environment_ids": environment_ids or [],
         "icon_url": icon_url,
     }
     r = client.post("/templates", json=payload)
@@ -71,17 +90,18 @@ def update_template(
     template_id: int,
     name: str,
     description: str = "",
-    forward_scheme: str = "http",
-    target_port: int | None = None,
+    forward_scheme: Literal["http", "https"] = "http",
+    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
     websocket: bool = False,
-    expose_mode: str = "proxy_dns",
+    expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
     dns_provider_id: int | None = None,
     tunnel_provider_id: int | None = None,
-    public_target_mode: str = "manual",
+    public_target_mode: Literal["auto", "manual"] = "manual",
     domain: str = "",
     dns_ip: str = "",
     tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
     icon_url: str = "",
 ) -> dict[str, Any]:
     """Replace a service template's settings.
@@ -90,6 +110,21 @@ def update_template(
     the template with `get_template` first and send back what should not change. Without this
     tool the only way to edit a template through the bridge was to delete and recreate it,
     which changes the id anything else refers to.
+
+    Constrained fields, refused with 422 otherwise: `forward_scheme` is http or https,
+    `expose_mode` is proxy_dns or tunnel, `public_target_mode` is manual or auto,
+    `target_port` is 1-65535. `domain` and `dns_ip` may be left empty -- that is what makes
+    a template a template -- but a value that is present must be a valid one. Every
+    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
+    `environment_ids` entry has to name a row that exists; the route refuses the whole call
+    with 400 and names the id. A key the model does not declare is refused with 422 rather
+    than dropped, so a misspelt field never stores a template quietly missing it.
+
+    The first three are declared as `Literal` and the port as a bounded `int`, so the schema
+    carries what the prose above says and a wrong value is refused here rather than after a
+    round trip. Nothing derives them from `TemplateIn`: FastMCP reads this signature, and a
+    normal install publishes no OpenAPI document. `scripts/check_api_mcp_parity.py` fails the
+    build if they drift from the model.
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -105,6 +140,7 @@ def update_template(
         "domain": domain,
         "dns_ip": dns_ip,
         "tag_ids": tag_ids or [],
+        "environment_ids": environment_ids or [],
         "icon_url": icon_url,
     }
     r = client.put(f"/templates/{template_id}", json=payload)
@@ -125,27 +161,54 @@ def apply_template(
     template_id: int,
     subdomain: str,
     target_ip: str,
-    target_port: int | None = None,
+    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
     domain: str | None = None,
 ) -> dict[str, Any]:
     """
     Create a new service from a template.
 
     Fetches the template defaults, merges them with the provided subdomain / target_ip /
-    target_port (user-supplied values take precedence), then creates the service.
-    Returns the created service record.
+    target_port / domain (an argument wins over the template), then creates the service.
+    Returns what `POST /api/services` answers: the id, the fqdn and an `errors` list.
+
+    `POST /api/services` requires a domain and a port, and a template is allowed to carry
+    neither -- that is what lets one template serve several domains. So both stay optional
+    here and are merged from the template, and when neither side supplies one the tool
+    refuses and sends nothing. It used to fill the gap with `or 80` and `or ""`: the empty
+    domain came back as a 422 ("a domain is required"), but 80 did not, because 80 is a
+    valid port. Every call that named no port, against a template that sets none, created a
+    service pointing at a port nobody had chosen -- and reported success.
+
+    That `errors` list is the part to read. The route publishes the tunnel route, the proxy
+    host and the DNS record first, collects every refusal into the list, and stores the row
+    either way, answering 207 rather than 201 when the list is not empty. A template carries
+    its own provider ids, so one pointing at a provider that has since been deleted or is
+    unreachable produces exactly that: a service with an id and an fqdn that nothing routes
+    to. Name the step that failed instead of reporting the template applied.
     """
-    # Fetch template defaults
     r = client.get(f"/templates/{template_id}/apply")
     client.check(r)
     defaults = r.json()
 
-    # Build the service payload
+    resolved_port = target_port if target_port is not None else defaults.get("target_port")
+    resolved_domain = domain if domain is not None else defaults.get("domain")
+    missing = [
+        field_name
+        for field_name, value in (("target_port", resolved_port), ("domain", resolved_domain))
+        if value is None or value == ""
+    ]
+    if missing:
+        template_name = defaults.get("_template_name") or template_id
+        raise ValueError(
+            f"template {template_name!r} sets no {' and no '.join(missing)}; pass "
+            f"{' and '.join(missing)} to apply_template, or give the template a default"
+        )
+
     payload: dict[str, Any] = {
         "subdomain": subdomain,
         "target_ip": target_ip,
-        "target_port": target_port or defaults.get("target_port") or 80,
-        "domain": domain or defaults.get("domain") or "",
+        "target_port": resolved_port,
+        "domain": resolved_domain,
         "forward_scheme": defaults.get("forward_scheme", "http"),
         "websocket": defaults.get("websocket", False),
         "expose_mode": defaults.get("expose_mode", "proxy_dns"),
@@ -155,6 +218,7 @@ def apply_template(
         "public_target_mode": defaults.get("public_target_mode", "manual"),
         "dns_ip": defaults.get("dns_ip", ""),
         "tag_ids": defaults.get("tag_ids", []),
+        "environment_ids": defaults.get("environment_ids", []),
         "icon_url": defaults.get("icon_url", ""),
         "enabled": True,
     }
