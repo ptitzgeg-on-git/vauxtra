@@ -1075,7 +1075,7 @@
   "services.confirm.bulk_disable_title_other": "{count}件のルートを無効にしますか？",
   "services.confirm.bulk_enable_body_other": "選択したルートが各プロバイダーで再び公開されます。",
   "services.confirm.bulk_enable_title_other": "{count}件のルートを有効にしますか？",
-  "services.confirm.delete_body": "{host} のルートを削除しますか？ プロキシホストとDNSレコードが各プロバイダーから削除されます。",
+  "services.confirm.delete_body": "{host} のルートを削除しますか？ このルートを提供しているすべてのプロバイダーからプロキシホストとDNSレコードが削除されます。",
   "services.confirm.delete_title": "ルートを削除",
   "services.confirm.disable_body": "{host} は再び有効にするまで応答しなくなります。レコードは保持されます。",
   "services.confirm.disable_title": "このルートを無効にしますか？",

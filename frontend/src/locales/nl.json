@@ -1162,7 +1162,7 @@
   "services.confirm.bulk_enable_body_other": "De geselecteerde routes worden opnieuw op hun providers gepubliceerd.",
   "services.confirm.bulk_enable_title_one": "{count} route inschakelen?",
   "services.confirm.bulk_enable_title_other": "{count} routes inschakelen?",
-  "services.confirm.delete_body": "De route voor {host} verwijderen? De proxyhost en het DNS-record worden bij de providers verwijderd.",
+  "services.confirm.delete_body": "De route voor {host} verwijderen? De proxyhosts en DNS-records worden verwijderd bij elke provider die de route bedient.",
   "services.confirm.delete_title": "Route verwijderen",
   "services.confirm.disable_body": "{host} antwoordt niet meer totdat je de route weer inschakelt. Het record blijft behouden.",
   "services.confirm.disable_title": "Deze route uitschakelen?",

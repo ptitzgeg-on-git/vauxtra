@@ -1162,7 +1162,7 @@
   "services.confirm.bulk_enable_body_other": "Les routes sélectionnées seront de nouveau publiées sur leurs fournisseurs.",
   "services.confirm.bulk_enable_title_one": "Activer {count} route ?",
   "services.confirm.bulk_enable_title_other": "Activer {count} routes ?",
-  "services.confirm.delete_body": "Supprimer la route de {host} ? Son hôte proxy et son enregistrement DNS sont retirés des fournisseurs.",
+  "services.confirm.delete_body": "Supprimer la route de {host} ? Ses hôtes proxy et ses enregistrements DNS sont retirés de chaque fournisseur qui la sert.",
   "services.confirm.delete_title": "Supprimer la route",
   "services.confirm.disable_body": "{host} cessera de répondre jusqu'à sa réactivation. L'enregistrement est conservé.",
   "services.confirm.disable_title": "Désactiver cette route ?",

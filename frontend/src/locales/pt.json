@@ -1162,7 +1162,7 @@
   "services.confirm.bulk_enable_body_other": "As rotas selecionadas serão publicadas novamente nos seus provedores.",
   "services.confirm.bulk_enable_title_one": "Ativar {count} rota?",
   "services.confirm.bulk_enable_title_other": "Ativar {count} rotas?",
-  "services.confirm.delete_body": "Excluir a rota de {host}? Seu host de proxy e registro DNS são removidos dos provedores.",
+  "services.confirm.delete_body": "Excluir a rota de {host}? Seus hosts de proxy e registros DNS são removidos de todos os provedores que a servem.",
   "services.confirm.delete_title": "Excluir rota",
   "services.confirm.disable_body": "{host} deixará de responder até você ativá-lo novamente. O registro é mantido.",
   "services.confirm.disable_title": "Desativar esta rota?",

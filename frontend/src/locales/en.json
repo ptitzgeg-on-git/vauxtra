@@ -1162,7 +1162,7 @@
   "services.confirm.bulk_enable_body_other": "The selected routes will be published again on their providers.",
   "services.confirm.bulk_enable_title_one": "Enable {count} route?",
   "services.confirm.bulk_enable_title_other": "Enable {count} routes?",
-  "services.confirm.delete_body": "Delete the route for {host}? Its proxy host and DNS record are removed from the providers.",
+  "services.confirm.delete_body": "Delete the route for {host}? Its proxy hosts and DNS records are withdrawn from every provider that serves it.",
   "services.confirm.delete_title": "Delete route",
   "services.confirm.disable_body": "{host} will stop answering until you enable it again. The record is kept.",
   "services.confirm.disable_title": "Disable this route?",
