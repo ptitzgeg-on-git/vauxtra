@@ -528,6 +528,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Traefik's own read check counted a list its listing had already emptied.** The
+  `List routers` line exists to catch a refused read, and it could not: `list_hosts` caught
+  `RequestException` itself and answered `[]`, so the `except` that would have reported
+  `proxy_read_failed` never fired. A Traefik that refused the call was reported as "0
+  routers readable", ticked, blocking nothing -- a green check on a read that failed, which
+  is the one answer worse than having no check. Sweeping the other nine integrations for
+  the same shape found this one and NPM; `list_hosts` raises `ProviderListingRefused` now,
+  so the check it feeds can finally fail, and `/drift` stops reading a refusal as routes
+  that someone deleted.
+
 - **NPM said "Login OK" and stopped, on the one question the panel was asked.** Every other
   integration ends its validation with the read it actually needs -- AdGuard lists its
   rewrites, Zoraxy its rules, Traefik its routers, Technitium and PowerDNS their zones. NPM
