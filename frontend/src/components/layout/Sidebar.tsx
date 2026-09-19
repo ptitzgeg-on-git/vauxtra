@@ -34,6 +34,7 @@ import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
+import { versionLabel } from '@/lib/format';
 import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, toneClasses, type Tone } from '@/components/ui';
 import { isMacPlatform } from '@/components/ui/_internal';
 import { certificateUrgency } from '@/components/features/certificates/certificates';
@@ -223,7 +224,7 @@ export function Sidebar({
     },
   ];
 
-  const version = health?.version ? `v${health.version}` : '—';
+  const version = versionLabel(health?.version);
   const modKey = isMacPlatform() ? '⌘' : 'Ctrl';
   const themeLabel = `${t('layout.theme.toggle')} · ${t(`layout.theme.${theme}`)}`;
   const currentLang = SUPPORTED_LANGUAGES.find((l) => l.code === lang) ?? SUPPORTED_LANGUAGES[0];
