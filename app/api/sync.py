@@ -11,10 +11,31 @@ from app.text import plural
 router = APIRouter()
 
 
+def _has_column(row, name: str) -> bool:
+    """Whether *row* carries a column called *name*.
+
+    `name in row` is the obvious spelling and it asks a `sqlite3.Row` the wrong question:
+    a row is a sequence, so `in` searches its VALUES, not its column names. Every service
+    row read here answered False to `"expose_mode" in svc` -- no column of a service ever
+    holds the string "expose_mode" -- so the six sites that asked fell through to their
+    default and nothing ever contradicted them.
+
+    Tunnel services paid for it. Read as `proxy_dns`, which has no tunnel target, they were
+    collected against no provider at all: the drift check compared them to nothing and
+    answered "in sync" about a route that had never been published, and the push plan beside
+    it said there was nothing to do. `public_target_mode` was read the same way, so `auto`
+    never re-resolved the public address it exists to follow.
+
+    A dict answers on its keys, and so does this.
+    """
+    keys = getattr(row, "keys", None)
+    return name in (keys() if callable(keys) else row)
+
+
 def _service_public_host(service_row) -> str:
-    mode = (service_row["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in service_row else "proxy_dns"
+    mode = (service_row["expose_mode"] or "proxy_dns").strip().lower() if _has_column(service_row, "expose_mode") else "proxy_dns"
     if mode == "tunnel":
-        tunnel_hostname = str(service_row["tunnel_hostname"] or "").strip().lower() if "tunnel_hostname" in service_row else ""
+        tunnel_hostname = str(service_row["tunnel_hostname"] or "").strip().lower() if _has_column(service_row, "tunnel_hostname") else ""
         if tunnel_hostname:
             return tunnel_hostname
     return f"{service_row['subdomain']}.{service_row['domain']}".strip(".").lower()
@@ -37,7 +58,7 @@ def _refused(kind: str, provider_name: str, attempted: str) -> str:
 
 def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
     public_host = _service_public_host(svc)
-    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in svc else "proxy_dns"
+    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if _has_column(svc, "expose_mode") else "proxy_dns"
 
     extra_targets = conn.execute(
         """
@@ -192,7 +213,7 @@ def _all_route_holders(conn, svc, sid: int) -> tuple[str, str, list, list]:
     removal has to try all of them.
     """
     public_host = _service_public_host(svc)
-    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if "expose_mode" in svc else "proxy_dns"
+    expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if _has_column(svc, "expose_mode") else "proxy_dns"
 
     proxy_rows: list = []
     dns_rows: list = []
@@ -513,7 +534,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
     dns_target = ""
     dns_target_source = ""
     if expose_mode != "tunnel":
-        dns_target_mode = (svc["public_target_mode"] or "manual") if "public_target_mode" in svc else "manual"
+        dns_target_mode = (svc["public_target_mode"] or "manual") if _has_column(svc, "public_target_mode") else "manual"
         manual_value = svc["dns_ip"] if dns_target_mode != "auto" else ""
         dns_target, dns_target_source = resolve_public_target(
             conn,
@@ -910,7 +931,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
             errors.append(f"Proxy ({row['name']}): {e}")
 
     if expose_mode != "tunnel":
-        dns_target_mode = (svc["public_target_mode"] or "manual") if "public_target_mode" in svc else "manual"
+        dns_target_mode = (svc["public_target_mode"] or "manual") if _has_column(svc, "public_target_mode") else "manual"
         manual_value = svc["dns_ip"] if dns_target_mode != "auto" else ""
         dns_target, dns_target_source = resolve_public_target(
             conn,
