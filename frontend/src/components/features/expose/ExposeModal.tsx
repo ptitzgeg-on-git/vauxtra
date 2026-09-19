@@ -59,6 +59,7 @@ import {
   initialForm,
   providerHasCapability,
   publicTargetSourceLabel,
+  preflightDetailText,
   toFormState,
 } from './types';
 import { ServiceForm } from './ServiceForm';
@@ -609,13 +610,7 @@ export function ExposeModal({
    * `detail` and the short code it was written from in `detail_key`; the code wins when this
    * build knows it, and the sentence stands in otherwise.
    */
-  const checkDetail = (check: PreflightCheck): string => {
-    const fallback = String(check.detail || '');
-    if (!check.detail_key) return fallback;
-    const key = `expose.preflight.detail.${check.detail_key}`;
-    const line = t(key, check.detail_params);
-    return line === key ? fallback : line;
-  };
+  const checkDetail = (check: PreflightCheck): string => preflightDetailText(check, t);
 
   const blockingFailures = preflight?.summary.blocking_failures ?? 0;
   const warningCount = preflight?.summary.warnings ?? 0;

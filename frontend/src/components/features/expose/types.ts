@@ -1,4 +1,10 @@
-import type { Provider, ProviderTypesResponse, Service, TemplateApplyResult } from '@/types/api';
+import type {
+  PreflightCheck,
+  Provider,
+  ProviderTypesResponse,
+  Service,
+  TemplateApplyResult,
+} from '@/types/api';
 import { providerHasCapability } from '@/lib/providers';
 
 //: the modal reads whole `GET /api/providers` rows; this module used to declare a
@@ -211,4 +217,31 @@ export function publicTargetSourceLabel(
   const key = `expose.dry_run.source.${word}`;
   const line = t(key);
   return line === key ? word : line;
+}
+
+
+/**
+ * One preflight line, in the reader's language.
+ *
+ * Two things had to travel together for this sentence to be right. The `detail_key` picks
+ * the translation, and an unknown one falls back to the English `detail` the server sent
+ * rather than printing a bare key. And `source` inside `detail_params` is a wire word, so
+ * substituted raw it left "Cible DNS publique : 10.0.0.99 (auto)" -- the same
+ * half-translated line the dry run was fixed for, one step earlier in the flow.
+ */
+export function preflightDetailText(
+  check: Pick<PreflightCheck, 'detail' | 'detail_key' | 'detail_params'>,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string {
+  const fallback = String(check.detail || '');
+  if (!check.detail_key) return fallback;
+  const key = `expose.preflight.detail.${check.detail_key}`;
+  const params = check.detail_params;
+  const line = t(
+    key,
+    params?.source === undefined
+      ? params
+      : { ...params, source: publicTargetSourceLabel(String(params.source), t) },
+  );
+  return line === key ? fallback : line;
 }

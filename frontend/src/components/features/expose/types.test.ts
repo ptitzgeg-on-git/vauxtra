@@ -24,7 +24,13 @@ import { describe, expect, it } from 'vitest';
 // rather than a thing someone has to notice in review.
 import exposeModalSource from './ExposeModal.tsx?raw';
 import serviceFormSource from './ServiceForm.tsx?raw';
-import { autoPublicTarget, initialForm, publicTargetSourceLabel, type FormState } from './types';
+import {
+  autoPublicTarget,
+  initialForm,
+  preflightDetailText,
+  publicTargetSourceLabel,
+  type FormState,
+} from './types';
 import type { Provider, ProviderTypesResponse } from '@/types/api';
 
 /** Two DNS providers that differ in the only way this rule cares about. */
@@ -178,5 +184,52 @@ describe('publicTargetSourceLabel', () => {
   it('answers nothing when the API sent nothing', () => {
     expect(publicTargetSourceLabel('', t)).toBe('');
     expect(publicTargetSourceLabel(undefined, t)).toBe('');
+  });
+});
+
+describe('preflightDetailText', () => {
+  // The catalogue this panel really ships: the sentence, and the words it prints inside it.
+  const CATALOGUE: Record<string, string> = {
+    'expose.preflight.detail.dns_resolved_local': 'Cible DNS sur le LAN : {target} ({source})',
+    'expose.preflight.detail.dns_resolved_public': 'Cible DNS publique : {target} ({source})',
+    'expose.dry_run.source.manual': 'saisie a la main',
+  };
+  const t = (key: string, vars?: Record<string, string | number>) => {
+    const line = CATALOGUE[key];
+    if (line === undefined) return key;
+    return line.replace(/\{(\w+)\}/g, (_m, name) => String(vars?.[name] ?? `{${name}}`));
+  };
+
+  it('translates the source word instead of printing the wire word', () => {
+    expect(
+      preflightDetailText(
+        {
+          detail: 'Resolved LAN DNS target: 10.0.0.99 (manual)',
+          detail_key: 'dns_resolved_local',
+          detail_params: { target: '10.0.0.99', source: 'manual' },
+        },
+        t,
+      ),
+    ).toBe('Cible DNS sur le LAN : 10.0.0.99 (saisie a la main)');
+  });
+
+  it('says LAN or public according to the code the server chose', () => {
+    const params = { target: '203.0.113.9', source: 'manual' };
+    expect(
+      preflightDetailText({ detail: '', detail_key: 'dns_resolved_public', detail_params: params }, t),
+    ).toBe('Cible DNS publique : 203.0.113.9 (saisie a la main)');
+  });
+
+  it('falls back to the English sentence for a code this build does not know', () => {
+    expect(
+      preflightDetailText(
+        { detail: 'Resolved DNS target: 10.0.0.99 (manual)', detail_key: 'dns_resolved_sideways' },
+        t,
+      ),
+    ).toBe('Resolved DNS target: 10.0.0.99 (manual)');
+  });
+
+  it('leaves a sentence with no source word alone', () => {
+    expect(preflightDetailText({ detail: 'Host is free' }, t)).toBe('Host is free');
   });
 });
