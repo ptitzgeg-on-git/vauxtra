@@ -24,6 +24,8 @@ export interface ProviderCardProps {
   status: OperationalStatus;
   /** Only a fresh (within TTL) manual test / validation; stale ones are dropped upstream. */
   diagnostics?: ProviderDiagnostics;
+  /** When the last manual test ran, fresh or not. The verdict expires; the date it ran does not. */
+  lastTestedAt?: number;
   tunnelHealth?: ProviderHealthStatus;
   autoHealth?: ProviderHealthSummary;
   testing?: boolean;
@@ -57,6 +59,7 @@ export const ProviderCard = memo(function ProviderCard({
   health,
   status,
   diagnostics,
+  lastTestedAt,
   tunnelHealth,
   autoHealth,
   testing = false,
@@ -78,7 +81,7 @@ export const ProviderCard = memo(function ProviderCard({
   const typeLabel = meta?.label || provider.type;
   const enabled = Boolean(provider.enabled);
   const isTunnel = isTunnelType(typeKey, meta);
-  const testedAt = diagnostics?.testedAt;
+  const testedAt = diagnostics?.testedAt ?? lastTestedAt;
 
   // What the diagnostics block says: validation summary first, then the reasons.
   const report = useMemo(() => {
