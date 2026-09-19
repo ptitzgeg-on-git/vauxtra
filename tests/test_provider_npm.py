@@ -18,6 +18,13 @@ def _response(status_code: int = 200, json_data=None, text: str = "") -> MagicMo
     return r
 
 
+def _bad_json_response() -> MagicMock:
+    """A 200 whose body is not JSON, which `requests` reports by raising from `.json()`."""
+    r = _response(200)
+    r.json.side_effect = ValueError("no json")
+    return r
+
+
 class TestNPMAuth(unittest.TestCase):
 
     def setUp(self):
@@ -212,7 +219,29 @@ class TestNPMToggleHost(unittest.TestCase):
 
     def test_toggle_returns_false_on_404(self):
         self.npm.session.post = MagicMock(return_value=_response(404))
+        self.npm.session.get = MagicMock(return_value=_response(404))
         self.assertFalse(self.npm.toggle_host(5, True))
+
+    def test_a_host_already_in_the_wanted_state_is_not_a_refusal(self):
+        """NPM answers 400 to an enable on a host it already serves.
+
+        Measured against Nginx Proxy Manager: the body is
+        `{"error": {"code": 400, "message": "Host is already enabled"}}`. Every push
+        resumes the host it has just updated and almost every host it updates is already
+        running, so reading the status code alone reported the ordinary edit of a route as
+        a proxy that had refused the push, and told the operator to go and check
+        credentials that were fine.
+        """
+        self.npm.session.post = MagicMock(
+            return_value=_response(400, {"error": {"code": 400, "message": "Host is already enabled"}})
+        )
+        self.npm.session.get = MagicMock(return_value=_response(200, {"id": 5, "enabled": True}))
+        self.assertTrue(self.npm.toggle_host(5, True))
+
+    def test_a_host_already_suspended_is_not_a_refusal_either(self):
+        self.npm.session.post = MagicMock(return_value=_response(400))
+        self.npm.session.get = MagicMock(return_value=_response(200, {"id": 5, "enabled": False}))
+        self.assertTrue(self.npm.toggle_host(5, False))
 
     def test_toggle_returns_false_on_auth_fail(self):
         self.npm._ensure_auth = MagicMock(return_value=False)
@@ -221,6 +250,33 @@ class TestNPMToggleHost(unittest.TestCase):
     def test_toggle_returns_false_on_network_error(self):
         self.npm.session.post = MagicMock(side_effect=requests.RequestException("err"))
         self.assertFalse(self.npm.toggle_host(5, True))
+
+    def test_a_refusal_that_left_the_wrong_state_is_still_a_refusal(self):
+        """The read-back must not turn every refusal into a success.
+
+        A host that is still switched off after an enable was genuinely refused, and that
+        is the one case the operator does need to hear about.
+        """
+        self.npm.session.post = MagicMock(return_value=_response(400))
+        self.npm.session.get = MagicMock(return_value=_response(200, {"id": 5, "enabled": False}))
+        self.assertFalse(self.npm.toggle_host(5, True))
+
+    def test_a_state_that_cannot_be_read_is_not_claimed_as_success(self):
+        for name, mocked in (
+            ("http error", MagicMock(return_value=_response(500))),
+            ("network error", MagicMock(side_effect=requests.RequestException("err"))),
+            ("unreadable body", MagicMock(return_value=_bad_json_response())),
+        ):
+            with self.subTest(read_back=name):
+                self.npm.session.post = MagicMock(return_value=_response(400))
+                self.npm.session.get = mocked
+                self.assertFalse(self.npm.toggle_host(5, True))
+
+    def test_a_call_that_succeeded_is_not_read_back(self):
+        self.npm.session.post = MagicMock(return_value=_response(200))
+        self.npm.session.get = MagicMock(return_value=_response(200, {"enabled": False}))
+        self.assertTrue(self.npm.toggle_host(5, True))
+        self.npm.session.get.assert_not_called()
 
 
 class TestNPMCertificates(unittest.TestCase):

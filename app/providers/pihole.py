@@ -3,7 +3,14 @@ from urllib.parse import quote
 
 import requests
 
-from app.providers.base import DNSProvider, ProviderListingRefused, TimeoutSession
+from app.providers.base import (
+    DNSProvider,
+    ProviderListingRefused,
+    TimeoutSession,
+    login_check,
+    reachability_check,
+)
+from app.text import plural
 
 
 class PiholeProvider(DNSProvider):
@@ -112,6 +119,40 @@ class PiholeProvider(DNSProvider):
             if self._depth == 0:
                 # A no-op on v5 and whenever no session was opened.
                 self._logout_v6()
+
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        """Reachability, then credentials, then the read the provider needs.
+
+        Held inside a single `_api_session`: Pi-hole v6 hands out a small, fixed number of
+        sessions and hangs on to each until it is given back, so a diagnostic that opened
+        one per check would spend seats an operator needs for the web interface. `_depth`
+        makes the nested open in `list_rewrites` a no-op.
+
+        Without this, `_provider_diagnostics` falls back to `test_connection` alone, and
+        that one boolean is `False` both for a Pi-hole that is switched off and for one that
+        refused the password -- reported, either way, as `connection_failed`.
+        """
+        checks = [reachability_check(self.session, f"{self.url}/api/auth")]
+        if not checks[0]["ok"]:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        with self._api_session() as authed:
+            checks.append(login_check(bool(authed)))
+            if not authed:
+                return {"ok": False, "checks": checks, "warnings": []}
+            try:
+                count = len(self.list_rewrites())
+                read_ok, detail = True, f"{plural(count, 'record')} readable"
+            except Exception as exc:
+                read_ok, detail = False, str(exc)
+        checks.append({
+            "name": "List records",
+            "ok": read_ok,
+            "detail": detail,
+            "detail_code": "dns_read_ok" if read_ok else "dns_read_failed",
+            "blocking": not read_ok,
+        })
+        return {"ok": read_ok, "checks": checks, "warnings": []}
 
     def test_connection(self) -> bool:
         with self._api_session() as authed:

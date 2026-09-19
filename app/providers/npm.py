@@ -3,7 +3,7 @@
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider, TimeoutSession
+from app.providers.base import ProxyProvider, TimeoutSession, login_check, reachability_check
 
 
 def _numeric_host_id(host_id) -> int | None:
@@ -67,6 +67,21 @@ class NPMProvider(ProxyProvider):
 
     def test_connection(self) -> bool:
         return self._ensure_auth()
+
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        """Reachability first, credentials second.
+
+        `test_connection` here is `_ensure_auth`, which is `False` for an NPM that is down
+        and `False` for one that refused the email and password. Reported through the
+        fallback in `_provider_diagnostics` both came out as `connection_failed`, which
+        points the operator at the network when the account is what needs looking at.
+        """
+        checks = [reachability_check(self.session, f"{self.api_url}/tokens")]
+        if not checks[0]["ok"]:
+            return {"ok": False, "checks": checks, "warnings": []}
+        authenticated = self._ensure_auth()
+        checks.append(login_check(authenticated))
+        return {"ok": authenticated, "checks": checks, "warnings": []}
 
     def list_hosts(self) -> list[dict]:
         if not self._ensure_auth():
@@ -171,8 +186,29 @@ class NPMProvider(ProxyProvider):
         except requests.RequestException:
             return False
 
+    def _host_enabled(self, host_id: int) -> bool | None:
+        """Whether NPM serves this host right now, or None when the state could not be read."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
+                timeout=PROVIDER_TIMEOUT,
+            )
+            if r.status_code != 200:
+                return None
+            return bool(r.json().get("enabled"))
+        except (requests.RequestException, ValueError):
+            return None
+
     def toggle_host(self, host_id: int | str, enabled: bool) -> bool:
-        """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints."""
+        """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints.
+
+        NPM answers 400 "Host is already enabled" when the host is in the state being asked
+        for, so the status code alone cannot tell a refusal apart from a no-op. Every push
+        resumes the host it just updated, and almost every host it updates is already
+        running, so reading the code alone reported the ordinary case as a refused push.
+        Read the host back instead and answer on the state it is actually in, which is what
+        the caller asked about; only a host still in the wrong state is a real refusal.
+        """
         host_id = _numeric_host_id(host_id)
         if host_id is None or not self._ensure_auth():
             return False
@@ -182,7 +218,9 @@ class NPMProvider(ProxyProvider):
                 f"{self.api_url}/nginx/proxy-hosts/{host_id}/{action}",
                 timeout=PROVIDER_TIMEOUT,
             )
-            return r.status_code == 200
+            if r.status_code == 200:
+                return True
+            return self._host_enabled(host_id) == enabled
         except requests.RequestException:
             return False
 
