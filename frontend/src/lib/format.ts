@@ -341,3 +341,20 @@ export function formatLatency(ms: number | null | undefined, locale: string): st
     () => `${Math.round(ms)} ms`,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Version
+// ---------------------------------------------------------------------------
+
+/**
+ * The version string as a reader should see it. `APP_VERSION` is a free-form environment
+ * variable whose default is the word `dev`, so the `v` the sidebar used to prepend without
+ * looking produced `vdev` -- and `vmain`, or `v` followed by a commit sha, for anyone who
+ * sets it to a branch or a build id. The prefix belongs to a numbered release and to nothing
+ * else; anything that does not start with a digit is shown as it was set.
+ */
+export function versionLabel(version: string | null | undefined): string {
+  const text = String(version || '').trim();
+  if (!text) return EM_DASH;
+  return /^[0-9]/.test(text) ? `v${text}` : text;
+}
