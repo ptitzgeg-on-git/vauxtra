@@ -15,7 +15,13 @@ from urllib.parse import urlparse
 
 import requests
 
-from app.providers.base import ProxyProvider, TimeoutSession, login_check, reachability_check
+from app.providers.base import (
+    ProviderListingRefused,
+    ProxyProvider,
+    TimeoutSession,
+    login_check,
+    reachability_check,
+)
 from app.text import plural
 
 
@@ -75,6 +81,12 @@ class TraefikProvider(ProxyProvider):
         Each entry includes:
           - ``middlewares``: list of middleware names active on this router
           - ``tls_resolver``: ACME cert resolver name if TLS is configured
+
+        Raises rather than answering []. This one swallowed its own check: the `List
+        routers` line in `validate_permissions` counts what this returns, so a Traefik that
+        refused the call came back as an empty list, the counting `except` never fired, and
+        the panel printed "0 routers readable" with a tick beside it. A green check on a
+        read that failed is the one answer worse than no check at all.
         """
         try:
             r_routers    = self.session.get(f"{self.url}/api/http/routers")
@@ -139,8 +151,8 @@ class TraefikProvider(ProxyProvider):
                     "tls_resolver": tls_resolver,
                 })
             return hosts
-        except requests.RequestException:
-            return []
+        except requests.RequestException as exc:
+            raise ProviderListingRefused(f"Traefik would not list its routers: {exc}") from exc
 
     def create_host(self, domain, ip, port, scheme="http", websocket=False, cert_id=None):
         return None  # Traefik is read-only — routes are managed via Docker labels or config files
