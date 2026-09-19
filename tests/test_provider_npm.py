@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import requests
 
+from app.providers.base import ProviderListingRefused
 from app.providers.npm import NPMProvider
 
 
@@ -102,13 +103,17 @@ class TestNPMListHosts(unittest.TestCase):
         self.assertTrue(hosts[0]["websocket"])
         self.assertTrue(hosts[0]["enabled"])
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    def test_a_network_error_is_not_an_empty_host_list(self):
+        """[] is how the drift check learns a route is gone. A failed call never said that."""
         self.npm.session.get = MagicMock(side_effect=requests.RequestException("err"))
-        self.assertEqual(self.npm.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.npm.list_hosts()
 
-    def test_list_hosts_returns_empty_on_auth_fail(self):
+    def test_a_refused_login_is_not_an_empty_host_list(self):
+        """NPM declining the token says nothing about the hosts it holds."""
         self.npm._ensure_auth = MagicMock(return_value=False)
-        self.assertEqual(self.npm.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.npm.list_hosts()
 
 
 class TestNPMCreateHost(unittest.TestCase):
@@ -357,6 +362,62 @@ class TestNPMCertificates(unittest.TestCase):
         certs = self.npm.get_certificates()
         self.assertEqual(len(certs), 1)
         self.assertEqual(certs[0]["id"], 10)
+
+
+class TheNPMPanelProvesItCanReadBeforeItSaysReadyTests(unittest.TestCase):
+    """"Login OK" was the last word NPM said, and it was not the question being asked.
+
+    Every other integration ends its validation with the one read it actually needs --
+    AdGuard lists its rewrites, Zoraxy its rules, Traefik its routers. NPM stopped at the
+    token. But NPM gives a user per-object permissions, so an account whose `proxy_hosts`
+    visibility is off signs in perfectly and is then refused the very list Vauxtra manages.
+    The panel called that account ready, and the refusal surfaced later as a push that
+    saved nothing.
+    """
+
+    def setUp(self):
+        self.npm = NPMProvider("http://npm:81", "admin@example.com", "pw")
+        self.npm._ensure_auth = MagicMock(return_value=True)
+        self.npm.session.get = MagicMock(return_value=_response(200, []))
+
+    def _validate(self):
+        return self.npm.validate_permissions()
+
+    def test_a_readable_npm_reports_all_three_checks(self):
+        self.npm.list_hosts = MagicMock(return_value=[{"id": 1}, {"id": 2}])
+        result = self._validate()
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [c["detail_code"] for c in result["checks"]],
+            ["connection_ok", "login_ok", "proxy_read_ok"],
+        )
+        self.assertIn("2 hosts", result["checks"][-1]["detail"])
+
+    def test_an_account_that_signs_in_but_cannot_list_is_not_ready(self):
+        """The whole point: authenticated, reachable, and still not usable."""
+        self.npm.list_hosts = MagicMock(
+            side_effect=ProviderListingRefused("NPM would not list its proxy hosts: 403")
+        )
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["checks"][-1]["detail_code"], "proxy_read_failed")
+        self.assertTrue(result["checks"][-1]["blocking"])
+        self.assertTrue(result["checks"][1]["ok"], "the login itself did succeed")
+
+    def test_an_empty_npm_is_readable_not_broken(self):
+        """Nothing published is a fine answer; it is a failed read that is not."""
+        self.npm.list_hosts = MagicMock(return_value=[])
+        result = self._validate()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][-1]["detail_code"], "proxy_read_ok")
+
+    def test_the_read_is_not_attempted_when_the_login_failed(self):
+        """A second failure about the same cause reads as two problems."""
+        self.npm._ensure_auth = MagicMock(return_value=False)
+        self.npm.list_hosts = MagicMock(side_effect=AssertionError("must not be called"))
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertEqual([c["detail_code"] for c in result["checks"]], ["connection_ok", "login_failed"])
 
 
 if __name__ == "__main__":

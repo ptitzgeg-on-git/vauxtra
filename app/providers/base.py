@@ -139,7 +139,15 @@ class ProxyProvider(ABC):
 
     @abstractmethod
     def list_hosts(self) -> list[dict]:
-        """List all proxy hosts."""
+        """Every proxy host the provider holds.
+
+        Same contract as `DNSProvider.list_rewrites`, and for the same reason: an empty
+        list means the provider said it holds nothing, while a provider that could not
+        finish answering raises rather than handing back the part it collected. It was
+        only ever written down on the DNS side, so the one proxy client that answered []
+        to a failed request drifted for as long as nothing here said otherwise -- and the
+        drift check reads a missing host as a route to republish.
+        """
 
     @abstractmethod
     def create_host(self, domain: str, ip: str, port: int,

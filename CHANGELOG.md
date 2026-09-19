@@ -528,6 +528,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **NPM said "Login OK" and stopped, on the one question the panel was asked.** Every other
+  integration ends its validation with the read it actually needs -- AdGuard lists its
+  rewrites, Zoraxy its rules, Traefik its routers, Technitium and PowerDNS their zones. NPM
+  ended at the token. But NPM gives a user per-object permissions, so an account whose
+  `proxy_hosts` visibility is off signs in perfectly and is then refused the very list
+  Vauxtra manages. The panel called that account ready, and the refusal surfaced later as a
+  push that saved nothing. `validate_permissions` now ends on a `List hosts` check answering
+  `proxy_read_ok` or `proxy_read_failed`, the same codes its two sibling proxies already use.
+
+  Underneath it, `list_hosts` answered `[]` to a request that failed. An empty list and a
+  refused listing are different answers, and five callers act on the difference: `/drift`
+  reads no matching host as `route_missing` and offers a Reconcile button beside it, and
+  `_service_proxy_state` reads it as a service that was never published. A momentary 502
+  from NPM was therefore reported as a route someone had deleted. It raises
+  `ProviderListingRefused` now, as AdGuard, Pi-hole, Technitium, PowerDNS and deSEC already
+  did; every call site was already wrapped, so the honest `proxy_check_failed` was reachable
+  all along and only the provider stood in its way.
+
+  The contract itself was only ever written on `DNSProvider.list_rewrites`. `ProxyProvider.list_hosts`
+  said "List all proxy hosts" and nothing about the difference, which is how the one client
+  that got it wrong stayed wrong. It is stated there now.
+
 - **The preflight called a LAN address "public", on the screen whose field above it calls
   the same address a LAN one.** `expose.preflight.detail.dns_resolved` read "Resolved public
   DNS target: 10.0.0.99 (auto)" whatever DNS server the route had been given, while the field
