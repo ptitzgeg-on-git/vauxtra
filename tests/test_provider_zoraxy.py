@@ -16,6 +16,7 @@ from app.api import certificates as certificates_api
 from app.api import services as services_api
 from app.api import sync as sync_api
 from app.config import encrypt_secret
+from app.providers.base import ProviderListingRefused
 from app.providers.factory import (
     PROVIDER_TYPES,
     certificate_provider_types,
@@ -376,18 +377,29 @@ class TestZoraxyListHosts(unittest.TestCase):
                             _rule(ProxyType=2, RootOrMatchingDomain="vdir"))
         self.assertEqual([h["id"] for h in hosts], ["app.example.com"])
 
-    def test_list_hosts_returns_empty_on_auth_fail(self):
+    def test_a_refused_session_is_not_an_empty_rule_list(self):
+        """Zoraxy declining the login says nothing about the rules it holds."""
         self.z._ensure_auth = MagicMock(return_value=False)
         self.z.session.get = MagicMock()
-        self.assertEqual(self.z.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.z.list_hosts()
         self.z.session.get.assert_not_called()
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    def test_a_network_error_is_not_an_empty_rule_list(self):
+        """[] is how the drift check learns a route is gone. A failed call never said that."""
         self.z.session.get = MagicMock(side_effect=requests.RequestException("down"))
-        self.assertEqual(self.z.list_hosts(), [])
+        with self.assertRaises(ProviderListingRefused):
+            self.z.list_hosts()
 
-    def test_list_hosts_returns_empty_when_answer_is_not_a_list(self):
+    def test_an_answer_that_is_not_a_list_is_not_an_empty_list(self):
+        """Zoraxy answering {"error": ...} is a refusal, not an inventory of nothing."""
         self.z.session.get = MagicMock(return_value=_response(200, {"error": "nope"}))
+        with self.assertRaises(ProviderListingRefused):
+            self.z.list_hosts()
+
+    def test_a_zoraxy_holding_no_rules_still_answers_the_empty_list(self):
+        """The honest empty answer must survive: only a refusal raises."""
+        self.z.session.get = MagicMock(return_value=_response(200, []))
         self.assertEqual(self.z.list_hosts(), [])
 
 

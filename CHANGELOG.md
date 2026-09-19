@@ -236,6 +236,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Added
 
+- **A listing contract gate**, `scripts/check_listing_contract.py`, run in the backend job
+  beside the other parity gates, with `tests/test_listing_contract_gate.py` running it against
+  this repository so the suite catches the next instance even with the CI step removed. It
+  holds one rule across every listing method in `app/providers/`: none of them writes an empty
+  answer as a literal. A provider that genuinely holds nothing already answers `[]` by building
+  an empty list from an empty response, so a literal `[]`, `None` or `False` is always a
+  listing that failed and said "nothing" instead. The rule is about the value that leaves the
+  method rather than the handler it left from, because the four cases that prompted it arrived
+  in two shapes: two swallowed a `RequestException` inside the listing, and two turned an
+  honest `None` from their own helper into `[]` one line later, where no `except` was involved
+  at all. An audit reading exception handlers found only the first two.
+
 - **`vauxtra_mcp/README.md` now has a "When a call half-succeeds" section**, and a test that
   keeps its table true. The docstrings say what each key means at call time; this is what
   somebody reads before writing the integration, and it carries the rule none of them can
@@ -527,6 +539,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   `python -m pytest tests/` catches the next such bump even with the CI step removed.
 
 ### Fixed
+
+- **Zoraxy and Cloudflare Tunnel answered "no routes" when they had answered nothing.**
+  Neither swallowed an exception, which is why the audit that caught NPM and Traefik walked
+  past them: the loss happened one line later, where a helper's honest `None` was turned
+  into `[]`. Zoraxy's `_get` returns `None` for a refused session, a non-200 and a body
+  that is not JSON alike, and `list_hosts` read all three as an empty rule list; the
+  tunnel's `_get_configuration` carries a docstring explaining why it refuses to conflate
+  "unreadable" with "empty", and `list_hosts` conflated them on the next line. Both now
+  raise `ProviderListingRefused`. This matters because `[]` is the exact sentence the drift
+  check reads as `route_missing`, so a provider having a bad minute was reported as a
+  service whose route had disappeared, with a Reconcile button offering to republish it.
+  Zoraxy's panel check was never affected -- it asks `_get` directly and tests the type --
+  which meant the panel could say "rules unreadable" while the drift check, on the same
+  failure, said "the route is gone".
 
 - **Traefik's own read check counted a list its listing had already emptied.** The
   `List routers` line exists to catch a refused read, and it could not: `list_hosts` caught
