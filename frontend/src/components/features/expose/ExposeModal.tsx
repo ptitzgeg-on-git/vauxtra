@@ -143,6 +143,27 @@ const PLAN_ACTION_TONE: Partial<Record<PushPlanProxyAction['action'] | PushPlanD
   resume: 'warning',
 };
 
+/** The finished sentence, with every mention of the hostname set in mono.
+ *
+ * `t` returns a plain string, so a sentence that names the host cannot carry markup of its
+ * own and the emphasis has to be put back here. Splitting on the host rather than writing
+ * it out after the sentence is what lets each locale keep it where its grammar wants it:
+ * English and French open on the hostname, and the sentence used to be rendered with the
+ * placeholder still in it because nothing filled it.
+ */
+function withHostHighlighted(sentence: string, host: string): ReactNode[] {
+  return sentence.split(host).flatMap((part, index) =>
+    index === 0
+      ? [part]
+      : [
+          <span key={`host-${index}`} className="font-mono text-foreground">
+            {host}
+          </span>,
+          part,
+        ],
+  );
+}
+
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
   Boolean(value) && typeof value === 'object' && Array.isArray((value as { errors?: unknown }).errors);
 
@@ -433,7 +454,10 @@ export function ExposeModal({
           : `${result.payload.subdomain}.${result.payload.domain}`;
 
       if (allErrors.length === 0) {
-        toast.success(isEditMode ? t('expose.toast.updated') : t('expose.toast.created'), { duration: 4500 });
+        toast.success(
+          isEditMode ? t('expose.toast.updated', { host }) : t('expose.toast.created', { host }),
+          { duration: 4500 },
+        );
       } else {
         const summary = allErrors.slice(0, 2).join('; ');
         const more = allErrors.length > 2 ? t('expose.toast.more', { count: allErrors.length - 2 }) : '';
@@ -977,7 +1001,7 @@ export function ExposeModal({
               {isEditMode ? t('expose.done.updated_title') : t('expose.done.created_title')}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {t('expose.done.body')} <span className="font-mono text-foreground">{saveOutcome.host}</span>
+              {withHostHighlighted(t('expose.done.body', { host: saveOutcome.host }), saveOutcome.host)}
             </p>
           </div>
           {saveOutcome.errors.length > 0 && (
