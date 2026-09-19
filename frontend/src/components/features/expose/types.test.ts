@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 // rather than a thing someone has to notice in review.
 import exposeModalSource from './ExposeModal.tsx?raw';
 import serviceFormSource from './ServiceForm.tsx?raw';
-import { autoPublicTarget, initialForm, type FormState } from './types';
+import { autoPublicTarget, initialForm, publicTargetSourceLabel, type FormState } from './types';
 import type { Provider, ProviderTypesResponse } from '@/types/api';
 
 /** Two DNS providers that differ in the only way this rule cares about. */
@@ -159,5 +159,24 @@ describe('the rule has one writer', () => {
     const source = exposeModalSource;
     expect(source.split('supports_auto_public_target').length - 1).toBe(1);
     expect(source).toContain('publicTarget.mode');
+  });
+});
+
+describe('publicTargetSourceLabel', () => {
+  // The preflight prints this word inside its own sentence, so an untranslated one reads
+  // "Cible DNS 10.0.0.99 (manual)" on a French panel.
+  const t = (key: string) => (key === 'expose.dry_run.source.manual' ? 'saisie a la main' : key);
+
+  it('translates a word the build knows', () => {
+    expect(publicTargetSourceLabel('manual', t)).toBe('saisie a la main');
+  });
+
+  it('returns an unknown word as it came, so a newer API never blanks the line', () => {
+    expect(publicTargetSourceLabel('some_future_source', t)).toBe('some_future_source');
+  });
+
+  it('answers nothing when the API sent nothing', () => {
+    expect(publicTargetSourceLabel('', t)).toBe('');
+    expect(publicTargetSourceLabel(undefined, t)).toBe('');
   });
 });

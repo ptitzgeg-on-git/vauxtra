@@ -58,6 +58,7 @@ import {
   fqdnOf,
   initialForm,
   providerHasCapability,
+  publicTargetSourceLabel,
   toFormState,
 } from './types';
 import { ServiceForm } from './ServiceForm';
@@ -878,7 +879,10 @@ export function ExposeModal({
                     <span className="font-mono text-xs text-muted-foreground">{dryRun.public_host}</span>
                     {dryRun.dns_target && (
                       <span className="text-xs text-muted-foreground">
-                        {t('expose.dry_run.dns_target', { target: dryRun.dns_target, source: dryRun.dns_target_source })}
+                        {t('expose.dry_run.dns_target', {
+                          target: dryRun.dns_target,
+                          source: publicTargetSourceLabel(dryRun.dns_target_source, t),
+                        })}
                       </span>
                     )}
                   </div>

@@ -192,3 +192,23 @@ export const autoPublicTarget = (
     canOfferAuto: isExternal && supportsAuto,
   };
 };
+
+/**
+ * Where a resolved public target came from, in the reader's language.
+ *
+ * `resolve_public_target` answers a wire word beside the address -- `manual`, `auto`,
+ * `current`, `proxy_provider_host`, `server_public_ip` -- and the preflight printed it into
+ * its sentence untouched, so a French panel read "Cible DNS 10.0.0.99 (manual)". It is the
+ * same half-translated line `healthStatusLabel` was written for. A word the build does not
+ * know is returned as it came, so a newer API never blanks the line.
+ */
+export function publicTargetSourceLabel(
+  source: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  const word = String(source || '').trim();
+  if (!word) return '';
+  const key = `expose.dry_run.source.${word}`;
+  const line = t(key);
+  return line === key ? word : line;
+}
