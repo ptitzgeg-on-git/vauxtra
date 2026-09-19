@@ -1075,7 +1075,7 @@
   "services.confirm.bulk_disable_title_other": "禁用这 {count} 条路由？",
   "services.confirm.bulk_enable_body_other": "所选路由将在其提供商上重新发布。",
   "services.confirm.bulk_enable_title_other": "启用这 {count} 条路由？",
-  "services.confirm.delete_body": "确定删除 {host} 的路由？其代理主机和 DNS 记录会从提供商中移除。",
+  "services.confirm.delete_body": "确定删除 {host} 的路由？其代理主机和 DNS 记录会从每一个提供该路由的提供商中移除。",
   "services.confirm.delete_title": "删除路由",
   "services.confirm.disable_body": "{host} 将停止应答，直到您重新启用。记录会被保留。",
   "services.confirm.disable_title": "禁用该路由？",

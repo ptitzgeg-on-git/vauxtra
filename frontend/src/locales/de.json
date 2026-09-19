@@ -1162,7 +1162,7 @@
   "services.confirm.bulk_enable_body_other": "Die ausgewählten Routen werden bei ihren Anbietern erneut veröffentlicht.",
   "services.confirm.bulk_enable_title_one": "{count} Route aktivieren?",
   "services.confirm.bulk_enable_title_other": "{count} Routen aktivieren?",
-  "services.confirm.delete_body": "Route für {host} löschen? Ihr Proxy-Host und ihr DNS-Eintrag werden bei den Anbietern entfernt.",
+  "services.confirm.delete_body": "Route für {host} löschen? Ihre Proxy-Hosts und DNS-Einträge werden bei jedem Anbieter entfernt, der sie bedient.",
   "services.confirm.delete_title": "Route löschen",
   "services.confirm.disable_body": "{host} antwortet nicht mehr, bis Sie die Route wieder aktivieren. Der Eintrag bleibt erhalten.",
   "services.confirm.disable_title": "Diese Route deaktivieren?",
