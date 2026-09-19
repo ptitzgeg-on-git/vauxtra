@@ -17,7 +17,7 @@ from app.models import (
     set_tags,
 )
 from app.providers.base import supports_suspension
-from app.providers.factory import create_provider, host_id_is_hostname
+from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import (
     describe_public_target_failure,
     resolve_public_target,
@@ -200,6 +200,44 @@ def _detail(key: str, text: str, **params) -> dict:
     if params:
         out["detail_params"] = params
     return out
+
+
+def _dns_resolved_detail(dns_provider_row, target, source) -> dict:
+    """Say which kind of address the preflight just resolved, the way the form says it.
+
+    The sentence was "Resolved public DNS target: ..." whatever the DNS server was, while
+    the field it echoes is labelled "DNS target (LAN IP)" as soon as the chosen server only
+    answers on the LAN. One screen called 10.0.0.99 a LAN address above and a public one
+    below. The criterion is the provider's own `public_dns` capability, which is what the
+    form reads too, so the two cannot drift apart.
+
+    A missing row is the one case where neither word is honest: the id points at nothing,
+    the `dns_provider` check above is already blocking the save over it, and a resolution
+    still happened because `resolve_public_target` never needed the row. It gets the
+    sentence with no adjective rather than a guess.
+    """
+    if dns_provider_row is None:
+        return _detail(
+            "dns_resolved",
+            f"Resolved DNS target: {target} ({source})",
+            target=str(target),
+            source=str(source),
+        )
+    meta = PROVIDER_TYPES.get(dns_provider_row["type"], {})
+    public = bool(meta.get("capabilities", {}).get("public_dns"))
+    if public:
+        return _detail(
+            "dns_resolved_public",
+            f"Resolved public DNS target: {target} ({source})",
+            target=str(target),
+            source=str(source),
+        )
+    return _detail(
+        "dns_resolved_local",
+        f"Resolved LAN DNS target: {target} ({source})",
+        target=str(target),
+        source=str(source),
+    )
 
 
 def _check_provider(conn, provider_id: int | None, *, role: str, required: bool) -> tuple[dict | None, dict]:
@@ -500,12 +538,7 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                     "ok": bool(resolved_target),
                     "blocking": True,
                     **(
-                        _detail(
-                            "dns_resolved",
-                            f"Resolved public DNS target: {resolved_target} ({target_source})",
-                            target=str(resolved_target),
-                            source=str(target_source),
-                        )
+                        _dns_resolved_detail(dns_provider_row, resolved_target, target_source)
                         if resolved_target
                         else _detail(*describe_public_target_failure(target_source))
                     ),

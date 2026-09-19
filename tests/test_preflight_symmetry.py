@@ -95,7 +95,8 @@ _SERVER_CHECK_NAMES = frozenset(
 #: `_check_provider` under the same two names, and only the first is a refusal; keyed on the
 #: name alone this list could not tell them apart, and the name it would have had to carry
 #: for `provider_missing` would have licensed `provider_disabled` to block too. The ok
-#: branches of the gates are here as well (`host_free`, `target_set`, `dns_resolved`): they
+#: branches of the gates are here as well (`host_free`, `target_set`, the two
+#: `dns_resolved_*`, and `dns_resolved` for a DNS id pointing at nothing): they
 #: carry the flag, so a gate that stops being one is a line that disappears from this set.
 _MAY_BLOCK = frozenset(
     {
@@ -104,6 +105,8 @@ _MAY_BLOCK = frozenset(
         ("provider_target_required", "target_set"),
         ("provider_target_required", "target_none"),
         ("dns_target_resolution", "dns_resolved"),
+        ("dns_target_resolution", "dns_resolved_public"),
+        ("dns_target_resolution", "dns_resolved_local"),
         ("dns_target_resolution", "dns_target_required"),
         ("dns_target_resolution", "dns_target_detection_failed"),
         ("proxy_provider", "provider_missing"),
@@ -493,6 +496,19 @@ def _case_everything_healthy(t):
     }
 
 
+def _case_public_dns_server(t):
+    """The corpus had no healthy case whose DNS server answers off the LAN.
+
+    Every resolving scenario above picks AdGuard, so `dns_target_resolution` only ever came
+    back on its LAN branch, and the public one was a line no route had ever walked. The
+    preflight now names the kind of address it resolved, and a claim nothing exercises is a
+    claim nothing checks.
+    """
+    t._add_provider(1, "NPM", "npm")
+    t._add_provider(2, "Cloudflare", "cloudflare")
+    return {"proxy_provider_id": 1, "dns_provider_id": 2, "dns_ip": "203.0.113.9"}
+
+
 def _case_healthy_tunnel(t):
     t._add_provider(2, "CF Tunnel", "cloudflare_tunnel", _FakeTunnel(health={"ok": True, "status": "healthy"}))
     return {
@@ -522,6 +538,7 @@ _CORPUS = (
     ("an extra proxy id pointing at nothing", _case_extra_points_at_nothing, True, False),
     ("an extra DNS id pointing at nothing", _case_extra_dns_points_at_nothing, True, False),
     ("a healthy proxy, DNS server and spare proxy", _case_everything_healthy, False, False),
+    ("a healthy DNS server that answers off the LAN", _case_public_dns_server, False, False),
     ("a healthy tunnel", _case_healthy_tunnel, False, False),
 )
 
@@ -1043,6 +1060,44 @@ class TwoExtraTargetsReallyProduceTwoLinesTests(_SymmetryTestCase):
             [c["detail_params"]["name"] for c in lines],
             ["NPM bis", "NPM ter"],
         )
+
+
+class ThePreflightNamesTheKindOfAddressTheFormAsksForTests(_SymmetryTestCase):
+    """The sentence under the field said "public" whatever DNS server was chosen.
+
+    The field itself is labelled "DNS target (LAN IP)" as soon as the selected server only
+    answers on the LAN -- the form reads the provider's `public_dns` capability for that --
+    so one screen called 10.0.0.99 a LAN address above and a public one below. The check
+    now reads the same capability, and the two cannot say different things about one value.
+    """
+
+    def test_a_lan_dns_server_resolves_a_lan_target(self):
+        self._add_provider(2, "AdGuard", "adguard")
+
+        result = self._preflight(dns_provider_id=2, dns_ip="10.0.0.99")
+        check = self._named(result, "dns_target_resolution")[0]
+
+        self.assertTrue(check["ok"], check["detail"])
+        self.assertEqual(check["detail_key"], "dns_resolved_local")
+        self.assertNotIn("public", check["detail"].lower())
+
+    def test_a_public_dns_server_still_resolves_a_public_one(self):
+        self._add_provider(3, "Cloudflare", "cloudflare")
+
+        result = self._preflight(dns_provider_id=3, dns_ip="203.0.113.9")
+        check = self._named(result, "dns_target_resolution")[0]
+
+        self.assertTrue(check["ok"], check["detail"])
+        self.assertEqual(check["detail_key"], "dns_resolved_public")
+        self.assertIn("public", check["detail"].lower())
+
+    def test_both_carry_the_source_word_for_the_panel_to_translate(self):
+        """`detail_params` is where the panel reads it; printed raw it stayed English."""
+        self._add_provider(2, "AdGuard", "adguard")
+
+        check = self._named(self._preflight(dns_provider_id=2, dns_ip="10.0.0.99"), "dns_target_resolution")[0]
+
+        self.assertEqual(check["detail_params"], {"target": "10.0.0.99", "source": "manual"})
 
 
 if __name__ == "__main__":
