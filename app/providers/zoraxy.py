@@ -8,7 +8,8 @@ import re
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import ProxyProvider, TimeoutSession
+from app.providers.base import ProxyProvider, TimeoutSession, login_check, reachability_check
+from app.text import plural
 
 log = logging.getLogger(__name__)
 
@@ -243,6 +244,35 @@ class ZoraxyProvider(ProxyProvider):
         if not self._ensure_auth():
             return False
         return isinstance(self._get("/api/proxy/list", {"type": "host"}), list)
+
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        """Reachability, then credentials, then the rule list.
+
+        Worth separating here more than anywhere else: Zoraxy answers HTTP 200 to a login
+        with the wrong password and says so only in the body, so `_ensure_auth` is the only
+        thing that knows, and `test_connection` folds its answer together with a host that
+        never replied. The fallback in `_provider_diagnostics` called both
+        `connection_failed`.
+        """
+        checks = [reachability_check(self.session, f"{self.base_url}/login.html")]
+        if not checks[0]["ok"]:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        authenticated = self._ensure_auth()
+        checks.append(login_check(authenticated))
+        if not authenticated:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        rules = self._get("/api/proxy/list", {"type": "host"})
+        read_ok = isinstance(rules, list)
+        checks.append({
+            "name": "List rules",
+            "ok": read_ok,
+            "detail": f"{plural(len(rules), 'rule')} readable" if read_ok else "Zoraxy did not return its rule list",
+            "detail_code": "proxy_read_ok" if read_ok else "proxy_read_failed",
+            "blocking": not read_ok,
+        })
+        return {"ok": read_ok, "checks": checks, "warnings": []}
 
     @staticmethod
     def _normalize_rule(rule: dict) -> dict:

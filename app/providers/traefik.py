@@ -15,7 +15,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from app.providers.base import ProxyProvider, TimeoutSession
+from app.providers.base import ProxyProvider, TimeoutSession, login_check, reachability_check
+from app.text import plural
 
 
 class TraefikProvider(ProxyProvider):
@@ -34,6 +35,39 @@ class TraefikProvider(ProxyProvider):
             return r.status_code == 200
         except requests.RequestException:
             return False
+
+    def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
+        """Reachability, then whether the API let us in, then the router list.
+
+        Traefik needs no credentials of its own, which is exactly why the distinction is
+        worth drawing: its API is routinely put behind a middleware, and a dashboard that
+        answers 401 is a permission to fix, not a network to debug. `test_connection` is a
+        bare `status_code == 200`, so the fallback in `_provider_diagnostics` called that
+        `connection_failed` and pointed the operator somewhere there was nothing to find.
+        """
+        overview = f"{self.url}/api/overview"
+        checks = [reachability_check(self.session, overview)]
+        if not checks[0]["ok"]:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        accepted = self.test_connection()
+        checks.append(login_check(accepted))
+        if not accepted:
+            return {"ok": False, "checks": checks, "warnings": []}
+
+        try:
+            count = len(self.list_hosts())
+            read_ok, detail = True, f"{plural(count, 'router')} readable"
+        except Exception as exc:
+            read_ok, detail = False, str(exc)
+        checks.append({
+            "name": "List routers",
+            "ok": read_ok,
+            "detail": detail,
+            "detail_code": "proxy_read_ok" if read_ok else "proxy_read_failed",
+            "blocking": not read_ok,
+        })
+        return {"ok": read_ok, "checks": checks, "warnings": []}
 
     def list_hosts(self) -> list[dict]:
         """Return all enabled HTTP routers as normalised host dicts.

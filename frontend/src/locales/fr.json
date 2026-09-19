@@ -2086,6 +2086,8 @@
   "providers.diag.detail.connection_ok": "Le test de connexion a réussi.",
   "providers.diag.detail.dns_read_failed": "Les enregistrements DNS n'ont pas pu être listés.",
   "providers.diag.detail.dns_read_ok": "Les enregistrements DNS peuvent être listés.",
+  "providers.diag.detail.proxy_read_ok": "Les règles du proxy peuvent être listées.",
+  "providers.diag.detail.proxy_read_failed": "Les règles du proxy n'ont pas pu être listées.",
   "providers.diag.detail.dns_write_skipped": "Test d'écriture ignoré (mode non destructif) ; la première vraie modification le validera.",
   "providers.diag.detail.login_failed": "Connexion refusée : vérifiez le nom d'utilisateur, le mot de passe et l'URL.",
   "providers.diag.detail.login_ok": "Authentification réussie.",

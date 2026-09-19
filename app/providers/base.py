@@ -28,6 +28,51 @@ class TimeoutSession(requests.Session):
         return super().request(method, url, **kwargs)
 
 
+def reachability_check(session, url: str) -> dict:
+    """One diagnostic check saying whether anything at all answered at `url`.
+
+    `test_connection` cannot answer this, and that is the whole point of asking separately:
+    it folds "nothing listened on that port" and "the host answered and refused the
+    credentials" into one `False`, which the providers panel then labels `connection_failed`.
+    An operator who reads that goes looking for a firewall, and the integrations with no
+    richer diagnostic of their own sent them there every time a password was simply wrong.
+
+    Any HTTP answer proves the host is reachable, a refusal included, so the status code is
+    deliberately not read here: whether the credentials are accepted is the next check's
+    business. Only a transport error -- refused connection, DNS failure, timeout -- says the
+    host was never reached.
+    """
+    try:
+        session.get(url, timeout=PROVIDER_TIMEOUT, allow_redirects=False)
+    except requests.RequestException as exc:
+        return {
+            "name": "Reachability",
+            "ok": False,
+            "detail": f"Could not reach {url}: {exc}",
+            "detail_code": "connection_failed",
+            "detail_params": {"error": str(exc)},
+            "blocking": True,
+        }
+    return {
+        "name": "Reachability",
+        "ok": True,
+        "detail": f"{url} answered",
+        "detail_code": "connection_ok",
+        "blocking": False,
+    }
+
+
+def login_check(ok: bool) -> dict:
+    """One diagnostic check for credentials the host was reachable enough to refuse."""
+    return {
+        "name": "Login",
+        "ok": ok,
+        "detail": "Authenticated successfully" if ok else "Login failed -- check username/password and URL",
+        "detail_code": "login_ok" if ok else "login_failed",
+        "blocking": True,
+    }
+
+
 class ProviderListingRefused(RuntimeError):
     """The provider did not finish saying what it holds.
 

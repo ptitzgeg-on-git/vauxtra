@@ -880,8 +880,9 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
                 # off -- and `update_host` is a PUT that does not carry the flag. So the push
                 # wrote the right origin onto a suspended rule and left it suspended, and
                 # Reconcile, which is this push, could not converge the one state Vauxtra
-                # itself produces. Resuming is idempotent: NPM answers 200 to an enable on a
-                # host already enabled, and a provider with no suspension is never asked.
+                # itself produces. A provider with no suspension is never asked, and the two
+                # that have one answer on the state the host ends up in rather than on the
+                # code of the call, so resuming a host already running is not a refusal.
                 if pushed and supports_suspension(proxy) and not proxy.toggle_host(host_id, True):
                     pushed = False
                     attempted = f"resume of host {host_id}"

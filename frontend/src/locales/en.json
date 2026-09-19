@@ -2086,6 +2086,8 @@
   "providers.diag.detail.connection_ok": "The connection test passed.",
   "providers.diag.detail.dns_read_failed": "DNS records could not be listed.",
   "providers.diag.detail.dns_read_ok": "DNS records can be listed.",
+  "providers.diag.detail.proxy_read_ok": "The proxy rules can be listed.",
+  "providers.diag.detail.proxy_read_failed": "The proxy rules could not be listed.",
   "providers.diag.detail.dns_write_skipped": "Write probe skipped (non-destructive mode); the first real change validates it.",
   "providers.diag.detail.login_failed": "Login failed — check the username, the password and the URL.",
   "providers.diag.detail.login_ok": "Authenticated successfully.",
