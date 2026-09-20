@@ -37,8 +37,16 @@ jobs:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     # A job with no ceiling can hold its concurrency group for GitHub's default of six
-    # hours. This one is not on the push path, so the ceiling is simply a backstop.
-    timeout-minutes: 20
+    # hours, so it needs one. But a ceiling BELOW the wait it contains is worse than no
+    # ceiling: it was 20 against a 30-minute wait, so the wait could never reach its own
+    # deadline and the run died on "exceeded the maximum execution time of 20 minutes"
+    # instead of printing which manifest was missing and what to do about it. The wait
+    # reads its budget from `PULL_WAIT_MINUTES` below; keep this ceiling well above it.
+    # (The comment that used to sit here said this job is not on the push path. It is:
+    # `push: tags` at the top of this file is its main trigger.)
+    timeout-minutes: 40
+    env:
+      PULL_WAIT_MINUTES: "30"
 
     steps:
       # On a tag push the tag is the ref; on a manual run it is the input. Everything
@@ -108,7 +116,8 @@ jobs:
                       return f"child {m['digest'][:19]}: HTTP {e.code}"
               return None
 
-          DEADLINE, STEP = 30 * 60, 30
+          # Derived from the job ceiling rather than written next to it and forgotten.
+          DEADLINE, STEP = int(os.environ["PULL_WAIT_MINUTES"]) * 60, 30
           waited = 0
           while True:
               why = resolves()

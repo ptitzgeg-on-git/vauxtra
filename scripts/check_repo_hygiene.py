@@ -196,7 +196,7 @@ def _find_unpinned_actions() -> list[str]:
 
 
 def _find_ignored_source_files() -> list[str]:
-    """Source files that exist on disk but that .gitignore hides from `git add`.
+    """Source files a .gitignore rule hides, whether or not git already holds them.
 
     Not hypothetical: the rule was `data/`, unanchored, written for the SQLite directory
     at the root -- so it also matched `frontend/src/components/features/settings/data/`,
@@ -204,18 +204,56 @@ def _find_ignored_source_files() -> list[str]:
     locally, where the files are on disk; only CI, which checks out what git actually
     holds, said `Cannot find module './data/SyncSection'`. A silent omission is the
     failure mode worth a test -- a loud one gets fixed by whoever hits it.
+
+    Two questions, because the obvious one cannot be answered where this runs. `git
+    ls-files --others --ignored` lists files that are on disk and NOT tracked, so on an
+    `actions/checkout` tree -- which holds the tracked files and nothing else -- its
+    answer is empty by construction. That was the whole rule, and it could only ever fire
+    on a developer's disk, where nothing launches it: the two callers are both workflows.
+
+    So the first question is the one CI can answer. Of the files git DOES hold, which
+    ones would a .gitignore rule cover today? That catches the `data/` rule the moment it
+    lands, from the committed tree, which is the only tree this gate ever sees. The disk
+    question stays as a second signal, for the local run that may never happen.
     """
-    result = subprocess.run(
+    bad: set[str] = set()
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", *SOURCE_ROOTS],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split("\0")
+    sources = [p for p in tracked if p.endswith(SOURCE_SUFFIXES)]
+    if sources:
+        # `--no-index` is what makes the question answerable at all: without it,
+        # check-ignore reports nothing for a tracked file because the index wins, which
+        # is precisely the blind spot being closed here. Exit 1 means "none matched".
+        covered = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-z", "--stdin"],
+            input="\0".join(sources) + "\0",
+            capture_output=True,
+            text=True,
+        )
+        if covered.returncode not in (0, 1):
+            raise RuntimeError(f"git check-ignore failed: {covered.stderr.strip()}")
+        bad.update(path for path in covered.stdout.split("\0") if path)
+
+    # Second signal, and the original one: a source file that exists on disk but was never
+    # committed, because the same kind of rule hid it from `git add`. Only a local run can
+    # see this, so it is a bonus here rather than the gate.
+    untracked = subprocess.run(
         ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", *SOURCE_ROOTS],
         check=True,
         capture_output=True,
         text=True,
     )
-    return sorted(
+    bad.update(
         line.strip()
-        for line in result.stdout.splitlines()
+        for line in untracked.stdout.splitlines()
         if line.strip().endswith(SOURCE_SUFFIXES)
     )
+    return sorted(bad)
 
 
 def _find_bad_commit_identities() -> list[str]:

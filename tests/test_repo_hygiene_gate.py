@@ -210,5 +210,73 @@ class RepoHygieneAllowlistTests(unittest.TestCase):
             self.assertEqual(token, token.lower())
 
 
+class RepoHygieneIgnoredSourceTests(unittest.TestCase):
+    """The rule that could not fire in the only place it runs.
+
+    It asked git for `ls-files --others --ignored`, which lists files that are on disk and
+    NOT tracked. An `actions/checkout` tree holds the tracked files and nothing else, so
+    that answer was empty on every run this gate has ever had. The defect its docstring
+    describes -- an unanchored `data/` rule that hid four settings components from
+    `git add -A` -- was therefore invisible to the two workflows that launch it. These
+    tests build the CI shape on purpose: everything committed, nothing loose on disk.
+    """
+
+    def setUp(self) -> None:
+        self._previous_cwd = Path.cwd()
+        self._tmp = Path(tempfile.mkdtemp(prefix="vauxtra-ignored-"))
+        self.repo = self._tmp / "repo"
+        self.repo.mkdir()
+        _git(self.repo.parent, "init", "-b", "main", str(self.repo))
+
+    def tearDown(self) -> None:
+        os.chdir(self._previous_cwd)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _commit_tree(self, gitignore: str) -> None:
+        """A tracked component, then the rule, in that order.
+
+        That order is how the real one got in: the component is committed first, the rule
+        arrives later for the SQLite directory at the root, and quietly covers a path
+        nobody was thinking about.
+        """
+        component = self.repo / "frontend/src/components/features/settings/data"
+        component.mkdir(parents=True)
+        (component / "SyncSection.tsx").write_text("export const SyncSection = () => null")
+        _git(self.repo, "add", "-A")
+        _commit(self.repo, "feat(settings) : la section de synchronisation")
+        (self.repo / ".gitignore").write_text(gitignore)
+        _git(self.repo, "add", "-A")
+        _commit(self.repo, "chore : une regle d'exclusion")
+
+    def _run_gate(self) -> list[str]:
+        os.chdir(self.repo)
+        return hygiene._find_ignored_source_files()
+
+    def test_an_unanchored_rule_over_a_tracked_file_is_refused(self) -> None:
+        self._commit_tree("data/")
+        self.assertEqual(
+            ["frontend/src/components/features/settings/data/SyncSection.tsx"],
+            self._run_gate(),
+        )
+
+    def test_the_same_rule_anchored_to_the_root_passes(self) -> None:
+        """`/data/` is the fix the gate's own message asks for, so it has to be accepted."""
+        self._commit_tree("/data/")
+        self.assertEqual([], self._run_gate())
+
+    def test_a_clean_checkout_is_not_an_excuse_to_answer_nothing(self) -> None:
+        """The old rule's blind spot, pinned: no loose file, and the gate still speaks."""
+        self._commit_tree("data/")
+        os.chdir(self.repo)
+        loose = subprocess.run(
+            ["git", "ls-files", "--others", "--ignored", "--exclude-standard"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual("", loose.stdout.strip(), "the tree under test must look like CI")
+        self.assertNotEqual([], hygiene._find_ignored_source_files())
+
+
 if __name__ == "__main__":
     unittest.main()

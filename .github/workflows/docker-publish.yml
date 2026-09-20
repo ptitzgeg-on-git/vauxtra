@@ -8,11 +8,20 @@ on:
     branches: [main, dev]
     tags: ["v*.*.*"]
 
-# Never `cancel-in-progress`. Two runs here would be two writers on the same registry tag
-# or the same release page, so they queue instead -- and a run that is already pushing,
-# signing or attesting is never the one to kill.
+# Never `cancel-in-progress`. Two runs here would be two writers on the same registry tag,
+# so they queue instead -- and a run that is already pushing, signing or attesting is
+# never the one to kill.
+#
+# The group is the workflow, with nothing appended. It used to end in `github.ref`, which
+# put the two runs that actually collide into two different groups: pushing `main` and
+# then tagging that same commit are two refs, one commit, and both runs write `latest`
+# and `sha-<short>`. Measured on v1.5.0: the two runs overlapped for four minutes and it
+# was the later finisher that set `latest`. Keying on the commit instead would fix that
+# pair and still miss two successive pushes to `main`, which also both write `latest`.
+# Any two publishes can share a moving tag, so all publishes share one queue. The cost is
+# a `dev` push waiting behind a `main` push; a build here runs six to thirteen minutes.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 env:
@@ -98,7 +107,15 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=sha,prefix=sha-,format=short
+            # Only on `main`. Without the `enable=`, every ref carrying the commit wrote
+            # this same tag -- and the builds differ: `APP_VERSION` is `latest` on main,
+            # `dev` on dev, `1.5.0` on a tag, so the digests differ too. The second run
+            # repointed the crumb and left the first image nameless, which handed it,
+            # with its cosign signature and its SLSA attestation, to `delete-untagged`
+            # in the weekly cleanup. A `dev` or tag build needs no crumb: `dev` is the
+            # moving pointer, a release has its semver, and both carry the commit in
+            # `org.opencontainers.image.revision` anyway.
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
           labels: |
             org.opencontainers.image.title=Vauxtra
             org.opencontainers.image.description=Self-hosted DNS & reverse proxy management panel for homelab

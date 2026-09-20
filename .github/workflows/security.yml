@@ -269,10 +269,22 @@ jobs:
           # The redirection creates the file even when grype writes nothing into it, which
           # defeated the `hashFiles(...) != ''` guard on the upload step below.
           [ -s grype-results.sarif ] || rm -f grype-results.sarif
-          if [ "$rc" -gt 1 ]; then
-            echo "::error::grype exited $rc: it failed to run. This is not a vulnerability report."
-            exit "$rc"
-          fi
+          # grype's exit codes, read from the source rather than guessed. `cmd/grype/cli`
+          # hands clio a `WithMapExitCode` that returns 2 for ErrAboveSeverityThreshold,
+          # 100 for ErrDBUpgradeAvailable and 1 for everything else. This block used to
+          # read 1 as "found something" and anything above it as "failed to run", which is
+          # exactly backwards: a real HIGH finding was reported as "it failed to run. This
+          # is not a vulnerability report", and a real crash was reported as a clean run
+          # followed by "Grype found vulnerabilities" about a report nobody produced.
+          case "$rc" in
+            0) ;;
+            2) echo "::notice::grype found findings at or above the cutoff; the gate below fails the job" ;;
+            100) echo "::warning::grype ran, but its database is out of date (exit 100)" ;;
+            *)
+              echo "::error::grype exited $rc: it failed to run. This is not a vulnerability report."
+              exit "$rc"
+              ;;
+          esac
           exit 0
 
       - name: Upload Grype results to Security tab
@@ -282,11 +294,13 @@ jobs:
           sarif_file: grype-results.sarif
           category: grype
 
-      # Exactly 1 -- that is what `--fail-on high` returns when it finds something. Any
-      # other non-zero code is grype failing to run, and is raised by the step above with
-      # a message that says so.
+      # Exactly 2 -- that is what `--fail-on high` returns when it finds something, via
+      # clio's ErrAboveSeverityThreshold mapping. Any code that is not 0, 2 or 100 is
+      # grype failing to run, and is raised by the step above with a message that says so.
+      # Witness, to re-run by hand if this is ever doubted again:
+      #   grype sbom:sbom.cyclonedx.json --fail-on high >/dev/null; echo $?   -> 2
       - name: Enforce Grype policy
-        if: steps.grype.outputs.exit_code == '1'
+        if: steps.grype.outputs.exit_code == '2'
         run: |
           echo "::error::Grype found vulnerabilities at or above the 'high' cutoff. See the Security tab."
           exit 1
