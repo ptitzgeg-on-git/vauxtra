@@ -12,16 +12,28 @@ on:
 # so they queue instead -- and a run that is already pushing, signing or attesting is
 # never the one to kill.
 #
-# The group is the workflow, with nothing appended. It used to end in `github.ref`, which
-# put the two runs that actually collide into two different groups: pushing `main` and
-# then tagging that same commit are two refs, one commit, and both runs write `latest`
-# and `sha-<short>`. Measured on v1.5.0: the two runs overlapped for four minutes and it
-# was the later finisher that set `latest`. Keying on the commit instead would fix that
-# pair and still miss two successive pushes to `main`, which also both write `latest`.
-# Any two publishes can share a moving tag, so all publishes share one queue. The cost is
-# a `dev` push waiting behind a `main` push; a build here runs six to thirteen minutes.
+# Two queues, because there are exactly two sets of runs that can write the same moving
+# tag. What each kind of push writes was read from the run logs, not from the `tags:`
+# block below, which does not show it: the `{{is_default_branch}}` guard on `latest` is
+# true on a tag push too.
+#
+#   push dev    0d896cd  ->  dev
+#   push main   35ab50c  ->  latest, sha-35ab50c
+#   push v1.5.0 c9734fb  ->  1.5.0, 1.5, 1, latest, sha-c9734fb
+#
+# So `main` and a release tag both move `latest` and must queue together. That pair is
+# what this group exists for: measured on v1.5.0, the two runs overlapped for four
+# minutes and it was the later finisher that set `latest`. A `dev` build moves only
+# `dev`, collides with nobody, and belongs in its own queue.
+#
+# This has been wrong in both directions. Keyed on `github.ref`, `main` and its own tag
+# landed in two groups and raced, which is the bug above. Keyed on nothing at all, every
+# publish shared one queue -- and GitHub cancels the previously PENDING run of a group
+# as soon as a newer one queues, whatever `cancel-in-progress` says, so a `dev` push
+# arriving while a release build waited killed the release build. `tests/
+# test_publish_concurrency.py` holds the table above against this expression.
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/dev' && 'dev' || 'latest' }}
   cancel-in-progress: false
 
 env:
