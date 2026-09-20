@@ -110,6 +110,7 @@ const DECLARED = new Map(
     'services.meta': { total: 'a bare total after "of"; the noun sits beside {count}' },
     'settings.backup.restore_settings_dropped': { keys: 'the refused setting names, joined into one string' },
     'settings.general.ignored_keys': { keys: 'the refused setting names, joined into one string' },
+    'settings.logs.total_matching': { total: 'a bare total after "of"; the noun sits beside {count}' },
     'settings.webhooks.enabled_count': { total: 'a bare total after "of", with no noun of its own' },
     'setup.restore.done_settings': { keys: 'the refused setting names, joined into one string' },
     'templates.count_filtered': { total: 'a bare total after "of", with no noun of its own' },

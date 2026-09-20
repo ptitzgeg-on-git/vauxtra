@@ -177,6 +177,14 @@ export function LogsTab() {
   }, [liveEntries, data?.items, level, needle]);
 
   const total = (data?.total ?? 0) + liveEntries.length;
+  // The level chip is a server-side filter -- it sits in the query key and in the URL, so
+  // `total` already counts only the rows it kept. The text search is not: it runs over the
+  // page in hand, in `rows` above. The footer therefore has to say which of the two numbers
+  // it is showing, instead of printing a 21 under three visible rows.
+  const searching = needle.length > 0;
+  // Whether anything is narrowing the list at all -- which is what separates "this instance
+  // has never logged a thing" from "your filter hides everything".
+  const filtering = searching || level !== '';
 
   return (
     <div className="space-y-6">
@@ -273,7 +281,7 @@ export function LogsTab() {
           <EmptyState
             compact
             icon={<FileTerminal />}
-            title={(data?.total ?? 0) === 0 && liveEntries.length === 0 ? t('settings.logs.empty') : t('settings.logs.no_match')}
+            title={total === 0 && !filtering ? t('settings.logs.empty') : t('settings.logs.no_match')}
           />
         ) : (
           <ol
@@ -310,7 +318,9 @@ export function LogsTab() {
           <p className="text-xs text-muted-foreground tabular-nums">
             {t('settings.logs.page_of', { page, pages })}
             <span aria-hidden="true"> · </span>
-            {t('settings.logs.total', { count: total })}
+            {searching
+              ? t('settings.logs.total_matching', { count: rows.length, total })
+              : t('settings.logs.total', { count: total })}
           </p>
           <div className="flex items-center gap-2">
             <Field inline label={t('settings.logs.per_page')} className="mr-2">

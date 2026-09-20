@@ -1502,6 +1502,8 @@
   "settings.logs.page_of": "Pagina {page} van {pages}",
   "settings.logs.per_page": "Per pagina",
   "settings.logs.prev_page": "Vorige pagina",
+  "settings.logs.total_matching_one": "{count} overeenkomende regel van {total}",
+  "settings.logs.total_matching_other": "{count} overeenkomende regels van {total}",
   "settings.logs.total_one": "{count} regel",
   "settings.logs.total_other": "{count} regels",
   "settings.migration.col_select": "Selecteren",

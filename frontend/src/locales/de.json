@@ -1502,6 +1502,8 @@
   "settings.logs.page_of": "Seite {page} von {pages}",
   "settings.logs.per_page": "Pro Seite",
   "settings.logs.prev_page": "Vorherige Seite",
+  "settings.logs.total_matching_one": "{count} passender Eintrag von {total}",
+  "settings.logs.total_matching_other": "{count} passende Einträge von {total}",
   "settings.logs.total_one": "{count} Eintrag",
   "settings.logs.total_other": "{count} Einträge",
   "settings.migration.col_select": "Auswählen",

@@ -1398,6 +1398,7 @@
   "settings.logs.page_of": "{pages}ページ中{page}ページ目",
   "settings.logs.per_page": "1ページあたり",
   "settings.logs.prev_page": "前のページ",
+  "settings.logs.total_matching_other": "{total}件中{count}件のエントリが一致",
   "settings.logs.total_other": "{count}件のエントリ",
   "settings.migration.col_select": "選択",
   "settings.migration.import_selected_message_other": "{count}件のルートを Vauxtra のサービスとしてインポートします。",
