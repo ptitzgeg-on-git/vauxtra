@@ -1398,6 +1398,7 @@
   "settings.logs.page_of": "第 {page} 页，共 {pages} 页",
   "settings.logs.per_page": "每页条数",
   "settings.logs.prev_page": "上一页",
+  "settings.logs.total_matching_other": "{total} 条记录中有 {count} 条匹配",
   "settings.logs.total_other": "{count} 条记录",
   "settings.migration.col_select": "选择",
   "settings.migration.import_selected_message_other": "{count} 条路由将作为 Vauxtra 服务导入。",
