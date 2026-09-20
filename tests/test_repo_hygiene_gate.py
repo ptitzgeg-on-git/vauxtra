@@ -277,6 +277,118 @@ class RepoHygieneIgnoredSourceTests(unittest.TestCase):
         self.assertEqual("", loose.stdout.strip(), "the tree under test must look like CI")
         self.assertNotEqual([], hygiene._find_ignored_source_files())
 
+class RepoHygieneUnreadableFileTests(unittest.TestCase):
+    """A file the address scan could not read used to leave no trace at all.
+
+    `_find_private_addresses` answers one question about the whole repository: is there an
+    undeclared private address printed anywhere in it. It reads each tracked text file as
+    UTF-8, and it used to `continue` on `UnicodeDecodeError`, which quietly narrowed that
+    answer to "anywhere I happened to be able to read" while the gate went on printing
+    `Repo hygiene check passed` in the same voice. A NAS address in a latin-1 note would
+    have sat there indefinitely, with the gate green over it and nobody told.
+
+    Measured on 2026-09-20: 400 tracked files reach that loop and all 400 decode, so this
+    costs nothing today. That is the argument for closing it today.
+    """
+
+    def setUp(self) -> None:
+        self._previous_cwd = Path.cwd()
+        self._tmp = Path(tempfile.mkdtemp(prefix="vauxtra-lecture-"))
+        os.chdir(self._tmp)
+
+    def tearDown(self) -> None:
+        os.chdir(self._previous_cwd)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_bytes(self, name: str, payload: bytes) -> str:
+        (self._tmp / name).write_bytes(payload)
+        return name
+
+    # Every address below is `172.20.x`, and that is not the usual placeholder. These
+    # cases need one the gate will actually flag, so the declared prefixes -- `192.168.1.`,
+    # `10.0.0.`, `172.16.` through `172.19.` -- are all unusable here: a fixture built from
+    # one of them would pass while proving nothing. `172.20.` is private, undeclared, and
+    # belongs to nobody. The first draft of this file reached for a real machine on the
+    # author's own network instead, and the gate under test is what caught it -- which is
+    # why the gate now skips this file and why the last test below takes over the scan.
+
+    def test_a_file_that_cannot_be_decoded_is_named(self) -> None:
+        """The latin-1 note, with an address in it, and the byte that hides it."""
+        note = self._write_bytes(
+            "note.md", b"\xe9tat du banc : la machine 172.20.0.5 ne repond plus\n"
+        )
+        hits = hygiene._find_private_addresses([note])
+        self.assertEqual(1, len(hits), "an unreadable file must produce exactly one line")
+        self.assertIn("note.md", hits[0])
+        self.assertIn("was not scanned", hits[0])
+        self.assertIn("UnicodeDecodeError", hits[0], "say which failure, not just that one")
+
+    def test_the_address_inside_it_is_not_what_gets_reported(self) -> None:
+        """An unreadable file is named, and only named.
+
+        The readable path below does print the address it found, and that is right: by
+        then the address is sitting in a tracked file of a public repository, so a CI log
+        reveals nothing a clone would not. This path is not that. The file did not decode,
+        so nothing in it has actually been established, and printing what a looser decode
+        seemed to find would put a guess into a public log on the strength of a guess.
+        The file is the finding here; its contents are not.
+        """
+        note = self._write_bytes(
+            "note.md", b"\xe9crit le 20 : 172.20.0.5 et 172.20.0.6\n"
+        )
+        self.assertNotIn("172.20.0.5", hygiene._find_private_addresses([note])[0])
+
+    def test_a_missing_file_is_named_too(self) -> None:
+        """`OSError`, the other half of the clause, and the likelier one in CI.
+
+        A tracked path that is not on disk means the checkout and the index disagree,
+        which is worth a line of its own rather than one fewer file quietly scanned.
+        """
+        hits = hygiene._find_private_addresses(["jamais-ecrit.md"])
+        self.assertEqual(1, len(hits))
+        self.assertIn("was not scanned", hits[0])
+
+    def test_a_readable_file_still_reports_its_address_and_its_line(self) -> None:
+        """The ordinary path, unchanged: the point was to add a case, not move one."""
+        note = self._write_bytes("doc.md", b"titre\nla machine 172.20.0.5 repond\n")
+        self.assertEqual(
+            ["doc.md:2: 172.20.0.5"], hygiene._find_private_addresses([note])
+        )
+
+    def test_a_declared_prefix_still_passes(self) -> None:
+        """`10.0.0.` is the lab compose network and is declared, so it is not a hit."""
+        note = self._write_bytes("compose.yml", b"provider: 10.0.0.7\n")
+        self.assertEqual([], hygiene._find_private_addresses([note]))
+
+    def test_this_file_shows_only_the_fixture_subnet(self) -> None:
+        """The scan the gate no longer performs on this file, performed here instead.
+
+        `SKIP_ADDRESS_SCAN` names this file, because the cases above have to carry an
+        address the gate refuses and no declared prefix can play that part. An exemption
+        that replaces a check with nothing is how the real address got in here in the
+        first place, so it is replaced with this: every private address written anywhere
+        in this module, fixture or prose, is either the `172.20.` fixture subnet or one
+        of the prefixes the gate itself declares. The allowed list is read from the gate
+        rather than copied, so widening it there cannot leave this test behind.
+        """
+        self.assertIn(
+            "tests/test_repo_hygiene_gate.py",
+            hygiene.SKIP_ADDRESS_SCAN,
+            "if the gate scans this file again, this test is redundant -- delete it, "
+            "do not leave two half-answers standing",
+        )
+        permitted = ("172.20.", *hygiene.ALLOWED_ADDRESS_PREFIXES)
+        source = Path(__file__).read_text(encoding="utf-8")
+        strays = sorted(
+            {a for a in hygiene._PRIVATE_V4.findall(source) if not a.startswith(permitted)}
+        )
+        self.assertEqual(
+            [],
+            strays,
+            "an address that is neither declared nor in the fixture subnet is written "
+            "in this file, and the gate is no longer looking at it",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
