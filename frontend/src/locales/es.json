@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "Ningún webhook coincide con tu búsqueda.",
   "settings.logs.title": "Registros de acción",
   "settings.logs.clear": "Borrar registros",
-  "settings.logs.empty": "No hay registros disponibles o API desconectada.",
+  "settings.logs.empty": "Todavía no se ha registrado nada.",
   "settings.logs.refresh": "Actualizar",
   "settings.logs.search_placeholder": "Buscar registros por mensaje, nivel o marca de tiempo",
   "settings.logs.level_filter_aria": "Filtrar registros por nivel",

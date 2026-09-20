@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "没有匹配搜索条件的 Webhook。",
   "settings.logs.title": "操作日志",
   "settings.logs.clear": "清空日志",
-  "settings.logs.empty": "没有可用日志或 API 已断开。",
+  "settings.logs.empty": "尚无任何记录。",
   "settings.logs.refresh": "刷新",
   "settings.logs.search_placeholder": "按消息、级别或时间戳搜索日志",
   "settings.logs.level_filter_aria": "按级别筛选日志",

@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "No webhooks match your search.",
   "settings.logs.title": "Action Logs",
   "settings.logs.clear": "Clear Logs",
-  "settings.logs.empty": "No logs available or API disconnected.",
+  "settings.logs.empty": "Nothing has been logged yet.",
   "settings.logs.refresh": "Refresh",
   "settings.logs.search_placeholder": "Search logs by message, level or timestamp",
   "settings.logs.level_filter_aria": "Filter logs by level",

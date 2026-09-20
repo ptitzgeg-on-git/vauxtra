@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "Geen webhooks komen overeen met je zoekopdracht.",
   "settings.logs.title": "Actielogs",
   "settings.logs.clear": "Logs wissen",
-  "settings.logs.empty": "Geen logs beschikbaar of API niet verbonden.",
+  "settings.logs.empty": "Er is nog niets gelogd.",
   "settings.logs.refresh": "Vernieuwen",
   "settings.logs.search_placeholder": "Zoek logs op bericht, niveau of tijdstempel",
   "settings.logs.level_filter_aria": "Filter logboeken op niveau",

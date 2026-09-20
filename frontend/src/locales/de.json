@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "Keine Webhooks entsprechen Ihrer Suche.",
   "settings.logs.title": "Aktionsprotokolle",
   "settings.logs.clear": "Protokolle löschen",
-  "settings.logs.empty": "Keine Protokolle verfügbar oder API getrennt.",
+  "settings.logs.empty": "Es wurde noch nichts protokolliert.",
   "settings.logs.refresh": "Aktualisieren",
   "settings.logs.search_placeholder": "Durchsuchen Sie Protokolle nach Nachricht, Ebene oder Zeitstempel",
   "settings.logs.level_filter_aria": "Protokolle nach Ebene filtern",

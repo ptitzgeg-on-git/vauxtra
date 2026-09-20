@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "Aucun webhook ne correspond à votre recherche.",
   "settings.logs.title": "Journaux d'actions",
   "settings.logs.clear": "Effacer les journaux",
-  "settings.logs.empty": "Aucun journal disponible ou API deconnectee.",
+  "settings.logs.empty": "Aucune action n'a encore été journalisée.",
   "settings.logs.refresh": "Rafraîchir",
   "settings.logs.search_placeholder": "Rechercher par message, niveau ou horodatage",
   "settings.logs.level_filter_aria": "Filtrer les journaux par niveau",

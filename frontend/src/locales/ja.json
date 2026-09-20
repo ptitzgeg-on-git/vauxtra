@@ -65,7 +65,7 @@
   "settings.webhooks.no_match": "検索に一致する Webhook はありません。",
   "settings.logs.title": "操作ログ",
   "settings.logs.clear": "ログをクリア",
-  "settings.logs.empty": "ログがないか、API が切断されています。",
+  "settings.logs.empty": "まだ何も記録されていません。",
   "settings.logs.refresh": "リフレッシュ",
   "settings.logs.search_placeholder": "メッセージ、レベル、またはタイムスタンプでログを検索",
   "settings.logs.level_filter_aria": "レベルごとにログをフィルタリングする",
