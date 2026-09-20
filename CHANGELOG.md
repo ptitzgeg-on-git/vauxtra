@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+---
+
+## [1.5.0] — 2026-09-20
+
 ### Security
 
 - **Any API key could read the audit log, including one minted `read`, while emptying that
@@ -4432,7 +4436,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...v1.2.0
