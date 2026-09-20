@@ -39,7 +39,7 @@ import {
   type ProviderTypeMeta,
   type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
-import { checkDetailText, healthStatusLabel } from '@/components/features/providers/providerHealth';
+import { checkDetailText, checkLabelText, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 
@@ -235,9 +235,11 @@ export function ProviderFormStep({
                 ) : (
                   <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
                 )}
-                {/* Same rule as the Integrations modal: the reader gets the translated
-                    sentence, never the server's identifier for the check. */}
-                <span>{checkDetailText(check, t) || t('provider_modal.validation.check_fallback')}</span>
+                {/* Same rule as the Integrations modal: the translated sentence, then the
+                    translated check name, then -- only for a check that carries no name at
+                    all -- the generic word. A name this build does not know shows through as
+                    itself, which is more use to a reader than "Check". */}
+                <span>{checkDetailText(check, t) || checkLabelText(check.name, t) || t('provider_modal.validation.check_fallback')}</span>
               </li>
             ))}
         </ul>
