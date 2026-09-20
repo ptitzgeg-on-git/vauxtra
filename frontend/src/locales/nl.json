@@ -70,7 +70,7 @@
   "settings.logs.search_placeholder": "Zoek logs op bericht, niveau of tijdstempel",
   "settings.logs.level_filter_aria": "Filter logboeken op niveau",
   "settings.logs.level_all": "Alle niveaus",
-  "settings.logs.level_ok": "Oké",
+  "settings.logs.level_ok": "OK",
   "settings.logs.level_info": "Informatie",
   "settings.logs.level_warning": "Waarschuwing",
   "settings.logs.level_error": "Fout",

@@ -70,7 +70,7 @@
   "settings.logs.search_placeholder": "Durchsuchen Sie Protokolle nach Nachricht, Ebene oder Zeitstempel",
   "settings.logs.level_filter_aria": "Protokolle nach Ebene filtern",
   "settings.logs.level_all": "Alle Ebenen",
-  "settings.logs.level_ok": "Okay",
+  "settings.logs.level_ok": "OK",
   "settings.logs.level_info": "Infos",
   "settings.logs.level_warning": "Warnung",
   "settings.logs.level_error": "Fehler",

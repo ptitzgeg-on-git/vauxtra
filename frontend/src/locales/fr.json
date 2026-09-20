@@ -70,7 +70,7 @@
   "settings.logs.search_placeholder": "Rechercher par message, niveau ou horodatage",
   "settings.logs.level_filter_aria": "Filtrer les journaux par niveau",
   "settings.logs.level_all": "Tous les niveaux",
-  "settings.logs.level_ok": "D'accord",
+  "settings.logs.level_ok": "OK",
   "settings.logs.level_info": "Informations",
   "settings.logs.level_warning": "Avertissement",
   "settings.logs.level_error": "Erreur",
