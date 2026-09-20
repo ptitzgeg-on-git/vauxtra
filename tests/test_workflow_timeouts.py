@@ -87,5 +87,36 @@ class EveryRunnerJobDeclaresACeilingTests(unittest.TestCase):
         self.assertGreaterEqual(len(gated), 6, f"only found {gated}")
 
 
+class TheCeilingSitsAboveTheWaitItContainsTests(unittest.TestCase):
+    """A ceiling below the wait it holds is worse than no ceiling at all.
+
+    `release.yml` waited up to thirty minutes for the image to become pullable, inside a
+    job capped at twenty. The wait could never reach its own deadline, so the two
+    `::error::` lines that name the missing manifest and say what to do about it were
+    unreachable: the run died on "exceeded the maximum execution time of 20 minutes" and
+    explained nothing. The two numbers were written independently, in different commits,
+    and nothing compared them. This does.
+    """
+
+    def test_the_release_job_may_run_longer_than_it_is_allowed_to_wait(self):
+        text = (_WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+        ceiling = re.search(r"^    timeout-minutes: (\d+)$", text, re.M)
+        budget = re.search(r'^      PULL_WAIT_MINUTES: "(\d+)"$', text, re.M)
+        self.assertIsNotNone(ceiling, "release.yml declares no job ceiling")
+        self.assertIsNotNone(budget, "release.yml declares no wait budget")
+        ceiling, budget = int(ceiling.group(1)), int(budget.group(1))
+        self.assertGreaterEqual(
+            ceiling - budget,
+            10,
+            f"the job may run {ceiling} min and waits up to {budget} min: the wait needs "
+            f"room to reach its deadline AND print why, plus the steps around it",
+        )
+
+    def test_the_wait_reads_that_budget_instead_of_repeating_it(self):
+        """A second copy of the number is a second thing to forget."""
+        text = (_WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+        self.assertIn('DEADLINE, STEP = int(os.environ["PULL_WAIT_MINUTES"]) * 60', text)
+
+
 if __name__ == "__main__":
     unittest.main()

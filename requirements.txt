@@ -1,10 +1,10 @@
 fastapi>=0.141.1
-uvicorn[standard]>=0.44
+uvicorn[standard]>=0.53.0
 python-multipart>=0.0.32
 itsdangerous>=2.2
 requests>=2.34.2
 cryptography>=50.0.1
-apprise>=1.9
+apprise>=1.13.1
 apscheduler>=3.11
 cloudflare>=5.7.0,<6
 sse-starlette>=3.3

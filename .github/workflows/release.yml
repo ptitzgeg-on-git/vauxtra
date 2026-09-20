@@ -37,8 +37,16 @@ jobs:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     # A job with no ceiling can hold its concurrency group for GitHub's default of six
-    # hours. This one is not on the push path, so the ceiling is simply a backstop.
-    timeout-minutes: 20
+    # hours, so it needs one. But a ceiling BELOW the wait it contains is worse than no
+    # ceiling: it was 20 against a 30-minute wait, so the wait could never reach its own
+    # deadline and the run died on "exceeded the maximum execution time of 20 minutes"
+    # instead of printing which manifest was missing and what to do about it. The wait
+    # reads its budget from `PULL_WAIT_MINUTES` below; keep this ceiling well above it.
+    # (The comment that used to sit here said this job is not on the push path. It is:
+    # `push: tags` at the top of this file is its main trigger.)
+    timeout-minutes: 40
+    env:
+      PULL_WAIT_MINUTES: "30"
 
     steps:
       # On a tag push the tag is the ref; on a manual run it is the input. Everything
@@ -53,10 +61,22 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
-          case "$tag" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::'$tag' is not a v<major>.<minor>.<patch> tag"; exit 1 ;;
-          esac
+          # This was a glob, and a glob cannot say what the error below claims to
+          # require. Measured against `v[0-9]*.[0-9]*.[0-9]*`: `v1.5.0-rc1` passes,
+          # `v1.5.0+meta` passes, and because `*` matches a newline so does a value
+          # whose second line reads `version=anything`.
+          #
+          # The last one is not cosmetic. The two `echo`s below append to
+          # `$GITHUB_OUTPUT`, which GitHub parses one line at a time, so a two-line
+          # tag publishes a third output nobody wrote -- and `version` is the string
+          # the release page hands a reader to paste into `docker pull`. Only a
+          # `workflow_dispatch` input can carry a newline here, which needs write
+          # access, so this is a small door; it is still a door, and closing it is
+          # one line. An anchored regex refuses all three shapes.
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$tag' is not a v<major>.<minor>.<patch> tag"
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "tag: $tag, image tag: ${tag#v}"
@@ -73,7 +93,16 @@ jobs:
           PACKAGE: ${{ github.repository }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
-          python3 - <<'PY'
+          # `-u`, and it is the difference between a progress log and no log. Python
+          # block-buffers stdout whenever it is not a terminal, and under Actions it
+          # never is: measured locally, three lines printed over 1.2 s arrived at the
+          # far end of the pipe within 91 ms of each other, at exit. So this wait --
+          # up to thirty minutes of `not yet (...)` lines written precisely so someone
+          # can watch how far it got -- showed nothing at all until it finished, and
+          # if the job ceiling above killed it first the buffer died with the process
+          # and the lines were never written at all. Exactly the run you most want to
+          # read is the one that told you nothing.
+          python3 -u - <<'PY'
           import json, os, sys, time, urllib.error, urllib.request
 
           repo, tag = os.environ["PACKAGE"].lower(), os.environ["VERSION"]
@@ -108,7 +137,8 @@ jobs:
                       return f"child {m['digest'][:19]}: HTTP {e.code}"
               return None
 
-          DEADLINE, STEP = 30 * 60, 30
+          # Derived from the job ceiling rather than written next to it and forgotten.
+          DEADLINE, STEP = int(os.environ["PULL_WAIT_MINUTES"]) * 60, 30
           waited = 0
           while True:
               why = resolves()

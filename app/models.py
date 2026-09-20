@@ -5,9 +5,11 @@ from contextlib import contextmanager
 from app.config import DATA_DIR, DB_PATH  # noqa: F401 — re-exported for test patching
 from app.db import get_connection
 
-# Increment this constant whenever a new ALTER is added to _migrate().
-# The value is stored in the settings table and logged on startup.
-SCHEMA_VERSION = 11
+# Bump this whenever a statement is added to `_MIGRATIONS`. The value is recorded in the
+# settings table, and it is the only thing that tells two schemas apart after the fact:
+# leave it behind and a 1.4.0 database and a 1.5.0 one both answer 11, which is what
+# happened to 1.5.0. `tests/test_regressions_v2.py` pins the pair so it cannot happen twice.
+SCHEMA_VERSION = 12
 
 
 def get_db():
@@ -224,35 +226,40 @@ def ensure_default_docker_endpoint(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE docker_endpoints SET is_default=1 WHERE id=?", (first["id"],))
 
 
+# Replayed in full on every startup, so each statement has to be idempotent: the loop
+# below swallows "duplicate column name" and re-raises nothing else into the journal.
+_MIGRATIONS = [
+    "ALTER TABLE providers ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE services ADD COLUMN status       TEXT NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE services ADD COLUMN last_checked TEXT",
+    # `services.environment` was the single free-text environment, replaced by the
+    # `service_environments` join before 1.1. Nothing has read it since -- not the API,
+    # not the frontend, not the backup restore, which lists its columns explicitly --
+    # so it is dropped below rather than kept as a column every row carries empty.
+    "ALTER TABLE services ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE services ADD COLUMN tunnel_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL",
+    "ALTER TABLE services ADD COLUMN expose_mode TEXT NOT NULL DEFAULT 'proxy_dns'",
+    "ALTER TABLE services ADD COLUMN public_target_mode TEXT NOT NULL DEFAULT 'manual'",
+    "ALTER TABLE services ADD COLUMN auto_update_dns INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE services ADD COLUMN tunnel_hostname TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE webhooks ADD COLUMN alert_on_any_down INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN alert_on_any_up INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN alert_on_integration_down INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN alert_on_integration_up INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN min_down_minutes INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
+    "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
+    "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
+    # A template carried only half of the label control the form shows. The other
+    # half is added here rather than in a rebuild because the column has a default:
+    # every template written before this reads back as naming no environment, which
+    # is exactly what it named.
+    "ALTER TABLE service_templates ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]'",
+]
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
-    for sql in [
-        "ALTER TABLE providers ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'",
-        "ALTER TABLE services ADD COLUMN status       TEXT NOT NULL DEFAULT 'unknown'",
-        "ALTER TABLE services ADD COLUMN last_checked TEXT",
-        # `services.environment` was the single free-text environment, replaced by the
-        # `service_environments` join before 1.1. Nothing has read it since -- not the API,
-        # not the frontend, not the backup restore, which lists its columns explicitly --
-        # so it is dropped below rather than kept as a column every row carries empty.
-        "ALTER TABLE services ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE services ADD COLUMN tunnel_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL",
-        "ALTER TABLE services ADD COLUMN expose_mode TEXT NOT NULL DEFAULT 'proxy_dns'",
-        "ALTER TABLE services ADD COLUMN public_target_mode TEXT NOT NULL DEFAULT 'manual'",
-        "ALTER TABLE services ADD COLUMN auto_update_dns INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE services ADD COLUMN tunnel_hostname TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE webhooks ADD COLUMN alert_on_any_down INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE webhooks ADD COLUMN alert_on_any_up INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE webhooks ADD COLUMN alert_on_integration_down INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE webhooks ADD COLUMN alert_on_integration_up INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE webhooks ADD COLUMN min_down_minutes INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
-        "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
-        "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
-        # A template carried only half of the label control the form shows. The other
-        # half is added here rather than in a rebuild because the column has a default:
-        # every template written before this reads back as naming no environment, which
-        # is exactly what it named.
-        "ALTER TABLE service_templates ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]'",
-    ]:
+    for sql in _MIGRATIONS:
         try:
             conn.execute(sql)
         except Exception as e:

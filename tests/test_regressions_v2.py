@@ -460,8 +460,14 @@ class WebhookDeliveryLogCascadeTests(IsolatedDBTestCase):
             conn.close()
         self.assertEqual([("webhooks", "webhook_id", "CASCADE")],
                          [(f["table"], f["from"], f["on_delete"]) for f in fks])
-        self.assertEqual(11, models.SCHEMA_VERSION)
-        self.assertEqual("11", version["value"])
+        # The pair, not the bare number. Pinning only the version let 1.5.0 add a
+        # migration and still report 11, so the recorded value stopped identifying
+        # the schema it came from.
+        self.assertEqual(
+            (18, 12), (len(models._MIGRATIONS), models.SCHEMA_VERSION),
+            "a statement was added to _MIGRATIONS: bump SCHEMA_VERSION and this pair",
+        )
+        self.assertEqual(str(models.SCHEMA_VERSION), version["value"])
 
 
 class RestoreWipesEveryTableTests(IsolatedDBTestCase):

@@ -18,16 +18,24 @@
 #
 # That stops the bleeding; it does not report the wound. A dry run on 2026-09-11 found 48
 # images with at least one missing child, three of them carrying a release tag -- `0.1.0`,
-# `1.0.1` and `1.0.2` cannot be pulled, on a package page that still lists them. `validate:
-# true` names every one of them and the run still ends green, because the action writes
-# `::warning` and not `::error`. A check nobody is paged for is a check that does not exist,
-# which is why the damage sat there across every Sunday since it was done.
+# `1.0.1` and `1.0.2` could not be pulled, on a package page that still listed them.
+# `validate: true` names every one of them and the run still ends green, because the action
+# writes `::warning` and not `::error`. A check nobody is paged for is a check that does not
+# exist, which is why the damage sat there across every Sunday since it was done.
 #
 # So the last step below re-asks the only question that has a user behind it: does every
 # version a human is invited to pull still resolve, all the way down to its platform
 # manifests? It fails the run when the answer is no. The `sha-<commit>` breadcrumbs are
 # deliberately outside its scope: nothing reads them, and the settings below now retire
 # them on their own rather than letting five months of them pile up again.
+#
+# The three broken releases have since been withdrawn rather than repaired, along with the
+# rest of the pre-1.1 line, so nothing on the package page points at them any more. Read
+# anonymously from the registry on 2026-09-20: the package holds `dev`, `latest` and eleven
+# version tags from `1.1.0` to `1.5.0`, and every one of them resolves to all four of the
+# manifests it references. The same morning's scheduled run deleted 423 versions and the
+# step below reported twelve pullable tags, all green. This header used to describe the
+# damage in the present tense; the damage is gone, and what remains is the guard.
 name: GHCR Cleanup
 
 on:
@@ -68,10 +76,10 @@ jobs:
           package: vauxtra
           # The one rule everything else is subordinate to: a tag a human can be invited to
           # pull is never a candidate, whatever state the registry reports it in. `latest`,
-          # `dev` and every dotted version number are excluded by name here, which is also why
-          # `delete-ghost-images` below cannot quietly retire `0.1.0`, `1.0.1` and `1.0.2` --
-          # those three are already unpullable, and removing their package entries is a
-          # decision for a person, not for a cron job.
+          # `dev` and every dotted version number are excluded by name here, so
+          # `delete-ghost-images` below can never quietly retire a tag the package page
+          # still offers. Withdrawing one is a decision for a person, not for a cron job;
+          # that is how the pre-1.1 line went, by hand and on purpose.
           use-regex: true
           # `^(latest|\d+(\.\d+)*)$` is the obvious way to write this and the action rejects
           # it: a quantified group inside a quantifier is a ReDoS shape, and it refuses to
@@ -112,7 +120,11 @@ jobs:
         env:
           PACKAGE: ${{ github.repository }}
         run: |
-          python3 - <<'PY'
+          # `-u` for the same reason as the wait in `release.yml`: Python block-buffers
+          # stdout when it is a pipe, and this step prints one line per tag as it walks
+          # roughly fifty manifests. Buffered, the whole walk lands at once at the end,
+          # which is no use while it runs and no use at all if it is cut short.
+          python3 -u - <<'PY'
           import json, os, re, sys, urllib.error, urllib.request
 
           repo = os.environ["PACKAGE"].lower()
@@ -138,25 +150,31 @@ jobs:
               except urllib.error.HTTPError as e:
                   return e.code
 
-          # Already destroyed, before this check existed, by the cleanup this workflow
-          # replaced. Their platform manifests are gone from the registry and nothing
-          # brings them back short of rebuilding and re-pushing the tag, so failing every
-          # Sunday over them would train everyone to ignore this step. Their release notes
-          # say plainly that the image cannot be pulled. Remove a line here the day its
-          # tag is rebuilt; never add one to silence a fresh break.
-          UNRECOVERABLE = {"0", "0.1", "0.1.0", "1.0", "1.0.1", "1.0.2"}
-
-          # A tag a human is invited to pull: a version number, or `latest`. The
+          # A tag something pulls: a version number, `latest`, or `dev`. The
           # `sha-<commit>` breadcrumbs and the `sha256-....sig` signatures are machine
           # bookkeeping and are not part of this contract.
+          #
+          # `dev` belongs here and was missing from it. The list above excludes it from
+          # deletion precisely because a staging instance pulls it on every restart, which
+          # is the definition this set is supposed to encode -- yet the pattern below
+          # admitted only `latest` and dotted numbers, so the one moving tag with a machine
+          # waiting on it was the one tag nobody verified. It would have broken in silence
+          # and been found by a restart.
+          #
+          # There used to be an UNRECOVERABLE set here, six tags this check skipped because
+          # their platform manifests had been destroyed before it existed and failing every
+          # Sunday over them would have trained everyone to ignore the step. Those releases
+          # have since been withdrawn: read anonymously on 2026-09-20, not one of the six is
+          # in the registry, so the set excluded nothing and the `::notice::` announcing it
+          # had stopped printing. A silent exception list that no longer matches anything is
+          # worse than none, because the next break to touch one of those names would be
+          # waved through by a rule written for a different break. If one ever has to come
+          # back, it comes back with the date and the reason, not inherited from this file.
           tags = get(f"https://ghcr.io/v2/{repo}/tags/list?n=1000", head)["tags"]
           pullable = sorted(
               t for t in tags
-              if (t == "latest" or re.fullmatch(r"\d+(\.\d+)*", t)) and t not in UNRECOVERABLE
+              if t in ("latest", "dev") or re.fullmatch(r"\d+(\.\d+)*", t)
           )
-          skipped = sorted(UNRECOVERABLE & set(tags))
-          if skipped:
-              print(f"::notice::known unpullable, not checked: {', '.join(skipped)}")
           print(f"checking {len(pullable)} pullable tags: {', '.join(pullable)}\n")
 
           broken = []
