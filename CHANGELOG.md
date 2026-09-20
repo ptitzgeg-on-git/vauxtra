@@ -9,6 +9,107 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [1.5.1] — 2026-09-20
+
+### Fixed
+
+- **Two different schemas declared themselves under the same number.** 1.5.0 added an
+  eighteenth migration, `service_templates.environment_ids_json`, without touching
+  `SCHEMA_VERSION`, although the comment above the constant asks for exactly that.
+  Measured on the production instance right after the upgrade: `settings.schema_version`
+  read 11 and the column was there. A 1.4.0 database and a 1.5.0 database therefore
+  answered the same 11, and the one marker that tells two schemas apart after the fact
+  told nothing apart. The constant is now 12, and the guard meant to make that omission
+  visible no longer forbids it: it froze `assertEqual(11, SCHEMA_VERSION)`, so bumping
+  the constant broke the suite. It checks the pair (number of migrations, version) now,
+  and says what to do when it falls.
+
+- **A real HIGH finding was reported as a scanner that had not run.** The grype exit
+  codes in the security workflow were read backwards. 2 is
+  `ErrAboveSeverityThreshold`, which is the tool succeeding and finding something; 1 is
+  the tool failing. So a genuine finding came out as a broken run, and a genuine crash
+  came out as a clean report. The codes are now taken from the source.
+
+- **The release tag was validated by a glob.** `v[0-9]*.[0-9]*.[0-9]*` accepts
+  `v1.5.0-rc1` and `v1.5.0+meta`, which the error message directly below it promises to
+  refuse. And because the shell's `*` matches a newline, a two-line value passed too:
+  the two `echo` lines that follow write to `$GITHUB_OUTPUT`, which GitHub reads line by
+  line, so the second line published an output nobody wrote. `version` is precisely the
+  string the release page hands the reader to paste into `docker pull`. An anchored
+  regular expression refuses all three shapes.
+
+- **The release wait could not reach its own deadline.** The job ceiling was 20 minutes
+  for a wait that can legitimately last 30, so the two `::error::` lines that name the
+  missing manifest were unreachable code. The ceiling is 40 now, and the wait reads its
+  budget from `PULL_WAIT_MINUTES`, written once.
+
+- **Two publication runs that overwrite each other were filed apart, then all of them
+  were filed together.** The concurrency group ended in `github.ref`, which put the two
+  runs that collide into different groups: pushing `main` and then tagging that same
+  commit is two refs and one commit, and both write `latest`. Measured on v1.5.0: four
+  minutes of overlap, and it was the second to finish that placed `latest`. The first
+  repair put every publication into one group, which was too wide: GitHub cancels a
+  group's queued run as soon as a newer one queues behind it, whatever
+  `cancel-in-progress` says, so a push to `dev` arriving while a release build waited
+  killed that build, and the release then spent its whole wait on an image nobody was
+  building. `main` and a release tag now share one queue; `dev`, which moves only `dev`,
+  has its own.
+
+- **The `sha-` tag was written from every ref, although the images differ.** `APP_VERSION`
+  is `latest`, `dev` or the version number depending on the ref, so the second run
+  repointed the crumb and left the first image nameless, handed to the weekly cleanup's
+  `delete-untagged` along with its signature and its attestation. It is written from
+  `main` only.
+
+- **The GHCR cleanup never verified `dev`.** It protects the tag from deletion, because a
+  staging instance pulls it on every restart, and then asked "does this tag still
+  resolve?" of `latest` and the version numbers only. The one moving tag with a machine
+  behind it was the one nobody checked. The contract holds 13 tags now instead of 12.
+
+- **Two progress logs never arrived in time.** The wait for the image, up to thirty
+  minutes, and the walk of the registry, some fifty manifests, run under `python3 -u`
+  now. Python buffers its output whenever it is not a terminal, and under Actions it
+  never is: measured here, three lines written over 1.2 s arrive at the far end of the
+  pipe within 91 ms, all at process exit. The log worth reading is the one from a run cut
+  short by its own ceiling, and that was exactly the run that wrote nothing.
+
+- **The hygiene gate swallowed the files it could not read.** Its conclusion is about the
+  whole repository; a file it failed to decode is a file it did not look at, and
+  `Repo hygiene check passed` came out with the same confidence. Such a file is named
+  now. Measured: all 400 tracked files decode today, which is the reason to close the
+  hole today rather than the reason not to.
+
+- **The version gate read two declarations out of four.** It pinned
+  `vauxtra_mcp/__init__.py` against `frontend/package.json` and against what the MCP
+  handshake actually answers, and stopped there. The release number is also written twice
+  in `frontend/package-lock.json` and once at the top of this file, and neither was
+  watched. Both were found by grep while cutting this very release, not by a failing
+  test, which is the defect family that gate exists to catch. A stale lock does not build
+  a wrong image, it fails `npm ci` with a message about being out of sync, a long way
+  from the character that needs changing; a stale changelog publishes a release page for
+  a build nobody made. Three tests now read the lock by key, the newest released heading,
+  and the comparison link that turns that heading into something clickable. Reading by
+  key is not a style choice: `css.escape` in that lock is at 1.5.1 and `lz-string` at
+  1.5.0, so a text search for either number finds theirs first. `CONTRIBUTING.md` names
+  the four files too: its release instructions went straight from "when `dev` has proven
+  itself" to "tag `main`", with the cut that has to happen in between written down
+  nowhere.
+
+### Removed
+
+- The `UNRECOVERABLE` exclusion set in the GHCR cleanup. Its six tags have been taken out
+  of the registry, read anonymously on 2026-09-20: not one of the six is there, so it
+  excluded nothing and its `::notice::` no longer printed. A silent exception list that
+  matches nothing is worse than none, because it would wave through the next breakage
+  that reused one of those names.
+
+### Changed
+
+- Dependencies: `uvicorn[standard]` >= 0.53.0, `apprise` >= 1.13.1, `pytest` >= 9.1.1
+  for development, four GitHub Actions and fifteen npm packages in the minor group.
+
+---
+
 ## [1.5.0] — 2026-09-20
 
 ### Security
@@ -4436,13 +4537,14 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.1...v1.0.2
-[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v0.1.0...v1.0.1
+[1.0.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ptitzgeg-on-git/vauxtra/releases/tag/v0.1.0

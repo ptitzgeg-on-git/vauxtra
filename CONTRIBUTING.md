@@ -87,7 +87,22 @@ The flow, in order:
 2. Open a pull request into `dev`. The five required checks run there.
 3. Merge. `dev` rebuilds and pushes the `dev` image, so a staging instance can pull the
    exact artifact this repository just produced rather than an approximation of it.
-4. When `dev` has proven itself, open a pull request from `dev` into `main`.
+4. When `dev` has proven itself, cut the release **on `dev`, in one commit**, then open a
+   pull request from `dev` into `main`. Cutting it means moving the release number in the
+   four files that declare it and writing the notes:
+
+   | File | What carries the number |
+   | --- | --- |
+   | `frontend/package.json` | `version`. This is the one the others follow. |
+   | `frontend/package-lock.json` | `version` twice, at the root and under `packages[""]`. Leave every `node_modules/...` entry alone: they are other people's versions and some of them collide with ours. |
+   | `vauxtra_mcp/__init__.py` | `__version__`, which the MCP handshake answers with. |
+   | `CHANGELOG.md` | a `## [x.y.z]` section above the previous one, and a matching line in the comparison links at the bottom. |
+
+   `tests/test_version_declarations.py` reads all four and falls if any one of them lags,
+   so this is checked rather than remembered. Do it before merging into `main`, not after:
+   a push to `main` moves `:latest`, and a `:latest` that moves without a release behind it
+   is the thing that breaks.
+
 5. To ship, tag `main`: `git tag -a v1.5.0 -m "v1.5.0" && git push origin v1.5.0`. The tag
    is what builds the versioned image and writes the release page. Nothing else does.
 
