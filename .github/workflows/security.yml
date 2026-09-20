@@ -117,10 +117,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build the image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -147,7 +147,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload image scan results to Security tab
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always() && hashFiles('trivy-image-results.sarif') != '' && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: trivy-image-results.sarif
@@ -183,7 +183,7 @@ jobs:
           exit-code: "1"
 
       - name: Upload Trivy results to Security tab
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always() && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: trivy-results.sarif
@@ -288,7 +288,7 @@ jobs:
           exit 0
 
       - name: Upload Grype results to Security tab
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always() && hashFiles('grype-results.sarif') != '' && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: grype-results.sarif
