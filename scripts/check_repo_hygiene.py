@@ -122,7 +122,18 @@ TEXT_SUFFIXES = (
     ".md", ".yml", ".yaml", ".toml", ".txt", ".sh", ".html", ".example",
 )
 
-SKIP_ADDRESS_SCAN = ("frontend/package-lock.json",)
+# The second entry is this gate's own test file. It has to contain undeclared private
+# addresses, because the case it pins is the gate REFUSING one, and a fixture built
+# from a declared prefix would pass while proving nothing. That exemption is a hole,
+# and the file closes it itself: `test_this_file_shows_only_the_fixture_subnet` reads
+# its own source and refuses any address outside `172.20.`, so the scan is delegated
+# rather than dropped. A skip nobody replaces is how a real address gets in -- which
+# is not hypothetical: the first draft of that file reached for a live machine on the
+# author's network, and this scan is what caught it.
+SKIP_ADDRESS_SCAN = (
+    "frontend/package-lock.json",
+    "tests/test_repo_hygiene_gate.py",
+)
 
 
 # Where hand-written source lives. An ignore rule has no business reaching in here.
@@ -328,7 +339,20 @@ def _find_private_addresses(files: list[str]) -> list[str]:
         path = Path(rel)
         try:
             text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            # Named, not skipped. The claim this function makes is about the whole
+            # repository -- no undeclared private address is printed anywhere in it --
+            # and a file it could not read is a file it did not look at. Swallowing the
+            # error shrank the claim and left the `Repo hygiene check passed` line that
+            # follows exactly as confident as before, which is the one combination a
+            # gate must never produce. An address in a latin-1 note would have sat here
+            # indefinitely, invisible, with the gate green over it.
+            #
+            # Measured on 2026-09-20: 400 tracked files reach this loop and every one of
+            # them decodes, so this costs nothing today. That is the point of closing it
+            # today rather than on the day it starts costing something.
+            hits.append(f"{rel}: could not be read, so was not scanned "
+                        f"({type(exc).__name__})")
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             for addr in _PRIVATE_V4.findall(line):
