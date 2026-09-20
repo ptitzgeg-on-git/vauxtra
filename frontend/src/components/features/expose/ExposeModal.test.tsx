@@ -97,7 +97,7 @@ vi.mock('@/api/client', () => ({
   },
 }));
 
-const { ExposeModal } = await import('./ExposeModal');
+const { ExposeModal, withHostHighlighted } = await import('./ExposeModal');
 
 const show = () =>
   renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={SERVICE} />);
@@ -205,5 +205,79 @@ describe('ExposeModal, once a target is typed by hand', () => {
     // The automatic-update switch below reads the same lookup, so the failure still
     // describes something the operator is about to decide on.
     expect(unreadAlert()).not.toBeNull();
+  });
+});
+
+/**
+ * The success sentence names the host exactly once, in a monospace run of its own.
+ *
+ * `expose.done.body` used to be called with no parameter at all, so the last screen of the
+ * wizard printed the literal `{host}` and the value was appended after it. Handing `t()` the
+ * host fixes the count and loses the monospace run, `t()` returning a plain string;
+ * `withHostHighlighted` splits the finished sentence on the host instead, which keeps both.
+ *
+ * `scripts/check-locale-usage.mjs` already fails the build on the cause: a `t()` call that
+ * fills none of the holes its sentence presents. What it cannot see is the rendering. Putting
+ * a trailing `<span>{saveOutcome.host}</span>` back next to the fixed call would print the
+ * host twice and leave every gate in CI green, so these are assertions on the output.
+ *
+ * Asserted on the helper rather than through the wizard, because `renderWithProviders` leaves
+ * `I18nProvider` out on purpose: `t()` is the context default `(key) => key` and interpolates
+ * nothing, so a rendered `done` step would be splitting the string `expose.done.body` and the
+ * assertions would be about nothing. Interpolation is `t()`'s half of the job and is done
+ * here by `filled()`; the splitting is the half that lives in the component.
+ */
+
+const HOST = 'app.xeno.homes';
+
+/** The English string as it stands in `en.json`, placeholder included. */
+const EN = '{host} is published on its providers.';
+
+/** What `t()` has already done to the template by the time the component sees it. */
+const filled = (template: string) => template.split('{host}').join(HOST);
+
+/** The sentence as the `done` step paints it: one paragraph, host split back out of it. */
+const sentence = (template: string) =>
+  renderWithProviders(<p>{withHostHighlighted(filled(template), HOST)}</p>);
+
+describe('withHostHighlighted, the sentence the wizard ends on', () => {
+  it('prints the host once and leaves no placeholder behind', () => {
+    const { container } = sentence(EN);
+
+    expect(container.textContent).toBe('app.xeno.homes is published on its providers.');
+    expect(container.textContent).not.toContain('{host}');
+    expect(screen.getAllByText(HOST)).toHaveLength(1);
+  });
+
+  it('gives the host its own monospace run rather than the whole sentence', () => {
+    const { container } = sentence(EN);
+
+    const mono = container.querySelectorAll('.font-mono');
+    expect(mono).toHaveLength(1);
+    expect(mono[0]).toHaveTextContent(HOST);
+    expect(mono[0]?.textContent).toBe(HOST);
+  });
+
+  it('keeps the words in the order the translation put them', () => {
+    // All eight sentences open on the host today, and none of them has to: a translator is
+    // free to move it, and the sentence has to read correctly when they do.
+    const { container } = sentence('Der Dienst {host} ist veroeffentlicht.');
+
+    expect(container.textContent).toBe('Der Dienst app.xeno.homes ist veroeffentlicht.');
+    expect(screen.getAllByText(HOST)).toHaveLength(1);
+  });
+
+  it('drops the host entirely when a translation dropped the placeholder', () => {
+    // Deliberately the opposite claim from the one that would be natural to want. The host
+    // is recovered by splitting the finished sentence on its value, so a translation with no
+    // `{host}` in it leaves nothing to split on and the name is simply absent -- there is no
+    // appended copy to fall back to, and no monospace run either. The sentence still reads,
+    // which is why nothing on screen announces it; the gate for that case is
+    // `scripts/check-locale-quality.mjs` comparing the eight files, not this component.
+    const { container } = sentence('Der Dienst ist veroeffentlicht.');
+
+    expect(container.textContent).toBe('Der Dienst ist veroeffentlicht.');
+    expect(screen.queryAllByText(HOST)).toHaveLength(0);
+    expect(container.querySelectorAll('.font-mono')).toHaveLength(0);
   });
 });
