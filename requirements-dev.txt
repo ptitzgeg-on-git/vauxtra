@@ -2,5 +2,5 @@
 # The MCP bridge is not shipped in the Docker image, but tests/test_mcp_*.py import
 # it. Without this the suite cannot even be collected in CI.
 -r vauxtra_mcp/requirements.txt
-pytest>=9.0
+pytest>=9.1.1
 ruff>=0.11
