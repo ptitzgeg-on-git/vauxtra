@@ -21,7 +21,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}'],
+    // `scripts/` too: the locale gates live there, and the typography rule one of them
+    // enforces has its own bench beside it. Left out, that bench is a file nothing runs.
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
     // Raised with `asyncUtilTimeout` in `src/test/setup.ts`, which carries the measurement:
     // a test that waits three times in a row has to be allowed to spend three of those.
     testTimeout: 20_000,

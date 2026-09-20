@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { breakableSpaces } from './locale-typography.mjs';
 
 const localesDir = join(process.cwd(), 'src', 'locales');
 const files = readdirSync(localesDir).filter((f) => f.endsWith('.json')).sort();
@@ -9,6 +10,63 @@ const bannedByKey = {
   'settings.tab.webhooks': ['webhaken'],
   'settings.backup.summary.webhooks': ['webhaken'],
 };
+
+/**
+ * The same mistake, but the wrong word is only wrong in one language: `Prestations` is what a
+ * caterer sells, `Balises` are the tags in a markup document, `Dienstleistungen` is the
+ * commercial sense of "services", and `Provider` is English sitting in a Chinese file. Each was
+ * the only string in its file using that word, while the rest of the file said Services,
+ * Etiquettes, Dienste. They are pinned here so the fix cannot quietly come back.
+ */
+const bannedByLocaleAndKey = {
+  fr: {
+    'settings.backup.summary.services': ['prestations'],
+    'settings.backup.summary.tags': ['balises'],
+  },
+  de: {
+    'settings.backup.summary.services': ['dienstleistungen'],
+  },
+  zh: {
+    'settings.backup.summary.providers': ['provider'],
+  },
+};
+
+// Spellings that are not words in their language: each one is a real word with its
+// diacritics dropped. A whole panel arrived that way once -- "Les cles API ne sont
+// affichees qu'une seule fois a la creation" -- and nothing here noticed, because every
+// key was present and every placeholder matched. Only spellings that can never be right
+// belong in this list: `chiffres`, `configure` and `utilise` stay out of it, they are
+// ordinary words that happen to neighbour an accented one.
+const unaccentedByLocale = {
+  fr: [
+    'acceder', 'acces', 'affichee', 'affichees', 'apres', 'associes', 'caracteres',
+    'cle', 'cles', 'creation', 'creee', 'creez', 'deja', 'derniere', 'desactive',
+    'desactivee', 'detectee', 'donnees', 'element', 'elements', 'enregistree', 'etat',
+    'etats', 'evenement', 'evenements', 'generee', 'integree', 'necessaire', 'numero',
+    'parametre', 'parametres', 'periode', 'portee', 'prefixe', 'premiere', 'remplacee',
+    'remplacees', 'reponse', 'requete', 'reseau', 'retablissent', 'securite',
+    'selectionnee', 'succes', 'systeme', 'tres', 'utilisee', 'utilisees', 'verifiee',
+    // Measured 2026-09-20: `settings.logs.empty` read "API deconnectee" and this guard
+    // still passed, because no form of that verb was listed. The list is the guard.
+    'connectee', 'connectees', 'deconnecte', 'deconnectee', 'deconnectees',
+    'deconnectes', 'deconnexion', 'disponibilite', 'echec', 'echecs', 'echouee',
+    'expiree', 'expirees', 'integrite', 'liee', 'revoquee', 'supprimee',
+    'supprimees', 'validite',
+  ],
+  de: ['eintrage', 'zuruck', 'fur', 'uber', 'konnen', 'mussen', 'gultig', 'ubertragen'],
+  es: ['configuracion', 'informacion', 'conexion', 'publico', 'version'],
+  pt: ['configuracao', 'informacao', 'conexao', 'notificacao', 'servico', 'servicos', 'versao'],
+};
+
+// `{count}` is a placeholder and `icone.png` is a path -- neither is prose, and both hold
+// sequences this check would otherwise read as a dropped accent.
+function prose(value) {
+  return String(value)
+    .replace(/\{[^}]*\}/g, ' ')
+    .split(/\s+/)
+    .filter((token) => !/[/@\\]/.test(token) && !/\w\.\w/.test(token))
+    .join(' ');
+}
 
 /**
  * A parenthesised ending next to a count is a plural written by hand: "certificat(s)",
@@ -248,6 +306,7 @@ let failed = false;
 
 for (const file of files) {
   const locale = JSON.parse(readFileSync(join(localesDir, file), 'utf8'));
+  const name = file.replace(/\.json$/, '');
 
   for (const [key, value] of Object.entries(locale)) {
     if (CRUTCH_ALLOWED.has(key)) continue;
@@ -262,7 +321,18 @@ for (const file of files) {
     }
   }
 
-  for (const [key, bannedValues] of Object.entries(bannedByKey)) {
+  /*
+   * Concatenated, not spread. Both maps are keyed by locale key and hold a list of words, so
+   * `{ ...global, ...perLocale }` would let a per-locale list REPLACE the global one for that
+   * key instead of adding to it -- the global ban would disappear without a word. No key sits
+   * in both maps today; this is the line that keeps it harmless when one does.
+   */
+  const bannedHere = { ...bannedByKey };
+  for (const [key, values] of Object.entries(bannedByLocaleAndKey[name] ?? {})) {
+    bannedHere[key] = [...(bannedHere[key] ?? []), ...values];
+  }
+
+  for (const [key, bannedValues] of Object.entries(bannedHere)) {
     const raw = String(locale[key] ?? '').trim().toLowerCase();
     if (!raw) continue;
 
@@ -270,6 +340,36 @@ for (const file of files) {
     if (bad) {
       failed = true;
       console.error(`Locale quality failed for ${file}: key '${key}' has banned value '${locale[key]}'`);
+    }
+  }
+
+  if (name === 'fr') {
+    for (const [key, value] of Object.entries(locale)) {
+      if (typeof value !== 'string') continue;
+      const loose = breakableSpaces(value);
+      if (!loose.length) continue;
+      failed = true;
+      console.error(
+        `Locale quality failed for ${file}: key '${key}' has a breakable space before ` +
+          `${loose.join(' and ')}. Use U+202F before ? ! ; and U+00A0 before : and inside ` +
+          `the guillemets, so the punctuation cannot wrap away from its sentence.`,
+      );
+    }
+  }
+
+  const forbidden = new Set(unaccentedByLocale[name] ?? []);
+  if (!forbidden.size) continue;
+
+  for (const [key, value] of Object.entries(locale)) {
+    if (typeof value !== 'string') continue;
+
+    // \p{L}, not \w: JavaScript's \w is ASCII even under /u, so `Parametres` would come back
+    // as `Param` and `tres` -- and `tres` is on the list above.
+    const words = prose(value).match(/\p{L}+/gu) ?? [];
+    const bad = [...new Set(words.filter((w) => forbidden.has(w.toLowerCase())))];
+    if (bad.length) {
+      failed = true;
+      console.error(`Locale quality failed for ${file}: key '${key}' lost its accents on ${bad.join(', ')}`);
     }
   }
 }
