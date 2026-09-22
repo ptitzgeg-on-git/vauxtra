@@ -63,6 +63,27 @@ export function checkDetailText(check: ProviderValidationCheck, t: Translate): s
 }
 
 /**
+ * What a validation check is called, in the reader's language.
+ *
+ * The API names its checks for itself, not for a reader: `test_connection`, `zones_access`,
+ * and -- in the three providers written before the naming convention settled -- `API token`,
+ * `List zones`, `DNS write`. Both spellings are folded onto one key, so
+ * `providers.diag.check.dns_write` covers the snake_case name and the English phrase alike.
+ * An unknown name falls through to itself, which is what a build older than the API has to
+ * do anyway.
+ *
+ * This is the last word, not the first: `checkDetailText` says what the check found, and the
+ * name of the check is only worth printing when there is no detail to print instead.
+ */
+export function checkLabelText(name: string | undefined, t: Translate): string {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const key = `providers.diag.check.${raw.toLowerCase().replace(/\s+/g, '_')}`;
+  const label = t(key);
+  return label === key ? raw : label;
+}
+
+/**
  * The health word in the reader's language. The API answers `healthy`, `degraded`, `down` or
  * `unknown`; those are wire values, and interpolating one into a translated sentence produced
  * half-English lines like "État : healthy". An unknown word is returned as it came, so a newer

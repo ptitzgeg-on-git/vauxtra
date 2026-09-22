@@ -9,6 +9,103 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [1.5.2] — 2026-09-20
+
+### Fixed
+
+- **A diagnostic check with no detail announced itself with a generic word.** When a
+  provider validation check returned no detail sentence, both screens that show it fell back
+  to "Verification" — the same word for every check in the list. The name of the check was
+  in hand the whole time and was never used. The check names are now translated in all eight
+  locales, and a folding helper resolves them, so the fallback reads "Token verification"
+  where it used to read "Check". Counted, not assumed: the providers emit 29 check names,
+  which fold to 28 keys because `dns_write` and `DNS write` are the same check spelled two
+  ways, and all 28 exist in every locale, with no key left over for a check nobody emits. A
+  name this build does not know — what an API newer than the build sends — shows through as
+  itself, which tells a reader more than a generic word would. The generic word is what
+  remains for a check carrying no name at all.
+
+- **The log footer counted rows the screen was not showing.** The level filter is applied by
+  the server and the text search only sifts the page already in hand, and both fed the same
+  footer sentence. The count shown was therefore the server's, never the screen's. The footer
+  now tells the two cases apart and says how many rows match when a text search narrows the
+  view; the empty state no longer blames the API on a branch only reached after a request
+  succeeded, and reads "no filter in effect" instead. The counted key the sentence needs,
+  `settings.logs.total_matching`, did not exist and arrives here in all eight locales, with
+  the plural categories each language actually has.
+
+- **French set a breakable space before its punctuation.** French puts a no-break space
+  before `? ! ;` and around its quotation marks, and the browser is the reason: a plain space
+  there lets the `?` wrap onto a line of its own, under the sentence it belongs to. A narrow
+  no-break space was substituted for one breakable space in 221 values — one of which also
+  had a word corrected — and folding both files back to plain spaces returns them byte for
+  byte identical, which is the proof that only spaces moved. The pass was applied by a script
+  that masks `{placeholder}` tokens and technical runs such as `host:8443` and `http://…`
+  before it matches. That mask now lives in `scripts/locale-typography.mjs`, out of the guard
+  so it can be imported at all, and is pinned by twelve witnesses: five sites it must take,
+  five it must refuse, two on the mask itself. Each escape hatch was watched going red with
+  the hatch removed. Measured while writing them: not one French value in the file needs that
+  mask today. It is there for the sentence written next month, which will carry a port or a
+  placeholder.
+
+- **A log level badge read "D'accord".** The severity labels on a log line had been
+  translated as ordinary words instead of as levels: `OK` read "D'accord" in French, "bien"
+  in Spanish, "Okay" in German and "Oke" in Dutch, and the Spanish error level read "error"
+  in lower case while every other level was capitalised. These are badges on a journal entry,
+  not an answer to a question. All four now read `OK`, which is what the level is called in
+  each of those languages, and the Spanish error level matches the case of its neighbours.
+
+- **French settings pages said "providers".** Eight French values had kept the English word
+  where the rest of the interface says "fournisseurs": the migration panel, the webhook scope
+  picker and the credentials export help among them. A ninth, the journal's empty state, had
+  lost the accents from "deconnectee". All nine now read as French.
+
+- **The container could still regain a privilege it did not start with.** `no-new-privileges`
+  had been left off both Vauxtra services by reflex, because the entrypoint starts as root.
+  That is the wrong reflex: the flag forbids REGAINING a privilege, not dropping one, and
+  what the entrypoint does is the drop. Measured on the image with the flag set: `groupadd`,
+  `usermod`, `chown -R` and `gosu appuser` all four go through, and the Docker socket's
+  secondary group arrives on the other side. Deliberately no further: `read_only: true` and
+  `cap_drop: ALL` both break this entrypoint, which writes `/etc/group` and `/etc/passwd` and
+  chowns `/app/data`. That negative knowledge is written beside the flag, so the next reader
+  does not set them and find the breakage at the following restart.
+
+### Added
+
+- **The locale guard now refuses French written without its accents.** The list is narrow on
+  purpose: a word only enters it when its unaccented spelling is never correct French. That
+  is why `a`, `ou`, `sur` and `expose` are absent — they are real words, and listing them
+  would make the guard noisy enough to be switched off. It reads `\p{L}` rather than `\w`,
+  because JavaScript's `\w` stays ASCII even under `/u`, which would cut "Parametres" into
+  "Param" and "tres", and "tres" is on the list.
+
+- **The locale guard now refuses a breakable space before French punctuation.** It runs on
+  `fr.json` alone, and that is the point: this is a French typographic rule, and applying it
+  to the other seven locales would flag correct text. The message names the punctuation whose
+  space is wrong rather than a column number, so it says what to repair. `scripts/` carried no
+  test at all before this; vitest now collects `scripts/**/*.test.mjs` as well.
+
+- **The locale guard now pins three words that are only wrong in one language.** `Prestations`
+  is what a caterer sells, `Balises` are the tags in a markup document, `Dienstleistungen` is
+  the commercial sense of "services", and `Provider` was English sitting in a Chinese file.
+  Each was the only string in its file using that word while the rest of the file said
+  otherwise. The per-locale table and the global one are concatenated rather than spread: both
+  are keyed by locale key and hold a list of words, so `{ ...global, ...perLocale }` would let
+  a per-locale list REPLACE the global one for that key instead of adding to it, and the
+  global ban would disappear without a word. No key sits in both maps today; that line is what
+  keeps it harmless when one does.
+
+- **Four assertions on the sentence the expose assistant prints at the end.** CI already
+  prevents the cause — a translation call that fills none of its parameters fails the build
+  — but nothing looked at the render. Putting a spare `<span>{host}</span>` back printed the
+  host twice on screen with every guard green. The four checks say: the host is written once,
+  there is a single monospace region whose text is exactly the host, the translator's word
+  order is honoured when the parameter moves, and the case of a translation that has lost its
+  parameter, described as `dev` behaves. The negative witness was played: with the defect put
+  back, the four new tests fall and the nine existing ones stay green.
+
+---
+
 ## [1.5.1] — 2026-09-20
 
 ### Fixed
@@ -4537,7 +4634,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.3.0...v1.4.0

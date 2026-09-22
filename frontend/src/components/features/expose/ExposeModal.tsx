@@ -152,8 +152,14 @@ const PLAN_ACTION_TONE: Partial<Record<PushPlanProxyAction['action'] | PushPlanD
  * it out after the sentence is what lets each locale keep it where its grammar wants it:
  * English and French open on the hostname, and the sentence used to be rendered with the
  * placeholder still in it because nothing filled it.
+ *
+ * Exported for the test beside it, the way `Button.tsx` exports `buttonVariants`: the
+ * splitting is what the test is about, and the test providers leave `I18nProvider` out, so
+ * driving the wizard to its `done` step would hand this the key `expose.done.body` and there
+ * would be nothing in it to split on.
  */
-function withHostHighlighted(sentence: string, host: string): ReactNode[] {
+// eslint-disable-next-line react-refresh/only-export-components -- a plain string helper, not a second component; the same exception Button.tsx takes for buttonVariants
+export function withHostHighlighted(sentence: string, host: string): ReactNode[] {
   return sentence.split(host).flatMap((part, index) =>
     index === 0
       ? [part]

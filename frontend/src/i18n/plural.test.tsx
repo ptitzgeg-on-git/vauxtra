@@ -126,14 +126,17 @@ describe('t(), the sentences that carried a (s)', () => {
     );
   });
 
+  // The expected sentences below escape their no-break space as `\u00a0`. French puts one
+  // before a colon, `check-locale-quality.mjs` enforces it, and a raw U+00A0 written here would
+  // read as an ordinary space to anyone opening the file -- and be "fixed" back on sight.
   it('selects on {count} while the other numbers ride along', async () => {
     // `monitoring.check_summary` carries three numbers. Only the first one chooses a form.
     expect(
       await say('fr', 'monitoring.check_summary', { count: 1, ok: 1, error: 0 }),
-    ).toBe('1 service vérifié : 1 en ligne, 0 hors ligne');
+    ).toBe('1 service vérifié\u00a0: 1 en ligne, 0 hors ligne');
     expect(
       await say('fr', 'monitoring.check_summary', { count: 7, ok: 6, error: 1 }),
-    ).toBe('7 services vérifiés : 6 en ligne, 1 hors ligne');
+    ).toBe('7 services vérifiés\u00a0: 6 en ligne, 1 hors ligne');
   });
 });
 
@@ -219,7 +222,7 @@ describe('t(), a count that selects a form without printing itself', () => {
   it('singularises the sentence around a one-item list', async () => {
     expect(
       await say('fr', 'settings.general.ignored_keys', { count: 1, keys: 'check_interval' }),
-    ).toBe('Le serveur a refusé ce paramètre : check_interval');
+    ).toBe('Le serveur a refusé ce paramètre\u00a0: check_interval');
   });
 
   it('pluralises it around a longer one', async () => {
@@ -228,7 +231,7 @@ describe('t(), a count that selects a form without printing itself', () => {
         count: 2,
         keys: 'check_interval, log_retention_days',
       }),
-    ).toBe('Le serveur a refusé ces paramètres : check_interval, log_retention_days');
+    ).toBe('Le serveur a refusé ces paramètres\u00a0: check_interval, log_retention_days');
   });
 
   it('never prints the count it selected on', async () => {
