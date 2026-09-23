@@ -199,7 +199,9 @@ def run_auto_reconcile() -> None:
         fqdn = f"{svc['subdomain']}.{svc['domain']}"
         try:
             conn  = get_db()
-            drift = _compute_service_drift(conn, svc, sid)
+            # Only `ok` is read here, and a record on another integration never moves it:
+            # asking each of them about every service, every round, would buy nothing.
+            drift = _compute_service_drift(conn, svc, sid, look_elsewhere=False)
             conn.close()
 
             if drift.get("ok"):

@@ -20,6 +20,7 @@ import { Badge, Chip, IconButton, ProviderLogo, Tooltip } from '@/components/ui'
 import type { Tone } from '@/components/ui';
 import type { DriftResult, Environment, Provider, Service, ServiceCheckResult, Tag } from '@/types/api';
 import {
+  driftStanding,
   isLocalDnsType,
   isNavigablePublicHost,
   providersOf,
@@ -320,17 +321,20 @@ export function CheckResultInline({ result, className }: { result: ServiceCheckR
   );
 }
 
-/** A small badge on rows that were drift-checked; clicking opens the report drawer. */
+/**
+ * A small badge on rows that were drift-checked; clicking opens the report drawer. Green only
+ * when the report holds nothing: a warning is `ok` for the API and still yellow here.
+ */
 export function DriftIndicator({ drift, onOpen, className }: { drift: DriftResult; onOpen: () => void; className?: string }) {
   const t = useT();
-  const errors = drift.issues.filter((i) => i.severity === 'error').length;
-  const warns = drift.issues.length - errors;
-  const tone: Tone = drift.ok ? 'success' : errors > 0 ? 'danger' : 'warning';
-  const label = drift.ok
-    ? t('services.drift.in_sync')
-    : errors > 0
+  const { errors, warnings } = driftStanding(drift);
+  const tone: Tone = errors > 0 ? 'danger' : warnings > 0 ? 'warning' : 'success';
+  const label =
+    errors > 0
       ? t('services.drift.errors', { count: errors })
-      : t('services.drift.warnings', { count: warns });
+      : warnings > 0
+        ? t('services.drift.warnings', { count: warnings })
+        : t('services.drift.in_sync');
   return (
     <button
       type="button"
