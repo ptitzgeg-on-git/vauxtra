@@ -165,6 +165,10 @@ const DECLARED = new Map(
     'monitoring.tunnels.healthy_of': { total: 'a bare denominator after a slash, with no noun of its own' },
     'monitoring.uptime.summary': { percent: 'already formatted by formatPercent' },
     'providers.refresh.failed_count': { total: 'a bare total after "out of"; the noun sits beside {count}' },
+    'providers.refresh.progress': {
+      count: 'a bare number before a slash, on a button that already says what is counted',
+      total: 'a bare denominator after a slash, with no noun of its own',
+    },
     'services.meta': { total: 'a bare total after "of"; the noun sits beside {count}' },
     'settings.backup.restore_settings_dropped': { keys: 'the refused setting names, joined into one string' },
     'settings.general.ignored_keys': { keys: 'the refused setting names, joined into one string' },
