@@ -5,7 +5,7 @@ import { cn } from '@/lib/cn';
 import { Badge, Button, Drawer, EmptyState, InlineAlert, SectionHeading, Skeleton } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import type { DriftIssue, DriftResult, ReconcileResult, Service } from '@/types/api';
-import { publicHostOf } from './helpers';
+import { driftStanding, publicHostOf } from './helpers';
 
 export interface DriftDrawerProps {
   open: boolean;
@@ -24,6 +24,7 @@ export interface DriftDrawerProps {
 /** `services.drift.type.<type>` for the known issue types; the raw type otherwise. */
 // A disabled service expects the opposite of a published one, so the two `*_still_served`
 // types read the same drawer backwards: what is still answering rather than what is missing.
+// The last two come from the DNS integrations the service is not published to.
 const KNOWN_ISSUE_TYPES = new Set([
   'missing_proxy_route',
   'proxy_route_still_served',
@@ -34,6 +35,8 @@ const KNOWN_ISSUE_TYPES = new Set([
   'dns_rewrite_still_served',
   'dns_target_mismatch',
   'dns_check_failed',
+  'dns_answered_elsewhere',
+  'dns_elsewhere_check_failed',
 ]);
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -90,9 +93,8 @@ function IssueList({ issues }: { issues: DriftIssue[] }) {
 
 function DriftSummary({ drift }: { drift: DriftResult }) {
   const t = useT();
-  const errors = drift.issues.filter((i) => i.severity === 'error').length;
-  const warns = drift.issues.length - errors;
-  if (drift.ok) {
+  const { errors, warnings, reconcilable } = driftStanding(drift);
+  if (drift.issues.length === 0) {
     return (
       <InlineAlert tone="success" icon={<CircleCheck />} title={t('services.drift.in_sync_title')}>
         {t('services.drift.in_sync_body', { host: drift.public_host })}
@@ -104,19 +106,20 @@ function DriftSummary({ drift }: { drift: DriftResult }) {
       tone={errors > 0 ? 'danger' : 'warning'}
       title={t('services.drift.out_of_sync_title', { count: drift.issues.length })}
     >
-      {t('services.drift.out_of_sync_body', {
-        errors: t('services.drift.errors', { count: errors }),
-        warnings: t('services.drift.warnings', { count: warns }),
-      })}
+      {reconcilable
+        ? t('services.drift.out_of_sync_body', {
+            errors: t('services.drift.errors', { count: errors }),
+            warnings: t('services.drift.warnings', { count: warnings }),
+          })
+        : t('services.drift.nothing_to_push_body')}
     </InlineAlert>
   );
 }
 
 function CountBadges({ drift }: { drift: DriftResult }) {
   const t = useT();
-  const errors = drift.issues.filter((i) => i.severity === 'error').length;
-  const warns = drift.issues.length - errors;
-  if (drift.ok) {
+  const { errors, warnings: warns } = driftStanding(drift);
+  if (drift.issues.length === 0) {
     return (
       <Badge tone="success" size="sm" dot>
         {t('services.drift.in_sync')}
@@ -206,7 +209,9 @@ export function DriftDrawer({
 }: DriftDrawerProps) {
   const t = useT();
   const host = service ? publicHostOf(service) : '';
-  const canReconcile = Boolean(drift) && !drift?.ok && !isChecking && !isReconciling;
+  // Not `!drift.ok`: a DNS answer or a proxy origin that differs is a warning, and Reconcile
+  // is what fixes it. What it cannot fix is a record on an integration it never writes to.
+  const canReconcile = Boolean(drift && driftStanding(drift).reconcilable) && !isChecking && !isReconciling;
 
   let body: ReactNode;
   if (isChecking && !drift) {

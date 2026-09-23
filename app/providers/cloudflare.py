@@ -79,8 +79,14 @@ class CloudflareProvider(DNSProvider):
 
     # ── Zone helpers ──────────────────────────────────────────────────────
 
-    def _find_zone(self, domain: str) -> str | None:
-        """Return the zone ID for *domain*, using the configured ID or auto-detecting."""
+    def _find_zone(self, domain: str, *, strict: bool = False) -> str | None:
+        """Return the zone ID for *domain*, using the configured ID or auto-detecting.
+
+        `None` means no zone was found, and by default a lookup that failed reads the same
+        way: a write then answers False, which is what its callers expect. `strict` raises
+        instead, for `records_for`, where "no zone" is an answer about the records: read that
+        way, a failed lookup would say nobody holds a name nobody was asked about.
+        """
         if self._configured_zone_id:
             return self._configured_zone_id
         # Check per-domain cache
@@ -105,6 +111,8 @@ class CloudflareProvider(DNSProvider):
                     self._zone_cache[candidate] = zone.id
                     return zone.id
             except Exception:
+                if strict:
+                    raise
                 # Zone lookup failed for this candidate; try next subdomain level
                 pass
         return None
@@ -181,6 +189,27 @@ class CloudflareProvider(DNSProvider):
                         }
                     )
         return results
+
+    def records_for(self, domain: str) -> list[dict]:
+        """The A, AAAA and CNAME records named exactly `domain`, from the zone that holds it.
+
+        The inherited answer filters `list_rewrites`, which lists the zones the token reaches
+        and reads each one three record types at a time: three calls a zone and one more, for
+        one name, each time a drift drawer opens. The production token of 2026-09-22 read
+        records from thirteen zones, so forty calls at least. This is the zone lookup and one
+        listing that Cloudflare filters by name.
+        """
+        wanted = (domain or "").strip().strip(".").lower()
+        if not wanted:
+            return []
+        zone_id = self._find_zone(wanted, strict=True)
+        if not zone_id:
+            return []
+        return [
+            {"domain": r.name, "answer": r.content, "type": r.type, "proxied": r.proxied}
+            for r in self._client.dns.records.list(zone_id=zone_id, name={"exact": wanted})
+            if r.type in ("A", "AAAA", "CNAME") and self._same_name(r.name, wanted)
+        ]
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)

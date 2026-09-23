@@ -133,6 +133,81 @@ def _rewrite_for(rewrites, public_host: str) -> dict | None:
     )
 
 
+def _is_dns_type(ptype: str) -> bool:
+    """Whether a provider type answers names, by the rule the scan uses."""
+    meta = PROVIDER_TYPES.get(ptype, {})
+    return bool((meta.get("capabilities") or {}).get("dns")) or meta.get("category") == "dns"
+
+
+def _records_named(provider, name: str) -> list[dict]:
+    """What `provider` holds for `name`, through `records_for` when it has one.
+
+    `register_provider_type` checks no base class, so a plugin written before `records_for`
+    existed still answers here, through the listing every DNS provider has.
+    """
+    ask = getattr(provider, "records_for", None)
+    if callable(ask):
+        return ask(name) or []
+    wanted = (name or "").strip().strip(".").lower()
+    return [
+        r
+        for r in provider.list_rewrites() or []
+        if str(r.get("domain") or "").strip().strip(".").lower() == wanted
+    ]
+
+
+def _answers_elsewhere(conn, public_host: str, published: str, attached: set) -> list[dict]:
+    """Warnings for the DNS integrations that answer `public_host` without being pushed to.
+
+    The drift check read the integrations a service is attached to and nothing else, so a
+    record anywhere else could not show. Measured in production on 2026-09-22:
+    a media server was imported with AdGuard attached, whose rewrite gave it a LAN address;
+    a grey Cloudflare A record gave the same name a public one, and the drift answer was
+    `ok: true, issues: []`.
+
+    Two answers for one name is what split-horizon means, and it is also what a leftover
+    looks like. Nothing here can tell them apart, so it says what it found and stops there:
+    a warning, never an error. `ok` does not move: auto-reconcile acts on it and pushes only
+    to the integrations the service is attached to, so an error here would set off a push
+    every round that could never clear it. Reconcile has nothing to offer about one either.
+    An integration that cannot be read is a warning of its own, because its silence would
+    read as nobody else answering.
+    """
+    issues: list[dict] = []
+    for row in conn.execute("SELECT * FROM providers WHERE enabled=1 ORDER BY id").fetchall():
+        if row["id"] in attached or not _is_dns_type(row["type"]):
+            continue
+        try:
+            records = _records_named(create_provider(row), public_host)
+        except Exception as e:
+            issues.append(
+                {
+                    "severity": "warn",
+                    "type": "dns_elsewhere_check_failed",
+                    "provider": row["name"],
+                    "detail": redact_query_secrets(str(e)),
+                }
+            )
+            continue
+        answers = {str(r.get("answer") or r.get("ip") or "").strip().lower() for r in records}
+        found = ", ".join(sorted(answers - {"", published}))
+        if found:
+            issues.append(
+                {
+                    "severity": "warn",
+                    "type": "dns_answered_elsewhere",
+                    "provider": row["name"],
+                    "detail": (
+                        f"{public_host} also resolves to {found} here, "
+                        f"while the service publishes {published}"
+                    ),
+                    "detail_key": "answered_elsewhere",
+                    "detail_params": {"host": public_host, "found": found, "expected": published},
+                }
+            )
+    return issues
+
+
 def _imported_name(value) -> str:
     """A hostname read off a provider, reduced to the spelling a service is stored under.
 
@@ -654,7 +729,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
 #: never be translated. Each templated shape now also carries the key its sentence was
 #: written from and the values it was built out of, so the UI can say the same thing in the
 #: reader's language. `detail` stays as the plain-text fallback (logs, older clients).
-def _compute_service_drift(conn, svc, sid: int) -> dict:
+def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) -> dict:
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
     issues: list[dict] = []
 
@@ -802,6 +877,14 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                         "detail": redact_query_secrets(str(e)),
                     }
                 )
+
+    # A record on an integration the service is not pushed to is invisible to the loop
+    # above, and it answers the same name all the same. Only an enabled service that
+    # publishes an address somewhere has an answer to hold it against.
+    published = str(svc["dns_ip"] or "").strip().lower()
+    if look_elsewhere and expose_mode != "tunnel" and service_enabled and dns_targets and published:
+        attached = {row["id"] for row in dns_targets}
+        issues.extend(_answers_elsewhere(conn, public_host, published, attached))
 
     return {
         "service_id": sid,
