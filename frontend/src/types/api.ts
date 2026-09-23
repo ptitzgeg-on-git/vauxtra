@@ -480,6 +480,17 @@ export interface ServicePayload {
 }
 
 /**
+ * Body of `PATCH /api/services/{sid}` (`ServiceLabelsIn`, `extra="forbid"`): Vauxtra's own
+ * metadata, which no proxy host, DNS record or tunnel rule carries. A key left out keeps its
+ * value, and no provider is called, so the answer is the `Service` with no `errors`.
+ */
+export interface ServiceLabelsPayload {
+  tag_ids?: number[];
+  environment_ids?: number[];
+  icon_url?: string;
+}
+
+/**
  * Body of `POST /api/services/preflight` (`ServicePreflightIn`): the exact `ServicePayload`
  * plus `service_id` when editing, so the public-host conflict check ignores the service
  * itself. Unknown keys are rejected with 422.

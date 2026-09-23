@@ -46,6 +46,7 @@ import type {
   PushPlanProxyAction,
   PushResult,
   Service,
+  ServiceLabelsPayload,
   ServicePayload,
   Tag,
   Template,
@@ -84,13 +85,28 @@ interface TargetSuggestion {
 type Step = 'configure' | 'review' | 'done';
 const STEPS: Step[] = ['configure', 'review', 'done'];
 
-/** Configure → Review → Done, the current one announced with `aria-current`. */
-function Stepper({ current, label, labels }: { current: Step; label: string; labels: Record<Step, string> }) {
+/**
+ * Configure → Review → Done, the current one announced with `aria-current`.
+ *
+ * A step in `skipped` is passed without a tick. An edit that changes labels and nothing else
+ * goes from Configure straight to Done, and a ticked Review would say the checks ran.
+ */
+function Stepper({
+  current,
+  label,
+  labels,
+  skipped = [],
+}: {
+  current: Step;
+  label: string;
+  labels: Record<Step, string>;
+  skipped?: Step[];
+}) {
   const currentIndex = STEPS.indexOf(current);
   return (
     <ol aria-label={label} className="flex items-center gap-2 text-xs font-medium">
       {STEPS.map((step, index) => {
-        const done = index < currentIndex;
+        const done = index < currentIndex && !skipped.includes(step);
         const active = index === currentIndex;
         return (
           <li key={step} className="flex items-center gap-2">
@@ -175,6 +191,40 @@ export function withHostHighlighted(sentence: string, host: string): ReactNode[]
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
   Boolean(value) && typeof value === 'object' && Array.isArray((value as { errors?: unknown }).errors);
 
+/** The name a route answers on: its tunnel hostname when it has one, else subdomain and domain. */
+const publicHostOf = (route: Pick<ServicePayload, 'expose_mode' | 'tunnel_hostname' | 'subdomain' | 'domain'>): string =>
+  route.expose_mode === 'tunnel' && route.tunnel_hostname
+    ? route.tunnel_hostname
+    : `${route.subdomain}.${route.domain}`;
+
+/** A set of ids, written so that the order they were ticked in does not count. */
+const idSet = (ids: number[]) => JSON.stringify([...new Set(ids)].sort((a, b) => a - b));
+
+/**
+ * What an edit changed, when all it changed is labels; null otherwise.
+ *
+ * Tags, environments and the icon are Vauxtra's own metadata: no proxy host, DNS record or
+ * tunnel rule carries them. The wizard sent them through the checks and a `PUT`, which
+ * publishes the route again on its proxy or tunnel, so a tag cost a round of provider calls
+ * and, on a tunnel, a rewrite of its rule. `PATCH` writes the three columns and calls no
+ * provider. Only the keys that moved are sent, because the journal names what a save
+ * changed.
+ *
+ * Null as soon as anything else on the form moved, and null on an untouched form too, which
+ * keeps going through the checks and a `PUT`: saving an unchanged route is how an operator
+ * publishes it again. Ids are compared as sets, so unticking a tag and ticking it again,
+ * which only moves it to the end of the list, is not a change.
+ */
+function labelChanges(form: FormState, saved: FormState): ServiceLabelsPayload | null {
+  const routeOf = (f: FormState) => JSON.stringify({ ...f, tag_ids: null, environment_ids: null, icon_url: null });
+  if (routeOf(form) !== routeOf(saved)) return null;
+  const changes: ServiceLabelsPayload = {};
+  if (idSet(form.tag_ids) !== idSet(saved.tag_ids)) changes.tag_ids = form.tag_ids;
+  if (idSet(form.environment_ids) !== idSet(saved.environment_ids)) changes.environment_ids = form.environment_ids;
+  if (form.icon_url !== saved.icon_url) changes.icon_url = form.icon_url;
+  return Object.keys(changes).length > 0 ? changes : null;
+}
+
 export function ExposeModal({
   isOpen,
   onClose,
@@ -203,7 +253,10 @@ export function ExposeModal({
   }, [formError]);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [dryRun, setDryRun] = useState<DryRunPlan | null>(null);
-  const [saveOutcome, setSaveOutcome] = useState<{ host: string; errors: string[] } | null>(null);
+  // `labelsOnly`: the save went through `PATCH`, and the last step says no provider was asked.
+  const [saveOutcome, setSaveOutcome] = useState<{ host: string; errors: string[]; labelsOnly?: boolean } | null>(
+    null,
+  );
   const [templateDraftName, setTemplateDraftName] = useState('');
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
 
@@ -463,10 +516,7 @@ export function ExposeModal({
       const serviceErrors = isRecordWithErrors(result.persisted) ? result.persisted.errors : [];
       const pushErrors = result.pushResult && Array.isArray(result.pushResult.errors) ? result.pushResult.errors : [];
       const allErrors = [...serviceErrors, ...pushErrors].map(String);
-      const host =
-        result.payload.expose_mode === 'tunnel' && result.payload.tunnel_hostname
-          ? result.payload.tunnel_hostname
-          : `${result.payload.subdomain}.${result.payload.domain}`;
+      const host = publicHostOf(result.payload);
 
       if (allErrors.length === 0) {
         toast.success(
@@ -489,6 +539,27 @@ export function ExposeModal({
     onError: (err: unknown) => {
       const fallback = isEditMode ? t('expose.toast.update_failed') : t('expose.toast.create_failed');
       toast.error(translateApiError(err, t, fallback), { duration: 5000 });
+    },
+  });
+
+  // Labels alone: one `PATCH`, no checks and no push. No provider holds a label, and
+  // `saveService` would publish the whole route again for one.
+  const saveLabels = useMutation({
+    mutationFn: (labels: ServiceLabelsPayload) => api.patch<Service>(`/services/${serviceId}`, labels),
+    onSuccess: (saved) => {
+      queryClient.invalidateQueries({ queryKey: ['services'] });
+      queryClient.invalidateQueries({ queryKey: ['logs'] });
+      const host = publicHostOf(saved);
+      toast.success(t('expose.toast.labels_updated', { host }), { duration: 4500 });
+      setSaveOutcome({ host, errors: [], labelsOnly: true });
+      setStep('done');
+    },
+    onError: (err: unknown) => {
+      // In the banner as well as the toast: the wizard stays on this step, and a toast in the
+      // opposite corner is gone before the operator has looked for it.
+      const message = translateApiError(err, t, t('expose.toast.update_failed'));
+      setFormError(message);
+      toast.error(message, { duration: 5000 });
     },
   });
 
@@ -541,8 +612,18 @@ export function ExposeModal({
     };
   };
 
+  // Only labels moved on an edit: saved directly. See `labelChanges`.
+  const labelsOnly = isEditMode ? labelChanges(formData, seedForm()) : null;
+
   const handleContinue = (e: FormEvent) => {
     e.preventDefault();
+    if (labelsOnly) {
+      // No provider is asked anything, so neither `validate` nor the checks run: a provider
+      // that is down must not block a change it will never see.
+      setFormError(null);
+      saveLabels.mutate(labelsOnly);
+      return;
+    }
     const problem = validate();
     if (problem) {
       setFormError(problem);
@@ -635,10 +716,17 @@ export function ExposeModal({
   };
 
   const title = isEditMode ? t('expose.title.edit') : t('expose.title.create');
+  // An edit that moves labels alone contacts no provider, so the line under the title says
+  // so, from the first label moved to the receipt. It used to promise the push on every edit,
+  // and kept as it was, it would now sit above a receipt saying no provider was contacted.
+  const editDescription =
+    labelsOnly !== null || saveOutcome?.labelsOnly === true
+      ? t('expose.labels_only.hint')
+      : t('expose.description.edit');
   const description = templateName
     ? t('expose.from_template', { name: templateName })
     : isEditMode
-      ? t('expose.description.edit')
+      ? editDescription
       : t('expose.description.create');
 
   let footer: ReactNode;
@@ -648,15 +736,23 @@ export function ExposeModal({
         <Button variant="ghost" onClick={() => void requestClose()}>
           {t('common.cancel')}
         </Button>
-        <Button
-          type="submit"
-          form={formId}
-          loading={runPreflight.isPending}
-          disabled={isLoadingProviders}
-          rightIcon={<ArrowRight />}
-        >
-          {t('expose.continue')}
-        </Button>
+        {labelsOnly ? (
+          // `formNoValidate`: the browser's own `required` guards the route fields, and this
+          // save sends none of them.
+          <Button type="submit" form={formId} formNoValidate loading={saveLabels.isPending} leftIcon={<Check />}>
+            {t('expose.labels_only.save')}
+          </Button>
+        ) : (
+          <Button
+            type="submit"
+            form={formId}
+            loading={runPreflight.isPending}
+            disabled={isLoadingProviders}
+            rightIcon={<ArrowRight />}
+          >
+            {t('expose.continue')}
+          </Button>
+        )}
       </>
     );
   } else if (step === 'review') {
@@ -699,7 +795,12 @@ export function ExposeModal({
       footer={footer}
       bodyClassName="space-y-6"
     >
-      <Stepper current={step} label={t('expose.steps.label')} labels={stepLabels} />
+      <Stepper
+        current={step}
+        label={t('expose.steps.label')}
+        labels={stepLabels}
+        skipped={saveOutcome?.labelsOnly ? ['review'] : []}
+      />
 
       {step === 'configure' && (
         <form id={formId} onSubmit={handleContinue} className="space-y-8 animate-in fade-in animate-duration-200">
@@ -1010,10 +1111,19 @@ export function ExposeModal({
           </span>
           <div className="space-y-1">
             <h3 className="text-lg font-semibold text-foreground">
-              {isEditMode ? t('expose.done.updated_title') : t('expose.done.created_title')}
+              {saveOutcome.labelsOnly
+                ? t('expose.done.labels_title')
+                : isEditMode
+                  ? t('expose.done.updated_title')
+                  : t('expose.done.created_title')}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {withHostHighlighted(t('expose.done.body', { host: saveOutcome.host }), saveOutcome.host)}
+              {withHostHighlighted(
+                saveOutcome.labelsOnly
+                  ? t('expose.done.labels_body', { host: saveOutcome.host })
+                  : t('expose.done.body', { host: saveOutcome.host }),
+                saveOutcome.host,
+              )}
             </p>
           </div>
           {saveOutcome.errors.length > 0 && (

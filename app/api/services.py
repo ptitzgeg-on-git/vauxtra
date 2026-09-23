@@ -797,6 +797,28 @@ class ServicePreflightIn(ServiceIn):
     service_id: int | None = None
 
 
+class ServiceLabelsIn(BaseModel):
+    """What `PATCH /api/services/{sid}` changes: what a service carries, not what it publishes.
+
+    Found in production on 2026-09-22 (the `PUT` was not tried there) and read in the code:
+    nothing could put a tag on an existing service except a `PUT` carrying the whole service,
+    and a `PUT` pushes. On a tunnel service that push rewrites the ingress rule, so labelling
+    a row was, seen from the API, the same act as republishing its route. These three fields
+    live in Vauxtra's own tables and nowhere else.
+
+    A field left out, or sent as null, stays as it is. A list replaces the stored one, as it
+    does on the `PUT`: `tag_ids: [3]` on a service carrying 1 and 2 leaves it carrying 3
+    alone. Any other key is a 422, like `ServiceIn`, so a routing field sent here by mistake
+    is refused instead of looking saved.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tag_ids:         list[int] | None = None
+    environment_ids: list[int] | None = None
+    icon_url:        str | None       = None
+
+
 @router.get("/api/services/public-target/suggest")
 def suggest_public_target(
     request: Request,
@@ -913,11 +935,13 @@ def services_history(request: Request):
     return result
 
 
-@router.get("/api/services/{sid}")
-def get_service(sid: int, request: Request):
-    """Return one service with provider metadata, tags, environments and push targets."""
-    require_auth(request)
-    conn = get_db()
+def _service_detail(conn, sid: int) -> dict | None:
+    """One service as `GET /api/services/{sid}` answers it, or None when there is no such row.
+
+    Read on the caller's connection, which stays open. The update route and the label route
+    both answer with the service they have just written; the first used to carry its own
+    copy of these queries.
+    """
     row = conn.execute(
         """
         SELECT s.*,
@@ -932,10 +956,8 @@ def get_service(sid: int, request: Request):
         """,
         (sid,),
     ).fetchone()
-
     if not row:
-        conn.close()
-        raise HTTPException(404, "Service not found")
+        return None
 
     push_targets_rows = conn.execute(
         """
@@ -952,7 +974,6 @@ def get_service(sid: int, request: Request):
         (sid,),
     ).fetchall()
     tags_for_service, envs_for_service = labels_by_service(conn, [sid])
-    conn.close()
 
     service = row_to_service(
         row, tags_for_service.get(sid, []), envs_for_service.get(sid, [])
@@ -974,6 +995,77 @@ def get_service(sid: int, request: Request):
     service["extra_dns_provider_ids"] = [
         t["provider_id"] for t in push_targets if t["role"] == "dns"
     ]
+    return service
+
+
+@router.get("/api/services/{sid}")
+def get_service(sid: int, request: Request):
+    """Return one service with provider metadata, tags, environments and push targets."""
+    require_auth(request)
+    conn = get_db()
+    service = _service_detail(conn, sid)
+    conn.close()
+    if service is None:
+        raise HTTPException(404, "Service not found")
+    return service
+
+
+@router.patch("/api/services/{sid}")
+def update_service_labels(sid: int, request: Request, body: ServiceLabelsIn):
+    """Change a service's tags, environments or icon, and call no provider at all.
+
+    Not the proxy, not the DNS server, not the tunnel: the three fields are written to
+    Vauxtra's own tables and the route answers from them. `PUT` is the route that publishes,
+    and it still does on every call, so a change that is only a label comes here. The answer
+    is the service as `GET` gives it; there is no `errors` key because nothing outside the
+    database was asked.
+
+    404 when the service does not exist, 400 when the body names none of the three fields or
+    an id that names no row (and then nothing is written), 422 for any other key.
+    """
+    require_auth(request, scope="write")
+    conn = get_db()
+    row = conn.execute(
+        "SELECT subdomain, domain, expose_mode, tunnel_hostname FROM services WHERE id=?", (sid,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Service not found")
+
+    changed = [
+        name
+        for name, value in (
+            ("tags", body.tag_ids),
+            ("environments", body.environment_ids),
+            ("icon", body.icon_url),
+        )
+        if value is not None
+    ]
+    if not changed:
+        conn.close()
+        raise HTTPException(400, "Nothing to change -- send tag_ids, environment_ids or icon_url")
+
+    unknown = _unknown_ids(conn, "tags", body.tag_ids or [], "tag") + _unknown_ids(
+        conn, "environments", body.environment_ids or [], "environment"
+    )
+    if unknown:
+        conn.close()
+        raise HTTPException(400, f"Nothing was changed -- unknown {', '.join(unknown)}")
+
+    if body.tag_ids is not None:
+        set_tags(conn, sid, body.tag_ids)
+    if body.environment_ids is not None:
+        set_environments(conn, sid, body.environment_ids)
+    if body.icon_url is not None:
+        conn.execute("UPDATE services SET icon_url=? WHERE id=?", (body.icon_url, sid))
+    public_host = _service_public_hostname(
+        row["expose_mode"] or "proxy_dns", row["tunnel_hostname"] or "", row["subdomain"], row["domain"]
+    )
+    add_log("info", f"Service labels updated: {public_host} ({', '.join(changed)}), no provider called", conn)
+    conn.commit()
+
+    service = _service_detail(conn, sid)
+    conn.close()
     return service
 
 
@@ -1022,6 +1114,25 @@ def _hostname_taken(conn, public_host: str, exclude_id: int | None = None) -> st
     )
 
 
+def _unknown_ids(conn, table: str, ids, label: str) -> list[str]:
+    """`"<label> <id>"` for every id in `ids` that names no row of `table`, in id order.
+
+    Every id is asked about, 0 included. Tag and environment ids used to go through `if i`
+    first, which is right for a provider column, where 0 means none, and wrong for a label
+    list, where it names nothing: `tag_ids: [0]` passed the check, the providers were
+    called, and `set_tags` then failed on the foreign key with a 500.
+    """
+    wanted = sorted({int(i) for i in ids})
+    if not wanted:
+        return []
+    marks = ",".join("?" * len(wanted))
+    found = {
+        r["id"]
+        for r in conn.execute(f"SELECT id FROM {table} WHERE id IN ({marks})", tuple(wanted))
+    }
+    return [f"{label} {i}" for i in wanted if i not in found]
+
+
 def _unknown_references(conn, body: ServiceIn) -> list[str]:
     """Name every id in the payload that points at nothing.
 
@@ -1035,29 +1146,16 @@ def _unknown_references(conn, body: ServiceIn) -> list[str]:
     Checking here costs one query per kind and turns that 500-and-an-orphan into a 400 that
     names the offending id, before anything reaches a provider.
     """
-    unknown: list[str] = []
-
-    def _check(table: str, ids, label: str) -> None:
-        wanted = sorted({int(i) for i in ids if i})
-        if not wanted:
-            return
-        marks = ",".join("?" * len(wanted))
-        found = {
-            r["id"]
-            for r in conn.execute(f"SELECT id FROM {table} WHERE id IN ({marks})", tuple(wanted))
-        }
-        unknown.extend(f"{label} {i}" for i in wanted if i not in found)
-
-    _check("tags", body.tag_ids or [], "tag")
-    _check("environments", body.environment_ids or [], "environment")
-    _check(
-        "providers",
-        [body.proxy_provider_id, body.dns_provider_id, body.tunnel_provider_id]
-        + list(body.extra_proxy_provider_ids or [])
-        + list(body.extra_dns_provider_ids or []),
-        "provider",
+    providers = [
+        body.proxy_provider_id, body.dns_provider_id, body.tunnel_provider_id,
+        *(body.extra_proxy_provider_ids or []), *(body.extra_dns_provider_ids or []),
+    ]
+    return (
+        _unknown_ids(conn, "tags", body.tag_ids or [], "tag")
+        + _unknown_ids(conn, "environments", body.environment_ids or [], "environment")
+        # A provider id of 0 or None is the absence of one, not an id.
+        + _unknown_ids(conn, "providers", [p for p in providers if p], "provider")
     )
-    return unknown
 
 
 @router.post("/api/services", status_code=201)
@@ -1792,53 +1890,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     # said nothing about it -- the one place an operator looks to find out what Vauxtra did.
     conn.commit()
 
-    row = conn.execute("""
-        SELECT s.*,
-               dp.name AS dns_provider_name, dp.type AS dns_type,
-               pp.name AS proxy_provider_name, pp.type AS proxy_type,
-             tp.name AS tunnel_provider_name, tp.type AS tunnel_type
-        FROM services s
-        LEFT JOIN providers dp ON s.dns_provider_id  = dp.id
-        LEFT JOIN providers pp ON s.proxy_provider_id = pp.id
-         LEFT JOIN providers tp ON s.tunnel_provider_id = tp.id
-        WHERE s.id=?""", (sid,)).fetchone()
-    push_targets_rows = conn.execute(
-        """
-        SELECT spt.role,
-               p.id AS provider_id,
-               p.name AS provider_name,
-               p.type AS provider_type,
-               p.enabled AS provider_enabled
-        FROM service_push_targets spt
-        JOIN providers p ON p.id = spt.provider_id
-        WHERE spt.service_id=?
-        ORDER BY p.name
-        """,
-        (sid,),
-    ).fetchall()
-    tags_for_service, envs_for_service = labels_by_service(conn, [sid])
+    service = _service_detail(conn, sid)
     conn.close()
-
-    service = row_to_service(
-        row, tags_for_service.get(sid, []), envs_for_service.get(sid, [])
-    )
-    push_targets = [
-        {
-            "role": t["role"],
-            "provider_id": t["provider_id"],
-            "provider_name": t["provider_name"],
-            "provider_type": t["provider_type"],
-            "provider_enabled": bool(t["provider_enabled"]),
-        }
-        for t in push_targets_rows
-    ]
-    service["push_targets"] = push_targets
-    service["extra_proxy_provider_ids"] = [
-        t["provider_id"] for t in push_targets if t["role"] == "proxy"
-    ]
-    service["extra_dns_provider_ids"] = [
-        t["provider_id"] for t in push_targets if t["role"] == "dns"
-    ]
 
     return {**service, "errors": errors}
 

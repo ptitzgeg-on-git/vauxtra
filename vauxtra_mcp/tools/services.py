@@ -157,6 +157,10 @@ def update_service(
     carrying 3 alone, and `tag_ids=[]` strips every label. Read the service back with
     `get_service` and send its ids plus the new one to add rather than replace.
 
+    To change labels and nothing else, use `set_service_labels`. This tool sends the
+    whole service back through `PUT`, which publishes it again on its proxy or tunnel,
+    and a label is not something any provider holds.
+
     `forward_scheme` carries the same `Literal` as `create_service`: the route validates
     the merged body with `ServiceIn`, so an override it refuses fails the whole update,
     including the fields that were valid.
@@ -188,6 +192,44 @@ def update_service(
         if value is not None:
             payload[key] = value
     r = client.put(f"/services/{service_id}", json=payload)
+    client.check(r)
+    return r.json()
+
+
+@mcp.tool()
+def set_service_labels(
+    service_id: int,
+    tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
+    icon_url: str | None = None,
+) -> dict[str, Any]:
+    """Set a service's tags, environments or icon, and call no provider to do it.
+
+    These three are Vauxtra's own metadata: no proxy host, DNS record or tunnel rule carries
+    them. `update_service` sends the whole service back through `PUT`, which publishes it
+    again on its proxy or tunnel, so a tag change rewrote the tunnel rule as well, and the
+    tunnel provider used to rebuild that rule with its origin settings (`noTLSVerify` among
+    them) cleared. This tool goes through `PATCH /api/services/{id}`, which writes the three
+    columns and nothing else.
+
+    An argument left out, or None, keeps what the service has. A list replaces the whole set
+    rather than adding to it: `tag_ids=[3]` on a service carrying 1 and 2 leaves it carrying
+    3 alone, `tag_ids=[]` strips every tag, and `icon_url=""` removes the icon. To add a tag,
+    read the service with `get_service` and send its ids plus the new one.
+
+    Refused with nothing written: 400 when no argument is given, 400 naming every id that
+    matches no tag or environment (`list_tags` and `list_environments` are where they come
+    from), 404 for a service that does not exist. The answer is the service as `get_service`
+    returns it, with no `errors` key, because no provider was asked anything.
+    """
+    payload: dict[str, Any] = {}
+    if tag_ids is not None:
+        payload["tag_ids"] = tag_ids
+    if environment_ids is not None:
+        payload["environment_ids"] = environment_ids
+    if icon_url is not None:
+        payload["icon_url"] = icon_url
+    r = client.patch(f"/services/{service_id}", json=payload)
     client.check(r)
     return r.json()
 
