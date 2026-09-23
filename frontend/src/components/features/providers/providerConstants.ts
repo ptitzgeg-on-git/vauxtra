@@ -245,16 +245,16 @@ export function getProjectUrl(type: string, meta?: ProviderTypeMeta): string | u
 // ─── Helpers ────────────────────────────────────────────────────
 
 /**
- * The form state after the user picks a type in the Integrations modal.
+ * The form state after the user picks a type, in the Integrations modal or the first-run wizard.
  *
  * `url` is the whole reason this is a function rather than a spread. The type metadata carries
  * a `placeholder_url`, and seeding the field from it puts a value in the box that is
  * indistinguishable from the grey hint, because it IS the hint: the same string is the
- * placeholder. Nine of the twelve types name `http://192.168.1.10:3000`, the tenth address of
- * the commonest home range, where a real machine usually answers. Left untouched by someone
+ * placeholder. Seven of the ten types point it at the tenth address of the commonest home range,
+ * each on its own port, where a real machine usually answers. Left untouched by someone
  * who read a filled box as empty, the username and password are sent there. So a type change
  * clears the URL, a re-pick of the same type keeps what was typed, and nothing else may ever
- * put a value in it. The first-run wizard has only ever seeded the name.
+ * put a value in it. The first-run wizard used to seed the name alone.
  */
 export function seedFormForType(prev: ProviderFormState, type: string, label: string): ProviderFormState {
   const sameType = prev.type === type;
@@ -302,18 +302,141 @@ export function isUrlOptional(type: string): boolean {
   return urlOptionalTypes.has(type);
 }
 
-export function canSubmitProvider(
+/** Every field of the form, in the order both forms draw them. */
+export const FORM_FIELDS: ReadonlyArray<keyof ProviderFormState> = ['name', 'url', 'username', 'password', 'tunnel_id'];
+
+function isFormField(key: string): key is keyof ProviderFormState {
+  return (FORM_FIELDS as ReadonlyArray<string>).includes(key);
+}
+
+type RequirementMeta = Pick<ProviderTypeMeta, 'requires_password' | 'requires_username' | 'guided_steps'>;
+
+/**
+ * The fields a type cannot be validated without, in `FORM_FIELDS` order.
+ *
+ * There used to be two answers to this question, and they disagreed. The guided steps the API
+ * sends mark each field optional or not, and the setup wizard gated its "Next" on those marks;
+ * `canSubmitProvider` read a short local list that knew nothing of them. So the NPM e-mail had a
+ * red asterisk in the guided wizard, was "Optional" in the expert form of the same dialog, and
+ * could be left blank all the way to a failed login: NPM signs in with the e-mail and nothing
+ * else. The answer is now the union: a field is required when the local rules say so or when a
+ * guided step asks for it without marking it optional. On the ten types the API serves, the two
+ * only ever differ by adding the username of NPM, AdGuard Home and Technitium, the three whose
+ * login cannot go without one.
+ *
+ * The name is always required. The API refuses a blank one, and the form seeds it from the type.
+ */
+export function requiredFields(type: string, meta?: RequirementMeta): Array<keyof ProviderFormState> {
+  if (!type) return [];
+  const required = new Set<keyof ProviderFormState>(['name']);
+  if (!isUrlOptional(type)) required.add('url');
+  if (requiresUsername(type, meta)) required.add('username');
+  if (requiresPassword(type, meta)) required.add('password');
+  if (type === 'cloudflare_tunnel') required.add('tunnel_id');
+  for (const step of meta?.guided_steps ?? []) {
+    for (const field of step.fields ?? []) {
+      if (!field.optional && isFormField(field.key)) required.add(field.key);
+    }
+  }
+  return FORM_FIELDS.filter((key) => required.has(key));
+}
+
+/**
+ * The required fields still empty, in `FORM_FIELDS` order. `editMode` leaves the secret out:
+ * editing an integration sends a blank one to keep the secret already stored.
+ */
+export function missingFields(
   formData: ProviderFormState,
-  meta?: Pick<ProviderTypeMeta, 'requires_password' | 'requires_username'>,
-): boolean {
-  return (
-    Boolean(formData.type) &&
-    Boolean(formData.name.trim()) &&
-    (!requiresPassword(formData.type, meta) || Boolean(formData.password.trim())) &&
-    (!requiresUsername(formData.type, meta) || Boolean(formData.username.trim())) &&
-    Boolean(formData.url.trim() || isUrlOptional(formData.type)) &&
-    (formData.type !== 'cloudflare_tunnel' || Boolean(formData.tunnel_id.trim()))
+  meta?: RequirementMeta,
+  { editMode = false }: { editMode?: boolean } = {},
+): Array<keyof ProviderFormState> {
+  return requiredFields(formData.type, meta).filter(
+    (key) => !(editMode && key === 'password') && !String(formData[key] ?? '').trim(),
   );
+}
+
+export function canSubmitProvider(formData: ProviderFormState, meta?: RequirementMeta): boolean {
+  return Boolean(formData.type) && missingFields(formData, meta).length === 0;
+}
+
+/** The guided step that asks for `key`, or -1 when none does. */
+export function stepOfField(steps: WizardStep[], key: keyof ProviderFormState): number {
+  return steps.findIndex((step) => step.fields?.some((field) => field.key === key));
+}
+
+/**
+ * The first guided step that still asks for something missing, or `steps.length` when none
+ * does. Nothing past it can be reached: the wizard's dots and "Next" used to go there unchecked,
+ * and its last button then led to the end of the journey over an empty form.
+ */
+export function firstIncompleteStep(steps: WizardStep[], missing: ReadonlyArray<keyof ProviderFormState>): number {
+  const index = steps.findIndex((step) => step.fields?.some((field) => missing.includes(field.key)));
+  return index === -1 ? steps.length : index;
+}
+
+/**
+ * What a field is called on the screen the operator is looking at: the label of the guided
+ * step that asks for it when one does, the expert form's label otherwise. The list of missing
+ * fields names them this way, so it never calls a field something the form in front of it does
+ * not.
+ */
+export function formFieldLabel(
+  key: keyof ProviderFormState,
+  type: string,
+  meta: ProviderTypeMeta | undefined,
+  t: TranslateFn,
+  steps: WizardStep[] = [],
+): string {
+  for (const step of steps) {
+    const field = step.fields?.find((f) => f.key === key);
+    if (field) return field.label;
+  }
+  switch (key) {
+    case 'name':
+      return t('provider_modal.field.name');
+    case 'url':
+      return t('provider_modal.field.url');
+    case 'username':
+      return getUserLabel(type, meta, t);
+    case 'password':
+      return getPassLabel(type, meta, t);
+    case 'tunnel_id':
+      return t('provider_modal.field.tunnel_id');
+    case 'type':
+      //: Picked on the screen before the form, never typed: no rule lists it as missing.
+      return key;
+  }
+}
+
+/** One entry of the "still missing" line under a provider form. */
+export type MissingField = {
+  key: keyof ProviderFormState;
+  label: string;
+  /** The guided step that asks for it, when that is not the step on screen. */
+  step?: number;
+};
+
+/**
+ * The missing fields as the "still missing" line draws them. With `steps`, each is named after
+ * its guided step and a field asked on another step than `currentStep` carries that step, so
+ * the line can take the operator there.
+ */
+export function describeMissing(
+  keys: ReadonlyArray<keyof ProviderFormState>,
+  type: string,
+  meta: ProviderTypeMeta | undefined,
+  t: TranslateFn,
+  steps: WizardStep[] = [],
+  currentStep = -1,
+): MissingField[] {
+  return keys.map((key) => {
+    const step = stepOfField(steps, key);
+    return {
+      key,
+      label: formFieldLabel(key, type, meta, t, steps),
+      step: step >= 0 && step !== currentStep ? step : undefined,
+    };
+  });
 }
 
 // ─── Capabilities & grouping ────────────────────────────────────
