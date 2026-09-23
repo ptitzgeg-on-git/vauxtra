@@ -155,16 +155,32 @@ class CloudflareTunnelProvider(ProxyProvider):
             return False
         ingress = self._normalize_ingress(config.get("ingress"))
 
+        # The rule for this name is rewritten where it stands, and only its `service` is
+        # Vauxtra's to set. It used to be dropped and appended again as
+        # `{hostname, service, originRequest: {}}`, which cost it two things nothing in
+        # Vauxtra models: its `originRequest` (measured in production on 2026-09-22, two
+        # rules carried `noTLSVerify` and any push to them would have cleared it), and its
+        # place in the list, which decides what a wildcard rule above it catches first.
+        # A `path` is not kept: the route Vauxtra publishes serves the whole name. A second
+        # rule for the same name is dropped, as it always was.
         updated: list[dict] = []
+        written = False
         for rule in ingress:
             if str(rule.get("hostname", "")).strip().lower() == hostname.lower():
+                if not written:
+                    kept = {k: v for k, v in rule.items() if k != "path"}
+                    kept.update({"hostname": hostname, "service": service_url})
+                    kept.setdefault("originRequest", {})
+                    updated.append(kept)
+                    written = True
                 continue
             # Drop fallback to re-append exactly one rule at the end.
             if not rule.get("hostname") and str(rule.get("service", "")).startswith("http_status:"):
                 continue
             updated.append(rule)
 
-        updated.append({"hostname": hostname, "service": service_url, "originRequest": {}})
+        if not written:
+            updated.append({"hostname": hostname, "service": service_url, "originRequest": {}})
         updated.append({"service": "http_status:404"})
 
         config["ingress"] = updated
