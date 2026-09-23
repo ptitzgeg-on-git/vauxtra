@@ -7,6 +7,78 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Cloudflare DNS record came back grey, a CNAME to a tunnel included.** Every write
+  through the Cloudflare DNS integration took the orange cloud from the integration's
+  setting, which is off by default, and every CNAME was written grey whatever it pointed at.
+  A CNAME to `<tunnel id>.cfargotunnel.com` only answers when it is proxied. Measured on a
+  production instance: a test name Vauxtra had just created toward a tunnel answered a CNAME
+  and no address through two public resolvers, while the proxied record beside it, same
+  target, answered two. Creating, renaming, re-enabling or correcting the drift of such a
+  name cut it off. A proxied A record whose address changed came back grey without a word,
+  and the origin's address went into public DNS: the scheduler's address update rewrites a
+  record in place, the push corrects a drift by removing it and adding it back, a rename
+  creates the new name, and each wrote the default over the operator's choice. A record
+  already there now keeps its flag when its address changes, a rename carries the old name's
+  flag, and a record the push removes and adds back gets its own flag back. A CNAME to a
+  tunnel is created proxied, and one found grey is turned orange. Any other CNAME is still
+  created grey, since a proxied one pointing at a name on another Cloudflare account answers
+  error 1014, and for the same reason an address's flag never crosses to a CNAME. The
+  Cloudflare Tunnel integration writes its own CNAME proxied and was not affected. Known
+  limit: disabling a service and enabling it again removes the record in one request and
+  creates it in another, hours or days apart, and nothing keeps the flag in between, so a
+  proxied A record comes back with the integration's default. A CNAME to a tunnel comes back
+  proxied.
+
+- **After an upgrade, the browser could show the previous build.** `index.html` names the
+  hashed bundles of its build under a name that never changes, and it was sent with a
+  `Last-Modified` and no `Cache-Control`, so a browser could reuse its copy without asking
+  for a fraction of its age (heuristic freshness). Measured on a production instance: a page
+  loaded just after an upgrade came out of the browser's cache with the previous build's
+  bundle while `/api/health` already answered the new version, and the screen showed a
+  defect the running version had fixed. Every file of that route, the page and the icons at
+  the root of the build, is now sent with `Cache-Control: no-cache`: the browser keeps its
+  copy and asks again before using it. The hashed bundles under `/assets` do not go through
+  that route and are unchanged.
+
+- **Every move to another proxy came back with an error about the host it had just
+  removed.** A regression of 1.6.0. The edit deleted the previous proxy host in its proxy
+  block, then again with the former targets, whose failures 1.6.0 had just started to put in
+  `errors`. NPM answers the second deletion of an id with a 404, so the save reported
+  "Former target: Failed to delete proxy host" about a host that was gone. The previous host
+  is now deleted once, with the former targets. Found by reading the code and reproduced by
+  tests.
+
+- **An edit that moved a service did not say when the previous route stayed up.** Moving a
+  service to another mode, integration, name or tunnel publishes the new route, then
+  withdraws the old one. Those withdrawals dropped the provider's answer, and an exception
+  reached the journal only: a provider that refused left the old route serving the name
+  behind a 200 with an empty `errors`, while the screen showed the service moved. One of
+  them already read the answer, the tunnel route of a service disabled in the same request
+  that changed its name or its tunnel. A bulk enable had the mirror defect: it wrote "DNS
+  re-added" to the journal whatever the DNS server answered. A refused withdrawal is now
+  reported, in the response and in the journal, once it has been read against the
+  provider's listing: NPM answers a 404 for an id it no longer holds and the Cloudflare DNS
+  integration answers false when nothing matches, and neither is a route left behind. A
+  listing that cannot be read does not clear the refusal. Cloudflare Tunnel is read against
+  nothing: its ingress half answers true for a rule already gone, so a false from it is
+  always a failure, possibly of its DNS half, which the rule listing does not show. A
+  read-only integration is no longer called, and a proxy that files its hosts by name is
+  asked about the service's name rather than what an earlier rename left in the database. A
+  bulk enable reads the DNS server's answer and reports a refusal, and an exception raised
+  while an edit switches a proxy host on or off lands in `errors`, not only in the journal.
+  A disabled service no longer reports, on every edit and on its deletion, a DNS record its
+  disable had already withdrawn. Every provider exception that reaches `errors` is masked,
+  as the journal already was. No integration shipped today lets a credential through there:
+  the two that authenticate in the query string catch their `requests` errors on writes and
+  mask their listing refusals, and the masking closes the path for the next one. Found by
+  reading the code and reproduced by tests, not observed on a running instance. Known
+  limits: when the DNS server and the address change together, one refused record can be
+  reported twice, by the withdrawal from the old server and by the one from the former
+  targets; and deleting a service does not yet read its proxy's listing, so a host removed
+  by hand is reported as a failure.
+
 ---
 
 ## [1.6.0] — 2026-09-23
