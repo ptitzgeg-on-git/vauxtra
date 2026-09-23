@@ -97,7 +97,9 @@ export const toFormState = (service?: Service | null): FormState => {
     domain: String(service.domain || ''),
     subdomain: String(service.subdomain || ''),
     target_ip: String(service.target_ip || ''),
-    target_port: Number(service.target_port || 80),
+    // 0 is kept: it is a service published in DNS alone, and `|| 80` made it port 80 on the
+    // next save, which every check from then on probed and reported down.
+    target_port: Number.isFinite(Number(service.target_port)) ? Number(service.target_port) : initialForm.target_port,
     forward_scheme: service.forward_scheme === 'https' ? 'https' : 'http',
     websocket: Boolean(service.websocket),
     expose_mode: exposeMode,

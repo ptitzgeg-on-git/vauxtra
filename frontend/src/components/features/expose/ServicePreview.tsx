@@ -87,7 +87,9 @@ export function ServicePreview({
   const fqdn = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
   const publicHost =
     formData.expose_mode === 'tunnel' ? formData.tunnel_hostname.trim() || fqdn : fqdn;
-  const target = `${formData.forward_scheme}://${formData.target_ip || t('expose.preview.target_placeholder')}:${formData.target_port}`;
+  const address = formData.target_ip || t('expose.preview.target_placeholder');
+  // No port is a name published in DNS alone, and its address is then all there is to show.
+  const target = formData.target_port ? `${formData.forward_scheme}://${address}:${formData.target_port}` : address;
   const isTunnel = formData.expose_mode === 'tunnel';
   const isDnsOnly = !isTunnel && formData.ui_expose_mode === 'dns_only';
 

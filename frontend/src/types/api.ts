@@ -538,6 +538,11 @@ export interface ServiceCheckResult {
   /** Null when the target never answered. */
   latency_ms: number | null;
   dns_resolved: string[] | null;
+  /**
+   * False for a service without a port: nothing was probed, `status` stays `unknown` and only
+   * the name was resolved. Absent on older instances, which probed port 0 and reported it down.
+   */
+  tested?: boolean;
 }
 
 /** One line of `CheckAllResult.results`: what the fleet probe measured for one service. */
@@ -554,8 +559,16 @@ export interface CheckAllResult {
   ok: number;
   error: number;
   /**
-   * One entry per service actually probed — so `results.length` is `checked` minus the
-   * tunnel services, which are skipped. Absent on instances older than 1.5.0.
+   * The services left out, never probed: tunnels, reached through their connector, and
+   * services without a port, which have nothing to connect to. `skipped` is the sum of the
+   * two. All three are absent on older instances, which skipped the tunnels alone.
+   */
+  skipped?: number;
+  skipped_tunnel?: number;
+  skipped_no_port?: number;
+  /**
+   * One entry per service actually probed, so `results.length` is `checked` minus the ones
+   * skipped. Absent on instances older than 1.5.0.
    */
   results?: CheckAllEntry[];
 }

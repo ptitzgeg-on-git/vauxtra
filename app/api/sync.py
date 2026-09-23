@@ -8,6 +8,7 @@ from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_ho
 from app.public_target import describe_public_target_failure, resolve_public_target
 from app.security import redact_query_secrets
 from app.text import plural
+from app.validators import NO_PORT
 
 router = APIRouter()
 
@@ -1378,11 +1379,14 @@ def import_services(request: Request, data: dict = Body(...)):
                 linked += 1
                 add_log("info", f"DNS linked: {fqdn} -> {ip}", conn)
             else:
+                # No port: a DNS record names an address, not a service listening on it. The
+                # 80 written here before was a guess the monitor then took at its word, and
+                # a VPN endpoint or a hypervisor came in reported down on port 80 forever.
                 conn.execute(
                     """INSERT INTO services
                        (subdomain, domain, target_ip, target_port, dns_provider_id, dns_ip)
                        VALUES (?,?,?,?,?,?)""",
-                    (subdomain, domain, ip, 80, r.get("_provider_id"), ip),
+                    (subdomain, domain, ip, NO_PORT, r.get("_provider_id"), ip),
                 )
                 conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
                 imported += 1

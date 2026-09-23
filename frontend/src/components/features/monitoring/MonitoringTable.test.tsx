@@ -96,3 +96,49 @@ describe('MonitoringTable, the 24 h cell', () => {
     expect(within(cell).queryByText('monitoring.uptime.no_history')).toBeNull();
   });
 });
+
+/**
+ * A service without a port is published in DNS alone: there is nothing to connect to, and
+ * the row said so in three wrong ways. The address read `192.168.1.10:0`, the 24 h cell
+ * waited for a check that nothing runs, and the row offered a check button whose only
+ * possible answer was "down".
+ */
+const NO_PORT: Service = {
+  ...SERVICE,
+  target_port: 0,
+  proxy_provider_id: null,
+  npm_host_id: null,
+  status: 'unknown',
+  last_checked: null,
+};
+
+describe('MonitoringTable, a service without a port', () => {
+  it('says it is not probed, and why, instead of waiting for a check', () => {
+    renderTable({ services: [NO_PORT] });
+
+    const cell = uptimeCell();
+    expect(within(cell).getByText('monitoring.tunnel_not_probed')).toBeInTheDocument();
+    // Written out for screen readers; the tooltip repeats it on hover.
+    expect(within(cell).getByText(/monitoring\.no_port_not_probed_hint/)).toBeInTheDocument();
+    expect(within(cell).queryByText(/monitoring\.tunnel_not_probed_hint/)).toBeNull();
+    expect(within(cell).queryByText('monitoring.uptime.no_history')).toBeNull();
+  });
+
+  it('writes the address without a port, and says the service is not testable', () => {
+    renderTable({ services: [NO_PORT] });
+
+    expect(screen.getByText('192.168.1.10')).toBeInTheDocument();
+    expect(screen.queryByText('192.168.1.10:0')).toBeNull();
+    expect(screen.getByText('monitoring.no_port_caption')).toBeInTheDocument();
+  });
+
+  it('offers no check button on it', () => {
+    renderTable({ services: [NO_PORT] });
+    expect(screen.queryByRole('button', { name: 'monitoring.check_row' })).toBeNull();
+  });
+
+  it('keeps the check button on a service that has a port', () => {
+    renderTable();
+    expect(screen.getByRole('button', { name: 'monitoring.check_row' })).toBeInTheDocument();
+  });
+});

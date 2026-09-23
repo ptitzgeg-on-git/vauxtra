@@ -29,9 +29,10 @@ import {
   initialForm,
   preflightDetailText,
   publicTargetSourceLabel,
+  toFormState,
   type FormState,
 } from './types';
-import type { Provider, ProviderTypesResponse } from '@/types/api';
+import type { Provider, ProviderTypesResponse, Service } from '@/types/api';
 
 /** Two DNS providers that differ in the only way this rule cares about. */
 const CATALOGUE: ProviderTypesResponse = {
@@ -231,5 +232,25 @@ describe('preflightDetailText', () => {
 
   it('leaves a sentence with no source word alone', () => {
     expect(preflightDetailText({ detail: 'Host is free' }, t)).toBe('Host is free');
+  });
+});
+
+describe('toFormState, the port of a saved route', () => {
+  const saved = (targetPort: unknown) =>
+    ({ subdomain: 'app', domain: 'example.test', target_ip: '10.0.0.5', target_port: targetPort }) as unknown as Service;
+
+  it('keeps 0, which is a name published in DNS alone', () => {
+    // `|| 80` made it port 80 on the next save, and every check from then on probed that
+    // port and reported the service down.
+    expect(toFormState(saved(0)).target_port).toBe(0);
+  });
+
+  it('keeps a real port as it is', () => {
+    expect(toFormState(saved(8080)).target_port).toBe(8080);
+  });
+
+  it('falls back to the form default only when there is no number to read', () => {
+    expect(toFormState(saved(undefined)).target_port).toBe(initialForm.target_port);
+    expect(toFormState(saved('later')).target_port).toBe(initialForm.target_port);
   });
 });

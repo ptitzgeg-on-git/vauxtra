@@ -27,11 +27,12 @@ from app.text import plural, verb
 from app.validators import (
     DOMAIN_REASONS,
     FQDN_REASONS,
+    NO_PORT,
     SUBDOMAIN_REASONS,
     domain_problem,
     fqdn_problem,
     is_valid_hostname,
-    is_valid_port,
+    is_valid_service_port,
     normalize_domain,
     subdomain_problem,
 )
@@ -350,21 +351,37 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
     # Vauxtra that cannot see the target's VLAN while the reverse proxy can, a firewall that
     # only opens for the proxy, a backend switched off while its route is prepared, a name
     # only the proxy's Docker network resolves.
-    started = time.monotonic()
-    reachable, detail = _service_target_reachable(body.target_ip, body.target_port)
-    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-    checks.append(
-        {
-            "name": "target_reachable",
-            "ok": reachable,
-            "blocking": False,
-            **(
-                _detail("target_reachable", detail, ms=elapsed_ms)
-                if reachable
-                else _detail("target_unreachable", f"Target not reachable: {detail}", reason=detail)
-            ),
-        }
-    )
+    #
+    # A service published in DNS alone has no port, so there is nothing to connect to: the
+    # check says so instead of probing port 0 and reporting the target down.
+    if body.target_port == NO_PORT:
+        checks.append(
+            {
+                "name": "target_reachable",
+                "ok": True,
+                "blocking": False,
+                **_detail(
+                    "target_no_port",
+                    "No port: the service is only published in DNS, so there is nothing to reach",
+                ),
+            }
+        )
+    else:
+        started = time.monotonic()
+        reachable, detail = _service_target_reachable(body.target_ip, body.target_port)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        checks.append(
+            {
+                "name": "target_reachable",
+                "ok": reachable,
+                "blocking": False,
+                **(
+                    _detail("target_reachable", detail, ms=elapsed_ms)
+                    if reachable
+                    else _detail("target_unreachable", f"Target not reachable: {detail}", reason=detail)
+                ),
+            }
+        )
 
     if body.forward_scheme == "https" and int(body.target_port) == 80:
         checks.append(
@@ -698,8 +715,8 @@ class ServiceIn(BaseModel):
     @field_validator("target_port")
     @classmethod
     def val_port(cls, v):
-        if not is_valid_port(v):
-            raise ValueError("Invalid port (1–65535)")
+        if not is_valid_service_port(v):
+            raise ValueError("Invalid port (1–65535, or 0 for a service published in DNS only)")
         return int(v)
 
     @field_validator("forward_scheme")
@@ -745,6 +762,23 @@ class ServiceIn(BaseModel):
     def validate_mode_dependencies(self):
         if self.expose_mode == "tunnel" and not self.tunnel_provider_id:
             raise ValueError("Tunnel provider is required in tunnel mode")
+        return self
+
+    @model_validator(mode="after")
+    def validate_port_when_forwarded(self):
+        # `NO_PORT` is a service that is a name in DNS and nothing else, and it is accepted
+        # for that alone. A proxy host or a tunnel rule forwards to a port: pointed at 0 it
+        # is a route to nowhere, so it is refused here, before any provider is asked.
+        forwarded = (
+            self.expose_mode == "tunnel"
+            or bool(self.proxy_provider_id)
+            or bool(self.extra_proxy_provider_ids)
+        )
+        if self.target_port == NO_PORT and forwarded:
+            raise ValueError(
+                "A port is required when a proxy or a tunnel forwards to the service "
+                "(0 is only for a service published in DNS alone)"
+            )
         return self
 
     @model_validator(mode="after")
@@ -1563,6 +1597,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
              new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
              stored_dns_ip, next_npm_host_id, body.icon_url, sid),
         )
+        # The last probe of a service that no longer has a port measured a port it no
+        # longer names. Nothing probes it from now on, so an "error" left standing would
+        # be the last word about it forever.
+        if body.target_port == NO_PORT:
+            conn.execute("UPDATE services SET status='unknown' WHERE id=?", (sid,))
     except sqlite3.IntegrityError:
         refusal = _hostname_taken(conn, new_public_host, exclude_id=sid)
         conn.close()
@@ -1907,13 +1946,18 @@ def _check_one(sid: int) -> dict:
 
     status     = "unknown"
     latency_ms = None
+    # A service without a port is a name in DNS and nothing more: there is no connection to
+    # open, and a probe of port 0 would only write "down" into its history. Its name is
+    # still resolved below, which is the one thing about it that can be checked.
+    tested     = int(svc["target_port"] or 0) != NO_PORT
     start      = time.monotonic()
-    try:
-        with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
-            status     = "ok"
-            latency_ms = round((time.monotonic() - start) * 1000, 1)
-    except OSError:
-        status = "error"
+    if tested:
+        try:
+            with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
+                status     = "ok"
+                latency_ms = round((time.monotonic() - start) * 1000, 1)
+        except OSError:
+            status = "error"
 
     public_host = _service_public_hostname(
         (svc["expose_mode"] or "proxy_dns").strip().lower(),
@@ -1929,18 +1973,28 @@ def _check_one(sid: int) -> dict:
     except socket.gaierror:
         dns_resolved = []
 
-    conn.execute(
-        "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-        (status, sid),
-    )
-    conn.execute(
-        "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-        (sid, status),
-    )
+    if tested:
+        conn.execute(
+            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
+            (status, sid),
+        )
+        conn.execute(
+            "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+            (sid, status),
+        )
+    else:
+        conn.execute("UPDATE services SET status='unknown' WHERE id=?", (sid,))
     conn.commit()
     conn.close()
-    add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
-    return {"id": sid, "status": status, "latency_ms": latency_ms, "dns_resolved": dns_resolved}
+    if tested:
+        add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
+    return {
+        "id": sid,
+        "status": status,
+        "latency_ms": latency_ms,
+        "dns_resolved": dns_resolved,
+        "tested": tested,
+    }
 
 
 @router.post("/api/services/{sid}/check")
@@ -1978,8 +2032,16 @@ def check_all(request: Request):
     # the LATENCY column.
     results: list[dict] = []
 
+    skipped_tunnel = skipped_no_port = 0
     for svc in services:
+        # Tunnels are checked through their provider, and a service without a port has
+        # nothing to connect to: neither is probed. They are counted apart because the panel
+        # says why a service was left out, and the two reasons have nothing in common.
         if (svc["expose_mode"] or "").strip().lower() == "tunnel":
+            skipped_tunnel += 1
+            continue
+        if not svc["target_port"]:
+            skipped_no_port += 1
             continue
         status     = "unknown"
         latency_ms = None
@@ -2012,10 +2074,13 @@ def check_all(request: Request):
         f"Manual check of {plural(len(results), 'service')}: {ok_count} ok, {error_count} error",
     )
     return {
-        "checked": len(services),
-        "ok":      ok_count,
-        "error":   error_count,
-        "results": results,
+        "checked":         len(services),
+        "ok":              ok_count,
+        "error":           error_count,
+        "skipped":         skipped_tunnel + skipped_no_port,
+        "skipped_tunnel":  skipped_tunnel,
+        "skipped_no_port": skipped_no_port,
+        "results":         results,
     }
 
 

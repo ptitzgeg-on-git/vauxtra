@@ -19,10 +19,10 @@
  */
 
 import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
-import type { Provider, Service } from '@/types/api';
+import type { PreflightResult, Provider, Service } from '@/types/api';
 
 const PROXY: Provider = {
   id: 7,
@@ -82,6 +82,14 @@ function suggestion(): Promise<unknown> {
   });
 }
 
+/** A preflight with nothing to report, so the review step has a summary to read. */
+const PREFLIGHT: PreflightResult = {
+  ok: true,
+  public_host: 'grafana.example.test',
+  checks: [],
+  summary: { blocking_failures: 0, warnings: 0, total: 0 },
+};
+
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn((path: string) => {
@@ -91,13 +99,14 @@ vi.mock('@/api/client', () => ({
       if (path === '/domains') return Promise.resolve(['example.test']);
       return Promise.resolve([]);
     }),
-    post: vi.fn(() => Promise.resolve({ ok: true })),
+    post: vi.fn((path: string) => Promise.resolve(path === '/services/preflight' ? PREFLIGHT : { ok: true })),
     put: vi.fn(() => Promise.resolve({ ok: true })),
     delete: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }));
 
 const { ExposeModal, withHostHighlighted } = await import('./ExposeModal');
+const { api } = await import('@/api/client');
 
 const show = () =>
   renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={SERVICE} />);
@@ -205,6 +214,53 @@ describe('ExposeModal, once a target is typed by hand', () => {
     // The automatic-update switch below reads the same lookup, so the failure still
     // describes something the operator is about to decide on.
     expect(unreadAlert()).not.toBeNull();
+  });
+});
+
+/**
+ * A route without a port, sent from the form.
+ *
+ * `validate_port_when_forwarded` (`app/api/services.py`) takes port 0 only for a name
+ * published in DNS alone: a proxy host or a tunnel rule pointed at it is a route to nowhere.
+ * The form required a port in every mode, so the one route that has none could not be
+ * saved, and the 0 of a saved one came back as 80.
+ */
+describe('ExposeModal, a route without a port', () => {
+  const DNS_ONLY: Service = {
+    ...SERVICE,
+    target_port: 0,
+    proxy_provider_id: null,
+    public_target_mode: 'manual',
+    auto_update_dns: false,
+    dns_ip: '203.0.113.5',
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.post).mockClear();
+  });
+
+  it('sends a route published in DNS alone to the checks with no port', async () => {
+    renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={DNS_ONLY} />);
+    await targetField();
+    await userEvent.click(continueButton());
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/services/preflight', expect.objectContaining({ target_port: 0 })),
+    );
+    expect(screen.queryByText('expose.validation.port_required')).toBeNull();
+  });
+
+  it('refuses a route behind a proxy that has no port', async () => {
+    renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={{ ...SERVICE, target_port: 0 }} />);
+    await targetField();
+    // Submitted directly: a click stops at the browser's own `required` on the empty field
+    // first, and this is the rule behind it, the one the API applies.
+    const button = continueButton();
+    if (!(button instanceof HTMLButtonElement) || !button.form) throw new Error('Continue is not tied to the form');
+    fireEvent.submit(button.form);
+
+    expect(await screen.findByText('expose.validation.port_required')).not.toBeNull();
+    expect(api.post).not.toHaveBeenCalledWith('/services/preflight', expect.anything());
   });
 });
 

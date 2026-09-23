@@ -51,6 +51,7 @@ import { ServiceRow } from '@/components/features/services/ServiceRow';
 import {
   MODE_FILTERS,
   buildServicePayload,
+  bulkCheckSummary,
   isStatusFilter,
   matchesMode,
   matchesSearch,
@@ -598,12 +599,16 @@ export function Services() {
       setBulkChecking(true);
       let ok = 0;
       let failed = 0;
+      // A service without a port comes back untested: `bulkCheckSummary` says why it is
+      // counted apart.
+      let untested = 0;
       for (const service of targets) {
         startAction(service.id);
         try {
           const result = await api.post<ServiceCheckResult>(`/services/${service.id}/check`);
           setCheckById((prev) => ({ ...prev, [service.id]: result }));
-          if (result.status === 'ok') ok += 1;
+          if (result.tested === false) untested += 1;
+          else if (result.status === 'ok') ok += 1;
           else failed += 1;
         } catch {
           failed += 1;
@@ -614,14 +619,10 @@ export function Services() {
       setBulkChecking(false);
       invalidateServices();
       clearSelection();
-      if (failed === 0) toast.success(t('services.bulk.result.checked', { count: ok }));
-      else toast(
-          t('services.bulk.result.checked_mixed', {
-            ok: t('services.bulk.result.reachable', { count: ok }),
-            failed: t('services.bulk.result.unreachable', { count: failed }),
-          }),
-          { icon: '⚠️', duration: 6000 },
-        );
+      const { message, tone } = bulkCheckSummary({ ok, failed, untested }, t);
+      if (tone === 'warning') toast(message, { icon: '⚠️', duration: 6000 });
+      else if (tone === 'success') toast.success(message);
+      else toast(message, { duration: 6000 });
     },
     [startAction, endAction, invalidateServices, clearSelection, t],
   );
