@@ -4,7 +4,9 @@ Storage convention (DB columns):
   username → Zone ID   (optional — auto-detected per domain if blank)
   password → API Token (required — needs at least Zone:DNS:Edit permission)
   url      → ignored   (always https://api.cloudflare.com)
-  extra    → JSON {"proxied": true/false} (optional, default false)
+  extra    → JSON {"proxied": true/false} (optional, default false): the orange cloud of
+             a new A or AAAA record. A record already there keeps its own, and a CNAME to
+             a tunnel is always proxied (see `add_rewrite`).
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ class CloudflareProvider(DNSProvider):
         self._client = _cf.Cloudflare(api_token=api_token, timeout=PROVIDER_TIMEOUT)
         self._api_url = "https://api.cloudflare.com/client/v4"
         self._proxied = bool((extra or {}).get("proxied", False))
+        # name → (is a CNAME, orange cloud) of each record `delete_rewrite` removed, so that
+        # the record `add_rewrite` then puts back under that name keeps its flag.
+        self._removed: dict[str, tuple[bool, bool]] = {}
 
     def _api_request(self, method: str, path: str, **kwargs) -> dict:
         headers = kwargs.pop("headers", {}) or {}
@@ -236,13 +241,42 @@ class CloudflareProvider(DNSProvider):
             return ""
         return self._clean_zone_name(getattr(zone, "name", None))
 
-    def add_rewrite(self, domain: str, ip: str) -> bool:
+    @staticmethod
+    def _is_tunnel_target(value: str) -> bool:
+        """True for `<tunnel id>.cfargotunnel.com`, the name a Cloudflare Tunnel answers on.
+
+        That name only resolves inside Cloudflare's proxy. A record pointing at it that is
+        not proxied answers a CNAME and no address: measured in production on 2026-09-23,
+        through two public resolvers, on a test name this class had just created, while the
+        proxied record beside it, same target, answered two addresses.
+        """
+        return (value or "").strip().strip(".").lower().endswith(".cfargotunnel.com")
+
+    @staticmethod
+    def _name_key(domain: str) -> str:
+        return (domain or "").strip().strip(".").lower()
+
+    def add_rewrite(self, domain: str, ip: str, *, proxied: bool | None = None) -> bool:
+        """Point `domain` at `ip`, creating the record or changing the one already there.
+
+        The orange cloud is the operator's setting, and a change of address does not change
+        it. It used to be rewritten from the integration's default, which is off, so moving
+        a proxied name to a new address turned it grey and put the origin's address in
+        public DNS. A record already there keeps its own flag. A new one takes, in this
+        order: the `proxied` its caller passes (`update_rewrite`, for the record it moves);
+        the flag of the record this instance just removed under the same name, when both
+        are addresses or both are CNAMEs (the push path corrects a drift by removing, then
+        adding); the integration's default.
+
+        One flag is not a choice: a CNAME to a tunnel only answers when proxied, so it is
+        created proxied, and one found grey is turned orange. The rule for every other
+        CNAME created it grey, and a grey one cuts its name off.
+        """
         zone_id = self._find_zone(domain)
         if not zone_id:
             return False
         rtype = self._record_type(ip)
-        # CNAME records must not be proxied (Cloudflare error 1014 risk)
-        proxied = self._proxied if rtype != "CNAME" else False
+        tunnel = rtype == "CNAME" and self._is_tunnel_target(ip)
         try:
             # Upsert: check if a matching record already exists
             for record in self._client.dns.records.list(
@@ -254,9 +288,10 @@ class CloudflareProvider(DNSProvider):
                     # `cloudflare` is pinned below 5 for that reason; this check is what
                     # makes the wrong answer harmless rather than destructive.
                     continue
-                if record.content == ip:
+                if record.content == ip and (bool(record.proxied) or not tunnel):
                     return True  # already exists with same content
-                # Exists with different content → update it
+                # Exists with different content, or a tunnel CNAME left grey → update it
+                keep = bool(record.proxied) if proxied is None else proxied
                 self._client.dns.records.update(
                     dns_record_id=record.id,
                     zone_id=zone_id,
@@ -264,21 +299,63 @@ class CloudflareProvider(DNSProvider):
                     type=rtype,
                     content=ip,
                     ttl=1,
-                    proxied=proxied,
+                    proxied=tunnel or keep,
                 )
                 return True
             # No existing record → create
+            if proxied is None:
+                removed = self._removed.get(self._name_key(domain))
+                if removed and removed[0] == (rtype == "CNAME"):
+                    proxied = removed[1]
+            if proxied is None:
+                # Any other CNAME is created grey: a proxied one pointing at a name on
+                # another Cloudflare account answers error 1014.
+                proxied = self._proxied if rtype != "CNAME" else False
             self._client.dns.records.create(
                 zone_id=zone_id,
                 name=domain,
                 type=rtype,
                 content=ip,
                 ttl=1,
-                proxied=proxied,
+                proxied=tunnel or proxied,
             )
             return True
         except Exception:
             return False
+
+    def _proxied_of(self, domain: str, ip: str) -> bool | None:
+        """The orange cloud of the record `domain` → `ip`, or None when none is read."""
+        zone_id = self._find_zone(domain)
+        if not zone_id:
+            return None
+        try:
+            for record in self._client.dns.records.list(
+                zone_id=zone_id, name={"exact": domain}, type=self._record_type(ip)
+            ):
+                if self._same_name(record.name, domain) and record.content == ip:
+                    return bool(record.proxied)
+        except Exception:
+            return None
+        return None
+
+    def update_rewrite(self, old_domain: str, old_ip: str, new_domain: str, new_ip: str) -> bool:
+        """The inherited move, carrying the old record's orange cloud to its new name.
+
+        A new address under the same name is an update in place, which keeps the flag by
+        itself. A new name is a new record, which the inherited move created from the
+        integration's default: a proxied name came back grey after a rename. The flag only
+        crosses between two addresses or two CNAMEs, as in `add_rewrite`: an address's
+        orange cloud says nothing about a CNAME's target, which a proxy may not reach.
+        """
+        if self._same_name(old_domain, new_domain):
+            return super().update_rewrite(old_domain, old_ip, new_domain, new_ip)
+        carried = None
+        if (self._record_type(old_ip) == "CNAME") == (self._record_type(new_ip) == "CNAME"):
+            carried = self._proxied_of(old_domain, old_ip)
+        if not self.add_rewrite(new_domain, new_ip, proxied=carried):
+            return False
+        self.delete_rewrite(old_domain, old_ip)  # a failed removal answers True, as inherited
+        return True
 
     def delete_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)
@@ -299,6 +376,7 @@ class CloudflareProvider(DNSProvider):
                     self._client.dns.records.delete(
                         dns_record_id=record.id, zone_id=zone_id
                     )
+                    self._removed[self._name_key(domain)] = (rtype == "CNAME", bool(record.proxied))
                     return True
             return False
         except Exception:
