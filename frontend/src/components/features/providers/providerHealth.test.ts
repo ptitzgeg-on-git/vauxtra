@@ -26,9 +26,11 @@
 import { describe, expect, it } from 'vitest';
 import en from '@/locales/en.json';
 
-import type { Provider } from '@/types/api';
+import type { Provider, ProviderValidationCheck } from '@/types/api';
 
 import {
+  checkFailed,
+  checkTone,
   getHealthScore,
   getOperationalStatus,
   getProviderSeverity,
@@ -178,5 +180,47 @@ describe('the chip on the card and the counters above it', () => {
       const { labelKey } = getOperationalStatus(p, getHealthScore(p, signals, t));
       expect(keys, `${name} -> ${labelKey}`).toContain(labelKey);
     }
+  });
+});
+
+describe('a check the API did not run', () => {
+  // What a Cloudflare tunnel answers on a routine test with every read granted: the write
+  // probe is skipped (safe mode) and the zone lookup has no hostname to look up. Read as two
+  // failed warnings, that scored 90 and said "Passed with 2 warnings", and nothing the
+  // operator could change would ever clear either.
+  const TUNNEL_CHECKS: ProviderValidationCheck[] = [
+    { name: 'token_verify', ok: true, blocking: true },
+    { name: 'tunnel_read', ok: true, blocking: true },
+    { name: 'tunnel_details', ok: true, blocking: true },
+    { name: 'tunnel_config_read', ok: true, blocking: true },
+    { name: 'tunnel_config_write', ok: false, blocking: false, skipped: true, detail_code: 'tunnel_config_write_skipped' },
+    { name: 'zone_lookup', ok: false, blocking: false, skipped: true, detail_code: 'zone_lookup_no_hint' },
+  ];
+  const tested = (checks: ProviderValidationCheck[]): HealthSignals => ({
+    diag: { ok: true, testedAt: 1, validation: { checks } },
+  });
+
+  it('costs a healthy tunnel nothing', () => {
+    expect(getHealthScore(provider(true), tested(TUNNEL_CHECKS), t)).toEqual({ score: 100, severity: 'ok' });
+  });
+
+  it('is neither a failure nor a pass', () => {
+    for (const check of TUNNEL_CHECKS.filter((c) => c.skipped)) {
+      expect(checkFailed(check), check.name).toBe(false);
+      expect(checkTone(check), check.name).toBe('skipped');
+    }
+  });
+
+  it('leaves a check that ran and failed where it was', () => {
+    const lookupFailed: ProviderValidationCheck = { name: 'zone_lookup', ok: false, blocking: false, detail_code: 'zone_lookup_failed' };
+    const tokenRefused: ProviderValidationCheck = { name: 'token_verify', ok: false, blocking: true };
+    expect(checkTone(lookupFailed)).toBe('warning');
+    expect(checkTone(tokenRefused)).toBe('danger');
+    expect(getHealthScore(provider(true), tested([...TUNNEL_CHECKS, lookupFailed]), t).score).toBe(95);
+    expect(getHealthScore(provider(true), tested([...TUNNEL_CHECKS, tokenRefused]), t).score).toBe(75);
+  });
+
+  it('draws a check that carries no blocking flag the way it was always drawn', () => {
+    expect(checkTone({ name: 'older_api', ok: false })).toBe('danger');
   });
 });

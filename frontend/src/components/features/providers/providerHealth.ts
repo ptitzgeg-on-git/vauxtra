@@ -50,6 +50,37 @@ export interface HealthSignals {
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 /**
+ * Whether a validation check ran and did not pass.
+ *
+ * `!check.ok` alone is not that question. A Cloudflare tunnel skips two checks on every
+ * routine test -- the write probe (safe mode) and the zone lookup (no hostname) -- and both
+ * come back with `ok: false`, because nothing was verified. Read as failures they cost the
+ * tunnel 10 points and printed "Passed with 2 warnings" on a tunnel with every read granted,
+ * and no setting the operator could change would ever clear them. `skipped` is how the API
+ * says a check was not run; this is the one place that reads it.
+ */
+export function checkFailed(check: ProviderValidationCheck): boolean {
+  return !check.ok && !check.skipped;
+}
+
+/** How one validation line is drawn, in both the Integrations modal and the setup wizard. */
+export type CheckTone = 'success' | 'skipped' | 'warning' | 'danger';
+
+/**
+ * Passed, not run, failed without stopping anything, failed and blocking.
+ *
+ * Both lists used to draw every line that was not `ok` as a red cross, so "no hostname was
+ * given" and "the token was refused" looked the same, and the non-blocking one sat in red
+ * under a green "Connection validated". A check with no `blocking` at all is still drawn as
+ * blocking, in the old red: that is the safe reading of a check that does not say.
+ */
+export function checkTone(check: ProviderValidationCheck): CheckTone {
+  if (check.ok) return 'success';
+  if (check.skipped) return 'skipped';
+  return check.blocking === false ? 'warning' : 'danger';
+}
+
+/**
  * What a validation check says, in the reader's language. The API sends the English sentence
  * in `detail` and the short code it was written from in `detail_code`; the code wins when the
  * build knows it, and the sentence stands in when the API is newer than the locale files.
@@ -114,8 +145,8 @@ export function getHealthScore(provider: Provider, signals: HealthSignals, t: Tr
     }
     const checks = diag.validation?.checks || [];
     if (checks.length > 0) {
-      const blocking = checks.filter((c) => c.blocking && !c.ok);
-      const warnings = checks.filter((c) => !c.blocking && !c.ok).length;
+      const blocking = checks.filter((c) => c.blocking && checkFailed(c));
+      const warnings = checks.filter((c) => !c.blocking && checkFailed(c)).length;
       score -= blocking.length * 25;
       score -= warnings * 5;
       if (blocking.length > 0 && !reason) {

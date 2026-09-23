@@ -412,5 +412,50 @@ class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
         self.assertFalse(self.p._delete_dns_record("app.example.com"))
 
 
+class TestCFTunnelChecksThatWereNotRun(unittest.TestCase):
+    """A routine test skips two checks on purpose; neither is something to fix.
+
+    The write probe only runs when asked for, and the zone lookup needs a hostname. Both
+    used to come back as failed non-blocking checks, so a tunnel with every read granted
+    scored 90 in the UI with "2 warnings" that nothing the operator did could clear.
+    """
+
+    def setUp(self):
+        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p._request_detailed = MagicMock(return_value={"ok": True, "status": 200, "result": {}, "errors": []})
+
+    def _by_name(self, result: dict) -> dict:
+        return {c["name"]: c for c in result["checks"]}
+
+    def test_a_routine_test_raises_no_warning(self):
+        result = self.p.validate_permissions()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"], [])
+
+    def test_the_two_checks_not_run_say_so_and_do_not_claim_a_pass(self):
+        checks = self._by_name(self.p.validate_permissions())
+        skipped = sorted(name for name, c in checks.items() if c.get("skipped"))
+        self.assertEqual(skipped, ["tunnel_config_write", "zone_lookup"])
+        for name in skipped:
+            # Nothing was verified: a client that does not know the flag must still not
+            # read either of them as a pass.
+            self.assertFalse(checks[name]["ok"])
+            self.assertFalse(checks[name]["blocking"])
+
+    def test_a_check_that_ran_and_failed_is_still_a_warning(self):
+        self.p._find_zone = MagicMock(return_value="")
+        result = self.p.validate_permissions(hostname_hint="app.example.com")
+        lookup = self._by_name(result)["zone_lookup"]
+        self.assertNotIn("skipped", lookup)
+        self.assertEqual(result["warnings"], [lookup["detail"]])
+
+    def test_a_write_probe_that_ran_is_not_marked_skipped(self):
+        self.p._get_configuration = MagicMock(return_value={"ingress": []})
+        self.p._put_configuration = MagicMock(return_value=True)
+        write = self._by_name(self.p.validate_permissions(write_probe=True))["tunnel_config_write"]
+        self.assertTrue(write["ok"])
+        self.assertNotIn("skipped", write)
+
+
 if __name__ == "__main__":
     unittest.main()

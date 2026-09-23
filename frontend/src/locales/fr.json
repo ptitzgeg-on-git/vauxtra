@@ -1016,6 +1016,8 @@
   "providers.diag.passed": "Toutes les vérifications sont passées",
   "providers.diag.passed_warnings_one": "Réussi avec {count} avertissement",
   "providers.diag.passed_warnings_other": "Réussi avec {count} avertissements",
+  "providers.diag.passed_skipped_one": "Réussi, {count} vérification non lancée",
+  "providers.diag.passed_skipped_other": "Réussi, {count} vérifications non lancées",
   "providers.diag.test_failed": "Échec de la connexion",
   "providers.diag.test_ok": "Connexion OK",
   "providers.empty_body": "Connectez un reverse proxy, un tunnel ou un fournisseur DNS pour que Vauxtra puisse publier vos services.",

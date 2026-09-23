@@ -1016,6 +1016,8 @@
   "providers.diag.passed": "Alle controles geslaagd",
   "providers.diag.passed_warnings_one": "Geslaagd met {count} waarschuwing",
   "providers.diag.passed_warnings_other": "Geslaagd met {count} waarschuwingen",
+  "providers.diag.passed_skipped_one": "Geslaagd, {count} controle niet uitgevoerd",
+  "providers.diag.passed_skipped_other": "Geslaagd, {count} controles niet uitgevoerd",
   "providers.diag.test_failed": "Verbinding mislukt",
   "providers.diag.test_ok": "Verbinding OK",
   "providers.empty_body": "Verbind een reverse proxy, een tunnel of een DNS-provider zodat Vauxtra je services kan publiceren.",

@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { AlertTriangle, BookOpen, CheckCircle2, ChevronRight, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
+import { AlertTriangle, BookOpen, ChevronRight, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
 import {
   Badge,
   Card,
@@ -39,7 +39,8 @@ import {
   type ProviderTypeMeta,
   type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
-import { checkDetailText, checkLabelText, healthStatusLabel } from '@/components/features/providers/providerHealth';
+import { checkFailed, healthStatusLabel } from '@/components/features/providers/providerHealth';
+import { ValidationCheckLine } from '@/components/features/providers/ValidationCheckLine';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
 
@@ -226,21 +227,11 @@ export function ProviderFormStep({
     >
       {validationResult.validation?.checks && validationResult.validation.checks.length > 0 && (
         <ul className="space-y-1">
+          {/* On a failure, only what failed: a check that was merely not run is not one. */}
           {validationResult.validation.checks
-            .filter((check) => (validationResult.ok ? true : !check.ok))
+            .filter((check) => (validationResult.ok ? true : checkFailed(check)))
             .map((check, i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                {check.ok ? (
-                  <CheckCircle2 aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-success" />
-                ) : (
-                  <X aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
-                )}
-                {/* Same rule as the Integrations modal: the translated sentence, then the
-                    translated check name, then -- only for a check that carries no name at
-                    all -- the generic word. A name this build does not know shows through as
-                    itself, which is more use to a reader than "Check". */}
-                <span>{checkDetailText(check, t) || checkLabelText(check.name, t) || t('provider_modal.validation.check_fallback')}</span>
-              </li>
+              <ValidationCheckLine key={`${check.name || 'check'}-${i}`} check={check} />
             ))}
         </ul>
       )}
