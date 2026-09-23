@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.api.sync import (
-    _records_named,
+    _dns_record_kept,
+    _host_serves,
     push_extra_targets,
     withdraw_extra_targets,
     withdraw_service_routes,
@@ -1241,7 +1242,7 @@ def add_service(request: Request, body: ServiceIn):
                     errors.append("Failed to create tunnel route")
                     add_log("error", f"Tunnel route failed: {public_host}")
             except Exception as e:
-                errors.append(str(e))
+                errors.append(redact_query_secrets(str(e)))
     else:
         if body.proxy_provider_id and not body.enabled:
             # Same reasoning as the tunnel branch. `npm_host_id` stays NULL, which is exactly
@@ -1269,7 +1270,7 @@ def add_service(request: Request, body: ServiceIn):
                         errors.append("Failed to create proxy host")
                         add_log("error", f"Proxy failed: {public_host}")
                 except Exception as e:
-                    errors.append(str(e))
+                    errors.append(redact_query_secrets(str(e)))
 
         if body.dns_provider_id:
             row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
@@ -1287,7 +1288,7 @@ def add_service(request: Request, body: ServiceIn):
                         errors.append("Failed to create DNS rewrite")
                         add_log("error", f"DNS failed: {public_host}")
                 except Exception as e:
-                    errors.append(str(e))
+                    errors.append(redact_query_secrets(str(e)))
         else:
             dns_target = body.dns_ip
 
@@ -1382,21 +1383,51 @@ def add_service(request: Request, body: ServiceIn):
     return JSONResponse({"id": sid, "fqdn": public_host, "errors": errors}, status_code=201 if not errors else 207)
 
 
-def _dns_record_kept(dns, host: str, answer: str) -> bool:
-    """Whether `dns` still holds `host` -> `answer` after refusing to delete it.
+def _proxy_host_kept(proxy, host: str) -> bool:
+    """Whether `proxy` still holds a host for `host` after refusing to delete it.
 
-    A refused `delete_rewrite` is not always a record left behind. The Cloudflare one
-    answers False when nothing matched, and a disabled service is withdrawn again on every
-    edit, long after the first withdrawal took its record. Only the listing tells the two
-    apart. A listing that fails tells nothing, and that counts as kept: "withdrawn" is
-    the one claim nothing here has established.
+    The proxy half of `_dns_record_kept`. NPM answers the deletion of an id it no longer
+    holds with the same False as a refusal, and a host removed by hand leaves exactly that
+    behind. A listing that fails counts as kept, for the same reason. Read here rather than
+    through `_find_host`, which answers None for a listing that raised a ValueError -- and
+    a reply that is not JSON raises one.
     """
-    wanted = (answer or "").strip().rstrip(".").lower()
+    wanted = (host or "").strip().lower()
     try:
-        held = _records_named(dns, host)
+        return any(_host_serves(h, wanted) for h in proxy.list_hosts() or [])
     except Exception:
         return True
-    return any(str(r.get("answer") or "").strip().rstrip(".").lower() == wanted for r in held)
+
+
+def _retire(errors: list[str], row, what: str, host: str, delete, kept=None) -> None:
+    """Remove the route an edit moved away from, and say so when it stays.
+
+    `delete` removes the route from the provider built out of `row`. `kept` reads that
+    provider's listing after a refusal, for the providers whose False also means there was
+    nothing to delete (see `_dns_record_kept`). Without it a refusal is one: Cloudflare
+    Tunnel answers True for a rule that is already gone.
+
+    An edit that moves a service to another provider, another hostname or another mode
+    publishes the new route and then removes the old one. Those removals dropped the
+    provider's answer and wrote an exception to the journal alone, so a refusal left the
+    previous route serving the hostname under a 200 with `errors: []`: the interface showed
+    the service moved, and the old holder went on answering for it.
+
+    A read-only provider is left out, as the withdrawal of the former targets leaves it
+    out: nothing was ever pushed there, and its refusal would be reported on every such edit.
+    """
+    if PROVIDER_TYPES.get(row["type"], {}).get("read_only"):
+        return
+    try:
+        provider = create_provider(row)
+        if delete(provider) or (kept is not None and not kept(provider)):
+            return
+        errors.append(f"Failed to withdraw the previous {what}: {host}")
+        add_log("error", f"{what[0].upper()}{what[1:]} still published: {host}")
+    except Exception as e:
+        reason = redact_query_secrets(str(e))
+        errors.append(f"Could not withdraw the previous {what}: {reason}")
+        add_log("warn", f"Could not withdraw the previous {what} ({host}): {reason}")
 
 
 @router.put("/api/services/{sid}")
@@ -1480,17 +1511,26 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             if old["proxy_provider_id"] and old["npm_host_id"]:
                 old_proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["proxy_provider_id"],)).fetchone()
                 if old_proxy_row:
-                    try:
-                        create_provider(old_proxy_row).delete_host(old["npm_host_id"])
-                    except Exception as e:
-                        add_log("warn", f"Could not clean up old proxy host during mode switch: {e}")
+                    # Addressed as the withdrawal of a former target addresses it: a
+                    # provider that keys its rules on the name is asked for the name, whatever
+                    # an older rename left in `npm_host_id`.
+                    _retire(
+                        errors, old_proxy_row, "proxy host", old_public_host,
+                        lambda p: p.delete_host(
+                            old_public_host
+                            if host_id_is_hostname(p, old_proxy_row["type"])
+                            else old["npm_host_id"]
+                        ),
+                        lambda p: _proxy_host_kept(p, old_public_host),
+                    )
             if old["dns_provider_id"] and old["dns_ip"]:
                 old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["dns_provider_id"],)).fetchone()
                 if old_dns_row:
-                    try:
-                        create_provider(old_dns_row).delete_rewrite(old_public_host, old["dns_ip"])
-                    except Exception as e:
-                        add_log("warn", f"Could not clean up old DNS rewrite during mode switch: {e}")
+                    _retire(
+                        errors, old_dns_row, "DNS record", old_public_host,
+                        lambda p: p.delete_rewrite(old_public_host, old["dns_ip"]),
+                        lambda p: _dns_record_kept(p, old_public_host, old["dns_ip"]),
+                    )
 
         tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.tunnel_provider_id,)).fetchone()
         if not tunnel_row:
@@ -1524,16 +1564,10 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                 # lives elsewhere and would survive the withdrawal above.
                 old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
                 if old_tunnel_row:
-                    try:
-                        if not create_provider(old_tunnel_row).delete_host(old_public_host):
-                            errors.append(
-                                f"Failed to withdraw the previous tunnel route: {old_public_host}"
-                            )
-                            add_log("error", f"Tunnel route still published: {old_public_host}")
-                    except Exception as e:
-                        add_log("warn", f"Could not withdraw the previous tunnel route: {e}")
-                        reason = redact_query_secrets(str(e))
-                        errors.append(f"Could not withdraw the previous tunnel route: {reason}")
+                    _retire(
+                        errors, old_tunnel_row, "tunnel route", old_public_host,
+                        lambda p: p.delete_host(old_public_host),
+                    )
         else:
             try:
                 tunnel = create_provider(tunnel_row)
@@ -1561,10 +1595,10 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                     if ok and old_mode == "tunnel" and old["tunnel_provider_id"]:
                         old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
                         if old_tunnel_row:
-                            try:
-                                create_provider(old_tunnel_row).delete_host(old_public_host)
-                            except Exception as e:
-                                add_log("warn", f"Could not clean up old tunnel during mode switch: {e}")
+                            _retire(
+                                errors, old_tunnel_row, "tunnel route", old_public_host,
+                                lambda p: p.delete_host(old_public_host),
+                            )
 
                 if ok:
                     add_log("info", f"Tunnel updated: {new_public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
@@ -1572,16 +1606,16 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                     errors.append("Failed to update tunnel route")
                     add_log("error", f"Tunnel update failed: {new_public_host}")
             except Exception as e:
-                errors.append(str(e))
+                errors.append(redact_query_secrets(str(e)))
 
     else:
         if old_mode == "tunnel" and old["tunnel_provider_id"]:
             old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
             if old_tunnel_row:
-                try:
-                    create_provider(old_tunnel_row).delete_host(old_public_host)
-                except Exception as e:
-                    add_log("warn", f"Could not clean up old tunnel during mode switch: {e}")
+                _retire(
+                    errors, old_tunnel_row, "tunnel route", old_public_host,
+                    lambda p: p.delete_host(old_public_host),
+                )
 
         # Skip proxy ops if service stays disabled and host was already removed from provider
         # (host will be re-deployed when the service is enabled again)
@@ -1593,6 +1627,9 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             if not proxy_row:
                 errors.append("Proxy provider not found")
             else:
+                # The success line reads this block's own failures: the cleanup of a tunnel
+                # route above can now report one, and it is not the proxy's.
+                failed_before = len(errors)
                 try:
                     proxy = create_provider(proxy_row)
                     cert_id = proxy.find_best_certificate(body.domain)
@@ -1627,22 +1664,20 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                             body.websocket,
                             cert_id,
                         )
+                        # The host this service had on another proxy is not removed here: the
+                        # former primaries are withdrawn below, with the other former targets.
+                        # Removing it here as well deleted it twice, and NPM answers the second
+                        # deletion of an id with a 404: every move to another proxy came back
+                        # with an error about a host that had just been removed.
                         if created:
                             next_npm_host_id = created.get("id")
-                            if old_mode == "proxy_dns" and old["proxy_provider_id"] and old["npm_host_id"]:
-                                old_proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["proxy_provider_id"],)).fetchone()
-                                if old_proxy_row:
-                                    try:
-                                        create_provider(old_proxy_row).delete_host(old["npm_host_id"])
-                                    except Exception as e:
-                                        add_log("warn", f"Could not clean up old proxy host: {e}")
                         else:
                             errors.append("Failed to create proxy host")
 
-                    if not errors:
+                    if len(errors) == failed_before:
                         add_log("info", f"Proxy updated: {new_public_host} → {body.forward_scheme}://{body.target_ip}:{body.target_port}")
                 except Exception as e:
-                    errors.append(str(e))
+                    errors.append(redact_query_secrets(str(e)))
 
         if body.dns_provider_id and dns_ip and not body.enabled:
             # Publishing the record here and letting the enable/disable block below undo it
@@ -1707,15 +1742,16 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                             if old_mode == "proxy_dns" and old["dns_provider_id"] and old_dns_ip and moved:
                                 old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["dns_provider_id"],)).fetchone()
                                 if old_dns_row:
-                                    try:
-                                        create_provider(old_dns_row).delete_rewrite(old_public_host, old_dns_ip)
-                                    except Exception as e:
-                                        add_log("warn", f"Could not clean up old DNS rewrite: {e}")
+                                    _retire(
+                                        errors, old_dns_row, "DNS record", old_public_host,
+                                        lambda p: p.delete_rewrite(old_public_host, old_dns_ip),
+                                        lambda p: _dns_record_kept(p, old_public_host, old_dns_ip),
+                                    )
                             add_log("info", f"DNS updated: {new_public_host} → {dns_ip} ({dns_target_source})")
                         else:
                             errors.append("Failed to update DNS rewrite")
                 except Exception as e:
-                    errors.append(str(e))
+                    errors.append(redact_query_secrets(str(e)))
 
     stored_proxy_provider_id = body.proxy_provider_id if new_mode == "proxy_dns" else None
     stored_dns_provider_id = body.dns_provider_id if new_mode == "proxy_dns" else None
@@ -1920,7 +1956,12 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                                 errors.append("Failed to suspend the proxy host on disable")
                                 add_log("error", f"Proxy still serving: {new_public_host}", conn)
             except Exception as e:
-                add_log("warn", f"Could not manage proxy enabled state: {e}", conn)
+                # The journal alone heard about this one, so the host stayed as it was --
+                # still serving a service the interface now showed as off, or still
+                # suspended under one it showed as on -- behind a 200 with `errors: []`.
+                reason = redact_query_secrets(str(e))
+                add_log("warn", f"Could not manage proxy enabled state: {reason}", conn)
+                errors.append(f"Could not change the proxy host's state: {reason}")
 
         # DNS is deliberately not handled here any more. The block above now branches on
         # `body.enabled` and runs on every PUT, not only on a transition, so it already adds
@@ -2275,7 +2316,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
                                 else:
                                     errors.append(f"Service {sid_b}: failed to withdraw the tunnel route")
                     except Exception as e:
-                        errors.append(f"Service {sid_b}: tunnel state error — {e}")
+                        errors.append(f"Service {sid_b}: tunnel state error — {redact_query_secrets(str(e))}")
                 continue
 
             if mode != "proxy_dns":
@@ -2331,7 +2372,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
                                     errors.append(f"Service {sid_b}: failed to suspend the proxy host")
                                     add_log("error", f"Proxy still serving: {pub}", conn)
                 except Exception as e:
-                    errors.append(f"Service {sid_b}: proxy state error — {e}")
+                    errors.append(f"Service {sid_b}: proxy state error — {redact_query_secrets(str(e))}")
 
             # DNS provider: remove on disable, re-add on enable
             if svc["dns_provider_id"] and svc["dns_ip"]:
@@ -2340,8 +2381,16 @@ def bulk_action(body: _BulkActionBody, request: Request):
                     if dns_row:
                         dns = create_provider(dns_row)
                         if enable:
-                            dns.add_rewrite(pub, svc["dns_ip"])
-                            add_log("info", f"DNS re-added on enable: {pub} → {svc['dns_ip']}", conn)
+                            # The answer was dropped and the success line written anyway:
+                            # a DNS server that refused left the hostname unresolvable while
+                            # the batch reported it back on.
+                            if dns.add_rewrite(pub, svc["dns_ip"]):
+                                add_log("info", f"DNS re-added on enable: {pub} → {svc['dns_ip']}", conn)
+                            else:
+                                errors.append(
+                                    f"Service {sid_b}: failed to re-publish the DNS record"
+                                )
+                                add_log("error", f"DNS record not published: {pub}", conn)
                         else:
                             # Same reading as `update_service`: the answer was dropped, and
                             # a refusal is read against the listing before it is reported.
@@ -2355,7 +2404,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
                                 )
                                 add_log("error", f"DNS record still published: {pub}", conn)
                 except Exception as e:
-                    errors.append(f"Service {sid_b}: DNS state error — {e}")
+                    errors.append(f"Service {sid_b}: DNS state error — {redact_query_secrets(str(e))}")
 
             # Once per service, not once for the route. The commit above released the writer
             # lock, but every `add_log(..., conn)` in this loop takes it again -- so without
