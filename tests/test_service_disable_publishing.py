@@ -7,6 +7,7 @@ operator's side the UI said "off" and the hostname answered from the internet.
 
 Four paths are covered here: PUT on a tunnel service, PUT on an already-disabled
 proxy_dns service, the bulk enable/disable action, and creation with `enabled=false`.
+The last class covers a provider that refuses the withdrawal: the answer has to say so.
 """
 
 import os
@@ -63,6 +64,53 @@ class _RecordingProvider:
 
     def find_best_certificate(self, _domain):
         return None
+
+
+class _RefusingProvider(_RecordingProvider):
+    """Refuses every withdrawal the way the providers do it: by answering False.
+
+    `held` is what the DNS listing still shows afterwards, as (host, answer) pairs.
+    """
+
+    def __init__(self, calls: list, held=()):
+        super().__init__(calls)
+        self._held = list(held)
+
+    def delete_host(self, host):
+        self._record("delete_host", host)
+        return False
+
+    def delete_rewrite(self, host, ip):
+        self._record("delete_rewrite", host, ip)
+        return False
+
+    def records_for(self, host):
+        self._record("records_for", host)
+        return [{"domain": h, "answer": a} for h, a in self._held if h == host]
+
+
+class _UnreadableProvider(_RefusingProvider):
+    """Refuses the withdrawal, then cannot list what it holds either."""
+
+    def records_for(self, host):
+        self._record("records_for", host)
+        raise RuntimeError("the listing was refused")
+
+
+class _RaisingProvider(_RecordingProvider):
+    """Raises on the DNS withdrawal, quoting a URL the way `requests` does."""
+
+    def delete_rewrite(self, host, ip):
+        self._record("delete_rewrite", host, ip)
+        raise RuntimeError("503 for url: /api/zones/records/delete?token=abc123&zone=x")
+
+
+class _RaisingTunnel(_RecordingProvider):
+    """Raises on the tunnel withdrawal, quoting a URL the same way."""
+
+    def delete_host(self, host):
+        self._record("delete_host", host)
+        raise RuntimeError("503 for url: /api/tunnel/ingress?token=abc123&host=x")
 
 
 class ServiceExposureTestCase(unittest.TestCase):
@@ -291,6 +339,169 @@ class TestCreation(ServiceExposureTestCase):
         services_api.add_service(_request("POST"), self._proxy_payload(enabled=True))
         self.assertIn("create_host", self._names())
         self.assertIn("add_rewrite", self._names())
+
+
+class TestRefusedWithdrawal(ServiceExposureTestCase):
+    """A withdrawal the provider refused is not a withdrawal, and the answer has to say so.
+
+    Cloudflare Tunnel answers False rather than raising, and the single-service route
+    dropped that answer, and the DNS one: `errors` came back empty, the journal said the
+    route was withdrawn, and the hostname went on answering. The switch in the list and
+    the MCP `toggle_service` tool both go through this route.
+    """
+
+    def _answer_with(self, provider) -> None:
+        p = patch.object(services_api, "create_provider", lambda _row: provider)
+        p.start()
+        self._patchers.append(p)
+
+    def _journal(self) -> list[tuple[str, str]]:
+        conn = models.get_db()
+        rows = conn.execute("SELECT level, message FROM logs ORDER BY id").fetchall()
+        conn.close()
+        return [(r["level"], r["message"]) for r in rows]
+
+    def _held_record(self) -> list[tuple[str, str]]:
+        """The record the proxy service was published with, still listed."""
+        return [("app.example.com", self._proxy_payload(enabled=False).dns_ip)]
+
+    def _bulk_disable(self, sid: int) -> dict:
+        return services_api.bulk_action(
+            services_api._BulkActionBody(ids=[sid], action="disable"), _request("POST")
+        )
+
+    def test_a_refused_tunnel_withdrawal_is_an_error(self):
+        sid = self._seed_tunnel_service()
+        self._answer_with(_RefusingProvider(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._tunnel_payload(enabled=False)
+        )
+
+        self.assertEqual(answer["errors"], ["Failed to withdraw the tunnel route on disable"])
+        journal = self._journal()
+        self.assertIn(("error", "Tunnel route still published: vault.example.com"), journal)
+        self.assertFalse([m for _level, m in journal if "withdrawn" in m])
+
+    def test_a_refused_previous_tunnel_route_is_named(self):
+        """Renamed and disabled at once: the route under the old name is the one left."""
+        sid = self._seed_tunnel_service()
+        self._answer_with(_RefusingProvider(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._tunnel_payload(enabled=False, hostname="secret.example.com")
+        )
+
+        self.assertIn(
+            "Failed to withdraw the previous tunnel route: vault.example.com", answer["errors"]
+        )
+        self.assertIn(
+            ("error", "Tunnel route still published: vault.example.com"), self._journal()
+        )
+
+    def test_a_refused_dns_withdrawal_with_the_record_still_listed_is_an_error(self):
+        sid = self._seed_proxy_service()
+        self._answer_with(_RefusingProvider(self.calls, held=self._held_record()))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._proxy_payload(enabled=False)
+        )
+
+        self.assertEqual(
+            answer["errors"], ["Failed to withdraw the DNS record on disable: app.example.com"]
+        )
+        journal = self._journal()
+        self.assertIn(("error", "DNS record still published: app.example.com"), journal)
+        self.assertFalse([m for _level, m in journal if "withheld" in m])
+
+    def test_a_refusal_about_a_record_already_gone_is_not_an_error(self):
+        """The witness. Cloudflare answers False when nothing matched, and a service that
+        was disabled earlier is withdrawn again on every edit: reporting every False would
+        put an error on each of them."""
+        sid = self._seed_proxy_service(enabled=0)
+        self._answer_with(_RefusingProvider(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._proxy_payload(enabled=False)
+        )
+
+        self.assertEqual(answer["errors"], [])
+        self.assertIn(
+            ("info", "DNS record withheld (service disabled): app.example.com"), self._journal()
+        )
+
+    def test_a_listing_that_fails_after_a_refusal_counts_as_kept(self):
+        sid = self._seed_proxy_service()
+        self._answer_with(_UnreadableProvider(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._proxy_payload(enabled=False)
+        )
+
+        self.assertEqual(
+            answer["errors"], ["Failed to withdraw the DNS record on disable: app.example.com"]
+        )
+
+    def test_a_dns_exception_reaches_the_answer_masked(self):
+        """It used to reach the journal alone."""
+        sid = self._seed_proxy_service()
+        self._answer_with(_RaisingProvider(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._proxy_payload(enabled=False)
+        )
+
+        self.assertEqual(
+            answer["errors"],
+            [
+                "Could not withdraw the DNS record on disable: "
+                "503 for url: /api/zones/records/delete?token=***&zone=x"
+            ],
+        )
+
+    def test_a_tunnel_exception_reaches_the_answer_masked(self):
+        """It reached the answer already, as `requests` wrote it: token included."""
+        sid = self._seed_tunnel_service()
+        self._answer_with(_RaisingTunnel(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._tunnel_payload(enabled=False)
+        )
+
+        self.assertEqual(answer["errors"], ["503 for url: /api/tunnel/ingress?token=***&host=x"])
+
+    def test_an_exception_on_the_previous_tunnel_route_reaches_the_answer_masked(self):
+        """It used to reach the journal alone."""
+        sid = self._seed_tunnel_service()
+        self._answer_with(_RaisingTunnel(self.calls))
+        answer = services_api.update_service(
+            sid, _request("PUT"), self._tunnel_payload(enabled=False, hostname="secret.example.com")
+        )
+
+        self.assertIn(
+            "Could not withdraw the previous tunnel route: "
+            "503 for url: /api/tunnel/ingress?token=***&host=x",
+            answer["errors"],
+        )
+
+    def test_bulk_disable_reports_a_refused_dns_withdrawal(self):
+        sid = self._seed_proxy_service()
+        self._answer_with(_RefusingProvider(self.calls, held=self._held_record()))
+        answer = self._bulk_disable(sid)
+
+        self.assertEqual(answer["errors"], [f"Service {sid}: failed to withdraw the DNS record"])
+        journal = self._journal()
+        self.assertIn(("error", "DNS record still published: app.example.com"), journal)
+        self.assertFalse([m for _level, m in journal if "DNS removed on disable" in m])
+
+    def test_bulk_disable_of_a_record_already_gone_is_not_an_error(self):
+        """The same witness on the bulk route."""
+        sid = self._seed_proxy_service()
+        self._answer_with(_RefusingProvider(self.calls))
+        answer = self._bulk_disable(sid)
+
+        self.assertEqual(answer["errors"], [])
+
+    def test_bulk_disable_already_reported_a_refused_tunnel_withdrawal(self):
+        """What the single-service route now does, and the bulk route already did."""
+        sid = self._seed_tunnel_service()
+        self._answer_with(_RefusingProvider(self.calls))
+        answer = self._bulk_disable(sid)
+
+        self.assertEqual(answer["errors"], [f"Service {sid}: failed to withdraw the tunnel route"])
 
 
 if __name__ == "__main__":
