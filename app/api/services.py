@@ -5,7 +5,12 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from app.api.sync import push_extra_targets, withdraw_extra_targets, withdraw_service_routes
+from app.api.sync import (
+    _records_named,
+    push_extra_targets,
+    withdraw_extra_targets,
+    withdraw_service_routes,
+)
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -23,6 +28,7 @@ from app.public_target import (
     resolve_public_target,
     suggest_public_targets,
 )
+from app.security import redact_query_secrets
 from app.text import plural, verb
 from app.validators import (
     DOMAIN_REASONS,
@@ -1376,6 +1382,23 @@ def add_service(request: Request, body: ServiceIn):
     return JSONResponse({"id": sid, "fqdn": public_host, "errors": errors}, status_code=201 if not errors else 207)
 
 
+def _dns_record_kept(dns, host: str, answer: str) -> bool:
+    """Whether `dns` still holds `host` -> `answer` after refusing to delete it.
+
+    A refused `delete_rewrite` is not always a record left behind. The Cloudflare one
+    answers False when nothing matched, and a disabled service is withdrawn again on every
+    edit, long after the first withdrawal took its record. Only the listing tells the two
+    apart. A listing that fails tells nothing, and that counts as kept: "withdrawn" is
+    the one claim nothing here has established.
+    """
+    wanted = (answer or "").strip().rstrip(".").lower()
+    try:
+        held = _records_named(dns, host)
+    except Exception:
+        return True
+    return any(str(r.get("answer") or "").strip().rstrip(".").lower() == wanted for r in held)
+
+
 @router.put("/api/services/{sid}")
 def update_service(sid: int, request: Request, body: ServiceIn):
     require_auth(request, scope="write")
@@ -1478,11 +1501,21 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             # PUT without ever reading `enabled`: a request that disabled a service used to
             # re-publish the very route it was meant to cut. The configuration stays in
             # Vauxtra and is published again on re-enable.
+            #
+            # Cloudflare Tunnel reports a refusal by answering False, not by raising, and
+            # that answer was dropped here: the journal read "withdrawn", `errors` stayed
+            # empty, and the interface showed the service off while the tunnel went on
+            # serving its hostname. The bulk route already read it.
             try:
-                create_provider(tunnel_row).delete_host(new_public_host)
-                add_log("info", f"Tunnel route withdrawn (service disabled): {new_public_host}")
+                if create_provider(tunnel_row).delete_host(new_public_host):
+                    add_log(
+                        "info", f"Tunnel route withdrawn (service disabled): {new_public_host}"
+                    )
+                else:
+                    errors.append("Failed to withdraw the tunnel route on disable")
+                    add_log("error", f"Tunnel route still published: {new_public_host}")
             except Exception as e:
-                errors.append(str(e))
+                errors.append(redact_query_secrets(str(e)))
             if old_mode == "tunnel" and old["tunnel_provider_id"] and (
                 old["tunnel_provider_id"] != body.tunnel_provider_id
                 or old_public_host != new_public_host
@@ -1492,9 +1525,15 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                 old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
                 if old_tunnel_row:
                     try:
-                        create_provider(old_tunnel_row).delete_host(old_public_host)
+                        if not create_provider(old_tunnel_row).delete_host(old_public_host):
+                            errors.append(
+                                f"Failed to withdraw the previous tunnel route: {old_public_host}"
+                            )
+                            add_log("error", f"Tunnel route still published: {old_public_host}")
                     except Exception as e:
                         add_log("warn", f"Could not withdraw the previous tunnel route: {e}")
+                        reason = redact_query_secrets(str(e))
+                        errors.append(f"Could not withdraw the previous tunnel route: {reason}")
         else:
             try:
                 tunnel = create_provider(tunnel_row)
@@ -1620,11 +1659,28 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                     targets = {(new_public_host, dns_ip)}
                     if old_mode == "proxy_dns" and old["dns_provider_id"] == body.dns_provider_id and old_dns_ip:
                         targets.add((old_public_host, old_dns_ip))
+                    # Each answer was dropped here, and an exception reached the journal
+                    # alone: a DNS server that refused left the hostname resolving, with no
+                    # error in the answer and the service shown as off. A refusal is read
+                    # against the listing before it is reported -- see `_dns_record_kept`.
+                    withheld = True
                     for record_host, record_ip in sorted(targets):
-                        dns.delete_rewrite(record_host, record_ip)
-                    add_log("info", f"DNS record withheld (service disabled): {new_public_host}")
+                        if dns.delete_rewrite(record_host, record_ip):
+                            continue
+                        if _dns_record_kept(dns, record_host, record_ip):
+                            withheld = False
+                            errors.append(
+                                f"Failed to withdraw the DNS record on disable: {record_host}"
+                            )
+                            add_log("error", f"DNS record still published: {record_host}")
+                    if withheld:
+                        add_log(
+                            "info", f"DNS record withheld (service disabled): {new_public_host}"
+                        )
                 except Exception as e:
                     add_log("warn", f"Could not withdraw the DNS record of a disabled service: {e}")
+                    reason = redact_query_secrets(str(e))
+                    errors.append(f"Could not withdraw the DNS record on disable: {reason}")
         elif body.dns_provider_id and dns_ip:
             dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
             if dns_row:
@@ -2287,8 +2343,17 @@ def bulk_action(body: _BulkActionBody, request: Request):
                             dns.add_rewrite(pub, svc["dns_ip"])
                             add_log("info", f"DNS re-added on enable: {pub} → {svc['dns_ip']}", conn)
                         else:
-                            dns.delete_rewrite(pub, svc["dns_ip"])
-                            add_log("info", f"DNS removed on disable: {pub}", conn)
+                            # Same reading as `update_service`: the answer was dropped, and
+                            # a refusal is read against the listing before it is reported.
+                            if dns.delete_rewrite(pub, svc["dns_ip"]) or not _dns_record_kept(
+                                dns, pub, svc["dns_ip"]
+                            ):
+                                add_log("info", f"DNS removed on disable: {pub}", conn)
+                            else:
+                                errors.append(
+                                    f"Service {sid_b}: failed to withdraw the DNS record"
+                                )
+                                add_log("error", f"DNS record still published: {pub}", conn)
                 except Exception as e:
                     errors.append(f"Service {sid_b}: DNS state error — {e}")
 
