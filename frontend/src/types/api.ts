@@ -1242,6 +1242,12 @@ export interface ProviderValidationCheck {
   /** The values the sentence was built from, substituted into the translation. */
   detail_params?: Record<string, string | number>;
   blocking?: boolean;
+  /**
+   * The check was never run: the write probe in safe mode, the zone lookup when no hostname
+   * was given. `ok` is false on it, because nothing was verified, but nothing failed either.
+   * Read it through `checkFailed()` so it neither costs health points nor turns a line red.
+   */
+  skipped?: boolean;
 }
 
 /** `POST /api/providers/{pid}/test` and `POST /api/providers/{pid}/validate`. */

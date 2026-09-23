@@ -1016,6 +1016,8 @@
   "providers.diag.passed": "Alle Prüfungen bestanden",
   "providers.diag.passed_warnings_one": "Bestanden mit {count} Warnung",
   "providers.diag.passed_warnings_other": "Bestanden mit {count} Warnungen",
+  "providers.diag.passed_skipped_one": "Bestanden, {count} Prüfung nicht ausgeführt",
+  "providers.diag.passed_skipped_other": "Bestanden, {count} Prüfungen nicht ausgeführt",
   "providers.diag.test_failed": "Verbindung fehlgeschlagen",
   "providers.diag.test_ok": "Verbindung OK",
   "providers.empty_body": "Verbinden Sie einen Reverse Proxy, einen Tunnel oder einen DNS-Anbieter, damit Vauxtra Ihre Dienste veröffentlichen kann.",

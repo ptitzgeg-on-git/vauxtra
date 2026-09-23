@@ -10,6 +10,7 @@ import {
   type OperationalStatus,
   type ProviderDiagnostics,
   checkDetailText,
+  checkFailed,
   healthTone,
   showsHealthBadge,
   tunnelReasonLabel,
@@ -92,14 +93,20 @@ export const ProviderCard = memo(function ProviderCard({
     if (!diagnostics && !showAutoFailure) return null;
 
     const checks = diagnostics?.validation?.checks || [];
-    const blocking = checks.filter((c) => c.blocking && !c.ok).length;
-    const warnings = checks.filter((c) => !c.blocking && !c.ok).length;
-    const firstBlocking = checks.find((c) => c.blocking && !c.ok);
+    const blocking = checks.filter((c) => c.blocking && checkFailed(c)).length;
+    const warnings = checks.filter((c) => !c.blocking && checkFailed(c)).length;
+    // Checks the API did not run. They are said, in the title and in grey under it, and
+    // not counted as warnings: see `checkFailed`.
+    const skipped = checks.filter((c) => c.skipped);
+    const firstBlocking = checks.find((c) => c.blocking && checkFailed(c));
     const firstBlockingDetail = firstBlocking ? checkDetailText(firstBlocking, t) : undefined;
     const failedDetails = unique(
-      checks.filter((c) => !c.ok && c.detail).map((c) => checkDetailText(c, t)),
+      checks.filter((c) => checkFailed(c) && c.detail).map((c) => checkDetailText(c, t)),
     )
       .filter((detail) => detail !== firstBlockingDetail)
+      .slice(0, 3);
+    const skippedDetails = unique(skipped.filter((c) => c.detail).map((c) => checkDetailText(c, t)))
+      .filter((detail) => !failedDetails.includes(detail))
       .slice(0, 3);
     const warningDetails = unique(diagnostics?.validation?.warnings || [])
       .filter((w) => !failedDetails.includes(w) && w !== firstBlockingDetail)
@@ -118,7 +125,7 @@ export const ProviderCard = memo(function ProviderCard({
         title = t('providers.diag.passed_warnings', { count: warnings });
         tone = 'warning';
       } else {
-        title = t('providers.diag.passed');
+        title = skipped.length > 0 ? t('providers.diag.passed_skipped', { count: skipped.length }) : t('providers.diag.passed');
         tone = diagnostics?.ok === false ? 'danger' : 'success';
       }
     } else if (diagnostics) {
@@ -129,7 +136,7 @@ export const ProviderCard = memo(function ProviderCard({
       tone = 'danger';
     }
 
-    return { title, tone, firstBlockingDetail, failedDetails, warningDetails, healthError, showHealthError };
+    return { title, tone, firstBlockingDetail, failedDetails, warningDetails, skippedDetails, healthError, showHealthError };
   }, [autoHealth, diagnostics, t, tunnelHealth]);
 
   return (
@@ -214,6 +221,11 @@ export const ProviderCard = memo(function ProviderCard({
               {report.warningDetails.map((warning) => (
                 <p key={warning} className="truncate text-warning" title={warning}>
                   – {warning}
+                </p>
+              ))}
+              {report.skippedDetails.map((detail) => (
+                <p key={detail} className="truncate text-muted-foreground" title={detail}>
+                  – {detail}
                 </p>
               ))}
               {report.showHealthError && (

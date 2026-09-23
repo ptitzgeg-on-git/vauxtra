@@ -191,6 +191,18 @@ class TestCloudflareProvider(unittest.TestCase):
         call_kwargs = client.dns.records.create.call_args[1]
         self.assertFalse(call_kwargs.get("proxied"), "CNAME must not be proxied")
 
+    def test_the_write_probe_it_never_runs_is_not_a_warning(self):
+        """The DNS write check is never run here; it said so as a failed warning."""
+        p, _ = self._make_provider(zone_id="zone123")
+        p._api_request = MagicMock(return_value={"ok": True, "status": 200, "result": {}, "errors": []})
+        result = p.validate_permissions()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"], [])
+        write = next(c for c in result["checks"] if c["name"] == "dns_write")
+        self.assertTrue(write["skipped"])
+        self.assertFalse(write["ok"])
+        self.assertEqual([c["name"] for c in result["checks"] if c.get("skipped")], ["dns_write"])
+
 
 if __name__ == "__main__":
     unittest.main()

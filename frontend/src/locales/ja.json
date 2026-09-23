@@ -949,6 +949,7 @@
   "providers.diag.next_step": "次のステップ：{detail}",
   "providers.diag.passed": "すべてのチェックに合格しました",
   "providers.diag.passed_warnings_other": "警告{count}件付きで合格しました",
+  "providers.diag.passed_skipped_other": "合格しました（{count}件のチェックは未実行）",
   "providers.diag.test_failed": "接続に失敗しました",
   "providers.diag.test_ok": "接続に成功しました",
   "providers.empty_body": "リバースプロキシ、トンネル、またはDNSプロバイダーを接続すると、Vauxtra がサービスを公開できるようになります。",
