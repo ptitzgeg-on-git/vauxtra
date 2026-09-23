@@ -9,8 +9,8 @@
  * and no screen reads them.
  */
 
-import { useMemo, useState } from 'react';
-import { AlertTriangle, BookOpen, ChevronRight, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { BookOpen, ChevronRight, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
 import {
   Badge,
   Card,
@@ -26,19 +26,23 @@ import {
 } from '@/components/ui';
 import {
   PROVIDER_GROUPS,
-  canSubmitProvider as canSubmitProviderFn,
+  describeMissing,
   fallbackIconByType,
   getDescription,
   getGuidedSteps,
   getPassLabel,
   getProviderGroup,
   getUserLabel,
-  type WizardStep,
+  isUrlOptional,
+  missingFields,
+  requiredFields,
+  seedFormForType,
   type ProviderFormState,
   type ProviderGroup,
   type ProviderTypeMeta,
   type ProviderValidationResult,
 } from '@/components/features/providers/providerConstants';
+import { MissingFields } from '@/components/features/providers/MissingFields';
 import { checkFailed, healthStatusLabel } from '@/components/features/providers/providerHealth';
 import { ValidationCheckLine } from '@/components/features/providers/ValidationCheckLine';
 import { useT } from '@/i18n';
@@ -75,12 +79,6 @@ const GROUP_TONE: Record<ProviderGroup, Tone> = {
   other: 'neutral',
 };
 
-/** True when a guided step still has a required field the user has not filled. */
-function stepIncomplete(step: WizardStep | undefined, formData: ProviderFormState): boolean {
-  if (!step?.fields) return false;
-  return step.fields.some((f) => !f.optional && !formData[f.key]?.trim());
-}
-
 export function ProviderFormStep({
   formData,
   setFormData,
@@ -114,16 +112,39 @@ export function ProviderFormStep({
   const selectedMeta: ProviderTypeMeta = (providerTypes || {})[formData.type] || {};
   const selectedLabel = String(selectedMeta.label || formData.type);
   const guidedSteps = getGuidedSteps(formData.type, selectedMeta, t);
-  const currentGuidedStep = guidedSteps[guidedStepIndex];
-  const canSubmitProvider = canSubmitProviderFn(formData, selectedMeta);
+  //: The index comes back from the session, and can outlive the list of steps it counted.
+  const stepIndex = Math.min(guidedStepIndex, Math.max(guidedSteps.length - 1, 0));
+  const currentGuidedStep = guidedSteps[stepIndex];
 
-  const isLastGuided = guidedStepIndex === guidedSteps.length - 1;
+  // The rule the Integrations dialog reads (`requiredFields`). This step used to gate "Next" on
+  // the guided marks and "Validate" on `canSubmitProvider`, the shorter list the dialog read too,
+  // and its expert form marked nothing at all: the NPM e-mail was required on one screen and
+  // could be skipped on the other.
+  const required = requiredFields(formData.type, selectedMeta);
+  const isRequired = (key: keyof ProviderFormState) => required.includes(key);
+  const missing = missingFields(formData, selectedMeta);
+  const stepMissing = (currentGuidedStep?.fields ?? []).filter((field) => missing.includes(field.key)).map((field) => field.key);
+  const canSubmitProvider = Boolean(formData.type) && missing.length === 0;
+
+  const isLastGuided = stepIndex === guidedSteps.length - 1;
   const showExpert = wizardMode === 'expert' || (wizardMode === null && formData.type !== '' && guidedSteps.length === 0);
   const showGuided = wizardMode === 'guided' && Boolean(currentGuidedStep);
   const showModeChoice = Boolean(formData.type) && wizardMode === null && guidedSteps.length > 0;
 
+  // `clearType` empties `type` on the way back to the picker, so the type picked last is kept
+  // here: choosing it again is not a change of type.
+  const lastTypeRef = useRef(formData.type);
+
   const chooseProviderType = (type: string, label: string) => {
-    setFormData((prev) => ({ ...prev, type, name: prev.name.trim() ? prev.name : label }));
+    // The Integrations dialog's rule: a new type gets its own name and an empty address, the
+    // same type picked again keeps both. This step used to keep the name and the address typed
+    // for the type before, so an AdGuard Home could be validated against the address typed for
+    // NPM, under an integration still called "Nginx Proxy Manager".
+    //: Read here, not in the updater: React may run it after the next line, and every pick
+    //: would then look like the same type picked again.
+    const previous = lastTypeRef.current;
+    setFormData((prev) => seedFormForType({ ...prev, type: prev.type || previous }, type, label));
+    lastTypeRef.current = type;
     setValidationResult(null);
   };
 
@@ -136,6 +157,9 @@ export function ProviderFormStep({
 
   const setValue = (key: keyof ProviderFormState, value: string) => {
     setFormData((prev) => ({ ...prev, [key]: value }));
+    // A verdict is about the values it was given. Kept past an edit, it left "Connect" armed for
+    // a password nothing had tested. The Integrations dialog drops it on an edit too.
+    setValidationResult(null);
   };
 
   const toggleReveal = (key: string) => setRevealed((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -158,7 +182,7 @@ export function ProviderFormStep({
   const description = !formData.type
     ? t('provider_modal.type.description')
     : showGuided
-      ? t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })
+      ? t('provider_modal.guided.step', { step: stepIndex + 1, total: guidedSteps.length })
       : showModeChoice
         ? t('provider_modal.mode.label')
         : t('setup.provider_form.expert_subtitle');
@@ -166,9 +190,9 @@ export function ProviderFormStep({
   // ─── back ──────────────────────────────────────────────────────
   const back = !formData.type
     ? onCancel
-    : showGuided && guidedStepIndex > 0
+    : showGuided && stepIndex > 0
       ? () => {
-          setGuidedStepIndex(guidedStepIndex - 1);
+          setGuidedStepIndex(stepIndex - 1);
           setValidationResult(null);
         }
       : guidedSteps.length > 0 && wizardMode !== null
@@ -184,8 +208,8 @@ export function ProviderFormStep({
     ? !isLastGuided
       ? {
           label: t('provider_modal.guided.next'),
-          onClick: () => setGuidedStepIndex(guidedStepIndex + 1),
-          disabled: stepIncomplete(currentGuidedStep, formData),
+          onClick: () => setGuidedStepIndex(stepIndex + 1),
+          disabled: stepMissing.length > 0,
         }
       : validationResult?.ok
         ? {
@@ -198,7 +222,7 @@ export function ProviderFormStep({
         : {
             label: validateIsPending ? t('provider_modal.footer.validating') : t('provider_modal.footer.validate'),
             onClick: onValidate,
-            disabled: !canSubmitProvider || busy || stepIncomplete(currentGuidedStep, formData),
+            disabled: !canSubmitProvider || busy,
             loading: validateIsPending,
             icon: <Shield />,
           }
@@ -240,6 +264,25 @@ export function ProviderFormStep({
       )}
     </InlineAlert>
   ) : null;
+
+  const optionalAddon = (key: keyof ProviderFormState) =>
+    isRequired(key) ? undefined : (
+      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('provider_modal.guided.optional')}</span>
+    );
+
+  // First in both modes, as in the Integrations dialog. The guided mode asked for it under the
+  // last step's fields and nowhere else, and neither mode said the API refuses a blank one.
+  const nameField = (id: string) => (
+    <Field label={t('provider_modal.field.name')} htmlFor={id} hint={t('provider_modal.field.name_hint')} required>
+      <Input
+        id={id}
+        value={formData.name}
+        onChange={(e) => setValue('name', e.target.value)}
+        placeholder={t('provider_modal.field.name_placeholder', { label: selectedLabel })}
+        autoComplete="off"
+      />
+    </Field>
+  );
 
   return (
     <SetupStepShell
@@ -343,62 +386,60 @@ export function ProviderFormStep({
       {showGuided && currentGuidedStep && (
         <Card>
           <CardContent className="space-y-5 p-5 sm:p-6">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="primary" size="sm" className="nums">
-                {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
-              </Badge>
-              <h3 className="text-base font-semibold text-foreground">{currentGuidedStep.title}</h3>
-            </div>
+            {nameField('vx-guided-name')}
 
-            <p className="whitespace-pre-wrap rounded-xl border border-border bg-muted/50 p-4 text-sm leading-relaxed text-muted-foreground">
-              {currentGuidedStep.body}
-            </p>
-
-            {currentGuidedStep.fields?.map((field) => {
-              const id = `vx-guided-${field.key}`;
-              const isSecret = field.inputType === 'password';
-              return (
-                <Field
-                  key={field.key}
-                  label={field.label}
-                  htmlFor={id}
-                  hint={field.hint}
-                  labelAddon={
-                    field.optional ? (
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                        {t('provider_modal.guided.optional')}
-                      </span>
-                    ) : undefined
-                  }
-                >
-                  <Input
-                    id={id}
-                    type={isSecret && !revealed[field.key] ? 'password' : field.inputType === 'url' ? 'url' : 'text'}
-                    value={formData[field.key]}
-                    onChange={(e) => setValue(field.key, e.target.value)}
-                    placeholder={field.placeholder}
-                    className={isSecret ? undefined : 'font-mono'}
-                    autoComplete={isSecret ? 'off' : undefined}
-                    spellCheck={false}
-                    rightIcon={isSecret ? passwordToggle(field.key) : undefined}
-                  />
-                </Field>
-              );
-            })}
-
-            {isLastGuided && (
-              <div className="space-y-5 border-t border-border pt-5">
-                <Field label={t('provider_modal.field.name')} htmlFor="vx-guided-name" hint={t('provider_modal.field.name_hint')}>
-                  <Input
-                    id="vx-guided-name"
-                    value={formData.name}
-                    onChange={(e) => setValue('name', e.target.value)}
-                    placeholder={t('provider_modal.field.name_placeholder', { label: selectedLabel })}
-                  />
-                </Field>
-                {validationBlock}
+            <div className="space-y-5 border-t border-border pt-5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="primary" size="sm" className="nums">
+                  {t('provider_modal.guided.step', { step: stepIndex + 1, total: guidedSteps.length })}
+                </Badge>
+                <h3 className="text-base font-semibold text-foreground">{currentGuidedStep.title}</h3>
               </div>
-            )}
+
+              <p className="whitespace-pre-wrap rounded-xl border border-border bg-muted/50 p-4 text-sm leading-relaxed text-muted-foreground">
+                {currentGuidedStep.body}
+              </p>
+
+              {currentGuidedStep.fields?.map((field) => {
+                const id = `vx-guided-${field.key}`;
+                const isSecret = field.inputType === 'password';
+                return (
+                  <Field
+                    key={field.key}
+                    label={field.label}
+                    htmlFor={id}
+                    hint={field.hint}
+                    required={isRequired(field.key)}
+                    labelAddon={optionalAddon(field.key)}
+                  >
+                    <Input
+                      id={id}
+                      type={isSecret && !revealed[field.key] ? 'password' : field.inputType === 'url' ? 'url' : 'text'}
+                      value={formData[field.key]}
+                      onChange={(e) => setValue(field.key, e.target.value)}
+                      placeholder={field.placeholder}
+                      className={isSecret ? undefined : 'font-mono'}
+                      autoComplete={isSecret ? 'off' : undefined}
+                      spellCheck={false}
+                      rightIcon={isSecret ? passwordToggle(field.key) : undefined}
+                    />
+                  </Field>
+                );
+              })}
+
+              {/* A field asked on an earlier step is a link back to it: the password is not kept
+                  across a reload, so the last step can be reached with it gone. */}
+              <MissingFields
+                fields={describeMissing(isLastGuided ? missing : stepMissing, formData.type, selectedMeta, t, guidedSteps, stepIndex)}
+                onGoToStep={(step) => {
+                  setGuidedStepIndex(step);
+                  setValidationResult(null);
+                }}
+                complete={isLastGuided && !validationResult ? t('provider_modal.guided.collected') : undefined}
+              />
+
+              {isLastGuided && validationBlock}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -407,35 +448,68 @@ export function ProviderFormStep({
       {showExpert && (
         <Card>
           <CardContent className="space-y-5 p-5 sm:p-6">
-            <Field label={t('provider_modal.field.name')} htmlFor="vx-expert-name" hint={t('provider_modal.field.name_hint')}>
+            {nameField('vx-expert-name')}
+
+            {/* The fields in the Integrations dialog's order, and the address of a hosted API
+                shown too: it was hidden for Cloudflare here, and optional there. */}
+            <Field
+              label={t('provider_modal.field.url')}
+              htmlFor="vx-expert-url"
+              hint={isUrlOptional(formData.type) ? t('provider_modal.field.url_hint_hosted', { label: selectedLabel }) : undefined}
+              required={isRequired('url')}
+              labelAddon={optionalAddon('url')}
+            >
               <Input
-                id="vx-expert-name"
-                value={formData.name}
-                onChange={(e) => setValue('name', e.target.value)}
-                placeholder={t('provider_modal.field.name_placeholder', { label: selectedLabel })}
+                id="vx-expert-url"
+                type="url"
+                value={formData.url}
+                onChange={(e) => setValue('url', e.target.value)}
+                placeholder={selectedMeta.placeholder_url || 'http://'}
+                className="font-mono"
+                autoComplete="off"
+                spellCheck={false}
               />
             </Field>
 
-            {formData.type !== 'cloudflare' && formData.type !== 'cloudflare_tunnel' && (
-              <Field label={t('provider_modal.field.url')} htmlFor="vx-expert-url">
-                <Input
-                  id="vx-expert-url"
-                  type="url"
-                  value={formData.url}
-                  onChange={(e) => setValue('url', e.target.value)}
-                  placeholder={selectedMeta.placeholder_url || 'http://'}
-                  className="font-mono"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </Field>
-            )}
+            <Field
+              label={getUserLabel(formData.type, selectedMeta, t)}
+              htmlFor="vx-expert-user"
+              required={isRequired('username')}
+              labelAddon={optionalAddon('username')}
+            >
+              <Input
+                id="vx-expert-user"
+                value={formData.username}
+                onChange={(e) => setValue('username', e.target.value)}
+                placeholder={selectedMeta.user_placeholder || undefined}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </Field>
+
+            <Field
+              label={getPassLabel(formData.type, selectedMeta, t)}
+              htmlFor="vx-expert-pass"
+              required={isRequired('password')}
+              labelAddon={optionalAddon('password')}
+            >
+              <Input
+                id="vx-expert-pass"
+                type={revealed.password ? 'text' : 'password'}
+                value={formData.password}
+                onChange={(e) => setValue('password', e.target.value)}
+                autoComplete="off"
+                rightIcon={passwordToggle('password')}
+              />
+            </Field>
 
             {formData.type === 'cloudflare_tunnel' && (
               <Field
                 label={t('provider_modal.field.tunnel_id')}
                 htmlFor="vx-expert-tunnel"
                 hint={t('provider_modal.field.tunnel_id_hint')}
+                required={isRequired('tunnel_id')}
+                labelAddon={optionalAddon('tunnel_id')}
               >
                 <Input
                   id="vx-expert-tunnel"
@@ -449,32 +523,7 @@ export function ProviderFormStep({
               </Field>
             )}
 
-            <Field label={getUserLabel(formData.type, selectedMeta, t)} htmlFor="vx-expert-user">
-              <Input
-                id="vx-expert-user"
-                value={formData.username}
-                onChange={(e) => setValue('username', e.target.value)}
-                autoComplete="off"
-              />
-            </Field>
-
-            <Field label={getPassLabel(formData.type, selectedMeta, t)} htmlFor="vx-expert-pass">
-              <Input
-                id="vx-expert-pass"
-                type={revealed.password ? 'text' : 'password'}
-                value={formData.password}
-                onChange={(e) => setValue('password', e.target.value)}
-                autoComplete="off"
-                rightIcon={passwordToggle('password')}
-              />
-            </Field>
-
-            {!canSubmitProvider && !validationResult && (
-              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                <AlertTriangle aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
-                {t('setup.provider_form.missing_fields')}
-              </p>
-            )}
+            <MissingFields fields={describeMissing(missing, formData.type, selectedMeta, t)} />
 
             {validationBlock}
           </CardContent>
