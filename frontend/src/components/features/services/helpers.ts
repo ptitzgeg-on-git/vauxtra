@@ -1,4 +1,4 @@
-import type { Environment, Provider, Service, ServicePayload, Tag } from '@/types/api';
+import type { DriftResult, Environment, Provider, Service, ServicePayload, Tag } from '@/types/api';
 
 export type ModeFilter = 'all' | 'tunnel' | 'proxy' | 'dns' | 'disabled';
 export const MODE_FILTERS: ModeFilter[] = ['all', 'tunnel', 'proxy', 'dns', 'disabled'];
@@ -73,6 +73,35 @@ export function bulkCheckSummary(
       : probed || skipped;
   const tone = failed > 0 ? 'warning' : ok > 0 || untested === 0 ? 'success' : 'neutral';
   return { message, tone };
+}
+
+/**
+ * The issues about DNS integrations the service is not published to. Reconcile writes to the
+ * integrations a service is attached to and to no other, so it cannot clear either type.
+ */
+const OUTSIDE_RECONCILE = new Set(['dns_answered_elsewhere', 'dns_elsewhere_check_failed']);
+
+/** What a drift report holds, counted. */
+export interface DriftStanding {
+  errors: number;
+  warnings: number;
+  /** At least one issue is about an integration Reconcile writes to. */
+  reconcilable: boolean;
+}
+
+/**
+ * `ok` means "no error" (`app/api/sync.py`), the line auto-reconcile acts on, so a report
+ * with warnings only is `ok` as well. The screens read it as "in sync": "Everything is in
+ * sync" above a list of warnings, and Reconcile kept off for the two it does fix, a DNS
+ * answer or a proxy origin that differs. They count the issues instead.
+ */
+export function driftStanding(drift: Pick<DriftResult, 'issues'>): DriftStanding {
+  const errors = drift.issues.filter((issue) => issue.severity === 'error').length;
+  return {
+    errors,
+    warnings: drift.issues.length - errors,
+    reconcilable: drift.issues.some((issue) => !OUTSIDE_RECONCILE.has(issue.type)),
+  };
 }
 
 /** How a service reaches the internet, derived from its mode and provider ids. */

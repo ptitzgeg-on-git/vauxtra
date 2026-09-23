@@ -107,6 +107,13 @@ def check_drift(service_id: int) -> dict[str, Any]:
     route (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than one missing it.
     A route that exists and is switched off on the provider is `proxy_route_suspended`: an
     enabled service whose hostname answers nothing, which a push repairs.
+
+    The other enabled DNS integrations are asked as well. One that answers the hostname with
+    another address is `dns_answered_elsewhere` (expected with split-horizon DNS, a leftover
+    otherwise), and one that could not be read is `dns_elsewhere_check_failed`. Both are
+    warnings: `ok` stays true and `reconcile_service` leaves them alone, because the record
+    is not the service's to rewrite. `ok` is false only when an issue is an error, so read
+    `issues`, not `ok`, to know whether anything differs.
     """
     r = client.get(f"/services/{service_id}/drift")
     client.check(r)
@@ -118,7 +125,9 @@ def reconcile_service(service_id: int) -> dict[str, Any]:
     """
     Run drift detection, push corrections to providers, then verify drift is resolved.
 
-    Returns before/after drift states and push result.
+    Returns before/after drift states and push result. The push writes only to the
+    integrations the service is published to, so a `dns_answered_elsewhere` warning is
+    still in `after`: that record belongs to another integration.
     """
     r = client.post(f"/services/{service_id}/reconcile")
     client.check(r)
