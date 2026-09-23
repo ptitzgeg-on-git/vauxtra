@@ -26,8 +26,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
+import { api } from '@/api/client';
 import { DIAGNOSTICS_STORAGE_KEY } from '@/components/features/providers/providerHealth';
 import type { Provider } from '@/types/api';
+
+const toastSpy = vi.hoisted(() => Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }));
+vi.mock('react-hot-toast', () => ({ default: toastSpy }));
 
 const PROVIDER: Provider = {
   id: 1,
@@ -43,6 +47,9 @@ const PROVIDER: Provider = {
 /** Traefik is the one shipped type that declares `read_only`, so it is the badge's fixture. */
 const TRAEFIK: Provider = { ...PROVIDER, id: 2, name: 'Traefik at the edge', type: 'traefik' };
 
+/** A second proxy, so "Test all" has two answers to wait for. */
+const SECOND: Provider = { ...PROVIDER, id: 3, name: 'NPM in the garage' };
+
 /** What `GET /providers/types` serves, trimmed to the fields these tests read. */
 const TYPES = {
   npm: { label: 'Nginx Proxy Manager', category: 'proxy', capabilities: { proxy: true } },
@@ -55,12 +62,17 @@ const TYPES = {
 };
 
 let autoFails = false;
+/** The periodic health round never answers, the way a slow integration keeps it open. */
+let autoHangs = false;
 let tunnelFails = false;
 let typesFails = false;
 /** Set when a test wants the *second* read of the catalogue to answer. */
 let typesRecoversOnRetry = false;
 let typesCalls = 0;
 let providerList: Provider[] = [PROVIDER];
+/** Test calls that stay open until the test releases them, by path. */
+let heldTests: string[] = [];
+const release = new Map<string, () => void>();
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -72,6 +84,7 @@ vi.mock('@/api/client', () => ({
         return answers ? Promise.resolve(TYPES) : Promise.reject(new Error('down'));
       }
       if (path === '/providers/health') {
+        if (autoHangs) return new Promise(() => {});
         return autoFails ? Promise.reject(new Error('down')) : Promise.resolve({});
       }
       if (path === '/providers/tunnels/health') {
@@ -79,7 +92,10 @@ vi.mock('@/api/client', () => ({
       }
       return Promise.resolve({});
     }),
-    post: vi.fn(() => Promise.resolve({ ok: true })),
+    post: vi.fn((path: string) => {
+      if (!heldTests.includes(path)) return Promise.resolve({ ok: true });
+      return new Promise((resolve) => release.set(path, () => resolve({ ok: true })));
+    }),
     put: vi.fn(() => Promise.resolve({ ok: true })),
     delete: vi.fn(() => Promise.resolve({ ok: true })),
   },
@@ -94,11 +110,14 @@ const catalogBanner = () => screen.queryByText('providers.catalog.load_failed');
 
 beforeEach(() => {
   autoFails = false;
+  autoHangs = false;
   tunnelFails = false;
   typesFails = false;
   typesRecoversOnRetry = false;
   typesCalls = 0;
   providerList = [PROVIDER];
+  heldTests = [];
+  release.clear();
   window.localStorage.removeItem(DIAGNOSTICS_STORAGE_KEY);
   vi.clearAllMocks();
 });
@@ -228,5 +247,60 @@ describe('Providers, when the last manual test has gone stale', () => {
 
     expect(screen.getByText('providers.card.never_tested')).toBeInTheDocument();
     expect(screen.queryByText('providers.card.last_test')).toBeNull();
+  });
+});
+
+describe('Providers, Test all', () => {
+  const testAll = () => screen.getByRole('button', { name: /providers\.refresh\.button/ });
+
+  it('sends every test at once, without waiting for the periodic health round', async () => {
+    // The button used to await four refetches before sending a test, and one of them is
+    // the server-side round that tests every integration in turn. A refetch of a query
+    // still loading joins the request in flight, so the click waited for as long as that
+    // round did -- with no card moving -- and here, where it never answers, forever.
+    autoHangs = true;
+    providerList = [PROVIDER, SECOND];
+    renderWithProviders(<Providers />);
+    await filters();
+
+    await userEvent.click(testAll());
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/providers/1/test');
+      expect(api.post).toHaveBeenCalledWith('/providers/3/test');
+    });
+  });
+
+  it('spins the card still waiting, counts on the button, and settles when the last one answers', async () => {
+    providerList = [PROVIDER, SECOND];
+    heldTests = ['/providers/3/test'];
+    renderWithProviders(<Providers />);
+    await filters();
+
+    await userEvent.click(testAll());
+
+    const progress = await screen.findByRole('button', { name: /providers\.refresh\.progress/ });
+    expect(progress).toBeDisabled();
+    await waitFor(() => {
+      const busy = screen.getAllByRole('button', { name: 'providers.actions.test' }).filter((b) => b.getAttribute('aria-busy') === 'true');
+      expect(busy).toHaveLength(1);
+    });
+
+    release.get('/providers/3/test')?.();
+
+    await waitFor(() => expect(testAll()).toBeEnabled());
+    expect(toastSpy.success).toHaveBeenCalledWith('providers.refresh.success_all_passed');
+    expect(screen.queryByRole('button', { name: /providers\.refresh\.progress/ })).toBeNull();
+  });
+
+  it('says there is nothing to test rather than claiming a refresh', async () => {
+    providerList = [{ ...PROVIDER, enabled: false }];
+    renderWithProviders(<Providers />);
+    await filters();
+
+    await userEvent.click(testAll());
+
+    expect(toastSpy).toHaveBeenCalledWith('providers.refresh.none_enabled');
+    expect(api.post).not.toHaveBeenCalled();
   });
 });

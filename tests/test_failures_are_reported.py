@@ -26,6 +26,7 @@ one is the route that writes records.
 
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -709,6 +710,35 @@ class BatchHealthReadsTheAnswerTests(_IsolatedDB):
         conn.close()
         health = self._health({1: True, 2: True})
         self.assertEqual(sorted(health), ["1", "2"])
+
+    def test_the_integrations_are_tested_side_by_side(self) -> None:
+        """One after the other, the map took the sum of every answer time.
+
+        A barrier sized to the three integrations only opens when all three are inside
+        `test_connection` at once. Tested in turn, the first one waits alone until the
+        barrier times out and breaks, and every integration reads unhealthy.
+        """
+        barrier = threading.Barrier(3, timeout=5)
+
+        class _Waits:
+            def test_connection(self):
+                barrier.wait()
+                return True
+
+        with patch.object(providers_api, "create_provider", lambda _row: _Waits()):
+            health = providers_api.all_providers_health(_request("GET", "/api/providers/health"))
+        self.assertEqual(
+            {k: v["status"] for k, v in health.items()},
+            {"1": "healthy", "2": "healthy", "3": "healthy"},
+        )
+
+    def test_no_enabled_integration_answers_an_empty_map(self) -> None:
+        conn = models.get_db()
+        conn.execute("UPDATE providers SET enabled=0")
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._health({}), {})
+
 
 if __name__ == "__main__":
     unittest.main()
