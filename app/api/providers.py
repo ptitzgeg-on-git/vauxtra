@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -211,32 +212,41 @@ def list_providers(request: Request):
     return out
 
 
+def _health_of(row) -> dict[str, Any]:
+    try:
+        provider = create_provider(dict(row))
+        # `test_connection` answers False; it does not raise. Every other caller in the
+        # code base reads that boolean. This one dropped it, so an integration that had
+        # just refused the connection was written down as healthy -- and this map is
+        # what paints the dashboard tiles and feeds the Integrations page score.
+        ok = bool(provider.test_connection())
+        return {"status": "healthy" if ok else "unhealthy", "error": None}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
+
+# How many integrations `GET /providers/health` tests at once.
+_HEALTH_WORKERS = 8
+
+
 @router.get("/api/providers/health")
 def all_providers_health(request: Request):
-    """Batch health check for all enabled providers."""
+    """Batch health check for all enabled providers, tested side by side."""
     require_auth(request)
     with get_db_ctx() as conn:
         rows = conn.execute(
             "SELECT id, name, type, url, username, password, enabled, extra FROM providers WHERE enabled=1"
         ).fetchall()
+    if not rows:
+        return {}
 
-    results = {}
-    for r in rows:
-        pid = r["id"]
-        try:
-            provider = create_provider(dict(r))
-            # `test_connection` answers False; it does not raise. Every other caller in the
-            # code base reads that boolean. This one dropped it, so an integration that had
-            # just refused the connection was written down as healthy -- and this map is
-            # what paints the dashboard tiles and feeds the Integrations page score.
-            ok = bool(provider.test_connection())
-            results[str(pid)] = {
-                "status": "healthy" if ok else "unhealthy",
-                "error": None,
-            }
-        except Exception as e:
-            results[str(pid)] = {"status": "unhealthy", "error": str(e)}
-    return results
+    # One after the other, this answered in the SUM of every integration's answer time, and
+    # one that hangs held all the others back until its own timeout, on a map the dashboard
+    # and the Integrations page both poll every minute. No test needs another's answer, so
+    # nothing is gained by waiting for the previous one.
+    with ThreadPoolExecutor(max_workers=min(_HEALTH_WORKERS, len(rows))) as pool:
+        verdicts = list(pool.map(_health_of, rows))
+    return {str(r["id"]): verdict for r, verdict in zip(rows, verdicts, strict=True)}
 
 
 @router.get("/api/providers/types")
