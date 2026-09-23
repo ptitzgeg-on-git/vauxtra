@@ -261,9 +261,14 @@ Limitations:
    - **Zone → DNS → Edit** (required for DNS records)
 4. In Vauxtra: Add provider → Cloudflare Tunnel → enter tunnel ID, account ID, and token
 
-**Note on validation warnings:**
-- `tunnel_config_write: Write probe skipped (safe mode)` — normal, write is only tested when actually pushing
-- `zone_lookup: No hostname hint provided` — normal, DNS zones are checked when you create a service with a specific domain
+**Note on the checks that are not run:** a routine test leaves two of them out, and the card
+says so ("Passed, 2 checks not run") and lists them in grey. Neither is a warning, and
+neither costs health points. The API marks both with `"skipped": true`.
+- `tunnel_config_write: Write probe skipped (safe mode)`: write is only tested when actually pushing
+- `zone_lookup: No hostname hint provided`: DNS zones are checked when you create a service with a specific domain
+
+The plain Cloudflare DNS integration does the same with `dns_write`: the first real change is
+what proves the token can write.
 
 ### Pi-hole
 

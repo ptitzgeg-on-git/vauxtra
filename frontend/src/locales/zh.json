@@ -949,6 +949,7 @@
   "providers.diag.next_step": "下一步：{detail}",
   "providers.diag.passed": "全部检查通过",
   "providers.diag.passed_warnings_other": "通过，但有 {count} 项警告",
+  "providers.diag.passed_skipped_other": "通过，{count} 项检查未运行",
   "providers.diag.test_failed": "连接失败",
   "providers.diag.test_ok": "连接正常",
   "providers.empty_body": "连接一个反向代理、隧道或 DNS 提供商，Vauxtra 才能发布您的服务。",
