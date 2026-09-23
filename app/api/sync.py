@@ -6,6 +6,7 @@ from app.models import add_log, get_db
 from app.providers.base import supports_suspension
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import describe_public_target_failure, resolve_public_target
+from app.security import redact_query_secrets
 from app.text import plural
 
 router = APIRouter()
@@ -736,7 +737,9 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                     "severity": "error",
                     "type": "proxy_check_failed",
                     "provider": row["name"],
-                    "detail": str(e),
+                    # Technitium and Pi-hole v5 carry their credential in the query string,
+                    # and a `requests` error quotes the URL it failed on.
+                    "detail": redact_query_secrets(str(e)),
                 }
             )
 
@@ -795,7 +798,7 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                         "severity": "error",
                         "type": "dns_check_failed",
                         "provider": row["name"],
-                        "detail": str(e),
+                        "detail": redact_query_secrets(str(e)),
                     }
                 )
 

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 from app.config import DATA_DIR, DB_PATH  # noqa: F401 — re-exported for test patching
 from app.db import get_connection
+from app.security import redact_query_secrets
 
 # Bump this whenever a statement is added to `_MIGRATIONS`. The value is recorded in the
 # settings table, and it is the only thing that tells two schemas apart after the fact:
@@ -584,12 +585,15 @@ def normalise_log_level(level: str) -> str:
 
 
 def add_log(level: str, message: str, conn: sqlite3.Connection | None = None) -> None:
+    # Masked here, once, because most error lines quote an exception, and an exception
+    # raised by `requests` quotes the URL it called -- query string, and so credential,
+    # included. See `redact_query_secrets`.
     own = conn is None
     if own:
         conn = get_db()
     conn.execute(
         "INSERT INTO logs (level, message) VALUES (?, ?)",
-        (normalise_log_level(level), message),
+        (normalise_log_level(level), redact_query_secrets(message)),
     )
     if own:
         conn.commit()

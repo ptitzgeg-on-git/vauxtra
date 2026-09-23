@@ -169,6 +169,28 @@ def mask_secret_url(url: str) -> str:
     return f"{scheme}://***@{host}" if host else f"{scheme}://***"
 
 
+# A query parameter whose name ends in one of these carries a credential: Technitium sends its
+# session token as `token`, Pi-hole v5 its API key as `auth`.
+_SECRET_QUERY = re.compile(
+    r"([?&][A-Za-z0-9_.-]*?(?:token|auth|key|pass|password|secret|sid)=)[^&#\s'\"<>)]+",
+    re.IGNORECASE,
+)
+
+
+def redact_query_secrets(text: str) -> str:
+    """*text* with the value of every credential-bearing query parameter replaced by `***`.
+
+    `requests` quotes the URL it was calling, query string included, in the text of the
+    exceptions it raises: `raise_for_status()` ends on "for url: ...&auth=<the key>", and a
+    refused connection names "url: /api/zones/list?token=<the token>". The two integrations
+    that authenticate in the query string, Technitium and Pi-hole v5, wrap that text into
+    their own refusal, which the scan writes to the journal and a failed listing of their
+    records sends back in its 502. A parameter is masked on its name alone; one masked for
+    nothing costs a word of a log line.
+    """
+    return _SECRET_QUERY.sub(r"\1***", text or "")
+
+
 def sanitize_domain(domain: str) -> str:
     """
     Sanitize domain name to prevent injection attacks.

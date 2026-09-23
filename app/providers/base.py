@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 import requests
 
 from app.config import PROVIDER_TIMEOUT
+from app.security import redact_query_secrets
 
 
 class TimeoutSession(requests.Session):
@@ -85,7 +86,14 @@ class ProviderListingRefused(RuntimeError):
 
     Providers whose own client raises, Cloudflare's for one, let that exception out instead.
     Every caller wraps the call, so what matters is that something arrives.
+
+    The message is masked on the way in (`redact_query_secrets`): most refusals quote the
+    `requests` exception they caught, and Technitium and Pi-hole v5 put their credential in
+    the URL that exception quotes. What arrives is shown in the scan and the journal.
     """
+
+    def __init__(self, message: object = "") -> None:
+        super().__init__(redact_query_secrets(str(message)))
 
 
 class DNSProvider(ABC):
