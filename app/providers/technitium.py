@@ -202,11 +202,12 @@ class TechnitiumProvider(DNSProvider):
                 zone_records = data["response"].get("records", [])
             except (KeyError, TypeError) as exc:
                 raise ProviderListingRefused(f"Technitium zone {zone}: no response body") from exc
+            zone_name = str(zone or "").strip().strip(".").lower()
             for rec in zone_records:
                 if rec.get("type") == "A" and not rec.get("isDisabled"):
                     ip = rec.get("rData", {}).get("ipAddress", "")
                     if ip:
-                        records.append({"domain": rec["name"], "answer": ip})
+                        records.append({"domain": rec["name"], "answer": ip, "zone": zone_name})
         return records
 
     def add_rewrite(self, domain: str, ip: str) -> bool:

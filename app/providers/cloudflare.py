@@ -168,16 +168,22 @@ class CloudflareProvider(DNSProvider):
         keeps on purpose and explains over `_zone_rrsets`. It keeps it because it can tell
         that case apart from a listing that failed; one handler wrapped around the whole
         sweep cannot, so it read every failure as the harmless one.
+
+        Each record names the zone it was read from (`zone`). A token scoped to every zone of
+        an account reaches every zone on that account: measured in production on
+        2026-09-22, one scan listed 59 routes in twelve zones nobody had declared, beside the
+        32 in the one that was. The scan sorts them by that name, and the import splits a
+        record's name at it rather than at its first dot.
         """
-        zone_ids: list[str] = []
+        zones: list[tuple[str, str]] = []
         if self._configured_zone_id:
-            zone_ids = [self._configured_zone_id]
+            zones = [(self._configured_zone_id, self._zone_name(self._configured_zone_id))]
         else:
             # Discover all visible zones
             for zone in self._client.zones.list(per_page=50):
-                zone_ids.append(zone.id)
+                zones.append((zone.id, self._clean_zone_name(zone.name)))
         results: list[dict] = []
-        for zid in zone_ids:
+        for zid, zone_name in zones:
             for rtype in ("A", "AAAA", "CNAME"):
                 for r in self._client.dns.records.list(zone_id=zid, type=rtype):
                     results.append(
@@ -186,6 +192,7 @@ class CloudflareProvider(DNSProvider):
                             "answer": r.content,
                             "type": rtype,
                             "proxied": r.proxied,
+                            "zone": zone_name,
                         }
                     )
         return results
@@ -210,6 +217,24 @@ class CloudflareProvider(DNSProvider):
             for r in self._client.dns.records.list(zone_id=zone_id, name={"exact": wanted})
             if r.type in ("A", "AAAA", "CNAME") and self._same_name(r.name, wanted)
         ]
+
+    @staticmethod
+    def _clean_zone_name(name) -> str:
+        """A zone name as the scan compares it, or "" for anything that is not one."""
+        return name.strip(".").lower() if isinstance(name, str) else ""
+
+    def _zone_name(self, zone_id: str) -> str:
+        """The name of the configured zone, or "" when the token may not read it.
+
+        The one handler of the listing, and it guards a label, not a record: the scan falls
+        back to splitting the record's name without it, as it always did. Failing the whole
+        listing over it would hide every record of the zone to protect a heading.
+        """
+        try:
+            zone = self._client.zones.get(zone_id=zone_id)
+        except Exception:
+            return ""
+        return self._clean_zone_name(getattr(zone, "name", None))
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)

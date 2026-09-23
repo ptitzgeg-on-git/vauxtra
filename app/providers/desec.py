@@ -237,7 +237,7 @@ class DesecProvider(DNSProvider):
                     if rtype == "CNAME":
                         answer = answer.rstrip(".").lower()
                     if answer:
-                        records.append({"domain": fqdn.lower(), "answer": answer, "type": rtype})
+                        records.append({"domain": fqdn.lower(), "answer": answer, "type": rtype, "zone": name})
         return records
 
     def add_rewrite(self, domain: str, ip: str) -> bool:

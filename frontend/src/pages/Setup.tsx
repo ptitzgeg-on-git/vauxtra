@@ -22,6 +22,7 @@ import { getErrorDetail, getHttpStatus, translateApiError } from '@/lib/errors';
 import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
 import type { ImportResult, SyncResult } from '@/types/api';
+import { NOTHING_TRACKED, buildRows, declaredOf, isImportable, payloadFor, type SyncRow } from '@/lib/syncRows';
 import {
   emptyForm,
   type ProviderFormState,
@@ -50,7 +51,7 @@ import {
   SetupStepper,
   WelcomeStep,
 } from '@/components/features/setup';
-import type { ImportableService, ProviderItem, StepName } from '@/components/features/setup';
+import type { ProviderItem, StepName } from '@/components/features/setup';
 
 const THEME_ICONS: Record<Theme, ReactNode> = { light: <Sun />, dark: <Moon />, system: <Monitor /> };
 
@@ -152,7 +153,10 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
 
   // Import
-  const [importableServices, setImportableServices] = useState<ImportableService[]>([]);
+  /** The scan the import step lists. Kept whole, because the import sends back its records. */
+  const [scan, setScan] = useState<SyncResult | null>(null);
+  /** The names ticked, by row key: a name, not a record, is what the operator chooses. */
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
   /**
    * True from the moment the wizard lands on the import step until a scan has answered —
    * not from the moment the request goes out. Those two are a paint apart, and the rung
@@ -187,75 +191,40 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     }
   };
 
-  /** Provider id → declared type, so an imported host is drawn with its real provider's logo. */
-  const providerTypeById = useMemo(
-    () => new Map(providers.map((p) => [p.id, p.type])),
-    [providers],
-  );
-
   const loadImportableServices = useCallback(async () => {
     setImportScanFailed(false);
+    // A rescan offers a new list: a name ticked on the last one is not a choice made on this one.
+    setSelectedKeys(new Set());
     if (providers.length === 0) {
-      setImportableServices([]);
+      setScan(null);
       //: Nothing to scan is an answer, and the flag above starts life waiting for one.
       setLoadingImportable(false);
       return;
     }
     setLoadingImportable(true);
     try {
-      const result = await api.post<SyncResult>('/services/sync');
-      const services: ImportableService[] = [];
-
-      for (const host of result.proxy_hosts ?? []) {
-        if (host._already_imported) continue;
-        const names = (host.domain_names as string[] | undefined) ?? (host.domains as string[] | undefined) ?? [];
-        const domain = names[0] ?? (host.domain as string) ?? '';
-        if (!domain) continue;
-        const target = (host.forward_host || host.host)
-          ? `${host.forward_host || host.host}${(host.forward_port || host.port) ? `:${host.forward_port || host.port}` : ''}`
-          : '';
-        services.push({
-          kind: 'proxy',
-          source: (host._provider_name as string) || t('setup.import.source_proxy'),
-          // The row's icon follows the provider that served it. Defaulting to 'npm' drew an
-          // Nginx Proxy Manager logo on every Traefik or Caddy host.
-          type: (host._provider_type as string)
-            || (host._provider_id !== undefined ? providerTypeById.get(host._provider_id) : undefined)
-            || 'proxy',
-          name: domain.split('.')[0] || domain,
-          domain,
-          target,
-          selected: false,
-          raw: host,
-        });
-      }
-
-      for (const rewrite of result.dns_rewrites ?? []) {
-        if (rewrite._already_imported) continue;
-        const domain = (rewrite.domain as string) || '';
-        if (!domain) continue;
-        services.push({
-          kind: 'dns',
-          source: (rewrite._provider_name as string) || t('setup.import.source_dns'),
-          type: (rewrite._provider_id !== undefined ? providerTypeById.get(rewrite._provider_id) : undefined) || 'dns',
-          name: domain.split('.')[0] || domain,
-          domain,
-          target: (rewrite.answer as string) || (rewrite.target as string) || '',
-          selected: false,
-          raw: rewrite,
-        });
-      }
-
-      setImportableServices(services);
+      setScan(await api.post<SyncResult>('/services/sync'));
     } catch (err) {
       if (import.meta.env.DEV) console.error('Sync error:', err);
       toast.error(translateApiError(err, t, t('setup.toast.scan_failed')));
-      setImportableServices([]);
+      setScan(null);
       setImportScanFailed(true);
     } finally {
       setLoadingImportable(false);
     }
-  }, [providers.length, providerTypeById, t]);
+  }, [providers.length, t]);
+
+  /**
+   * One row per name, the way Settings > Data lists the same scan (`lib/syncRows.ts`). The
+   * wizard has no services to compare against yet; a name the server already tracks carries
+   * `_already_imported`, and it is left out as it always was.
+   */
+  const importRows = useMemo(() => {
+    if (!scan) return { rows: [] as SyncRow[], nameless: 0 };
+    const { rows, nameless } = buildRows(scan, declaredOf(scan.declared_domains), NOTHING_TRACKED);
+    return { rows: rows.filter((row) => row.status !== 'exists'), nameless };
+  }, [scan]);
+  const failedProviders = useMemo(() => (scan?.providers ?? []).filter((report) => !report.ok), [scan]);
 
   /**
    * The scan is what the import step is, so it follows the step. It used to be fired by the
@@ -298,14 +267,13 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const importBusy = loadingImportable || providersQuery.isFetching;
 
   const handleImportAndFinish = async () => {
-    const selected = importableServices.filter((s) => s.selected);
-    if (selected.length > 0) {
+    const chosen = importRows.rows.filter((row) => isImportable(row) && selectedKeys.has(row.key));
+    if (scan && chosen.length > 0) {
       setImporting(true);
       try {
-        const payload = {
-          proxy_hosts: selected.filter((s) => s.kind === 'proxy').map((s) => s.raw),
-          dns_rewrites: selected.filter((s) => s.kind === 'dns').map((s) => s.raw),
-        };
+        // Every record of a chosen name, so the import can pair a proxy host with its DNS
+        // record, and nothing else: the scan is never sent back whole.
+        const payload = payloadFor(scan, chosen);
         const result = await api.post<ImportResult>('/services/import', payload);
         // The wizard reported refusals under the word "skipped", which is the name of the
         // other outcome: a row set aside because it was already tracked is the nominal
@@ -574,13 +542,31 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
             {step === 'import' && (
               <ImportStep
                 providers={providers}
-                importableServices={importableServices}
+                rows={importRows.rows}
+                selected={selectedKeys}
+                failedProviders={failedProviders}
+                nameless={importRows.nameless}
                 loadingImportable={importBusy}
                 scanFailed={importReadFailed}
                 importing={importing}
-                onToggle={(idx) => setImportableServices((prev) => prev.map((svc, i) => (i === idx ? { ...svc, selected: !svc.selected } : svc)))}
-                onSelectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: true })))}
-                onDeselectAll={() => setImportableServices((prev) => prev.map((svc) => ({ ...svc, selected: false })))}
+                onToggle={(key) =>
+                  setSelectedKeys((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  })
+                }
+                onSelect={(keys, on) =>
+                  setSelectedKeys((prev) => {
+                    const next = new Set(prev);
+                    for (const key of keys) {
+                      if (on) next.add(key);
+                      else next.delete(key);
+                    }
+                    return next;
+                  })
+                }
                 onRetry={retryImport}
                 onImportAndFinish={() => void handleImportAndFinish()}
                 onBack={() => setStep('docker')}

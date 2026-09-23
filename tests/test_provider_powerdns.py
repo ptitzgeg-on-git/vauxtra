@@ -231,7 +231,7 @@ class TestPowerDNSListRewrites(unittest.TestCase):
             _rrset("app.home.lab.", "A", "192.168.1.10"),
         ]}))
         self.assertEqual(self.provider.list_rewrites(),
-                         [{"domain": "app.home.lab", "answer": "192.168.1.10", "type": "A"}])
+                         [{"domain": "app.home.lab", "answer": "192.168.1.10", "type": "A", "zone": "home.lab"}])
 
     def test_a_disabled_record_is_not_a_rewrite(self):
         _wire(self.provider, _FakePowerDNS({"home.lab.": [

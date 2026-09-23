@@ -276,7 +276,17 @@ def sync_services_from_providers() -> dict[str, Any]:
     Discover existing services from all enabled providers.
 
     Returns proxy_hosts (from NPM, Zoraxy, Traefik, Cloudflare Tunnel) and dns_rewrites
-    (from Pi-hole, AdGuard, Cloudflare DNS) that can be imported into Vauxtra.
+    (from Pi-hole, AdGuard, Cloudflare DNS) that can be imported into Vauxtra, plus:
+      providers        one line per integration asked, in the order they were added:
+                       id, name, type, ok, count, and when ok is false the error (its
+                       routes are missing from this scan, the rest is not a full picture);
+      declared_domains the domains declared in Settings > DNS domains.
+
+    Every row carries _zone (the zone its name is filed under) and _declared (whether that
+    zone is a declared domain). A DNS token can read zones the operator never declared:
+    import the rows whose _declared is true unless told otherwise. A name answered by two
+    integrations appears once per integration; the import keeps the first and refuses the
+    others by name.
     """
     r = client.post("/services/sync")
     client.check(r)
@@ -294,8 +304,10 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
       imported (int)      new services created;
       linked   (int)      existing services that gained the DNS half they were missing;
       skipped  (list[str]) rows passed over on purpose, nothing is wrong with them: a name
-                          Vauxtra already tracks, or the 2nd..Nth name of a proxy host that
-                          answers for several, since a service carries one name;
+                          Vauxtra already tracks (a link never replaces the DNS half a
+                          service already has, and a tunnel service takes none), or the
+                          2nd..Nth name of a proxy host that answers for several, since a
+                          service carries one name;
       errors   (list[str]) rows that are wrong and that the operator has somewhere to fix.
 
     A skipped list is not a failure: re-importing a scan Vauxtra already knows fills it and
