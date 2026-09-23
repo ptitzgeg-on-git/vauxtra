@@ -35,7 +35,11 @@ class CloudflareProvider(DNSProvider):
         self._configured_zone_id = zone_id.strip() if zone_id else ""
         self._zone_cache: dict[str, str] = {}  # domain → zone_id (per-domain cache)
         self._api_token = (api_token or "").strip()
-        self._client = _cf.Cloudflare(api_token=api_token)
+        # The SDK's own default is a 60-second read timeout, retried twice: three minutes
+        # before one silent Cloudflare call gives up, where every other request this class
+        # makes (`_api_request`) stops at `PROVIDER_TIMEOUT`. Nothing upstream bounds it
+        # either, so a stalled zone listing held a scan or a health round for that long.
+        self._client = _cf.Cloudflare(api_token=api_token, timeout=PROVIDER_TIMEOUT)
         self._api_url = "https://api.cloudflare.com/client/v4"
         self._proxied = bool((extra or {}).get("proxied", False))
 
