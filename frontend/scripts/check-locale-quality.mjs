@@ -137,11 +137,11 @@ const NON_QUANTITY = new Set([
 
 /** Names that may arrive as a number. Every use of one has to be declared below. */
 const QUANTITY = new Set([
-  'answers', 'badge', 'blocking', 'checks', 'clients', 'connections', 'count', 'days',
-  'disk', 'domains', 'enabled', 'environments', 'error', 'errors', 'failed', 'healthy',
-  'keys', 'latency', 'max', 'min', 'minutes', 'more', 'ms', 'ok', 'page', 'pages',
+  'answers', 'badge', 'blocking', 'checked', 'checks', 'clients', 'connections', 'count',
+  'days', 'disk', 'domains', 'enabled', 'environments', 'error', 'errors', 'failed',
+  'healthy', 'keys', 'latency', 'max', 'min', 'minutes', 'more', 'ms', 'ok', 'page', 'pages',
   'percent', 'providers', 'score', 'seconds', 'services', 'step', 'tags', 'templates',
-  'total', 'value', 'values', 'warnings', 'webhooks',
+  'total', 'untested', 'value', 'values', 'warnings', 'webhooks',
 ]);
 
 /**
@@ -199,6 +199,10 @@ const DECLARED = new Map(
     'services.bulk.result.checked_mixed': {
       ok: 'counted by services.bulk.result.reachable',
       failed: 'counted by services.bulk.result.unreachable',
+    },
+    'services.bulk.result.checked_with_untested': {
+      checked: 'counted by services.bulk.result.checked or services.bulk.result.checked_mixed',
+      untested: 'counted by services.bulk.result.untested',
     },
     'services.bulk.result.with_errors': {
       errors: 'the failure messages themselves, joined',

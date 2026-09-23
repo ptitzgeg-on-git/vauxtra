@@ -143,3 +143,31 @@ describe('ServiceDrawer, the logs before they have been read', () => {
     expect(screen.queryByText('monitoring.related_logs_empty')).toBeNull();
   });
 });
+
+describe('ServiceDrawer, a service without a port', () => {
+  // Published in DNS alone: the scheduler and "Check all services" leave it out.
+  const NO_PORT: Service = { ...SERVICE, target_port: 0, status: 'unknown', last_checked: null };
+
+  it('says why nothing probes it, and that it is not a tunnel', () => {
+    renderDrawer({ service: NO_PORT });
+
+    expect(screen.getByText('monitoring.drawer.no_port_notice')).toBeInTheDocument();
+    expect(screen.queryByText('monitoring.drawer.tunnel_notice')).toBeNull();
+    // "Check now" stays: it still resolves the name.
+    expect(screen.getByRole('button', { name: /monitoring\.check_now/ })).toBeInTheDocument();
+  });
+
+  it('puts the empty timeline down to the missing port, not to a check still to come', () => {
+    renderDrawer({ service: NO_PORT });
+
+    expect(screen.getByText('monitoring.no_port_not_probed_hint')).toBeInTheDocument();
+    expect(screen.queryByText('monitoring.drawer.timeline_empty_hint')).toBeNull();
+  });
+
+  it('says none of it for a service that has a port', () => {
+    renderDrawer();
+
+    expect(screen.queryByText('monitoring.drawer.no_port_notice')).toBeNull();
+    expect(screen.getByText('monitoring.drawer.timeline_empty_hint')).toBeInTheDocument();
+  });
+});

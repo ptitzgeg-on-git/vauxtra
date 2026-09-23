@@ -213,6 +213,28 @@ def is_valid_port(value) -> bool:
         return False
 
 
+# The port of a service that is only a name in DNS: an A record for a machine, a VPN
+# endpoint. Nothing forwards to it and there is nothing to connect to, so nothing probes it
+# either. Stored as 0 because the column is NOT NULL and every reader takes the port as an
+# integer; the import used to write 80 instead, and the monitor then reported port 80 of a
+# VPN gateway as down, every cycle, forever.
+NO_PORT = 0
+
+
+def is_valid_service_port(value) -> bool:
+    """A service's port: 1 to 65535, or `NO_PORT` for a service published in DNS alone.
+
+    The range is written out rather than built on `is_valid_port` because the API/MCP parity
+    gate reads a validator's bounds from the comparison it returns. Whether 0 is allowed for
+    a given service depends on its other fields -- a proxy host or a tunnel rule pointed at
+    port 0 is a route to nowhere -- so `ServiceIn` checks that pair itself.
+    """
+    try:
+        return 0 <= int(value) <= 65535
+    except (TypeError, ValueError):
+        return False
+
+
 def is_valid_url(value: str) -> bool:
     return (
         isinstance(value, str)

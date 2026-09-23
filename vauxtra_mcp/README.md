@@ -353,14 +353,14 @@ now answer nothing but 404. `DELETE /api/providers/{id}` answers `ok: false` in 
 situation, since the provider row is deleted either way and a false `ok` there means
 "deleted, but something is still published". Read the list, not the flag.
 
-Fourteen answers across eleven tools carry one:
+Fifteen answers across twelve tools carry one:
 
 | Key | Answered by | What a non-empty one means |
 | --- | --- | --- |
 | `errors` | `create_service`, `apply_template`, `update_service`, `toggle_service`, `delete_service`, `bulk_service_action`, `delete_provider`, `import_docker_containers`, `import_services_from_sync` | A record Vauxtra could not publish, or could not withdraw. After a deletion those are still live on their provider, still resolving, with nothing left in Vauxtra pointing at them. |
 | `not_applied` | `save_settings` | The value is in the database and the settings page reads it back, but the running scheduler never received it: the checks go on at the old cadence until Vauxtra restarts. |
 | `unreachable` | `get_certificate_expiry` | Enabled providers this call could not read. The counts cover only the rest, so the answer is partial rather than reassuring. |
-| `skipped` | `import_docker_containers`, `import_services_from_sync` | Nothing to do: a name Vauxtra already tracks, or the 2nd..Nth hostname of a proxy host that answers for several. The normal result of re-importing a scan. |
+| `skipped` | `import_docker_containers`, `import_services_from_sync`, `check_all_services` | Nothing to do: a name Vauxtra already tracks, or the 2nd..Nth hostname of a proxy host that answers for several. The normal result of re-importing a scan. For `check_all_services` it is a count, the services it did not probe: tunnels, which are checked through their provider, and services without a port, which are a name in DNS and nothing to connect to. The two are counted apart in `skipped_tunnel` and `skipped_no_port`. |
 | `ignored` | `save_settings` | Read-only keys handed back untouched, `schema_version` and `setup_completed`. Never a refusal. |
 
 Those last two rows are the distinction worth keeping. A `skipped` line needs no action, an

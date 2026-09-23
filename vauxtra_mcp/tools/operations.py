@@ -12,7 +12,7 @@ def run_preflight(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: Annotated[int, Field(ge=1, le=65535)],
+    target_port: Annotated[int, Field(ge=0, le=65535)],
     forward_scheme: Literal["http", "https"] = "http",
     expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,

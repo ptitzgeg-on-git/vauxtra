@@ -382,6 +382,13 @@ export function ExposeModal({
         ? t('expose.validation.dns_required_dns_only')
         : t('expose.validation.provider_required');
     }
+    // `validate_port_when_forwarded` in `app/api/services.py`: 0 is only for a name published
+    // in DNS alone, and a proxy host or a tunnel rule pointed at it is a route to nowhere.
+    const forwarded =
+      formData.expose_mode === 'tunnel' ||
+      Boolean(formData.proxy_provider_id) ||
+      formData.extra_proxy_provider_ids.length > 0;
+    if (!formData.target_port && forwarded) return t('expose.validation.port_required');
 
     const manualDnsTarget = formData.dns_ip.trim();
     const suggestedDnsTarget = String(targetSuggestion?.recommended || '').trim();

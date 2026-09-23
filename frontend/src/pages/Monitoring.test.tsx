@@ -15,11 +15,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { renderWithProviders } from '@/test/render';
-import type { Service } from '@/types/api';
+import type { CheckAllResult, Service } from '@/types/api';
 
 /** Both lists in flight, which is what the first paint of a deep link actually has. */
 let historyPending = false;
 let logsPending = false;
+
+/** What `POST /api/services/check-all` answers, set by each test that presses the button. */
+let checkAllAnswer: CheckAllResult = { checked: 0, ok: 0, error: 0 };
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -38,7 +41,7 @@ vi.mock('@/api/client', () => ({
       }
       return Promise.resolve({});
     }),
-    post: vi.fn(() => Promise.resolve({ ok: true })),
+    post: vi.fn((path: string) => Promise.resolve(path === '/services/check-all' ? checkAllAnswer : { ok: true })),
     put: vi.fn(() => Promise.resolve({ ok: true })),
     delete: vi.fn(() => Promise.resolve({ ok: true })),
   },
@@ -111,5 +114,46 @@ describe('Monitoring, a deep link opened before the page has read anything', () 
     openLogs(panel);
     expect(await within(panel).findByText('monitoring.related_logs_empty')).toBeInTheDocument();
     expect(panel.querySelectorAll('.animate-shimmer')).toHaveLength(0);
+  });
+});
+
+/**
+ * What the summary of "Check all services" says was left out.
+ *
+ * The page worked the skipped tunnels out as `checked - ok - error`: the check-all route
+ * skipped nothing else. It now also leaves out the services without a port, and the same
+ * subtraction called them tunnels.
+ */
+describe('Monitoring, the summary of a check of every service', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  async function checkAll(answer: CheckAllResult) {
+    checkAllAnswer = answer;
+    renderWithProviders(<Monitoring />, { route: '/monitoring' });
+    fireEvent.click(await screen.findByRole('button', { name: 'monitoring.check_all' }));
+  }
+
+  it('does not call the services without a port tunnels', async () => {
+    await checkAll({ checked: 3, ok: 1, error: 0, skipped: 2, skipped_tunnel: 0, skipped_no_port: 2, results: [] });
+
+    expect(await screen.findByText('monitoring.check_skipped_no_port')).toBeInTheDocument();
+    expect(screen.queryByText('monitoring.check_skipped')).toBeNull();
+  });
+
+  it('gives both reasons when both kinds were left out', async () => {
+    await checkAll({ checked: 4, ok: 1, error: 0, skipped: 3, skipped_tunnel: 1, skipped_no_port: 2, results: [] });
+
+    expect(await screen.findByText('monitoring.check_skipped_no_port')).toBeInTheDocument();
+    expect(screen.getByText('monitoring.check_skipped')).toBeInTheDocument();
+  });
+
+  it('still works the tunnels out on an older instance, which does not split them', async () => {
+    await checkAll({ checked: 3, ok: 1, error: 1 });
+
+    expect(await screen.findByText('monitoring.check_skipped')).toBeInTheDocument();
+    expect(screen.queryByText('monitoring.check_skipped_no_port')).toBeNull();
   });
 });

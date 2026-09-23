@@ -7,17 +7,20 @@
  * minutes), not only when the status flips, so the window is a dense series and can be
  * bucketed into a heat strip without carrying a state forward between events.
  *
- * Two things the table has to be honest about:
+ * Three things the table has to be honest about:
  *  - there is no latency column in `uptime_events`. Latency exists only in the answer of
  *    `POST /api/services/{sid}/check`, which measures one service on demand, and in
  *    the `results` of `POST /api/services/check-all`, which measures every one of them.
  *  - `expose_mode === 'tunnel'` services are skipped by both the scheduler and
  *    `POST /api/services/check-all` (TCP against a tunnel target always fails), so they
  *    have no history and no `last_checked` — that is expected, not a fault.
+ *  - so are the services without a port (`target_port` 0, published in DNS alone), for the
+ *    plainer reason that there is nothing to connect to.
  */
 
 import { parseBackendTimestamp } from '@/lib/format';
 import type { Tone } from '@/components/ui';
+import { hasNoPort } from '@/components/features/services/helpers';
 import type { Service, ServiceHistoryPoint, ServiceHistoryResponse, ServiceStatus } from '@/types/api';
 
 // ---------------------------------------------------------------------------
@@ -59,8 +62,9 @@ export function serviceHost(service: Service): string {
   return service.subdomain ? `${service.subdomain}.${service.domain}` : service.domain;
 }
 
+/** `ip:port`, or the address alone for a service without a port: there is no `:0` to reach. */
 export function serviceTarget(service: Service): string {
-  return `${service.target_ip}:${service.target_port}`;
+  return hasNoPort(service) ? service.target_ip : `${service.target_ip}:${service.target_port}`;
 }
 
 export function serviceStatus(service: Service): MonitoringStatus {
@@ -247,11 +251,24 @@ export interface LatencyProbe {
 
 export type LatencyProbes = Record<number, LatencyProbe>;
 
-/** Mean of the latencies measured this session, `null` while none has been. */
-export function averageLatency(probes: LatencyProbes): number | null {
-  const values = Object.values(probes)
+/** The latencies actually measured: a check that failed, or had no port to try, has none. */
+function measuredLatencies(probes: LatencyProbes): number[] {
+  return Object.values(probes)
     .map((probe) => probe.latencyMs)
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+}
+
+/** Mean of the latencies measured this session, `null` while none has been. */
+export function averageLatency(probes: LatencyProbes): number | null {
+  const values = measuredLatencies(probes);
   if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/**
+ * How many services that mean is taken over. Counting every check instead put "Measured on
+ * 1 service" under a dash, after a check that measured nothing.
+ */
+export function measuredCount(probes: LatencyProbes): number {
+  return measuredLatencies(probes).length;
 }
