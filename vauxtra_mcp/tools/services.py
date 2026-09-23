@@ -56,7 +56,7 @@ def create_service(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: Annotated[int, Field(ge=1, le=65535)],
+    target_port: Annotated[int, Field(ge=0, le=65535)],
     forward_scheme: Literal["http", "https"] = "http",
     expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
@@ -74,6 +74,10 @@ def create_service(
 
     expose_mode: 'proxy_dns' for NPM/Traefik + DNS, 'tunnel' for Cloudflare Tunnel.
     public_target_mode: 'manual' (use dns_ip) or 'auto' (detect WAN IP).
+
+    target_port 0 is a service published in DNS alone -- a machine's A record, a VPN
+    endpoint -- which nothing forwards to and nothing probes. It is refused with a proxy or
+    in tunnel mode, since both forward to a port.
 
     tag_ids and environment_ids attach labels. Both default to none, and every id has to
     name a row that exists: `list_tags` and `list_environments` are where they come from,
@@ -129,7 +133,7 @@ def create_service(
 def update_service(
     service_id: int,
     target_ip: str | None = None,
-    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
+    target_port: Annotated[int, Field(ge=0, le=65535)] | None = None,
     forward_scheme: Literal["http", "https"] | None = None,
     subdomain: str | None = None,
     domain: str | None = None,

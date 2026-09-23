@@ -6,6 +6,7 @@ import {
   Copy,
   ExternalLink,
   Globe,
+  Info,
   Power,
   PowerOff,
   Waypoints,
@@ -273,20 +274,36 @@ export function TaxonomyChips({
   );
 }
 
-/** Inline result of "Check now": status, latency and what DNS resolved to. */
+/**
+ * Inline result of "Check now": status, latency and what DNS resolved to. A service without a
+ * port comes back untested (`tested: false`): its name was resolved and nothing was probed,
+ * which the badge says instead of an "Unknown" that read as a check gone wrong.
+ */
 export function CheckResultInline({ result, className }: { result: ServiceCheckResult; className?: string }) {
   const t = useT();
   const { formatLatency } = useFormat();
-  const tone: Tone = result.status === 'ok' ? 'success' : result.status === 'error' ? 'danger' : 'neutral';
-  const label =
-    result.status === 'ok' ? t('services.check.ok') : result.status === 'error' ? t('services.check.error') : t('services.check.unknown');
+  const untested = result.tested === false;
+  const tone: Tone = untested
+    ? 'neutral'
+    : result.status === 'ok'
+      ? 'success'
+      : result.status === 'error'
+        ? 'danger'
+        : 'neutral';
+  const label = untested
+    ? t('services.check.no_port')
+    : result.status === 'ok'
+      ? t('services.check.ok')
+      : result.status === 'error'
+        ? t('services.check.error')
+        : t('services.check.unknown');
   const resolved = Array.isArray(result.dns_resolved) ? result.dns_resolved : [];
   return (
     <span
       role="status"
       className={cn('inline-flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground animate-in fade-in animate-duration-200', className)}
     >
-      <Badge tone={tone} size="sm" icon={result.status === 'ok' ? <Check /> : <CircleAlert />}>
+      <Badge tone={tone} size="sm" icon={untested ? <Info /> : result.status === 'ok' ? <Check /> : <CircleAlert />}>
         {label}
       </Badge>
       {result.latency_ms != null && <span className="tabular-nums">{formatLatency(result.latency_ms)}</span>}
@@ -295,7 +312,8 @@ export function CheckResultInline({ result, className }: { result: ServiceCheckR
           {resolved.join(', ')}
         </span>
       )}
-      {result.status === 'error' && resolved.length === 0 && result.dns_resolved !== null && (
+      {/* The name is the one thing an untested check looked at, so its absence is news too. */}
+      {(result.status === 'error' || untested) && resolved.length === 0 && result.dns_resolved !== null && (
         <span>{t('services.check.no_resolution')}</span>
       )}
     </span>

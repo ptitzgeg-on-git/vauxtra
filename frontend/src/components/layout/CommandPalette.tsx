@@ -24,6 +24,7 @@ import { useTheme, type Theme } from '@/theme';
 import { cn } from '@/lib/cn';
 import { Button, InlineAlert, Kbd } from '@/components/ui';
 import { SETTINGS_TABS } from '@/components/features/settings/tabs';
+import { targetOf } from '@/components/features/services/helpers';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { slugId, useScrollLock } from '@/components/ui/_internal';
 import type { Provider, Service } from '@/types/api';
@@ -154,7 +155,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }) {
       id: `service:${s.id}`,
       group: 'services',
       label: publicHost(s),
-      description: `${s.forward_scheme}://${s.target_ip}:${s.target_port}`,
+      description: targetOf(s),
       keywords: `${s.subdomain} ${s.domain} ${s.tunnel_hostname ?? ''} ${s.status}`,
       icon: <Globe />,
       run: go(`/services?edit=${s.id}`),

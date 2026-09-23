@@ -345,11 +345,12 @@ def run_health_checks() -> None:
         # UPDATEs on one transaction, that alone was minutes of held write lock a cycle.
         #
         # Tunnel services are health-checked via the Cloudflare API, not TCP. Running TCP
-        # against cfargotunnel.com or similar targets always fails.
+        # against cfargotunnel.com or similar targets always fails. A service without a
+        # port is a name in DNS and nothing more: there is no connection to open.
         probes = [
             (svc, _tcp_ok(svc["target_ip"], svc["target_port"]))
             for svc in services
-            if (svc["expose_mode"] or "").strip().lower() != "tunnel"
+            if (svc["expose_mode"] or "").strip().lower() != "tunnel" and svc["target_port"]
         ]
 
         changed: list[dict] = []

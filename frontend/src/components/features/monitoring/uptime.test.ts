@@ -16,7 +16,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { autoCheckCadence } from './uptime';
+import type { Service } from '@/types/api';
+import { autoCheckCadence, averageLatency, measuredCount, serviceTarget, type LatencyProbes } from './uptime';
 
 describe('autoCheckCadence', () => {
   it('reads zero as off, which is the whole point', () => {
@@ -50,5 +51,43 @@ describe('autoCheckCadence', () => {
       const cadence = autoCheckCadence(raw as string | number | null | undefined);
       if (cadence.state === 'every') expect(String(cadence.minutes)).toBe(String(raw));
     }
+  });
+});
+
+// The address and the latency card, for a service without a port: `target_port` 0 is a name
+// published in DNS alone, which nothing connects to.
+
+describe('serviceTarget', () => {
+  const base = { target_ip: '10.0.0.10', target_port: 8080, expose_mode: 'proxy_dns' } as Service;
+
+  it('writes the address and the port', () => {
+    expect(serviceTarget(base)).toBe('10.0.0.10:8080');
+  });
+
+  it('writes the address alone for a service without a port', () => {
+    // `10.0.0.10:0` named a port nothing listens on.
+    expect(serviceTarget({ ...base, target_port: 0 })).toBe('10.0.0.10');
+  });
+});
+
+describe('the latency card', () => {
+  const probes: LatencyProbes = {
+    1: { latencyMs: 12, status: 'ok', at: 0, dns: null },
+    2: { latencyMs: null, status: 'error', at: 0, dns: null },
+    3: { latencyMs: null, status: 'unknown', at: 0, dns: ['203.0.113.9'] },
+  };
+
+  it('averages the latencies that were measured, and only those', () => {
+    expect(averageLatency(probes)).toBe(12);
+  });
+
+  it('counts the services the mean is taken over, not the checks that ran', () => {
+    // The card read "Measured on 3 services" under 12 ms, two of which measured nothing.
+    expect(measuredCount(probes)).toBe(1);
+  });
+
+  it('counts nothing while nothing has been measured', () => {
+    expect(measuredCount({ 2: probes[2], 3: probes[3] })).toBe(0);
+    expect(averageLatency({ 2: probes[2], 3: probes[3] })).toBeNull();
   });
 });

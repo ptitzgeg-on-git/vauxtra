@@ -22,9 +22,58 @@ export const publicHostOf = (service: Service): string =>
 /** A wildcard host cannot be opened in a tab. */
 export const isNavigablePublicHost = (host: string): boolean => Boolean(host) && !host.includes('*');
 
-/** `scheme://ip:port` — what the route forwards to. */
+/**
+ * Port 0 is a service published in DNS alone (`NO_PORT` in `app/validators.py`): no proxy or
+ * tunnel forwards to it, and nothing probes it, neither the scheduler nor a check. A tunnel
+ * is never one: it forwards, and the server refuses it a port 0.
+ */
+export const hasNoPort = (service: Pick<Service, 'expose_mode' | 'target_port'>): boolean =>
+  service.expose_mode !== 'tunnel' && Number(service.target_port) === 0;
+
+/**
+ * `scheme://ip:port`, what the route forwards to. A service without a port forwards nowhere,
+ * so it is the address alone: `http://10.0.0.5:0` named a connection nothing will open.
+ */
 export const targetOf = (service: Service): string =>
-  `${service.forward_scheme || 'http'}://${service.target_ip}:${service.target_port}`;
+  hasNoPort(service)
+    ? service.target_ip
+    : `${service.forward_scheme || 'http'}://${service.target_ip}:${service.target_port}`;
+
+/** What a run of "Check now" over a selection came back with, one count per outcome. */
+export interface BulkCheckCounts {
+  ok: number;
+  failed: number;
+  /** Services without a port: their name was resolved and nothing was probed. */
+  untested: number;
+}
+
+/**
+ * The toast after a bulk check. A service without a port is neither up nor down, so it is
+ * named apart from the two: counted as a failure, it put "1 failed" on a selection where
+ * nothing had failed. `warning` whenever something did fail; `success` only when something
+ * was probed and all of it answered; `neutral` when nothing was probed at all.
+ */
+export function bulkCheckSummary(
+  { ok, failed, untested }: BulkCheckCounts,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): { message: string; tone: 'success' | 'warning' | 'neutral' } {
+  const probed =
+    failed > 0
+      ? t('services.bulk.result.checked_mixed', {
+          ok: t('services.bulk.result.reachable', { count: ok }),
+          failed: t('services.bulk.result.unreachable', { count: failed }),
+        })
+      : ok > 0 || untested === 0
+        ? t('services.bulk.result.checked', { count: ok })
+        : '';
+  const skipped = untested > 0 ? t('services.bulk.result.untested', { count: untested }) : '';
+  const message =
+    probed && skipped
+      ? t('services.bulk.result.checked_with_untested', { checked: probed, untested: skipped })
+      : probed || skipped;
+  const tone = failed > 0 ? 'warning' : ok > 0 || untested === 0 ? 'success' : 'neutral';
+  return { message, tone };
+}
 
 /** How a service reaches the internet, derived from its mode and provider ids. */
 export type RouteKind = 'disabled' | 'tunnel' | 'proxy_dns' | 'proxy' | 'dns' | 'none';

@@ -869,7 +869,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/preflight` | Preflight validation. A check marked `blocking` is a promise that the save route refuses the same body. Add `service_id` to preflight an edit: the public target is then resolved from that service's stored row, exactly as the `PUT` resolves it. |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
-| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
+| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service, and `skipped` for the rest, split into `skipped_tunnel` (checked through their provider) and `skipped_no_port` (port 0, published in DNS alone). |
 | `POST` | `/api/services/bulk` | Enable, disable or delete several ids at once — `{ids: [1, 2], action: "enable"}`. Enabling and disabling are not a flag flip: each service also has its proxy host re-deployed or suspended and its DNS record added or removed, so a provider that refuses is named in `errors[]` while the rest still apply. |
 | `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |

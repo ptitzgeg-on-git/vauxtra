@@ -74,9 +74,12 @@ def get_certificate_expiry() -> dict[str, Any]:
 def check_all_services() -> dict[str, Any]:
     """Trigger a manual health check for every service and return what it measured.
 
-    Counters (`checked`, `ok`, `error`) plus `results`, one entry per probed service with
-    its `status` and the `latency_ms` of the probe (`null` when the target never answered).
-    Tunnel services are skipped, so `checked` can exceed `len(results)`.
+    Counters (`checked`, `ok`, `error`, `skipped`) plus `results`, one entry per probed
+    service with its `status` and the `latency_ms` of the probe (`null` when the target never
+    answered). Two kinds of service are not probed and are counted in `skipped`, and apart
+    in `skipped_tunnel` and `skipped_no_port`: tunnels, checked through their provider, and
+    services with `target_port` 0, published in DNS alone with nothing to connect to. So
+    `checked` is `ok + error + skipped`, and can exceed `len(results)`.
     """
     r = client.post("/services/check-all")
     client.check(r)
