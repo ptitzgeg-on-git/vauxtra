@@ -195,10 +195,13 @@ BLIND_REASONS = {
         "A second opinion on a question the server has already answered. Every scanned row "
         "arrives carrying `_already_imported`, which `app/api/sync.py` sets from the "
         "services table itself, and a row counts as known if that flag is true or this list "
-        "holds its public host. A `['services']` read that fails empties the right-hand "
-        "side of that `or` and leaves the authoritative left-hand side standing: the scan "
-        "then marks exactly what the server says was imported, which is what it would have "
-        "done had this query never been written."
+        "holds its name, public host or tunnel hostname. A `['services']` read that fails "
+        "empties the right-hand side of that `or` and leaves the authoritative left-hand "
+        "side standing: the scan then marks exactly what the server says was imported. The "
+        "one thing this list adds on top is the `link` offer -- a tracked service with no "
+        "DNS provider whose record the scan found -- and without the list that offer does "
+        "not appear: the row reads `tracked`, which the server's flag already says, and is "
+        "not ticked. An offer withdrawn, nothing claimed."
     ),
     "components/layout/Sidebar.tsx:services": (
         "The count of enabled services, drawn as `enabledServicesCount || undefined` -- a "

@@ -5,68 +5,42 @@
  * Split out of `DataTab.tsx`, which had grown to four unrelated screens in one 1 100-line
  * file: nothing here is shared with Docker discovery, backup export or restore beyond the
  * `SettingsSection` frame they all sit in.
+ *
+ * One row per name, not per record. Measured in production on 2026-09-22: the first scan of a
+ * fresh instance offered 91 routes behind "Quick Import (91 new)" and a single confirmation,
+ * 59 of them in twelve zones nobody had declared, which one Cloudflare token could read; and
+ * `jellyfin.example.org`, which a proxy and two DNS integrations all answer for, showed once,
+ * under the proxy, as proxy hosts were listed before DNS records, with nothing saying the
+ * others had been folded away. So a row now carries every record found for its name, the zone
+ * the import will file it under and whether the operator declared that zone; the table opens
+ * on the declared zones; and an import sends the names chosen on screen, never the scan whole.
  */
 
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { AlertTriangle, CheckCircle2, RefreshCw, Search, Upload } from 'lucide-react';
+import { RefreshCw, Search, ShieldCheck, ShieldQuestion, Upload, XCircle } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
-import { Badge, Button, Checkbox, EmptyState, useConfirmDialog } from '@/components/ui';
-import type { ImportResult, Service, SyncDnsRewrite, SyncProxyHost, SyncResult } from '@/types/api';
+import {
+  Badge,
+  Button,
+  Checkbox,
+  Chip,
+  ChipGroup,
+  EmptyState,
+  InlineAlert,
+  Switch,
+  buttonVariants,
+  useConfirmDialog,
+} from '@/components/ui';
+import type { ImportResult, Service, SyncResult } from '@/types/api';
+import { buildRows, declaredOf, isImportable, payloadFor, trackServices, type SyncRow } from '@/lib/syncRows';
+import { SyncRecordsPill, SyncStatusBadge } from '@/components/features/sync/SyncRowBadges';
 import { SettingsSection } from '../SettingsSection';
-
-const LOCAL_TLDS = ['.lan', '.local', '.home', '.internal', '.localdomain', '.arpa'];
-
-function isLocalDomain(domain: string): boolean {
-  return LOCAL_TLDS.some((tld) => domain.endsWith(tld));
-}
-
-
-type SyncRow = {
-  key: string;
-  subdomain: string;
-  domain: string;
-  target: string;
-  provider: string;
-  publicHost: string;
-  isLocal: boolean;
-  status: 'new' | 'exists';
-};
-
-/**
- * The identity of one scanned route, computed once.
- *
- * The table rows and the "import only what is ticked" payload filter MUST agree on this
- * string: they used to compute it separately, and the DNS branch forgot to strip the empty
- * subdomain's leading dot, so a rewrite for a bare `foo.example.com` was keyed
- * `foo.example.com` in the table and looked up as `.foo.example.com` in the filter --
- * every ticked DNS row was silently dropped from the import.
- */
-function syncItemParts(item: SyncProxyHost | SyncDnsRewrite) {
-  const proxyItem = item as SyncProxyHost;
-  const subdomain = (
-    item.subdomain ||
-    proxyItem.domain_names?.[0]?.split('.')[0] ||
-    proxyItem.domains?.[0]?.split('.')[0] ||
-    ''
-  ).toLowerCase();
-  const domain = (
-    item.domain ||
-    proxyItem.domain_names?.[0]?.split('.').slice(1).join('.') ||
-    proxyItem.domains?.[0]?.split('.').slice(1).join('.') ||
-    ''
-  ).toLowerCase();
-  const publicHost = `${subdomain}.${domain}`.replace(/^\./, '');
-  return { subdomain, domain, publicHost };
-}
-
-function syncItemKey(item: SyncProxyHost | SyncDnsRewrite): string {
-  return syncItemParts(item).publicHost;
-}
 
 export function SyncSection() {
   const t = useT();
@@ -75,26 +49,43 @@ export function SyncSection() {
 
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const [declaredOnly, setDeclaredOnly] = useState(true);
+  const [zoneFilter, setZoneFilter] = useState<string | null>(null);
 
   const { data: existingServices = [] } = useQuery<Service[]>({
     queryKey: ['services'],
     queryFn: () => api.get<Service[]>('/services'),
   });
 
-  const existingPublicHosts = useMemo(() => {
-    const hosts = new Set<string>();
-    for (const svc of existingServices) {
-      const host = svc.public_host || `${svc.subdomain}.${svc.domain}`;
-      if (host) hosts.add(host.toLowerCase());
-    }
-    return hosts;
-  }, [existingServices]);
+  // Read before any scan, so a panel with no declared domain says so before the button is
+  // pressed. Reported from production on 2026-09-22: with none declared, four clicks on "Scan
+  // providers" produced no request, no error and no message, and the report put it down to the
+  // missing domain by elimination. That was not reproduced, and no code path holds the request
+  // back; what was missing either way is a word on why a declared domain matters. The scan
+  // also answers this question (`declared_domains`), and the rows are marked against that
+  // answer; this read is the fresher one for the notice.
+  const domainsQuery = useQuery<string[]>({
+    queryKey: ['domains'],
+    queryFn: () => api.get<string[]>('/domains'),
+  });
+
+  const tracked = useMemo(() => trackServices(existingServices), [existingServices]);
+
+  const declaredDomains = useMemo(
+    () => declaredOf(Array.isArray(syncResult?.declared_domains) ? syncResult.declared_domains : domainsQuery.data),
+    [syncResult, domainsQuery.data],
+  );
+
+  const noDomainDeclared = domainsQuery.isSuccess
+    ? domainsQuery.data.length === 0
+    : Array.isArray(syncResult?.declared_domains) && syncResult.declared_domains.length === 0;
 
   const syncMutation = useMutation({
     mutationFn: () => api.post<SyncResult>('/services/sync'),
     onSuccess: (data) => {
       setSyncResult(data);
       setSelectedRows(new Set());
+      setZoneFilter(null);
     },
     onError: (err: unknown) => toast.error(translateApiError(err, t, t('settings.migration.scan_failed'))),
   });
@@ -105,6 +96,8 @@ export function SyncSection() {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
+      // The import declares the zone of every service it creates.
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
       // The four outcomes are not exclusive, and reading them as if they were lost
       // most of what happened. `imported > 0` painted the whole run green, so a batch
       // that created two services and refused a third reported only the two; and the
@@ -112,9 +105,9 @@ export function SyncSection() {
       // shared a run with a success was never spoken. Each outcome now gets its own line.
       //
       // The count carries the line because the reason is not lost with it: every refusal
-      // is written to the journal by `_refuse_import`, and `logs` is one of the three
-      // queries invalidated just above, so Recent activity holds the sentence. Rows set
-      // aside on purpose are not failures and get no line each -- the run gets one.
+      // is written to the journal by `_refuse_import`, and `logs` is one of the queries
+      // invalidated just above, so Recent activity holds the sentence. Rows set aside on
+      // purpose are not failures and get no line each -- the run gets one.
       const skipped = data.skipped?.length ?? 0;
       const refused = data.errors?.length ?? 0;
       if (data.imported > 0) {
@@ -132,46 +125,44 @@ export function SyncSection() {
     onError: (err: unknown) => toast.error(translateApiError(err, t, t('settings.migration.import_failed'))),
   });
 
-  const syncRows = useMemo<SyncRow[]>(() => {
-    if (!syncResult) return [];
-    const rows: SyncRow[] = [];
-    const seen = new Set<string>();
+  const { rows: syncRows, nameless } = useMemo(
+    () => (syncResult ? buildRows(syncResult, declaredDomains, tracked) : { rows: [] as SyncRow[], nameless: 0 }),
+    [syncResult, declaredDomains, tracked],
+  );
 
-    const push = (item: SyncProxyHost | SyncDnsRewrite, providerLabel: string) => {
-      const proxyItem = item as SyncProxyHost;
-      const dnsItem = item as SyncDnsRewrite;
-      const { subdomain, domain, publicHost } = syncItemParts(item);
-      const target =
-        proxyItem.forward_host || proxyItem.host
-          ? `${proxyItem.forward_host || proxyItem.host}:${proxyItem.forward_port || proxyItem.port || ''}`
-          : ((dnsItem.answer || dnsItem.target || '') as string);
-      if (seen.has(publicHost)) return;
-      seen.add(publicHost);
-      // The backend already knows what it imported (it matches on provider ids and tunnel
-      // hostnames too); the local host set only catches what shares an exact FQDN.
-      const known = item._already_imported === true || existingPublicHosts.has(publicHost);
-      rows.push({
-        key: publicHost,
-        subdomain,
-        domain,
-        target,
-        provider: providerLabel,
-        publicHost,
-        isLocal: isLocalDomain(domain) || isLocalDomain(publicHost),
-        status: known ? 'exists' : 'new',
-      });
-    };
+  // The filter only means something once a domain is declared: with none, it would hide
+  // every row, and the notice above the table says what to do instead.
+  const filterDeclared = declaredOnly && declaredDomains.length > 0;
+  const inDeclared = useMemo(
+    () => (filterDeclared ? syncRows.filter((row) => row.declared) : syncRows),
+    [filterDeclared, syncRows],
+  );
+  const undeclaredCount = syncRows.filter((row) => !row.declared).length;
 
-    if (Array.isArray(syncResult.proxy_hosts)) {
-      for (const h of syncResult.proxy_hosts) push(h, h._provider_name || 'Proxy');
+  const zones = useMemo(() => {
+    const counts = new Map<string, { zone: string; declared: boolean; count: number }>();
+    for (const row of inDeclared) {
+      const entry = counts.get(row.zone);
+      if (entry) entry.count += 1;
+      else counts.set(row.zone, { zone: row.zone, declared: row.declared, count: 1 });
     }
-    if (Array.isArray(syncResult.dns_rewrites)) {
-      for (const h of syncResult.dns_rewrites) push(h, h._provider_name || 'DNS');
-    }
-    return rows;
-  }, [syncResult, existingPublicHosts]);
+    return [...counts.values()];
+  }, [inDeclared]);
+  // A zone the declared filter has just hidden is no longer a filter, it is an empty table.
+  const activeZone = zoneFilter !== null && zones.some((z) => z.zone === zoneFilter) ? zoneFilter : null;
+  const visibleRows = useMemo(
+    () => (activeZone === null ? inDeclared : inDeclared.filter((row) => row.zone === activeZone)),
+    [activeZone, inDeclared],
+  );
 
-  const allNewKeys = useMemo(() => syncRows.filter((r) => r.status === 'new').map((r) => r.key), [syncRows]);
+  const importableRows = syncRows.filter(isImportable);
+  const visibleImportable = visibleRows.filter(isImportable);
+  const visibleImportableKeys = visibleImportable.map((row) => row.key);
+  // A ticked row the filters now hide is not imported: what is sent is what is on screen.
+  const chosenRows = visibleImportable.filter((row) => selectedRows.has(row.key));
+  const newCount = visibleRows.filter((row) => row.status === 'new' && row.unimportable === null).length;
+
+  const failedProviders = (syncResult?.providers ?? []).filter((report) => !report.ok);
 
   const toggleRow = (key: string) =>
     setSelectedRows((prev) => {
@@ -181,44 +172,65 @@ export function SyncSection() {
       return next;
     });
 
+  /** What a confirmation has to say about *rows* before they are written, one line each. */
+  const describe = (rows: SyncRow[], opening: string | null) => {
+    const created = rows.filter((row) => row.status === 'new').length;
+    const linked = rows.filter((row) => row.status === 'link').length;
+    const lines: string[] = [];
+    if (created > 0 && opening) lines.push(opening);
+    if (linked > 0) lines.push(t('settings.migration.quick_import_link', { count: linked }));
+    const warnings: string[] = [];
+    // A zone and a TLD are the operator's to check only for a name Vauxtra does not hold
+    // yet: a `link` row fills in a service that already lives there.
+    const undeclared = rows.filter((row) => row.status === 'new' && !row.declared).length;
+    const local = rows.filter((row) => row.status === 'new' && row.isLocal).length;
+    const conflicts = rows.filter((row) => row.dnsCount >= 2).length;
+    if (undeclared > 0) warnings.push(t('settings.migration.quick_import_undeclared_warn', { count: undeclared }));
+    if (local > 0) warnings.push(t('settings.migration.quick_import_local_warn', { count: local }));
+    if (conflicts > 0) warnings.push(t('settings.migration.quick_import_conflicts', { count: conflicts }));
+    return { lines, warnings };
+  };
+
   const quickImport = async () => {
-    if (!syncResult) return;
-    const newCount = allNewKeys.length;
-    const existsCount = syncRows.filter((r) => r.status === 'exists').length;
-    const localCount = syncRows.filter((r) => r.isLocal && r.status === 'new').length;
-
-    let message = t('settings.migration.quick_import_message', { count: newCount });
-    if (existsCount > 0) message += `\n${t('settings.migration.quick_import_skipped', { count: existsCount })}`;
-    if (localCount > 0) message += `\n\n${t('settings.migration.quick_import_local_warn', { count: localCount })}`;
-
+    if (!syncResult || visibleImportable.length === 0) return;
+    const created = visibleImportable.filter((row) => row.status === 'new').length;
+    const { lines, warnings } = describe(
+      visibleImportable,
+      t('settings.migration.quick_import_message', { count: created }),
+    );
+    const hidden = importableRows.length - visibleImportable.length;
+    if (hidden > 0) lines.push(t('settings.migration.quick_import_hidden', { count: hidden }));
     const ok = await confirm({
       title: t('settings.migration.quick_import_title'),
-      message,
+      message: [lines.join('\n'), ...warnings].join('\n\n'),
       confirmLabel: t('settings.migration.import'),
-      variant: localCount > 0 ? 'warning' : 'info',
+      variant: warnings.length > 0 ? 'warning' : 'info',
+      // This writes services in bulk. A held Enter must not be the answer.
+      initialFocus: 'cancel',
     });
-    if (ok) importMutation.mutate(syncResult);
+    if (ok) importMutation.mutate(payloadFor(syncResult, visibleImportable));
   };
 
   const importSelected = async () => {
-    if (!syncResult || selectedRows.size === 0) return;
+    if (!syncResult || chosenRows.length === 0) return;
+    const created = chosenRows.filter((row) => row.status === 'new').length;
+    const { lines, warnings } = describe(
+      chosenRows,
+      t('settings.migration.import_selected_message', { count: created }),
+    );
     const ok = await confirm({
       title: t('settings.migration.import_selected_title'),
-      message: t('settings.migration.import_selected_message', { count: selectedRows.size }),
+      message: [lines.join('\n'), ...warnings].join('\n\n'),
       confirmLabel: t('settings.migration.import'),
-      variant: 'info',
+      variant: warnings.length > 0 ? 'warning' : 'info',
+      initialFocus: 'cancel',
     });
-    if (!ok) return;
-    const payload: SyncResult = {
-      ...syncResult,
-      proxy_hosts: (syncResult.proxy_hosts || []).filter((h) => selectedRows.has(syncItemKey(h))),
-      dns_rewrites: (syncResult.dns_rewrites || []).filter((h) => selectedRows.has(syncItemKey(h))),
-    };
-    importMutation.mutate(payload);
+    if (ok) importMutation.mutate(payloadFor(syncResult, chosenRows));
   };
 
-  const allNewSelected = allNewKeys.length > 0 && allNewKeys.every((k) => selectedRows.has(k));
-  const someSelected = selectedRows.size > 0 && !allNewSelected;
+  const allVisibleSelected =
+    visibleImportableKeys.length > 0 && visibleImportableKeys.every((key) => selectedRows.has(key));
+  const someSelected = chosenRows.length > 0 && !allVisibleSelected;
 
   return (
     <SettingsSection
@@ -230,7 +242,7 @@ export function SyncSection() {
           {syncRows.length > 0 && (
             <>
               <Badge tone="neutral">{t('settings.migration.discovered', { count: syncRows.length })}</Badge>
-              <Badge tone="primary">{t('settings.migration.new_count', { count: allNewKeys.length })}</Badge>
+              <Badge tone="primary">{t('settings.migration.new_count', { count: newCount })}</Badge>
             </>
           )}
           <Button
@@ -261,100 +273,232 @@ export function SyncSection() {
               variant="secondary"
               leftIcon={<Upload />}
               loading={importMutation.isPending}
-              disabled={allNewKeys.length === 0}
+              disabled={visibleImportable.length === 0}
               onClick={() => void quickImport()}
             >
-              {t('settings.migration.quick_import_cta', { count: allNewKeys.length })}
+              {t('settings.migration.quick_import_cta', { count: visibleImportable.length })}
             </Button>
             <Button
               leftIcon={<Upload />}
               loading={importMutation.isPending}
-              disabled={selectedRows.size === 0}
+              disabled={chosenRows.length === 0}
               onClick={() => void importSelected()}
             >
-              {t('settings.migration.import_selected', { count: selectedRows.size })}
+              {t('settings.migration.import_selected', { count: chosenRows.length })}
             </Button>
           </>
         ) : undefined
       }
     >
+      {noDomainDeclared && (
+        <InlineAlert
+          tone="warning"
+          title={t('settings.migration.no_domain_title')}
+          action={
+            <Link to="/settings?tab=dns" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              {t('settings.migration.no_domain_cta')}
+            </Link>
+          }
+        >
+          {t('settings.migration.no_domain_body')}
+        </InlineAlert>
+      )}
+
+      {failedProviders.length > 0 && (
+        <InlineAlert
+          tone="warning"
+          title={t('settings.migration.provider_failed_title', { count: failedProviders.length })}
+          action={
+            <Link to="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+              {t('settings.migration.provider_failed_cta')}
+            </Link>
+          }
+        >
+          <ul className="space-y-0.5">
+            {failedProviders.map((report) => (
+              <li key={report.id} className="break-words">
+                {t('settings.migration.provider_failed_line', { name: report.name, detail: report.error || '—' })}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1">{t('settings.migration.provider_failed_hint')}</p>
+        </InlineAlert>
+      )}
+
+      {(syncResult?.providers?.length ?? 0) > 0 && (
+        <ul aria-label={t('settings.migration.providers_label')} className="flex flex-wrap items-center gap-1.5">
+          {syncResult?.providers?.map((report) => (
+            <li key={report.id}>
+              {report.ok ? (
+                <Badge
+                  size="sm"
+                  tone="neutral"
+                  title={t('settings.migration.provider_listed', { count: report.count, name: report.name })}
+                >
+                  {report.name}
+                  <span className="font-normal text-muted-foreground">{report.count}</span>
+                </Badge>
+              ) : (
+                <Badge size="sm" tone="danger" icon={<XCircle />} title={report.error || undefined}>
+                  {report.name}
+                </Badge>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {syncResult && syncRows.length === 0 && (
         <EmptyState compact icon={<Search />} title={t('settings.migration.no_routes')} />
       )}
 
       {syncRows.length > 0 && (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <Checkbox
-              checked={allNewSelected}
-              indeterminate={someSelected}
-              disabled={allNewKeys.length === 0}
-              onChange={(e) => setSelectedRows(e.target.checked ? new Set(allNewKeys) : new Set())}
-              label={t('settings.migration.select_all_new')}
-              description={t('settings.migration.selected_count', { count: selectedRows.size })}
-            />
-            <Button variant="ghost" size="sm" disabled={selectedRows.size === 0} onClick={() => setSelectedRows(new Set())}>
-              {t('settings.migration.clear_selection')}
-            </Button>
-          </div>
-
-          <div className="overflow-x-auto rounded-xl border border-border">
-            <table className="w-full min-w-160 text-xs">
-              <thead className="border-b border-border bg-muted/50">
-                <tr>
-                  <th scope="col" className="w-10 px-3 py-2">
-                    <span className="sr-only">{t('settings.migration.col_select')}</span>
-                  </th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_subdomain')}</th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_domain')}</th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_target')}</th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_provider')}</th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_status')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {syncRows.map((row) => {
-                  const selectable = row.status === 'new';
-                  const checked = selectedRows.has(row.key);
-                  return (
-                    <tr
-                      key={row.key}
-                      className={cn('transition-colors', selectable ? 'hover:bg-muted/30' : 'opacity-60', checked && 'bg-primary/5')}
+          {(declaredDomains.length > 0 || zones.length >= 2) && (
+            <div className="space-y-3">
+              {declaredDomains.length > 0 && (
+                <Switch
+                  size="sm"
+                  checked={declaredOnly}
+                  onCheckedChange={setDeclaredOnly}
+                  label={t('settings.migration.declared_only')}
+                  description={
+                    filterDeclared
+                      ? t('settings.migration.declared_only_hidden', { count: undeclaredCount })
+                      : t('settings.migration.declared_only_shown', { count: undeclaredCount })
+                  }
+                />
+              )}
+              {zones.length >= 2 && (
+                <ChipGroup label={t('settings.migration.zones_label')}>
+                  <Chip size="sm" selected={activeZone === null} count={inDeclared.length} onClick={() => setZoneFilter(null)}>
+                    {t('settings.migration.zone_all')}
+                  </Chip>
+                  {zones.map((entry) => (
+                    <Chip
+                      key={entry.zone}
+                      size="sm"
+                      selected={activeZone === entry.zone}
+                      count={entry.count}
+                      icon={entry.declared ? <ShieldCheck /> : <ShieldQuestion />}
+                      onClick={() => setZoneFilter(activeZone === entry.zone ? null : entry.zone)}
                     >
-                      <td className="px-3 py-2">
-                        <Checkbox
-                          checked={checked}
-                          disabled={!selectable}
-                          onChange={() => toggleRow(row.key)}
-                          aria-label={t('settings.migration.select_route_aria', { host: row.publicHost })}
-                        />
-                      </td>
-                      <td className="px-3 py-2 font-mono font-medium text-foreground">{row.subdomain || '—'}</td>
-                      <td className="px-3 py-2 font-mono text-foreground">{row.domain || '—'}</td>
-                      <td className="px-3 py-2 font-mono text-muted-foreground">{row.target || '—'}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{row.provider}</td>
-                      <td className="px-3 py-2">
-                        {row.status === 'exists' ? (
-                          <Badge size="sm" tone="neutral" icon={<CheckCircle2 />}>
-                            {t('settings.migration.status_tracked')}
-                          </Badge>
-                        ) : row.isLocal ? (
-                          <Badge size="sm" tone="warning" icon={<AlertTriangle />} title={t('settings.migration.local_tld_title')}>
-                            {t('settings.migration.status_local')}
-                          </Badge>
-                        ) : (
-                          <Badge size="sm" tone="primary">
-                            {t('settings.migration.status_new')}
-                          </Badge>
-                        )}
-                      </td>
+                      {entry.zone || t('settings.migration.zone_none')}
+                    </Chip>
+                  ))}
+                </ChipGroup>
+              )}
+            </div>
+          )}
+
+          {visibleRows.length === 0 ? (
+            <EmptyState
+              compact
+              icon={<Search />}
+              title={t('settings.migration.no_routes_declared')}
+              description={t('settings.migration.declared_only_hidden', { count: undeclaredCount })}
+            />
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Checkbox
+                  checked={allVisibleSelected}
+                  indeterminate={someSelected}
+                  disabled={visibleImportableKeys.length === 0}
+                  onChange={(e) => setSelectedRows(e.target.checked ? new Set(visibleImportableKeys) : new Set())}
+                  label={t('settings.migration.select_all_new')}
+                  description={t('settings.migration.selected_count', { count: chosenRows.length })}
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={selectedRows.size === 0}
+                  onClick={() => setSelectedRows(new Set())}
+                >
+                  {t('settings.migration.clear_selection')}
+                </Button>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <table className="w-full min-w-160 text-xs">
+                  <thead className="border-b border-border bg-muted/50">
+                    <tr>
+                      <th scope="col" className="w-10 px-3 py-2">
+                        <span className="sr-only">{t('settings.migration.col_select')}</span>
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_subdomain')}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_domain')}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_target')}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_provider')}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold text-muted-foreground">{t('settings.migration.col_status')}</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {visibleRows.map((row) => {
+                      const selectable = isImportable(row);
+                      const checked = selectable && selectedRows.has(row.key);
+                      return (
+                        <tr
+                          key={row.key}
+                          className={cn(
+                            'align-top transition-colors',
+                            selectable ? 'hover:bg-muted/30' : 'opacity-60',
+                            checked && 'bg-primary/5',
+                          )}
+                        >
+                          <td className="px-3 py-2">
+                            <Checkbox
+                              checked={checked}
+                              disabled={!selectable}
+                              onChange={() => toggleRow(row.key)}
+                              aria-label={t('settings.migration.select_route_aria', { host: row.key })}
+                            />
+                          </td>
+                          <td className="px-3 py-2 font-mono font-medium text-foreground">{row.subdomain || '—'}</td>
+                          <td className="px-3 py-2 font-mono text-foreground">
+                            <span className="inline-flex items-center gap-1">
+                              {row.zone || '—'}
+                              {!row.declared && row.zone && (
+                                <span className="inline-flex text-warning" title={t('settings.migration.zone_undeclared_title')}>
+                                  <ShieldQuestion aria-hidden="true" className="h-3.5 w-3.5" />
+                                  <span className="sr-only">{t('settings.migration.zone_undeclared_title')}</span>
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-muted-foreground">
+                            <ul className="space-y-0.5">
+                              {row.records.map((record, index) => (
+                                <li key={index}>{record.target || '—'}</li>
+                              ))}
+                            </ul>
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            <ul className="space-y-0.5">
+                              {row.records.map((record, index) => (
+                                <li key={index}>{record.provider}</li>
+                              ))}
+                            </ul>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <SyncStatusBadge row={row} />
+                              <SyncRecordsPill row={row} />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </>
+      )}
+
+      {nameless > 0 && (
+        <p className="text-xs text-muted-foreground">{t('settings.migration.nameless', { count: nameless })}</p>
       )}
       {ConfirmDialogElement}
     </SettingsSection>

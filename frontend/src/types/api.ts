@@ -1066,6 +1066,10 @@ export interface SyncProxyHost {
   _provider_type?: string;
   _provider_readonly?: boolean;
   _already_imported?: boolean;
+  /** The zone the import files the host's first name under (`_zone_of` in `sync.py`). */
+  _zone?: string;
+  /** True when `_zone` is a domain the operator declared in Settings > DNS domains. */
+  _declared?: boolean;
   [key: string]: unknown;
 }
 
@@ -1074,16 +1078,39 @@ export interface SyncDnsRewrite {
   domain?: string;
   answer?: string;
   target?: string;
+  /** The record type, from the integrations that have several (Cloudflare: `A`, `CNAME`...). */
+  type?: string;
+  /** Cloudflare only: whether the record goes through Cloudflare's proxy (orange cloud). */
+  proxied?: boolean;
+  /** The zone the integration read the record from, when it has zones. */
+  zone?: string;
   _provider_id?: number;
   _provider_name?: string;
   _already_imported?: boolean;
+  _zone?: string;
+  _declared?: boolean;
   [key: string]: unknown;
+}
+
+/** One integration the scan asked, in the order they were asked. */
+export interface SyncProviderReport {
+  id: number;
+  name: string;
+  type: string;
+  /** False when listing failed: none of its routes are in the scan. */
+  ok: boolean;
+  count: number;
+  /** Why it failed, credentials masked; empty when `ok`. */
+  error: string;
 }
 
 /** `POST /api/services/sync` — what every enabled provider currently serves. */
 export interface SyncResult {
   proxy_hosts?: SyncProxyHost[];
   dns_rewrites?: SyncDnsRewrite[];
+  providers?: SyncProviderReport[];
+  /** The domains declared in Settings > DNS domains, lowercased, as the scan compared them. */
+  declared_domains?: string[];
   [key: string]: unknown;
 }
 
@@ -1091,8 +1118,9 @@ export interface SyncResult {
  * `POST /api/services/import`. Four outcomes, and one run can hold several of them: a
  * batch can create two services, attach a DNS record to a third that already existed,
  * pass over a fourth that was already tracked and refuse a fifth. `skipped` is not a
- * failure -- "Quick import" sends the whole scan back, tracked rows included -- and
- * `errors` is, so they are separate lists rather than one with a colour guessed from it.
+ * failure -- a route another caller sends back while Vauxtra already tracks it lands there
+ * -- and `errors` is, so they are separate lists rather than one with a colour guessed
+ * from it.
  */
 export interface ImportResult {
   imported: number;

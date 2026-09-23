@@ -217,6 +217,7 @@ class PowerDNSProvider(DNSProvider):
         records: list[dict] = []
         for zone in zones:
             zone_id = self._zone_id(zone)
+            zone_name = self._relative(zone.get("name") or zone_id)
             rrsets = self._zone_rrsets(zone_id)
             if rrsets is None:
                 raise ProviderListingRefused(f"PowerDNS would not read zone {zone_id}")
@@ -233,7 +234,7 @@ class PowerDNSProvider(DNSProvider):
                     answer = self._relative(record.get("content", "")) if rtype == "CNAME" \
                         else str(record.get("content", "")).strip()
                     if answer:
-                        records.append({"domain": domain, "answer": answer, "type": rtype})
+                        records.append({"domain": domain, "answer": answer, "type": rtype, "zone": zone_name})
         return records
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
