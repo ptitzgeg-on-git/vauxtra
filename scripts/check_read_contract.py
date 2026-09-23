@@ -1,8 +1,8 @@
 """Two declared types reading the same bytes have to say the same thing.
 
-`scripts/check_panel_contract.py` guards the panel's write side: every `api.post` and
-`api.put` body against the Pydantic model of the route it posts to. This is the read side,
-which had no gate at all.
+`scripts/check_panel_contract.py` guards the panel's write side: every `api.post`,
+`api.put` and `api.patch` body against the Pydantic model of the route it posts to. This is
+the read side, which had no gate at all.
 
 Nothing checks a GET answer anywhere. There is no `response_model=` in `app/` -- every GET
 route returns a bare dict or list assembled in Python -- and `api.get<T>(url)` in

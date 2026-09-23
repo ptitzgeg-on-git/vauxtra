@@ -559,6 +559,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_service` | Get full details of a service |
 | `create_service` | Create a new service |
 | `update_service` | Update an existing service |
+| `set_service_labels` | Set tags, environments or icon, no provider called |
 | `delete_service` | Delete a service |
 | `toggle_service` | Enable/disable a service |
 | `sync_services_from_providers` | Discover services from all providers |
@@ -873,6 +874,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/bulk` | Enable, disable or delete several ids at once — `{ids: [1, 2], action: "enable"}`. Enabling and disabling are not a flag flip: each service also has its proxy host re-deployed or suspended and its DNS record added or removed, so a provider that refuses is named in `errors[]` while the rest still apply. |
 | `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
+| `PATCH` | `/api/services/{sid}` | Set `tag_ids`, `environment_ids` or `icon_url` and nothing else. No provider is called, a key left out keeps its value, any other key is a 422 |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |

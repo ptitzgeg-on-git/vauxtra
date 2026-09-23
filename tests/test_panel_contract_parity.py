@@ -1,21 +1,22 @@
 """What the gate read out of the panel, read again by hand.
 
-`scripts/check_panel_contract.py` compares every `api.post` / `api.put` body in the panel
-against the Pydantic model of the route it posts to. It has to resolve those bodies out of
-TypeScript with regexes and bracket counting -- it cannot run `tsc`, and the CI job that runs
-it installs no Node at all -- so the question underneath every verdict it gives is whether
-what it read is what the file says.
+`scripts/check_panel_contract.py` compares every `api.post`, `api.put` and `api.patch` body
+in the panel against the Pydantic model of the route it posts to. It has to resolve those
+bodies out of TypeScript with regexes and bracket counting -- it cannot run `tsc`, and the CI
+job that runs it installs no Node at all -- so the question underneath every verdict it gives
+is whether what it read is what the file says.
 
 This file answers that in both directions. The key sets below were read out of the panel by
 hand and written here; the test fails if the resolver stops agreeing with them, and it fails
 if somebody edits one of those call sites without editing the expectation. A gate whose
 reading nobody checks is a gate that can be green for the wrong reason.
 
-The premise is pinned too. Eighteen of the twenty models the panel posts to do not set
-`extra="forbid"`, so an undeclared key is dropped in silence and answered `200` -- and only
-`ServiceIn` and `ServicePreflightIn` refuse it. `UnknownKeysAreDroppedNotRefused` sends both
-kinds over HTTP, because if every model refused, this gate would have nothing left to catch
-and should be deleted rather than kept green.
+The premise is pinned too. Seventeen of the twenty-one models the panel sends a body to do
+not set `extra="forbid"`, so an undeclared key is dropped in silence and the call succeeds
+all the same; only `ServiceIn`, `ServiceLabelsIn`, `ServicePreflightIn` and `TemplateIn`
+refuse it. `UnknownKeysAreDroppedNotRefused` sends both kinds over HTTP, because if every
+model refused, this gate would have nothing left to catch and should be deleted rather than
+kept green.
 """
 
 import importlib.util
@@ -111,6 +112,12 @@ GROUND_TRUTH = {
         "tag_ids", "target_ip", "target_port", "tunnel_hostname", "tunnel_provider_id",
         "websocket",
     ),
+
+    # The panel's only PATCH, the label edit: an identifier typed by the parameter of its
+    # `mutationFn`, through an interface declared in another file whose members are optional.
+    (
+        "components/features/expose/ExposeModal.tsx", "PATCH", "`/services/${serviceId}`",
+    ): ("environment_ids", "icon_url", "tag_ids"),
 }
 
 
@@ -126,7 +133,7 @@ class _PanelCase(unittest.TestCase):
 
 
 class TheResolverAnswersWithWhatTheFileSays(_PanelCase):
-    """Eight call sites, eight ways of writing a body, all read by hand first."""
+    """Nine call sites, read by hand first: eight ways of writing a body, and the one PATCH."""
 
     def test_every_hand_read_call_resolves_to_exactly_those_keys(self) -> None:
         for key, expected in GROUND_TRUTH.items():
@@ -138,7 +145,7 @@ class TheResolverAnswersWithWhatTheFileSays(_PanelCase):
     def test_each_of_those_calls_is_one_the_gate_actually_compares(self) -> None:
         """Resolving a body and never comparing it would be green and worthless.
 
-        One of the eight is read and still not compared, and the reason is worth keeping
+        One of the nine is read and still not compared, and the reason is worth keeping
         separate: `TaxonomyTab` posts to `cfg.endpoint`, one form driving `/api/tags` and
         `/api/environments`, so the body is legible and the route is not. The resolver did
         its half; there are simply two models it could be held to. That is a different
@@ -360,7 +367,7 @@ class UnknownKeysAreDroppedNotRefused(unittest.TestCase):
         self.assertEqual(resp.status_code, 201, resp.text)
         self.assertNotIn("notify_on_recovery", resp.json())
 
-    def test_the_two_models_that_forbid_it_answer_422_instead(self) -> None:
+    def test_a_model_that_forbids_it_answers_422_instead(self) -> None:
         """Where `extra="forbid"` is set, pydantic says so and no gate is needed."""
         resp = self.client.post(
             "/api/services",

@@ -94,7 +94,7 @@ anything other than `127.0.0.1`.
 
 ## Available tools
 
-84 tools across six modules. `scripts/check_api_mcp_parity.py` fails the build if a tool
+85 tools across six modules. `scripts/check_api_mcp_parity.py` fails the build if a tool
 listed here does not exist, or if a tool exists and is not listed here.
 
 ### Services (`tools/services.py`)
@@ -105,6 +105,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `get_service` | Full details of one service: provider assignments and push targets |
 | `create_service` | Create a service (DNS + proxy route) |
 | `update_service` | Update specific fields of a service |
+| `set_service_labels` | Set a service's tags, environments or icon without calling any provider |
 | `delete_service` | Delete a service and remove its routes from every provider |
 | `toggle_service` | Enable or disable a service without touching its provider routes |
 | `check_service_health` | Run a live health/TCP and DNS check for one service |
@@ -284,12 +285,19 @@ call that named no port, against a template that sets none, created a service po
 port nobody had chosen, and reported success.
 
 Labels are set on a service, not added to it. `create_service`, `update_service`,
-`create_template` and `update_template` all take `tag_ids` and `environment_ids`, and
-`PUT /api/services` replaces both lists rather than merging: `tag_ids=[3]` on a service
-carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]` strips every label. To add
-one, read the service back with `get_service` and send its ids plus the new one; omitting
-the argument keeps what is already there. An id that names no row is refused with 400, and
-the route names it, so a typo creates nothing rather than a service missing a label.
+`set_service_labels`, `create_template` and `update_template` all take `tag_ids` and
+`environment_ids`, and the service routes replace both lists rather than merging:
+`tag_ids=[3]` on a service carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]`
+strips every label. To add one, read the service back with `get_service` and send its ids
+plus the new one; omitting the argument keeps what is already there. An id that names no
+row is refused with 400, and the route names it, so a typo creates nothing rather than a
+service missing a label.
+
+On an existing service, `set_service_labels` is the one to reach for. It goes through
+`PATCH /api/services/{id}` and calls no provider. `update_service` sends the whole service
+through `PUT`, which publishes it again everywhere it is: a tag change used to rewrite the
+service's tunnel rule, and the rule came back without the origin settings set on it in the
+Cloudflare dashboard.
 
 Neither parameter used to exist. `create_service` sent an empty list it declared no way to
 fill and `update_service` declared neither at all, so every service the bridge created was
