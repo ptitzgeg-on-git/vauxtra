@@ -107,7 +107,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `update_service` | Update specific fields of a service |
 | `set_service_labels` | Set a service's tags, environments or icon without calling any provider |
 | `delete_service` | Delete a service and remove its routes from every provider |
-| `toggle_service` | Enable or disable a service without touching its provider routes |
+| `toggle_service` | Enable or disable a service. Not a flag: disabling withdraws its tunnel rule, or suspends its proxy host and withdraws its DNS record, and a withdrawal the provider refuses lands in `errors` |
 | `check_service_health` | Run a live health/TCP and DNS check for one service |
 | `get_services_history` | Last 24 h of uptime history for every service |
 | `bulk_service_action` | Enable, disable or delete several services at once (`action` is one of those three words) |

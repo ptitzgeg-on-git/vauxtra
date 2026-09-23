@@ -254,11 +254,16 @@ def toggle_service(service_id: int, enabled: bool) -> dict[str, Any]:
     """Enable or disable a service without removing its configuration.
 
     The answer carries an `errors` list, and on this tool it is the part that matters most.
-    Disabling a service does not only flip a flag: a tunnel-mode service is exposed by its
-    ingress rule alone, so the route withdraws that rule, and a proxy-mode one has its host
-    updated at the provider. The database row is written either way. If the provider refused
-    or was unreachable, the sentence lands in `errors` and nowhere else -- Vauxtra shows the
-    service as disabled while its public hostname is still live and still serving traffic.
+    Disabling a service does not only flip a flag. A tunnel-mode service loses its ingress
+    rule. A proxy-mode one has its proxy host suspended, or deleted where the provider has
+    no suspension, and its DNS record withdrawn; on the extra proxies and DNS servers it is
+    also published on, the host and the record are deleted. Enabling puts them back. The
+    database row is written either way, so a withdrawal that failed leaves the service off
+    in Vauxtra while its public hostname is still live and still serving traffic.
+
+    A withdrawal the provider refused lands in `errors`, and so does an error raised by the
+    tunnel or the DNS server. An error raised by the service's proxy provider does not: it
+    is written to the journal (`get_logs`) as a warning and appears nowhere in this answer.
     A non-empty `errors` after disabling means the service is off in Vauxtra and still
     reachable from the internet; say so rather than reporting the toggle done.
     """
