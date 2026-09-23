@@ -21,6 +21,7 @@ import {
   cn,
 } from '@/components/ui';
 import type { LogEntry, LogLevel, Service, ServiceHistoryPoint } from '@/types/api';
+import { hasNoPort } from '@/components/features/services/helpers';
 import { AlertsEditor } from './AlertsEditor';
 import { UptimeStrip } from './UptimeStrip';
 import {
@@ -130,6 +131,7 @@ export function ServiceDrawer({
   const host = serviceHost(service);
   const status = serviceStatus(service);
   const tunnel = isTunnelService(service);
+  const noPort = hasNoPort(service);
   const summary = summarizeUptime(history, now);
   const runs = collapse(history);
   const availability = summary.availability === null ? null : formatPercent(summary.availability * 100, 1);
@@ -217,6 +219,12 @@ export function ServiceDrawer({
           </InlineAlert>
         )}
 
+        {noPort && (
+          <InlineAlert tone="info" title={t('monitoring.drawer.no_port_notice')}>
+            {t('monitoring.drawer.no_port_notice_body')}
+          </InlineAlert>
+        )}
+
         <UptimeStrip
           summary={summary}
           emptyLabel={historyError ? t('monitoring.uptime.history_failed') : undefined}
@@ -250,7 +258,7 @@ export function ServiceDrawer({
                 <Skeleton className="h-10 w-full" />
                 <Skeleton className="h-10 w-full" />
               </div>
-            ) : runs.length === 0 && historyError && !tunnel ? (
+            ) : runs.length === 0 && historyError && !tunnel && !noPort ? (
               <InlineAlert tone="warning" title={t('monitoring.history.load_failed')}>
                 {t('monitoring.history.load_failed_hint')}
               </InlineAlert>
@@ -260,7 +268,11 @@ export function ServiceDrawer({
                 icon={<History />}
                 title={t('monitoring.timeline_empty')}
                 description={
-                  tunnel ? t('monitoring.tunnel_not_probed_hint') : t('monitoring.drawer.timeline_empty_hint')
+                  tunnel
+                    ? t('monitoring.tunnel_not_probed_hint')
+                    : noPort
+                      ? t('monitoring.no_port_not_probed_hint')
+                      : t('monitoring.drawer.timeline_empty_hint')
                 }
               />
             ) : (

@@ -43,7 +43,8 @@ sat in no list at all and the corpus agreed with a doctrine that did not describ
 
 Last, the type declaration the panel is built from: `frontend/src/types/api.ts` lists the
 check names a build knows, and three names the server had started emitting were missing from
-it. That list is compared here against names measured coming out of the API.
+it. That list is compared here against names measured coming out of the API, and so is the
+label the review step shows for each of them.
 """
 
 import json
@@ -64,6 +65,9 @@ from app.api import sync as sync_api
 
 _ROOT = Path(__file__).resolve().parent.parent
 _API_TYPES = _ROOT / "frontend" / "src" / "types" / "api.ts"
+_EN_LOCALE = _ROOT / "frontend" / "src" / "locales" / "en.json"
+#: What the review step's key for a check is: this prefix, then the check's name.
+_CHECK_LABEL = "expose.preflight.check."
 
 #: Every check name the server may put in a preflight result. Measured, not read: the corpus
 #: below drives the API and the test fails when it emits a name missing from this set, so a
@@ -1014,6 +1018,39 @@ class TheTypeScriptDeclarationListsTheNamesTheServerEmitsTests(_SymmetryTestCase
 
         self.assertTrue(declared, "no names were parsed out of the comment")
         self.assertEqual(sorted(declared - set(_SERVER_CHECK_NAMES)), [])
+
+    def test_every_name_the_api_emits_has_a_label_in_the_review_step(self):
+        """What the operator reads is the label, and a name without one is printed raw.
+
+        `checkLabel` builds its key at run time, `expose.preflight.check.${name}`, so the
+        locale usage check, which reads keys spelt out by hand, never sees it. Reported on
+        2026-09-22 as nine labels missing: the eight names from `services.py` had their key in
+        all eight locales, and nothing held that true for the next one. Only `en.json` is read
+        here, because the parity check holds the seven other locales to its keys.
+        """
+        modal = _ROOT / "frontend" / "src" / "components" / "features" / "expose" / "ExposeModal.tsx"
+        labels = json.loads(_EN_LOCALE.read_text(encoding="utf-8"))
+        emitted = self._emit_every_check_name()
+
+        self.assertIn(
+            f"`{_CHECK_LABEL}${{name}}`",
+            modal.read_text(encoding="utf-8"),
+            "checkLabel no longer builds its key from this prefix",
+        )
+        self.assertEqual(emitted, set(_SERVER_CHECK_NAMES), "the corpus stopped covering a check")
+        self.assertEqual(
+            sorted(name for name in emitted if _CHECK_LABEL + name not in labels),
+            [],
+            "the review step prints these check names raw",
+        )
+
+    def test_no_label_is_kept_for_a_name_the_api_never_emits(self):
+        """The witness: a label written for every plausible word would pass the test above."""
+        labels = json.loads(_EN_LOCALE.read_text(encoding="utf-8"))
+        labelled = {key[len(_CHECK_LABEL):] for key in labels if key.startswith(_CHECK_LABEL)}
+
+        self.assertTrue(labelled, "no check label was read out of en.json")
+        self.assertEqual(sorted(labelled - set(_SERVER_CHECK_NAMES)), [])
 
 
 class TheCheckListIsKeyedOnMoreThanTheNameTests(unittest.TestCase):

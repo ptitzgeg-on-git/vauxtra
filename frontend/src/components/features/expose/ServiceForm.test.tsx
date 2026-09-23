@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
 import type { Provider } from '@/types/api';
@@ -65,11 +65,16 @@ interface ReadState {
   refetchProviders?: () => void;
 }
 
-const renderForm = (formData: FormState, providers: Provider[], read: ReadState = {}) =>
+const renderForm = (
+  formData: FormState,
+  providers: Provider[],
+  read: ReadState = {},
+  setFormData: Parameters<typeof ServiceForm>[0]['setFormData'] = vi.fn(),
+) =>
   renderWithProviders(
     <ServiceForm
       formData={formData}
-      setFormData={vi.fn()}
+      setFormData={setFormData}
       providers={providers}
       domains={['example.test']}
       providersError={read.providersError ?? false}
@@ -175,5 +180,50 @@ describe('ServiceForm, with the provider list unread', () => {
   it('leaves that retry usable when nothing is in flight', () => {
     renderForm(empty, [], { providersError: true, refetchProviders: vi.fn() });
     expect(screen.getByRole('button', { name: 'common.retry' })).toBeEnabled();
+  });
+});
+
+/**
+ * The port of a route published in DNS alone.
+ *
+ * Nothing forwards traffic to such a route, so it has no port, and the API stores 0. The
+ * field was required in every mode, and leaving it put 80 back: the route became one that
+ * every check probes on a port nothing listens on, and reports down.
+ */
+
+/** Found by its label, whatever the label says about being required. */
+const portInput = () => screen.getByLabelText(/^expose\.field\.port\b/);
+
+describe('ServiceForm, the port of a route published in DNS alone', () => {
+  const dnsOnly: FormState = { ...editing('3'), target_port: 0 };
+
+  it('is not required, and the form says what an empty one means', () => {
+    renderForm(dnsOnly, [PIHOLE]);
+
+    expect(portInput()).not.toBeRequired();
+    expect(portInput()).toHaveValue('');
+    expect(portInput()).toHaveAttribute('placeholder', 'expose.field.port_none');
+    expect(screen.getByText('expose.field.port_optional_hint')).toBeInTheDocument();
+  });
+
+  it('stays empty when the field loses focus', () => {
+    const setFormData = vi.fn();
+    renderForm(dnsOnly, [PIHOLE], {}, setFormData);
+    setFormData.mockClear();
+
+    fireEvent.blur(portInput());
+    expect(setFormData).not.toHaveBeenCalled();
+  });
+
+  it('is still required behind a proxy, and 80 comes back when it is left empty', () => {
+    const setFormData = vi.fn();
+    renderForm({ ...dnsOnly, ui_expose_mode: 'dns_proxy' }, [PIHOLE], {}, setFormData);
+    setFormData.mockClear();
+
+    expect(portInput()).toBeRequired();
+    fireEvent.blur(portInput());
+    expect(setFormData).toHaveBeenCalledTimes(1);
+    const update = setFormData.mock.calls[0][0] as (prev: FormState) => FormState;
+    expect(update(dnsOnly).target_port).toBe(80);
   });
 });

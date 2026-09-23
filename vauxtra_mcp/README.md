@@ -94,7 +94,7 @@ anything other than `127.0.0.1`.
 
 ## Available tools
 
-84 tools across six modules. `scripts/check_api_mcp_parity.py` fails the build if a tool
+85 tools across six modules. `scripts/check_api_mcp_parity.py` fails the build if a tool
 listed here does not exist, or if a tool exists and is not listed here.
 
 ### Services (`tools/services.py`)
@@ -105,8 +105,9 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `get_service` | Full details of one service: provider assignments and push targets |
 | `create_service` | Create a service (DNS + proxy route) |
 | `update_service` | Update specific fields of a service |
+| `set_service_labels` | Set a service's tags, environments or icon without calling any provider |
 | `delete_service` | Delete a service and remove its routes from every provider |
-| `toggle_service` | Enable or disable a service without touching its provider routes |
+| `toggle_service` | Enable or disable a service. Not a flag: disabling withdraws its tunnel rule, or suspends its proxy host and withdraws its DNS record, and a withdrawal the provider refuses lands in `errors` |
 | `check_service_health` | Run a live health/TCP and DNS check for one service |
 | `get_services_history` | Last 24 h of uptime history for every service |
 | `bulk_service_action` | Enable, disable or delete several services at once (`action` is one of those three words) |
@@ -284,12 +285,19 @@ call that named no port, against a template that sets none, created a service po
 port nobody had chosen, and reported success.
 
 Labels are set on a service, not added to it. `create_service`, `update_service`,
-`create_template` and `update_template` all take `tag_ids` and `environment_ids`, and
-`PUT /api/services` replaces both lists rather than merging: `tag_ids=[3]` on a service
-carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]` strips every label. To add
-one, read the service back with `get_service` and send its ids plus the new one; omitting
-the argument keeps what is already there. An id that names no row is refused with 400, and
-the route names it, so a typo creates nothing rather than a service missing a label.
+`set_service_labels`, `create_template` and `update_template` all take `tag_ids` and
+`environment_ids`, and the service routes replace both lists rather than merging:
+`tag_ids=[3]` on a service carrying 1 and 2 leaves it carrying 3 alone, and `tag_ids=[]`
+strips every label. To add one, read the service back with `get_service` and send its ids
+plus the new one; omitting the argument keeps what is already there. An id that names no
+row is refused with 400, and the route names it, so a typo creates nothing rather than a
+service missing a label.
+
+On an existing service, `set_service_labels` is the one to reach for. It goes through
+`PATCH /api/services/{id}` and calls no provider. `update_service` sends the whole service
+through `PUT`, which publishes it again everywhere it is: a tag change used to rewrite the
+service's tunnel rule, and the rule came back without the origin settings set on it in the
+Cloudflare dashboard.
 
 Neither parameter used to exist. `create_service` sent an empty list it declared no way to
 fill and `update_service` declared neither at all, so every service the bridge created was
@@ -353,14 +361,14 @@ now answer nothing but 404. `DELETE /api/providers/{id}` answers `ok: false` in 
 situation, since the provider row is deleted either way and a false `ok` there means
 "deleted, but something is still published". Read the list, not the flag.
 
-Fourteen answers across eleven tools carry one:
+Fifteen answers across twelve tools carry one:
 
 | Key | Answered by | What a non-empty one means |
 | --- | --- | --- |
 | `errors` | `create_service`, `apply_template`, `update_service`, `toggle_service`, `delete_service`, `bulk_service_action`, `delete_provider`, `import_docker_containers`, `import_services_from_sync` | A record Vauxtra could not publish, or could not withdraw. After a deletion those are still live on their provider, still resolving, with nothing left in Vauxtra pointing at them. |
 | `not_applied` | `save_settings` | The value is in the database and the settings page reads it back, but the running scheduler never received it: the checks go on at the old cadence until Vauxtra restarts. |
 | `unreachable` | `get_certificate_expiry` | Enabled providers this call could not read. The counts cover only the rest, so the answer is partial rather than reassuring. |
-| `skipped` | `import_docker_containers`, `import_services_from_sync` | Nothing to do: a name Vauxtra already tracks, or the 2nd..Nth hostname of a proxy host that answers for several. The normal result of re-importing a scan. |
+| `skipped` | `import_docker_containers`, `import_services_from_sync`, `check_all_services` | Nothing to do: a name Vauxtra already tracks, or the 2nd..Nth hostname of a proxy host that answers for several. The normal result of re-importing a scan. For `check_all_services` it is a count, the services it did not probe: tunnels, which are checked through their provider, and services without a port, which are a name in DNS and nothing to connect to. The two are counted apart in `skipped_tunnel` and `skipped_no_port`. |
 | `ignored` | `save_settings` | Read-only keys handed back untouched, `schema_version` and `setup_completed`. Never a refusal. |
 
 Those last two rows are the distinction worth keeping. A `skipped` line needs no action, an

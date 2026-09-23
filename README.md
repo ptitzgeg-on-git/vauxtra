@@ -272,7 +272,7 @@ Add an equivalent server block to your MCP client configuration:
 
 See [docs/HOWTO.md](docs/HOWTO.md#11-mcp-integration) for the full list. Summary:
 
-**Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
+**Services** — `list_services`, `get_service`, `create_service`, `update_service`, `set_service_labels`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
 
 **Templates** — `list_templates`, `get_template`, `create_template`, `delete_template`, `apply_template`
 

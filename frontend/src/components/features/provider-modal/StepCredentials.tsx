@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, Eye, EyeOff, ExternalLink, Lock, Server, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, EyeOff, ExternalLink, Lock, Server } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -13,21 +13,25 @@ import {
   cn,
 } from '@/components/ui';
 import { useT } from '@/i18n';
-import { checkDetailText, checkLabelText, healthStatusLabel } from '@/components/features/providers/providerHealth';
+import { MissingFields } from '@/components/features/providers/MissingFields';
+import { healthStatusLabel } from '@/components/features/providers/providerHealth';
+import { ValidationCheckLine } from '@/components/features/providers/ValidationCheckLine';
 import type { ProviderCapability } from '@/types/api';
 import {
   type WizardStep,
   type ProviderFormState,
   type ProviderTypeMeta,
   type ProviderValidationResult,
+  describeMissing,
   fallbackIconByType,
+  firstIncompleteStep,
   getPassLabel,
   getProjectUrl,
   getUserLabel,
   isUrlOptional,
   listCapabilities,
-  requiresPassword,
-  requiresUsername,
+  missingFields,
+  requiredFields,
 } from '@/components/features/providers/providerConstants';
 
 export type WizardMode = 'guided' | 'expert';
@@ -111,25 +115,37 @@ export function StepCredentials({
   const capabilities = listCapabilities(meta);
   const userLabel = getUserLabel(type, meta, t);
   const passLabel = getPassLabel(type, meta, t);
-  const needsUsername = requiresUsername(type, meta);
-  const needsPassword = !editMode && requiresPassword(type, meta);
   const urlOptional = isUrlOptional(type);
   const isTunnel = type === 'cloudflare_tunnel';
   const guidedAvailable = !editMode && guidedSteps.length > 0;
   const effectiveMode: WizardMode = guidedAvailable ? mode : 'expert';
-  const guidedDone = guidedStepIndex >= guidedSteps.length;
-  const currentStep = guidedSteps[guidedStepIndex];
+
+  // One rule for the asterisks, the guided "Next", the dots and the footer's button
+  // (`requiredFields`). There used to be two: the guided asterisks read the API's marks, the
+  // expert form and the footer a local list, and "Next" and the dots read neither.
+  const required = requiredFields(type, meta);
+  const isRequired = (key: keyof ProviderFormState) => required.includes(key) && !(editMode && key === 'password');
+  const missing = missingFields(formData, meta, { editMode });
+  const optionalAddon = (key: keyof ProviderFormState) =>
+    isRequired(key) ? undefined : <span className="text-xs text-muted-foreground">{t('provider_modal.guided.optional')}</span>;
+
+  // An index past the last step was the "everything is filled in" screen, which is gone; it
+  // lands on the last step instead of on nothing.
+  const stepIndex = Math.min(guidedStepIndex, Math.max(guidedSteps.length - 1, 0));
+  const currentStep = guidedSteps[stepIndex];
+  const isLastStep = stepIndex === guidedSteps.length - 1;
+  const reachable = firstIncompleteStep(guidedSteps, missing);
+  const stepMissing = (currentStep?.fields ?? []).filter((field) => missing.includes(field.key)).map((field) => field.key);
 
   const renderGuidedField = (field: NonNullable<WizardStep['fields']>[number], index: number) => {
-    const optional = field.optional || (field.key === 'url' && urlOptional);
     const value = String(formData[field.key] ?? '');
     return (
       <Field
         key={String(field.key)}
         label={field.label}
         hint={field.hint}
-        required={!optional}
-        labelAddon={optional ? <span className="text-xs text-muted-foreground">{t('provider_modal.guided.optional')}</span> : undefined}
+        required={isRequired(field.key)}
+        labelAddon={optionalAddon(field.key)}
       >
         {field.inputType === 'password' ? (
           // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
@@ -200,6 +216,20 @@ export function StepCredentials({
         )}
       </section>
 
+      {/* The name comes first, in both modes. The guided panel used to ask for it only on a
+          screen of its own past the last step, reached through a button called "Name the
+          integration" and topped with a green "Everything is filled in" that was printed
+          whatever the steps held. */}
+      <Field label={t('provider_modal.field.name')} hint={t('provider_modal.field.name_hint')} required>
+        <Input
+          type="text"
+          value={formData.name}
+          onChange={(e) => onChange('name', e.target.value)}
+          placeholder={t('provider_modal.field.name_placeholder', { label: typeLabel })}
+          autoComplete="off"
+        />
+      </Field>
+
       {guidedAvailable && (
         <Tabs variant="segmented" value={effectiveMode} onValueChange={(v) => onModeChange(v as WizardMode)}>
           <TabList aria-label={t('provider_modal.mode.label')}>
@@ -209,25 +239,36 @@ export function StepCredentials({
         </Tabs>
       )}
 
-      {effectiveMode === 'guided' && !guidedDone && currentStep && (
+      {effectiveMode === 'guided' && currentStep && (
         <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-4">
           {/* A single step is not a journey: no "1 of 1", no lone dot to click. */}
           {guidedSteps.length > 1 && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-semibold uppercase tracking-wider text-primary">
-                {t('provider_modal.guided.step', { step: guidedStepIndex + 1, total: guidedSteps.length })}
+                {t('provider_modal.guided.step', { step: stepIndex + 1, total: guidedSteps.length })}
               </span>
               <div className="flex gap-1.5" role="group" aria-label={t('provider_modal.mode.guided')}>
-                {guidedSteps.map((_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
-                    aria-current={i === guidedStepIndex ? 'step' : undefined}
-                    onClick={() => onGuidedStepChange(i)}
-                    className={cn('h-2 w-2 rounded-full transition-colors', i === guidedStepIndex ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/60')}
-                  />
-                ))}
+                {guidedSteps.map((_, i) => {
+                  const locked = i > reachable;
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      aria-label={t('provider_modal.guided.go_to', { step: i + 1 })}
+                      aria-current={i === stepIndex ? 'step' : undefined}
+                      disabled={locked}
+                      onClick={() => onGuidedStepChange(i)}
+                      className={cn(
+                        'h-2 w-2 rounded-full transition-colors',
+                        i === stepIndex
+                          ? 'bg-primary'
+                          : locked
+                            ? 'cursor-not-allowed bg-muted-foreground/15'
+                            : 'bg-muted-foreground/30 hover:bg-muted-foreground/60',
+                      )}
+                    />
+                  );
+                })}
               </div>
             </div>
           )}
@@ -238,65 +279,48 @@ export function StepCredentials({
             <div className="space-y-3 border-t border-primary/20 pt-3">{currentStep.fields.map(renderGuidedField)}</div>
           )}
 
-          <div className="flex gap-2 pt-1">
-            {guidedStepIndex > 0 && (
-              <Button type="button" size="sm" variant="outline" leftIcon={<ChevronLeft />} onClick={() => onGuidedStepChange(guidedStepIndex - 1)}>
-                {t('provider_modal.guided.back')}
-              </Button>
-            )}
-            {guidedStepIndex < guidedSteps.length - 1 ? (
-              <Button type="button" size="sm" rightIcon={<ChevronRight />} onClick={() => onGuidedStepChange(guidedStepIndex + 1)}>
-                {t('provider_modal.guided.next')}
-              </Button>
-            ) : (
-              <Button type="button" size="sm" variant="outline" rightIcon={<Check />} onClick={() => onGuidedStepChange(guidedSteps.length)}>
-                {t('provider_modal.guided.finish')}
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {effectiveMode === 'guided' && guidedDone && (
-        <div className="space-y-4">
-          <InlineAlert
-            tone="success"
-            title={t('provider_modal.guided.collected')}
-            action={
-              <Button type="button" size="sm" variant="ghost" onClick={() => onGuidedStepChange(guidedSteps.length - 1)}>
-                {t('provider_modal.guided.review')}
-              </Button>
+          {/* On the last step the line covers the whole form, and a field asked on an earlier
+              step is a link back to it; before that, only what holds "Next" back. */}
+          <MissingFields
+            fields={
+              isLastStep
+                ? describeMissing(missing, type, meta, t, guidedSteps, stepIndex)
+                : describeMissing(stepMissing, type, meta, t, guidedSteps, stepIndex)
             }
+            onGoToStep={onGuidedStepChange}
+            complete={isLastStep && !validationResult ? t('provider_modal.guided.collected') : undefined}
           />
-          <Field label={t('provider_modal.field.name')} hint={t('provider_modal.field.name_hint')} required>
-            <Input
-              type="text"
-              value={formData.name}
-              onChange={(e) => onChange('name', e.target.value)}
-              placeholder={t('provider_modal.field.name_placeholder', { label: typeLabel })}
-              // eslint-disable-next-line jsx-a11y/no-autofocus -- a surface the operator just opened lands focus on its first field
-              autoFocus
-            />
-          </Field>
+
+          {(stepIndex > 0 || !isLastStep) && (
+            <div className="flex gap-2 pt-1">
+              {stepIndex > 0 && (
+                <Button type="button" size="sm" variant="outline" leftIcon={<ChevronLeft />} onClick={() => onGuidedStepChange(stepIndex - 1)}>
+                  {t('provider_modal.guided.back')}
+                </Button>
+              )}
+              {!isLastStep && (
+                <Button
+                  type="button"
+                  size="sm"
+                  rightIcon={<ChevronRight />}
+                  disabled={stepMissing.length > 0}
+                  onClick={() => onGuidedStepChange(stepIndex + 1)}
+                >
+                  {t('provider_modal.guided.next')}
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
       {effectiveMode === 'expert' && (
         <div className="space-y-4">
-          <Field label={t('provider_modal.field.name')} hint={t('provider_modal.field.name_hint')} required>
-            <Input
-              type="text"
-              value={formData.name}
-              onChange={(e) => onChange('name', e.target.value)}
-              placeholder={t('provider_modal.field.name_placeholder', { label: typeLabel })}
-            />
-          </Field>
-
           <Field
             label={t('provider_modal.field.url')}
-            hint={urlOptional ? t('provider_modal.field.url_hint_cloudflare') : undefined}
-            required={!urlOptional}
-            labelAddon={urlOptional ? <span className="text-xs text-muted-foreground">{t('provider_modal.guided.optional')}</span> : undefined}
+            hint={urlOptional ? t('provider_modal.field.url_hint_hosted', { label: typeLabel }) : undefined}
+            required={isRequired('url')}
+            labelAddon={optionalAddon('url')}
           >
             <Input
               type="url"
@@ -309,11 +333,7 @@ export function StepCredentials({
             />
           </Field>
 
-          <Field
-            label={userLabel}
-            required={needsUsername}
-            labelAddon={!needsUsername ? <span className="text-xs text-muted-foreground">{t('provider_modal.guided.optional')}</span> : undefined}
-          >
+          <Field label={userLabel} required={isRequired('username')} labelAddon={optionalAddon('username')}>
             <Input
               type="text"
               value={formData.username}
@@ -326,15 +346,20 @@ export function StepCredentials({
 
           <Field
             label={passLabel}
-            required={needsPassword}
+            required={isRequired('password')}
             hint={editMode ? t('provider_modal.field.password_edit_hint') : undefined}
-            labelAddon={!needsPassword && !editMode ? <span className="text-xs text-muted-foreground">{t('provider_modal.guided.optional')}</span> : undefined}
+            labelAddon={editMode ? undefined : optionalAddon('password')}
           >
             <SecretInput value={formData.password} onChange={(v) => onChange('password', v)} placeholder={editMode ? '••••••••' : undefined} />
           </Field>
 
           {isTunnel && (
-            <Field label={t('provider_modal.field.tunnel_id')} hint={t('provider_modal.field.tunnel_id_hint')} required>
+            <Field
+              label={t('provider_modal.field.tunnel_id')}
+              hint={t('provider_modal.field.tunnel_id_hint')}
+              required={isRequired('tunnel_id')}
+              labelAddon={optionalAddon('tunnel_id')}
+            >
               <Input
                 type="text"
                 value={formData.tunnel_id}
@@ -346,6 +371,8 @@ export function StepCredentials({
               />
             </Field>
           )}
+
+          <MissingFields fields={describeMissing(missing, type, meta, t)} />
         </div>
       )}
 
@@ -355,17 +382,11 @@ export function StepCredentials({
           title={validationResult.ok ? t('provider_modal.validation.title_ok') : t('provider_modal.validation.title_failed')}
         >
           <ul className="mt-1 space-y-1 text-xs">
-            {/* `check.name` is the server's identifier for the check (`test_connection`), not a
-                sentence anyone wrote to be read. `checkDetailText` turns `detail_code` into the
-                reader's language; with no detail, `checkLabelText` translates the name. Every
-                name the backend emits today has a translation, so the raw identifier only shows
-                through for a check added after this build, and the generic word is what is left
-                when the check carries no name at all. */}
-            {(validationResult.validation?.checks || []).slice(0, 6).map((check, idx) => (
-              <li key={`${check.name || 'check'}-${idx}`} className={cn('flex items-start gap-1.5', check.ok ? 'text-success' : 'text-destructive')}>
-                {check.ok ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-                <span>{checkDetailText(check, t) || checkLabelText(check.name, t) || t('provider_modal.validation.check_fallback')}</span>
-              </li>
+            {/* Every check. The list used to stop at six without a word. A Cloudflare tunnel
+                answers seven when it is given a hostname, the seventh being the DNS read, but
+                this dialog sends none: here it is a guard, not a fix. */}
+            {(validationResult.validation?.checks || []).map((check, idx) => (
+              <ValidationCheckLine key={`${check.name || 'check'}-${idx}`} check={check} />
             ))}
             {(validationResult.validation?.warnings || []).length > 0 && (
               <li className="text-warning">

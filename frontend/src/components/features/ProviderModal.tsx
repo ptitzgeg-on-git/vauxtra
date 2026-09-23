@@ -8,8 +8,7 @@ import {
   canSubmitProvider,
   emptyForm,
   getGuidedSteps,
-  isUrlOptional,
-  requiresUsername,
+  missingFields,
   seedFormForType,
 } from '@/components/features/providers/providerConstants';
 import { StepCredentials, StepTypeSelector, type WizardMode } from '@/components/features/provider-modal';
@@ -166,11 +165,8 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
 
   const canContinue = Boolean(formData.type) || isDockerMode;
   const canSubmit = canSubmitProvider(formData, selectedMeta);
-  const canSave =
-    Boolean(formData.name.trim()) &&
-    Boolean(formData.url.trim() || isUrlOptional(formData.type)) &&
-    (!requiresUsername(formData.type, selectedMeta) || Boolean(formData.username.trim())) &&
-    (formData.type !== 'cloudflare_tunnel' || Boolean(formData.tunnel_id.trim()));
+  //: The same rule as `canSubmit`, less the secret: a blank one keeps the stored secret.
+  const canSave = missingFields(formData, selectedMeta, { editMode: true }).length === 0;
 
   const busy = validateDraft.isPending || createProvider.isPending || updateProvider.isPending || docker.addEndpoint.isPending;
 

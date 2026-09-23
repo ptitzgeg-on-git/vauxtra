@@ -6,7 +6,9 @@ from app.models import add_log, get_db
 from app.providers.base import supports_suspension
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import describe_public_target_failure, resolve_public_target
+from app.security import redact_query_secrets
 from app.text import plural
+from app.validators import NO_PORT
 
 router = APIRouter()
 
@@ -131,6 +133,81 @@ def _rewrite_for(rewrites, public_host: str) -> dict | None:
     )
 
 
+def _is_dns_type(ptype: str) -> bool:
+    """Whether a provider type answers names, by the rule the scan uses."""
+    meta = PROVIDER_TYPES.get(ptype, {})
+    return bool((meta.get("capabilities") or {}).get("dns")) or meta.get("category") == "dns"
+
+
+def _records_named(provider, name: str) -> list[dict]:
+    """What `provider` holds for `name`, through `records_for` when it has one.
+
+    `register_provider_type` checks no base class, so a plugin written before `records_for`
+    existed still answers here, through the listing every DNS provider has.
+    """
+    ask = getattr(provider, "records_for", None)
+    if callable(ask):
+        return ask(name) or []
+    wanted = (name or "").strip().strip(".").lower()
+    return [
+        r
+        for r in provider.list_rewrites() or []
+        if str(r.get("domain") or "").strip().strip(".").lower() == wanted
+    ]
+
+
+def _answers_elsewhere(conn, public_host: str, published: str, attached: set) -> list[dict]:
+    """Warnings for the DNS integrations that answer `public_host` without being pushed to.
+
+    The drift check read the integrations a service is attached to and nothing else, so a
+    record anywhere else could not show. Measured in production on 2026-09-22:
+    a media server was imported with AdGuard attached, whose rewrite gave it a LAN address;
+    a grey Cloudflare A record gave the same name a public one, and the drift answer was
+    `ok: true, issues: []`.
+
+    Two answers for one name is what split-horizon means, and it is also what a leftover
+    looks like. Nothing here can tell them apart, so it says what it found and stops there:
+    a warning, never an error. `ok` does not move: auto-reconcile acts on it and pushes only
+    to the integrations the service is attached to, so an error here would set off a push
+    every round that could never clear it. Reconcile has nothing to offer about one either.
+    An integration that cannot be read is a warning of its own, because its silence would
+    read as nobody else answering.
+    """
+    issues: list[dict] = []
+    for row in conn.execute("SELECT * FROM providers WHERE enabled=1 ORDER BY id").fetchall():
+        if row["id"] in attached or not _is_dns_type(row["type"]):
+            continue
+        try:
+            records = _records_named(create_provider(row), public_host)
+        except Exception as e:
+            issues.append(
+                {
+                    "severity": "warn",
+                    "type": "dns_elsewhere_check_failed",
+                    "provider": row["name"],
+                    "detail": redact_query_secrets(str(e)),
+                }
+            )
+            continue
+        answers = {str(r.get("answer") or r.get("ip") or "").strip().lower() for r in records}
+        found = ", ".join(sorted(answers - {"", published}))
+        if found:
+            issues.append(
+                {
+                    "severity": "warn",
+                    "type": "dns_answered_elsewhere",
+                    "provider": row["name"],
+                    "detail": (
+                        f"{public_host} also resolves to {found} here, "
+                        f"while the service publishes {published}"
+                    ),
+                    "detail_key": "answered_elsewhere",
+                    "detail_params": {"host": public_host, "found": found, "expected": published},
+                }
+            )
+    return issues
+
+
 def _imported_name(value) -> str:
     """A hostname read off a provider, reduced to the spelling a service is stored under.
 
@@ -148,6 +225,102 @@ def _imported_name(value) -> str:
     holding half of what one should have held.
     """
     return str(value or "").strip().lower()
+
+
+def _longest_zone(name: str, zones) -> str:
+    """The longest of *zones* that *name* is, or sits under, at a label boundary; "" if none."""
+    best = ""
+    for zone in zones:
+        if zone and (name == zone or name.endswith("." + zone)) and len(zone) > len(best):
+            best = zone
+    return best
+
+
+def _zone_of(name: str, declared, hint="") -> tuple[str, bool]:
+    """The zone a scanned name belongs to, and whether the operator declared it.
+
+    Three answers, in this order:
+
+    - The longest declared domain the name sits under. It wins over a longer zone the
+      provider reports, because it is where the operator said their services live: a
+      record read from a delegated `maison.example.org` still files under a declared
+      `example.org`, as `nas.maison`, which is how the editor would have stored it.
+    - The zone the provider read the record from (`zone` on a DNS row), when the name
+      really is under it.
+    - Everything after the first dot, which is how every name used to be split, and what
+      is left when neither of the above knows the name. It is right only for a name one
+      label below its zone: `a.b.example.net` lands under `b.example.net`, which an import
+      would declare as a domain of its own, and a zone apex `example.net` under `net`.
+
+    A single-label name has no zone at all ("").
+    """
+    zone = _longest_zone(name, declared)
+    if zone:
+        return zone, True
+    hint = _imported_name(hint).strip(".")
+    if hint and (name == hint or name.endswith("." + hint)):
+        return hint, False
+    return (name.split(".", 1)[1] if "." in name else ""), False
+
+
+def _declared_domains(conn) -> list[str]:
+    """The domains the operator declared (Settings > DNS domains), as the scan compares them."""
+    names = (_imported_name(r["name"]).strip(".") for r in conn.execute("SELECT name FROM domains").fetchall())
+    return sorted({n for n in names if n})
+
+
+def _tracked_id(conn, fqdn: str, *, tunnels: bool = False):
+    """The id of the service already published under *fqdn*, or None.
+
+    Compared on the whole name. The import used to ask for its own split of the name,
+    `subdomain=? AND domain=?`, and a split is not a name: a service the editor stored as
+    `nas.maison` under `example.org` was not found under `nas` + `maison.example.org`. The
+    scan compared whole names and marked that row tracked, but "Quick import" sent it back all
+    the same, and the import made a second one. *tunnels* also matches a tunnel's own
+    hostname, which is the name that service publishes.
+    """
+    query = "SELECT id FROM services WHERE lower(subdomain || '.' || domain) = ?"
+    params: tuple = (fqdn,)
+    if tunnels:
+        query += " OR lower(COALESCE(tunnel_hostname, '')) = ?"
+        params = (fqdn, fqdn)
+    row = conn.execute(query, params).fetchone()
+    return row["id"] if row else None
+
+
+def _tracked_row(conn, fqdn: str):
+    """The service already published under *fqdn*, with the two columns a link has to read.
+
+    A tunnel's own hostname counts, as it does for `_tracked_id`: the CNAME a tunnel writes is
+    a record a DNS scan lists under that very name. Without it, a tunnel service published
+    under a hostname other than its subdomain and domain is not found, and its own record
+    comes in as a second service. The screens mark that row tracked (`trackServices`) and
+    never send it, but a caller that sends the scan as it is, the MCP bridge for one, has
+    only this test to stop it.
+    """
+    return conn.execute(
+        "SELECT id, expose_mode, dns_provider_id FROM services "
+        "WHERE lower(subdomain || '.' || domain) = ? OR lower(COALESCE(tunnel_hostname, '')) = ?",
+        (fqdn, fqdn),
+    ).fetchone()
+
+
+def _split_for_import(fqdn: str, declared, hint="") -> tuple[str, str, str]:
+    """`(subdomain, domain, "")` for a name that can become a service, `("", "", why)` if not.
+
+    Split at the zone `_zone_of` finds, not at the first dot. The first dot filed
+    `a.b.example.net` under a domain `b.example.net`, declared it in passing, and stored a
+    service the editor would have written as `a.b` under `example.net`.
+    """
+    if "." not in fqdn:
+        return "", "", "a domain needs at least one dot, so this name has no subdomain to split off"
+    zone, _declared = _zone_of(fqdn, declared, hint)
+    if fqdn == zone:
+        return "", "", (
+            f"it is the zone {zone} itself: a service is a name published under a domain, "
+            "and this one has nothing in front of the domain to publish"
+        )
+    return fqdn[: -(len(zone) + 1)], zone, ""
 
 
 def _find_host(proxy, public_host: str) -> dict | None:
@@ -652,7 +825,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
 #: never be translated. Each templated shape now also carries the key its sentence was
 #: written from and the values it was built out of, so the UI can say the same thing in the
 #: reader's language. `detail` stays as the plain-text fallback (logs, older clients).
-def _compute_service_drift(conn, svc, sid: int) -> dict:
+def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) -> dict:
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
     issues: list[dict] = []
 
@@ -736,7 +909,9 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                     "severity": "error",
                     "type": "proxy_check_failed",
                     "provider": row["name"],
-                    "detail": str(e),
+                    # Technitium and Pi-hole v5 carry their credential in the query string,
+                    # and a `requests` error quotes the URL it failed on.
+                    "detail": redact_query_secrets(str(e)),
                 }
             )
 
@@ -795,9 +970,17 @@ def _compute_service_drift(conn, svc, sid: int) -> dict:
                         "severity": "error",
                         "type": "dns_check_failed",
                         "provider": row["name"],
-                        "detail": str(e),
+                        "detail": redact_query_secrets(str(e)),
                     }
                 )
+
+    # A record on an integration the service is not pushed to is invisible to the loop
+    # above, and it answers the same name all the same. Only an enabled service that
+    # publishes an address somewhere has an answer to hold it against.
+    published = str(svc["dns_ip"] or "").strip().lower()
+    if look_elsewhere and expose_mode != "tunnel" and service_enabled and dns_targets and published:
+        attached = {row["id"] for row in dns_targets}
+        issues.extend(_answers_elsewhere(conn, public_host, published, attached))
 
     return {
         "service_id": sid,
@@ -1127,10 +1310,25 @@ def reconcile_service(sid: int, request: Request):
 
 @router.post("/api/services/sync")
 def sync_services(request: Request):
+    """Every route and record the enabled integrations hold, each marked with its zone.
+
+    Measured in production on 2026-09-22, two scans minutes apart answered 91 routes and then
+    32, with no setting changed in between according to the report. The 59 others came from
+    twelve zones nobody had declared, listed through one Cloudflare token by the first scan
+    and not by the second; and nothing in the answer said which integrations had been asked,
+    or that one had failed. So every row now carries `_zone` and `_declared` (see
+    `_zone_of`), and the answer says what was asked of whom: `providers` holds one line per
+    integration scanned, with its count and, when it failed, why; `declared_domains` the
+    domains the panel filters on.
+
+    Integrations are asked in the order they were added, so two scans that get the same rows
+    back list them in the same order, and the import keeps the same record of two.
+    """
     # Explicitly `read`: this only lists what the providers already hold.
     require_auth_or_setup(request, scope="read")
     conn = get_db()
-    providers = conn.execute("SELECT * FROM providers WHERE enabled=1").fetchall()
+    providers = conn.execute("SELECT * FROM providers WHERE enabled=1 ORDER BY id").fetchall()
+    declared = _declared_domains(conn)
     existing_fqdns = {
         _imported_name(f"{r['subdomain']}.{r['domain']}")
         for r in conn.execute("SELECT subdomain, domain FROM services").fetchall()
@@ -1145,14 +1343,18 @@ def sync_services(request: Request):
     }
     conn.close()
 
-    result = {"proxy_hosts": [], "dns_rewrites": []}
+    result = {"proxy_hosts": [], "dns_rewrites": [], "providers": [], "declared_domains": declared}
     for p in providers:
+        meta = PROVIDER_TYPES.get(p["type"], {})
+        caps = meta.get("capabilities", {})
+        is_proxy = bool(caps.get("proxy")) or meta.get("category") == "proxy"
+        is_dns = bool(caps.get("dns")) or meta.get("category") == "dns"
+        if not (is_proxy or is_dns):
+            continue
+        report = {"id": p["id"], "name": p["name"], "type": p["type"], "ok": True, "count": 0, "error": ""}
+        result["providers"].append(report)
         try:
             provider = create_provider(p)
-            meta = PROVIDER_TYPES.get(p["type"], {})
-            caps = meta.get("capabilities", {})
-            is_proxy = bool(caps.get("proxy")) or meta.get("category") == "proxy"
-            is_dns = bool(caps.get("dns")) or meta.get("category") == "dns"
 
             if is_proxy:
                 hosts = provider.list_hosts()
@@ -1178,6 +1380,7 @@ def sync_services(request: Request):
                     h["_provider_readonly"] = PROVIDER_TYPES.get(p["type"], {}).get("read_only", False)
                     h["_already_imported"] = already_by_id or already_by_domain
                 result["proxy_hosts"].extend(hosts)
+                report["count"] = len(hosts)
             elif is_dns:
                 rewrites = provider.list_rewrites()
                 for r in rewrites:
@@ -1185,8 +1388,28 @@ def sync_services(request: Request):
                     r["_provider_name"]    = p["name"]
                     r["_already_imported"] = _imported_name(r.get("domain")) in existing_fqdns
                 result["dns_rewrites"].extend(rewrites)
+                report["count"] = len(rewrites)
         except Exception as e:
-            add_log("error", f"Sync {p['name']}: {e}")
+            # Masked before it is shown or written: see `redact_query_secrets`.
+            error = redact_query_secrets(str(e)) or type(e).__name__
+            report["ok"] = False
+            report["error"] = error
+            add_log("error", f"Sync {p['name']}: {error}")
+
+    # Zones last, once every integration has answered: a proxy knows no zone, and the zone a
+    # DNS integration reported is the best guess for any name under it, a route included.
+    provider_zones = {
+        zone for zone in (_imported_name(r.get("zone")).strip(".") for r in result["dns_rewrites"]) if zone
+    }
+    for r in result["dns_rewrites"]:
+        name = _imported_name(r.get("domain"))
+        hint = r.get("zone") or _longest_zone(name, provider_zones)
+        r["_zone"], r["_declared"] = _zone_of(name, declared, hint)
+    for h in result["proxy_hosts"]:
+        # The name the import keeps is the first one (see `import_services`).
+        names = [_imported_name(d) for d in (h.get("domains") or []) if str(d).strip()]
+        name = names[0] if names else ""
+        h["_zone"], h["_declared"] = _zone_of(name, declared, _longest_zone(name, provider_zones))
 
     return result
 
@@ -1215,6 +1438,7 @@ def import_services(request: Request, data: dict = Body(...)):
     skipped  = []
     errors   = []
     conn     = get_db()
+    declared = _declared_domains(conn)
 
     # Built one row at a time rather than by a comprehension: the comprehension dropped a
     # nameless record, and a second record for a name already in the map, without either the
@@ -1232,11 +1456,12 @@ def import_services(request: Request, data: dict = Body(...)):
     # on one side still pairs with a clean one on the other.
     #
     # And on a name two providers answer for, the comprehension kept the LAST record; this
-    # keeps the first. Neither is a better guess: `sync_services` selects providers with no
-    # ORDER BY, so which one arrives first is not the repository's to promise. What changed is
-    # that the choice is no longer silent -- the message below names both providers, so the
-    # operator settles it at the provider instead of discovering months later which address
-    # `push_service` has been writing.
+    # keeps the first. Neither is a better guess, only a steadier one: `sync_services` asks
+    # the integrations in the order they were added (`ORDER BY id`), so of two answers the
+    # one kept is the older integration's, scan after scan. What changed is that the choice
+    # is no longer silent -- the message below names both providers, so the operator settles
+    # it at the provider instead of discovering months later which address `push_service`
+    # has been writing.
     dns_by_fqdn: dict[str, dict] = {}
     for r in data.get("dns_rewrites", []):
         fqdn = _imported_name(r.get("domain"))
@@ -1259,9 +1484,17 @@ def import_services(request: Request, data: dict = Body(...)):
                     f"remove the duplicate at the provider"
                 )
             else:
+                # Two integrations answering one name is also what a split-horizon looks
+                # like: the LAN resolver hands out the local address, the public zone the
+                # tunnel. The old wording ("remove the other") told the operator to delete
+                # the half that makes it work, so the sentence now says what the import did
+                # and leaves the verdict to them. It stays in `errors` all the same: the
+                # record from {other} is not tracked, and that is still worth reading.
                 reason = (
                     f"{kept} and {other} both answer for this name. The answer from {kept} is "
-                    f"the one imported; remove the other, or the two will drift apart"
+                    f"the one imported; the record at {other} is left as it is and not tracked. "
+                    f"If the two are meant to differ (split-horizon), nothing needs doing; "
+                    f"if not, one of them is stale"
                 )
             refuse_import(errors, conn, fqdn, reason)
             continue
@@ -1283,21 +1516,20 @@ def import_services(request: Request, data: dict = Body(...)):
                     skipped, spare,
                     f"{where} also answers for {fqdn}, and a service carries a single name",
                 )
-            parts = fqdn.split(".", 1)
-            if len(parts) < 2:
-                refuse_import(
-                    errors, conn, fqdn,
-                    "a domain needs at least one dot, so this name has no subdomain to split off",
-                )
+            dns_match = dns_by_fqdn.get(fqdn)
+            # The zone a DNS integration reported for this very name knows better than a
+            # proxy, which knows none.
+            hint = (dns_match or {}).get("_zone") or (dns_match or {}).get("zone") or h.get("_zone")
+            subdomain, domain, why = _split_for_import(fqdn, declared, hint)
+            if why:
+                refuse_import(errors, conn, fqdn, why)
                 continue
-            subdomain, domain = parts[0], parts[1]
-            if conn.execute("SELECT id FROM services WHERE subdomain=? AND domain=?", (subdomain, domain)).fetchone():
+            if _tracked_id(conn, fqdn, tunnels=True) is not None:
                 set_aside(skipped, fqdn, "Vauxtra already tracks this name")
                 continue
 
             provider_type = (h.get("_provider_type") or "").strip().lower()
 
-            dns_match       = dns_by_fqdn.get(fqdn)
             dns_provider_id = dns_match.get("_provider_id") if dns_match else None
             dns_ip          = dns_match.get("answer", "") if dns_match else ""
 
@@ -1347,24 +1579,32 @@ def import_services(request: Request, data: dict = Body(...)):
 
     for fqdn, r in dns_by_fqdn.items():
         try:
-            ip    = r.get("answer", "")
-            parts = fqdn.split(".", 1)
+            ip = r.get("answer", "")
             # Split in two, because the two causes are not cured the same way: one is a
             # record to fix at the provider, the other a name that can never be a service.
             if not ip:
                 refuse_import(errors, conn, fqdn, "its record answers with no address")
                 continue
-            if len(parts) < 2:
-                refuse_import(
-                    errors, conn, fqdn,
-                    "a domain needs at least one dot, so this name has no subdomain to split off",
-                )
+            subdomain, domain, why = _split_for_import(fqdn, declared, r.get("_zone") or r.get("zone"))
+            if why:
+                refuse_import(errors, conn, fqdn, why)
                 continue
-            subdomain, domain = parts[0], parts[1]
-            existing = conn.execute(
-                "SELECT id FROM services WHERE subdomain=? AND domain=?", (subdomain, domain)
-            ).fetchone()
-            if existing:
+            existing = _tracked_row(conn, fqdn)
+            if existing is not None:
+                # A link fills the DNS half a service is missing, and only that. It used to
+                # overwrite whatever half was there: "Quick import" sent the whole scan back,
+                # tracked names included, so a name two integrations answer for re-pointed a
+                # tracked service at whichever had been read first, and a tunnel service -- which
+                # stores no DNS provider, its tunnel writes the record -- gained one.
+                if existing["expose_mode"] == "tunnel":
+                    set_aside(
+                        skipped, fqdn,
+                        "Vauxtra already publishes this name through a tunnel, which writes its own DNS record",
+                    )
+                    continue
+                if existing["dns_provider_id"] is not None:
+                    set_aside(skipped, fqdn, "Vauxtra already tracks this name and its DNS record")
+                    continue
                 conn.execute(
                     "UPDATE services SET dns_provider_id=?, dns_ip=? WHERE id=?",
                     (r.get("_provider_id"), ip, existing["id"]),
@@ -1375,11 +1615,14 @@ def import_services(request: Request, data: dict = Body(...)):
                 linked += 1
                 add_log("info", f"DNS linked: {fqdn} -> {ip}", conn)
             else:
+                # No port: a DNS record names an address, not a service listening on it. The
+                # 80 written here before was a guess the monitor then took at its word, and
+                # a VPN endpoint or a hypervisor came in reported down on port 80 forever.
                 conn.execute(
                     """INSERT INTO services
                        (subdomain, domain, target_ip, target_port, dns_provider_id, dns_ip)
                        VALUES (?,?,?,?,?,?)""",
-                    (subdomain, domain, ip, 80, r.get("_provider_id"), ip),
+                    (subdomain, domain, ip, NO_PORT, r.get("_provider_id"), ip),
                 )
                 conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
                 imported += 1

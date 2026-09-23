@@ -307,7 +307,9 @@ class SignaturesCarryWhatTheRouteEnforces(unittest.TestCase):
         self.assertEqual(properties["forward_scheme"]["enum"], ["http", "https"])
         self.assertEqual(properties["expose_mode"]["enum"], ["proxy_dns", "tunnel"])
         self.assertEqual(properties["public_target_mode"]["enum"], ["auto", "manual"])
-        self.assertEqual(properties["target_port"]["minimum"], 1)
+        # 0 is a service published in DNS alone; the route refuses it with a proxy or a
+        # tunnel, a rule across two fields that no schema can carry (see below).
+        self.assertEqual(properties["target_port"]["minimum"], 0)
         self.assertEqual(properties["target_port"]["maximum"], 65535)
 
     def test_create_tag_publishes_the_palette_the_api_silently_substitutes(self):
@@ -402,17 +404,19 @@ class TheGateReadsWhatPydanticEnforces(unittest.TestCase):
         self.assertEqual(TagIn(name="t", color="chartreuse").color, "blue")
 
     def test_the_port_bounds_the_gate_read_are_the_bounds_the_models_enforce(self):
-        for name, model, build in (
+        # A service may have no port (0): it is then a name in DNS and nothing forwards to
+        # it. A template describes something a proxy forwards to, so it always has one.
+        for name, model, build, lowest in (
             ("ServiceIn", ServiceIn,
              lambda port: {"subdomain": "a", "domain": "example.com", "target_ip": "10.0.0.9",
-                           "target_port": port}),
-            ("TemplateIn", TemplateIn, lambda port: {"name": "t", "target_port": port}),
+                           "target_port": port}, 0),
+            ("TemplateIn", TemplateIn, lambda port: {"name": "t", "target_port": port}, 1),
         ):
             facts = self.models[name].fields["target_port"].facts
-            self.assertEqual((facts.minimum, facts.maximum), (1, 65535), name)
-            model(**build(1))
+            self.assertEqual((facts.minimum, facts.maximum), (lowest, 65535), name)
+            model(**build(lowest))
             model(**build(65535))
-            for refused in (0, 65536):
+            for refused in (lowest - 1, 65536):
                 with self.assertRaises(ValidationError, msg=f"{name} accepted port {refused}"):
                     model(**build(refused))
 
@@ -880,7 +884,7 @@ class TheHalfSucceedsTableNamesWhatTheCodeAnswers(unittest.TestCase):
 
     `EveryPartialFailureKeyIsNamedByItsTool` pins the docstrings, which is what an agent
     reads at call time. The README is what a person reads before writing the integration,
-    and it carries the same fourteen pairs written out by hand -- the kind of list that is
+    and it carries the same pairs written out by hand -- the kind of list that is
     correct on the day it is written and quietly wrong two routes later. So it is compared
     to the code rather than trusted, in both directions: a pair the README omits is a
     partial failure nobody was warned about, and a pair it invents sends a reader looking

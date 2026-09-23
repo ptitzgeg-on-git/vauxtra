@@ -480,6 +480,17 @@ export interface ServicePayload {
 }
 
 /**
+ * Body of `PATCH /api/services/{sid}` (`ServiceLabelsIn`, `extra="forbid"`): Vauxtra's own
+ * metadata, which no proxy host, DNS record or tunnel rule carries. A key left out keeps its
+ * value, and no provider is called, so the answer is the `Service` with no `errors`.
+ */
+export interface ServiceLabelsPayload {
+  tag_ids?: number[];
+  environment_ids?: number[];
+  icon_url?: string;
+}
+
+/**
  * Body of `POST /api/services/preflight` (`ServicePreflightIn`): the exact `ServicePayload`
  * plus `service_id` when editing, so the public-host conflict check ignores the service
  * itself. Unknown keys are rejected with 422.
@@ -538,6 +549,11 @@ export interface ServiceCheckResult {
   /** Null when the target never answered. */
   latency_ms: number | null;
   dns_resolved: string[] | null;
+  /**
+   * False for a service without a port: nothing was probed, `status` stays `unknown` and only
+   * the name was resolved. Absent on older instances, which probed port 0 and reported it down.
+   */
+  tested?: boolean;
 }
 
 /** One line of `CheckAllResult.results`: what the fleet probe measured for one service. */
@@ -554,8 +570,16 @@ export interface CheckAllResult {
   ok: number;
   error: number;
   /**
-   * One entry per service actually probed — so `results.length` is `checked` minus the
-   * tunnel services, which are skipped. Absent on instances older than 1.5.0.
+   * The services left out, never probed: tunnels, reached through their connector, and
+   * services without a port, which have nothing to connect to. `skipped` is the sum of the
+   * two. All three are absent on older instances, which skipped the tunnels alone.
+   */
+  skipped?: number;
+  skipped_tunnel?: number;
+  skipped_no_port?: number;
+  /**
+   * One entry per service actually probed, so `results.length` is `checked` minus the ones
+   * skipped. Absent on instances older than 1.5.0.
    */
   results?: CheckAllEntry[];
 }
@@ -1042,6 +1066,10 @@ export interface SyncProxyHost {
   _provider_type?: string;
   _provider_readonly?: boolean;
   _already_imported?: boolean;
+  /** The zone the import files the host's first name under (`_zone_of` in `sync.py`). */
+  _zone?: string;
+  /** True when `_zone` is a domain the operator declared in Settings > DNS domains. */
+  _declared?: boolean;
   [key: string]: unknown;
 }
 
@@ -1050,16 +1078,39 @@ export interface SyncDnsRewrite {
   domain?: string;
   answer?: string;
   target?: string;
+  /** The record type, from the integrations that have several (Cloudflare: `A`, `CNAME`...). */
+  type?: string;
+  /** Cloudflare only: whether the record goes through Cloudflare's proxy (orange cloud). */
+  proxied?: boolean;
+  /** The zone the integration read the record from, when it has zones. */
+  zone?: string;
   _provider_id?: number;
   _provider_name?: string;
   _already_imported?: boolean;
+  _zone?: string;
+  _declared?: boolean;
   [key: string]: unknown;
+}
+
+/** One integration the scan asked, in the order they were asked. */
+export interface SyncProviderReport {
+  id: number;
+  name: string;
+  type: string;
+  /** False when listing failed: none of its routes are in the scan. */
+  ok: boolean;
+  count: number;
+  /** Why it failed, credentials masked; empty when `ok`. */
+  error: string;
 }
 
 /** `POST /api/services/sync` — what every enabled provider currently serves. */
 export interface SyncResult {
   proxy_hosts?: SyncProxyHost[];
   dns_rewrites?: SyncDnsRewrite[];
+  providers?: SyncProviderReport[];
+  /** The domains declared in Settings > DNS domains, lowercased, as the scan compared them. */
+  declared_domains?: string[];
   [key: string]: unknown;
 }
 
@@ -1067,8 +1118,9 @@ export interface SyncResult {
  * `POST /api/services/import`. Four outcomes, and one run can hold several of them: a
  * batch can create two services, attach a DNS record to a third that already existed,
  * pass over a fourth that was already tracked and refuse a fifth. `skipped` is not a
- * failure -- "Quick import" sends the whole scan back, tracked rows included -- and
- * `errors` is, so they are separate lists rather than one with a colour guessed from it.
+ * failure -- a route another caller sends back while Vauxtra already tracks it lands there
+ * -- and `errors` is, so they are separate lists rather than one with a colour guessed
+ * from it.
  */
 export interface ImportResult {
   imported: number;
@@ -1242,6 +1294,12 @@ export interface ProviderValidationCheck {
   /** The values the sentence was built from, substituted into the translation. */
   detail_params?: Record<string, string | number>;
   blocking?: boolean;
+  /**
+   * The check was never run: the write probe in safe mode, the zone lookup when no hostname
+   * was given. `ok` is false on it, because nothing was verified, but nothing failed either.
+   * Read it through `checkFailed()` so it neither costs health points nor turns a line red.
+   */
+  skipped?: boolean;
 }
 
 /** `POST /api/providers/{pid}/test` and `POST /api/providers/{pid}/validate`. */

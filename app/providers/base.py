@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 import requests
 
 from app.config import PROVIDER_TIMEOUT
+from app.security import redact_query_secrets
 
 
 class TimeoutSession(requests.Session):
@@ -85,7 +86,14 @@ class ProviderListingRefused(RuntimeError):
 
     Providers whose own client raises, Cloudflare's for one, let that exception out instead.
     Every caller wraps the call, so what matters is that something arrives.
+
+    The message is masked on the way in (`redact_query_secrets`): most refusals quote the
+    `requests` exception they caught, and Technitium and Pi-hole v5 put their credential in
+    the URL that exception quotes. What arrives is shown in the scan and the journal.
     """
+
+    def __init__(self, message: object = "") -> None:
+        super().__init__(redact_query_secrets(str(message)))
 
 
 class DNSProvider(ABC):
@@ -103,6 +111,21 @@ class DNSProvider(ABC):
         finish answering raises -- `ProviderListingRefused`, or whatever its own client
         threw -- rather than handing back the part it managed to collect.
         """
+
+    def records_for(self, domain: str) -> list[dict]:
+        """The records held for exactly `domain`, in the shape `list_rewrites` gives them.
+
+        The drift check asks this of every DNS integration a service is not pushed to, to
+        find a name that also resolves somewhere else. Filtering the whole listing is the
+        answer any provider can give; one whose API can ask for a single name overrides this,
+        as Cloudflare does. Raises when the listing does.
+        """
+        wanted = (domain or "").strip().strip(".").lower()
+        return [
+            r
+            for r in self.list_rewrites() or []
+            if str(r.get("domain") or "").strip().strip(".").lower() == wanted
+        ]
 
     @abstractmethod
     def add_rewrite(self, domain: str, ip: str) -> bool:

@@ -199,7 +199,9 @@ def run_auto_reconcile() -> None:
         fqdn = f"{svc['subdomain']}.{svc['domain']}"
         try:
             conn  = get_db()
-            drift = _compute_service_drift(conn, svc, sid)
+            # Only `ok` is read here, and a record on another integration never moves it:
+            # asking each of them about every service, every round, would buy nothing.
+            drift = _compute_service_drift(conn, svc, sid, look_elsewhere=False)
             conn.close()
 
             if drift.get("ok"):
@@ -345,11 +347,12 @@ def run_health_checks() -> None:
         # UPDATEs on one transaction, that alone was minutes of held write lock a cycle.
         #
         # Tunnel services are health-checked via the Cloudflare API, not TCP. Running TCP
-        # against cfargotunnel.com or similar targets always fails.
+        # against cfargotunnel.com or similar targets always fails. A service without a
+        # port is a name in DNS and nothing more: there is no connection to open.
         probes = [
             (svc, _tcp_ok(svc["target_ip"], svc["target_port"]))
             for svc in services
-            if (svc["expose_mode"] or "").strip().lower() != "tunnel"
+            if (svc["expose_mode"] or "").strip().lower() != "tunnel" and svc["target_port"]
         ]
 
         changed: list[dict] = []

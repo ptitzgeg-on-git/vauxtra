@@ -155,16 +155,32 @@ class CloudflareTunnelProvider(ProxyProvider):
             return False
         ingress = self._normalize_ingress(config.get("ingress"))
 
+        # The rule for this name is rewritten where it stands, and only its `service` is
+        # Vauxtra's to set. It used to be dropped and appended again as
+        # `{hostname, service, originRequest: {}}`, which cost it two things nothing in
+        # Vauxtra models: its `originRequest` (measured in production on 2026-09-22, two
+        # rules carried `noTLSVerify` and any push to them would have cleared it), and its
+        # place in the list, which decides what a wildcard rule above it catches first.
+        # A `path` is not kept: the route Vauxtra publishes serves the whole name. A second
+        # rule for the same name is dropped, as it always was.
         updated: list[dict] = []
+        written = False
         for rule in ingress:
             if str(rule.get("hostname", "")).strip().lower() == hostname.lower():
+                if not written:
+                    kept = {k: v for k, v in rule.items() if k != "path"}
+                    kept.update({"hostname": hostname, "service": service_url})
+                    kept.setdefault("originRequest", {})
+                    updated.append(kept)
+                    written = True
                 continue
             # Drop fallback to re-append exactly one rule at the end.
             if not rule.get("hostname") and str(rule.get("service", "")).startswith("http_status:"):
                 continue
             updated.append(rule)
 
-        updated.append({"hostname": hostname, "service": service_url, "originRequest": {}})
+        if not written:
+            updated.append({"hostname": hostname, "service": service_url, "originRequest": {}})
         updated.append({"service": "http_status:404"})
 
         config["ingress"] = updated
@@ -416,10 +432,21 @@ class CloudflareTunnelProvider(ProxyProvider):
 
         # `code` is the short name of the sentence in `detail`; the UI reads
         # `providers.diag.detail.<code>` so the line is not English-only.
-        def _add(name: str, ok: bool, detail: str, blocking: bool = True, code: str = "") -> None:
+        #
+        # `skipped` marks a check that was never run. Two of them are skipped on every
+        # routine test: the write probe (safe mode) and the zone lookup when no hostname
+        # was given. They used to read as two failed non-blocking checks, so a tunnel with
+        # nothing wrong scored 90 with "2 warnings" and there was nothing the operator could
+        # do about either. `ok` stays False, because nothing was verified and a client that
+        # predates the flag must not read one of them as a pass; `warnings` leaves them out.
+        def _add(
+            name: str, ok: bool, detail: str, blocking: bool = True, code: str = "", skipped: bool = False
+        ) -> None:
             entry = {"name": name, "ok": bool(ok), "detail": detail, "blocking": blocking}
             if code:
                 entry["detail_code"] = code
+            if skipped:
+                entry["skipped"] = True
             checks.append(entry)
 
         token_verify = self._request_detailed("GET", "/user/tokens/verify")
@@ -495,6 +522,7 @@ class CloudflareTunnelProvider(ProxyProvider):
                     "Write probe skipped (safe mode).",
                     False,
                     code="tunnel_config_write_skipped",
+                    skipped=True,
                 )
 
         hostname = (hostname_hint or "").strip().lower()
@@ -527,10 +555,11 @@ class CloudflareTunnelProvider(ProxyProvider):
                 "No hostname hint provided for DNS scope checks",
                 False,
                 code="zone_lookup_no_hint",
+                skipped=True,
             )
 
         blocking_failures = [c for c in checks if c["blocking"] and not c["ok"]]
-        warnings = [c["detail"] for c in checks if not c["blocking"] and not c["ok"]]
+        warnings = [c["detail"] for c in checks if not c["blocking"] and not c["ok"] and not c.get("skipped")]
         return {
             "ok": len(blocking_failures) == 0,
             "checks": checks,

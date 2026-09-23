@@ -31,6 +31,7 @@ import {
   STATUS_FILTERS,
   STATUS_LABEL_KEY,
   autoCheckCadence,
+  measuredCount,
   overallAvailability,
   serviceHost,
   serviceStatus,
@@ -106,9 +107,16 @@ async function fetchRecentLogs(): Promise<LogEntry[]> {
   return items.concat(rest.slice(0, LOGS_SAMPLE - items.length));
 }
 
-interface CheckSummary extends CheckAllResult {
-  /** `checked` counts every enabled service, tunnels included — and the route skips those. */
-  skipped: number;
+/**
+ * `checked` counts every enabled service, and the route probes neither the tunnels nor the
+ * services without a port. Each is named apart: the two reasons have nothing in common.
+ */
+interface CheckSummary {
+  checked: number;
+  ok: number;
+  error: number;
+  skippedTunnel: number;
+  skippedNoPort: number;
 }
 
 export function Monitoring() {
@@ -199,7 +207,11 @@ export function Monitoring() {
       const checked = result?.checked ?? 0;
       const ok = result?.ok ?? 0;
       const error = result?.error ?? 0;
-      setSummary({ checked, ok, error, skipped: Math.max(0, checked - ok - error) });
+      // An instance older than the split skipped the tunnels alone and did not say so: what it
+      // left out is worked out from the three counts it does return.
+      const skippedNoPort = result?.skipped_no_port ?? 0;
+      const skippedTunnel = result?.skipped_tunnel ?? Math.max(0, checked - ok - error - skippedNoPort);
+      setSummary({ checked, ok, error, skippedTunnel, skippedNoPort });
       // The fleet check measured every latency on its way through; `results` is absent on
       // an instance older than 1.5.0, and the column then stays as it was.
       probes.record(result?.results ?? []);
@@ -231,7 +243,7 @@ export function Monitoring() {
 
   // `autoCheckCadence` carries why this is read from the setting and never from `last_checked`.
   const cadence = autoCheckCadence(settings?.check_interval);
-  const probedCount = Object.keys(probes.probes).length;
+  const measured = measuredCount(probes.probes);
 
   // --- filtering ----------------------------------------------------------
 
@@ -361,7 +373,10 @@ export function Monitoring() {
           })}
           onDismiss={() => setSummary(null)}
         >
-          {summary.skipped > 0 ? t('monitoring.check_skipped', { count: summary.skipped }) : null}
+          {summary.skippedTunnel > 0 && <p>{t('monitoring.check_skipped', { count: summary.skippedTunnel })}</p>}
+          {summary.skippedNoPort > 0 && (
+            <p>{t('monitoring.check_skipped_no_port', { count: summary.skippedNoPort })}</p>
+          )}
         </InlineAlert>
       )}
 
@@ -439,8 +454,8 @@ export function Monitoring() {
           label={t('monitoring.stat.latency')}
           value={probes.average === null ? EM_DASH : formatLatency(probes.average)}
           hint={
-            probedCount > 0
-              ? t('monitoring.stat.latency_hint', { count: probedCount })
+            measured > 0
+              ? t('monitoring.stat.latency_hint', { count: measured })
               : t('monitoring.stat.latency_empty')
           }
           icon={<Timer />}

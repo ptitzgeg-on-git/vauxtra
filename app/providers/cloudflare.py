@@ -35,7 +35,11 @@ class CloudflareProvider(DNSProvider):
         self._configured_zone_id = zone_id.strip() if zone_id else ""
         self._zone_cache: dict[str, str] = {}  # domain → zone_id (per-domain cache)
         self._api_token = (api_token or "").strip()
-        self._client = _cf.Cloudflare(api_token=api_token)
+        # The SDK's own default is a 60-second read timeout, retried twice: three minutes
+        # before one silent Cloudflare call gives up, where every other request this class
+        # makes (`_api_request`) stops at `PROVIDER_TIMEOUT`. Nothing upstream bounds it
+        # either, so a stalled zone listing held a scan or a health round for that long.
+        self._client = _cf.Cloudflare(api_token=api_token, timeout=PROVIDER_TIMEOUT)
         self._api_url = "https://api.cloudflare.com/client/v4"
         self._proxied = bool((extra or {}).get("proxied", False))
 
@@ -75,8 +79,14 @@ class CloudflareProvider(DNSProvider):
 
     # ── Zone helpers ──────────────────────────────────────────────────────
 
-    def _find_zone(self, domain: str) -> str | None:
-        """Return the zone ID for *domain*, using the configured ID or auto-detecting."""
+    def _find_zone(self, domain: str, *, strict: bool = False) -> str | None:
+        """Return the zone ID for *domain*, using the configured ID or auto-detecting.
+
+        `None` means no zone was found, and by default a lookup that failed reads the same
+        way: a write then answers False, which is what its callers expect. `strict` raises
+        instead, for `records_for`, where "no zone" is an answer about the records: read that
+        way, a failed lookup would say nobody holds a name nobody was asked about.
+        """
         if self._configured_zone_id:
             return self._configured_zone_id
         # Check per-domain cache
@@ -101,6 +111,8 @@ class CloudflareProvider(DNSProvider):
                     self._zone_cache[candidate] = zone.id
                     return zone.id
             except Exception:
+                if strict:
+                    raise
                 # Zone lookup failed for this candidate; try next subdomain level
                 pass
         return None
@@ -156,16 +168,22 @@ class CloudflareProvider(DNSProvider):
         keeps on purpose and explains over `_zone_rrsets`. It keeps it because it can tell
         that case apart from a listing that failed; one handler wrapped around the whole
         sweep cannot, so it read every failure as the harmless one.
+
+        Each record names the zone it was read from (`zone`). A token scoped to every zone of
+        an account reaches every zone on that account: measured in production on
+        2026-09-22, one scan listed 59 routes in twelve zones nobody had declared, beside the
+        32 in the one that was. The scan sorts them by that name, and the import splits a
+        record's name at it rather than at its first dot.
         """
-        zone_ids: list[str] = []
+        zones: list[tuple[str, str]] = []
         if self._configured_zone_id:
-            zone_ids = [self._configured_zone_id]
+            zones = [(self._configured_zone_id, self._zone_name(self._configured_zone_id))]
         else:
             # Discover all visible zones
             for zone in self._client.zones.list(per_page=50):
-                zone_ids.append(zone.id)
+                zones.append((zone.id, self._clean_zone_name(zone.name)))
         results: list[dict] = []
-        for zid in zone_ids:
+        for zid, zone_name in zones:
             for rtype in ("A", "AAAA", "CNAME"):
                 for r in self._client.dns.records.list(zone_id=zid, type=rtype):
                     results.append(
@@ -174,9 +192,49 @@ class CloudflareProvider(DNSProvider):
                             "answer": r.content,
                             "type": rtype,
                             "proxied": r.proxied,
+                            "zone": zone_name,
                         }
                     )
         return results
+
+    def records_for(self, domain: str) -> list[dict]:
+        """The A, AAAA and CNAME records named exactly `domain`, from the zone that holds it.
+
+        The inherited answer filters `list_rewrites`, which lists the zones the token reaches
+        and reads each one three record types at a time: three calls a zone and one more, for
+        one name, each time a drift drawer opens. The production token of 2026-09-22 read
+        records from thirteen zones, so forty calls at least. This is the zone lookup and one
+        listing that Cloudflare filters by name.
+        """
+        wanted = (domain or "").strip().strip(".").lower()
+        if not wanted:
+            return []
+        zone_id = self._find_zone(wanted, strict=True)
+        if not zone_id:
+            return []
+        return [
+            {"domain": r.name, "answer": r.content, "type": r.type, "proxied": r.proxied}
+            for r in self._client.dns.records.list(zone_id=zone_id, name={"exact": wanted})
+            if r.type in ("A", "AAAA", "CNAME") and self._same_name(r.name, wanted)
+        ]
+
+    @staticmethod
+    def _clean_zone_name(name) -> str:
+        """A zone name as the scan compares it, or "" for anything that is not one."""
+        return name.strip(".").lower() if isinstance(name, str) else ""
+
+    def _zone_name(self, zone_id: str) -> str:
+        """The name of the configured zone, or "" when the token may not read it.
+
+        The one handler of the listing, and it guards a label, not a record: the scan falls
+        back to splitting the record's name without it, as it always did. Failing the whole
+        listing over it would hide every record of the zone to protect a heading.
+        """
+        try:
+            zone = self._client.zones.get(zone_id=zone_id)
+        except Exception:
+            return ""
+        return self._clean_zone_name(getattr(zone, "name", None))
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)
@@ -255,12 +313,26 @@ class CloudflareProvider(DNSProvider):
 
         # `code` is the short name of the sentence in `detail`; the UI reads
         # `providers.diag.detail.<code>` so the line is not English-only.
-        def _add(name: str, ok: bool, detail: str, blocking: bool = True, code: str = "", **params) -> None:
+        #
+        # `skipped` marks a check that was never run: the write probe, which this
+        # provider does not attempt at all. See the tunnel provider's `_add` for why it is
+        # not a warning, and why `ok` stays False all the same.
+        def _add(
+            name: str,
+            ok: bool,
+            detail: str,
+            blocking: bool = True,
+            code: str = "",
+            skipped: bool = False,
+            **params,
+        ) -> None:
             entry = {"name": name, "ok": bool(ok), "detail": detail, "blocking": blocking}
             if code:
                 entry["detail_code"] = code
             if params:
                 entry["detail_params"] = params
+            if skipped:
+                entry["skipped"] = True
             checks.append(entry)
 
         # 1. Verify token is active
@@ -342,10 +414,11 @@ class CloudflareProvider(DNSProvider):
                     "DNS write probe skipped (non-destructive mode). Actual write is validated at runtime on first change.",
                     False,
                     code="dns_write_skipped",
+                    skipped=True,
                 )
 
         blocking_failures = [c for c in checks if c["blocking"] and not c["ok"]]
-        warnings = [c["detail"] for c in checks if not c["blocking"] and not c["ok"]]
+        warnings = [c["detail"] for c in checks if not c["blocking"] and not c["ok"] and not c.get("skipped")]
         return {
             "ok": len(blocking_failures) == 0,
             "checks": checks,

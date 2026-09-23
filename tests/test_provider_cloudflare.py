@@ -191,6 +191,62 @@ class TestCloudflareProvider(unittest.TestCase):
         call_kwargs = client.dns.records.create.call_args[1]
         self.assertFalse(call_kwargs.get("proxied"), "CNAME must not be proxied")
 
+    def test_the_write_probe_it_never_runs_is_not_a_warning(self):
+        """The DNS write check is never run here; it said so as a failed warning."""
+        p, _ = self._make_provider(zone_id="zone123")
+        p._api_request = MagicMock(return_value={"ok": True, "status": 200, "result": {}, "errors": []})
+        result = p.validate_permissions()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"], [])
+        write = next(c for c in result["checks"] if c["name"] == "dns_write")
+        self.assertTrue(write["skipped"])
+        self.assertFalse(write["ok"])
+        self.assertEqual([c["name"] for c in result["checks"] if c.get("skipped")], ["dns_write"])
+
+    def test_records_for_asks_the_zone_for_one_name(self):
+        """One listing Cloudflare filters, where `list_rewrites` walks every zone."""
+        p, client = self._make_provider()
+        client.zones.list.side_effect = lambda name, per_page: (
+            [_make_zone("zone456", "example.com")] if name == "example.com" else []
+        )
+        client.dns.records.list.return_value = [
+            _make_record("r1", "app.example.com", "203.0.113.7", "A"),
+            _make_record("r2", "app.example.com", "v=spf1 -all", "TXT"),
+        ]
+
+        records = p.records_for("App.Example.com.")
+
+        self.assertEqual(
+            records,
+            [{"domain": "app.example.com", "answer": "203.0.113.7", "type": "A", "proxied": False}],
+        )
+        client.dns.records.list.assert_called_once_with(
+            zone_id="zone456", name={"exact": "app.example.com"}
+        )
+
+    def test_records_for_raises_when_the_zone_lookup_fails(self):
+        """Read as "no zone", a failed lookup would say nobody holds the name."""
+        p, client = self._make_provider()
+        client.zones.list.side_effect = RuntimeError("Unauthorized")
+
+        with self.assertRaises(RuntimeError):
+            p.records_for("app.example.com")
+        client.dns.records.list.assert_not_called()
+
+    def test_a_write_still_reads_a_failed_zone_lookup_as_no_zone(self):
+        p, client = self._make_provider()
+        client.zones.list.side_effect = RuntimeError("Unauthorized")
+
+        self.assertIsNone(p._find_zone("app.example.com"))
+        self.assertFalse(p.add_rewrite("app.example.com", "1.2.3.4"))
+
+    def test_records_for_a_name_in_no_zone_is_nothing(self):
+        p, client = self._make_provider()
+        client.zones.list.return_value = []
+
+        self.assertEqual(p.records_for("app.unknown.net"), [])
+        client.dns.records.list.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

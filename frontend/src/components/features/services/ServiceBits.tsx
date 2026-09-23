@@ -6,6 +6,7 @@ import {
   Copy,
   ExternalLink,
   Globe,
+  Info,
   Power,
   PowerOff,
   Waypoints,
@@ -19,6 +20,7 @@ import { Badge, Chip, IconButton, ProviderLogo, Tooltip } from '@/components/ui'
 import type { Tone } from '@/components/ui';
 import type { DriftResult, Environment, Provider, Service, ServiceCheckResult, Tag } from '@/types/api';
 import {
+  driftStanding,
   isLocalDnsType,
   isNavigablePublicHost,
   providersOf,
@@ -273,20 +275,36 @@ export function TaxonomyChips({
   );
 }
 
-/** Inline result of "Check now": status, latency and what DNS resolved to. */
+/**
+ * Inline result of "Check now": status, latency and what DNS resolved to. A service without a
+ * port comes back untested (`tested: false`): its name was resolved and nothing was probed,
+ * which the badge says instead of an "Unknown" that read as a check gone wrong.
+ */
 export function CheckResultInline({ result, className }: { result: ServiceCheckResult; className?: string }) {
   const t = useT();
   const { formatLatency } = useFormat();
-  const tone: Tone = result.status === 'ok' ? 'success' : result.status === 'error' ? 'danger' : 'neutral';
-  const label =
-    result.status === 'ok' ? t('services.check.ok') : result.status === 'error' ? t('services.check.error') : t('services.check.unknown');
+  const untested = result.tested === false;
+  const tone: Tone = untested
+    ? 'neutral'
+    : result.status === 'ok'
+      ? 'success'
+      : result.status === 'error'
+        ? 'danger'
+        : 'neutral';
+  const label = untested
+    ? t('services.check.no_port')
+    : result.status === 'ok'
+      ? t('services.check.ok')
+      : result.status === 'error'
+        ? t('services.check.error')
+        : t('services.check.unknown');
   const resolved = Array.isArray(result.dns_resolved) ? result.dns_resolved : [];
   return (
     <span
       role="status"
       className={cn('inline-flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground animate-in fade-in animate-duration-200', className)}
     >
-      <Badge tone={tone} size="sm" icon={result.status === 'ok' ? <Check /> : <CircleAlert />}>
+      <Badge tone={tone} size="sm" icon={untested ? <Info /> : result.status === 'ok' ? <Check /> : <CircleAlert />}>
         {label}
       </Badge>
       {result.latency_ms != null && <span className="tabular-nums">{formatLatency(result.latency_ms)}</span>}
@@ -295,24 +313,28 @@ export function CheckResultInline({ result, className }: { result: ServiceCheckR
           {resolved.join(', ')}
         </span>
       )}
-      {result.status === 'error' && resolved.length === 0 && result.dns_resolved !== null && (
+      {/* The name is the one thing an untested check looked at, so its absence is news too. */}
+      {(result.status === 'error' || untested) && resolved.length === 0 && result.dns_resolved !== null && (
         <span>{t('services.check.no_resolution')}</span>
       )}
     </span>
   );
 }
 
-/** A small badge on rows that were drift-checked; clicking opens the report drawer. */
+/**
+ * A small badge on rows that were drift-checked; clicking opens the report drawer. Green only
+ * when the report holds nothing: a warning is `ok` for the API and still yellow here.
+ */
 export function DriftIndicator({ drift, onOpen, className }: { drift: DriftResult; onOpen: () => void; className?: string }) {
   const t = useT();
-  const errors = drift.issues.filter((i) => i.severity === 'error').length;
-  const warns = drift.issues.length - errors;
-  const tone: Tone = drift.ok ? 'success' : errors > 0 ? 'danger' : 'warning';
-  const label = drift.ok
-    ? t('services.drift.in_sync')
-    : errors > 0
+  const { errors, warnings } = driftStanding(drift);
+  const tone: Tone = errors > 0 ? 'danger' : warnings > 0 ? 'warning' : 'success';
+  const label =
+    errors > 0
       ? t('services.drift.errors', { count: errors })
-      : t('services.drift.warnings', { count: warns });
+      : warnings > 0
+        ? t('services.drift.warnings', { count: warnings })
+        : t('services.drift.in_sync');
   return (
     <button
       type="button"

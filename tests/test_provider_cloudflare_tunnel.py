@@ -1,5 +1,6 @@
 """Unit tests for CloudflareTunnelProvider — all HTTP calls are mocked."""
 
+import copy
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -243,6 +244,117 @@ class TestCFTunnelIngressRules(unittest.TestCase):
         self.p._put_configuration.assert_not_called()
 
 
+class TestCFTunnelRewritesTheRuleWhereItStands(unittest.TestCase):
+    """A push sets the `service` of its own rule and leaves the rest of that rule alone.
+
+    Measured in production on 2026-09-22: two ingress rules carried
+    `originRequest: {noTLSVerify: true}`, a setting Vauxtra never writes. `_upsert_ingress_rule`
+    dropped the rule and appended `{hostname, service, originRequest: {}}` at the end, so the
+    first push to either, and a tag change was one in 1.5.2, would have cleared the setting
+    and moved the rule below any wildcard that came after it. Both routes were importable, and
+    could not be pushed without losing it.
+    """
+
+    def setUp(self):
+        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.put_calls = []
+        self.p._put_configuration = MagicMock(
+            side_effect=lambda c: self.put_calls.append(copy.deepcopy(c)) or True
+        )
+
+    def _upsert(self, ingress, hostname="app.example.com", service="https://10.0.0.5:8443"):
+        self.p._get_configuration = MagicMock(return_value={"ingress": copy.deepcopy(ingress)})
+        self.assertTrue(self.p._upsert_ingress_rule(hostname, service))
+        return self.put_calls[-1]["ingress"]
+
+    def test_the_origin_settings_of_the_rule_survive_a_push(self):
+        ingress = self._upsert([
+            {"hostname": "app.example.com", "service": "https://10.0.0.5:443",
+             "originRequest": {"noTLSVerify": True, "connectTimeout": 30}},
+            {"service": "http_status:404"},
+        ])
+
+        self.assertEqual(ingress[0], {
+            "hostname": "app.example.com", "service": "https://10.0.0.5:8443",
+            "originRequest": {"noTLSVerify": True, "connectTimeout": 30},
+        })
+
+    def test_the_rule_keeps_its_place_above_a_wildcard(self):
+        ingress = self._upsert([
+            {"hostname": "app.example.com", "service": "https://10.0.0.5:443"},
+            {"hostname": "*.example.com", "service": "http://10.0.0.9:80"},
+            {"service": "http_status:404"},
+        ])
+
+        # Moved below the wildcard, the name would be answered by the wildcard's origin.
+        self.assertEqual(
+            [r.get("hostname") for r in ingress], ["app.example.com", "*.example.com", None]
+        )
+
+    def test_the_neighbours_are_written_back_as_they_were_read(self):
+        neighbours = [
+            {"hostname": "a.example.com", "service": "http://10.0.0.2:80",
+             "originRequest": {"httpHostHeader": "a.internal"}},
+            {"hostname": "z.example.com", "service": "ssh://10.0.0.3:22", "path": "/x"},
+        ]
+        ingress = self._upsert([
+            neighbours[0],
+            {"hostname": "app.example.com", "service": "http://10.0.0.5:80"},
+            neighbours[1],
+            {"service": "http_status:404"},
+        ])
+
+        self.assertEqual(ingress[0], neighbours[0])
+        self.assertEqual(ingress[2], neighbours[1])
+        self.assertEqual(ingress[3], {"service": "http_status:404"})
+
+    def test_a_new_name_is_added_before_the_fallback_with_empty_settings(self):
+        ingress = self._upsert([
+            {"hostname": "a.example.com", "service": "http://10.0.0.2:80"},
+            {"service": "http_status:404"},
+        ])
+
+        self.assertEqual(ingress, [
+            {"hostname": "a.example.com", "service": "http://10.0.0.2:80"},
+            {"hostname": "app.example.com", "service": "https://10.0.0.5:8443",
+             "originRequest": {}},
+            {"service": "http_status:404"},
+        ])
+
+    def test_a_path_is_not_kept_because_the_route_serves_the_whole_name(self):
+        ingress = self._upsert([
+            {"hostname": "app.example.com", "path": "/api", "service": "http://10.0.0.5:80",
+             "originRequest": {"noTLSVerify": True}},
+            {"service": "http_status:404"},
+        ])
+
+        self.assertNotIn("path", ingress[0])
+        self.assertEqual(ingress[0]["originRequest"], {"noTLSVerify": True})
+
+    def test_a_second_rule_for_the_same_name_is_dropped_and_the_first_one_kept(self):
+        ingress = self._upsert([
+            {"hostname": "App.Example.com", "service": "http://10.0.0.5:80",
+             "originRequest": {"noTLSVerify": True}},
+            {"hostname": "a.example.com", "service": "http://10.0.0.2:80"},
+            {"hostname": "app.example.com", "service": "http://10.0.0.6:80"},
+            {"service": "http_status:404"},
+        ])
+
+        self.assertEqual([r.get("hostname") for r in ingress],
+                         ["app.example.com", "a.example.com", None])
+        self.assertEqual(ingress[0]["originRequest"], {"noTLSVerify": True})
+
+    def test_exactly_one_fallback_stays_at_the_end(self):
+        ingress = self._upsert([
+            {"service": "http_status:404"},
+            {"hostname": "app.example.com", "service": "http://10.0.0.5:80"},
+            {"service": "http_status:503"},
+        ])
+
+        self.assertEqual(ingress[-1], {"service": "http_status:404"})
+        self.assertEqual(sum(1 for r in ingress if "hostname" not in r), 1)
+
+
 class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
     """A failed read of the tunnel config must never trigger a write.
 
@@ -298,6 +410,51 @@ class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
     def test_delete_dns_record_fails_when_zone_cannot_be_resolved(self):
         self.p._find_zone = MagicMock(return_value="")
         self.assertFalse(self.p._delete_dns_record("app.example.com"))
+
+
+class TestCFTunnelChecksThatWereNotRun(unittest.TestCase):
+    """A routine test skips two checks on purpose; neither is something to fix.
+
+    The write probe only runs when asked for, and the zone lookup needs a hostname. Both
+    used to come back as failed non-blocking checks, so a tunnel with every read granted
+    scored 90 in the UI with "2 warnings" that nothing the operator did could clear.
+    """
+
+    def setUp(self):
+        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p._request_detailed = MagicMock(return_value={"ok": True, "status": 200, "result": {}, "errors": []})
+
+    def _by_name(self, result: dict) -> dict:
+        return {c["name"]: c for c in result["checks"]}
+
+    def test_a_routine_test_raises_no_warning(self):
+        result = self.p.validate_permissions()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"], [])
+
+    def test_the_two_checks_not_run_say_so_and_do_not_claim_a_pass(self):
+        checks = self._by_name(self.p.validate_permissions())
+        skipped = sorted(name for name, c in checks.items() if c.get("skipped"))
+        self.assertEqual(skipped, ["tunnel_config_write", "zone_lookup"])
+        for name in skipped:
+            # Nothing was verified: a client that does not know the flag must still not
+            # read either of them as a pass.
+            self.assertFalse(checks[name]["ok"])
+            self.assertFalse(checks[name]["blocking"])
+
+    def test_a_check_that_ran_and_failed_is_still_a_warning(self):
+        self.p._find_zone = MagicMock(return_value="")
+        result = self.p.validate_permissions(hostname_hint="app.example.com")
+        lookup = self._by_name(result)["zone_lookup"]
+        self.assertNotIn("skipped", lookup)
+        self.assertEqual(result["warnings"], [lookup["detail"]])
+
+    def test_a_write_probe_that_ran_is_not_marked_skipped(self):
+        self.p._get_configuration = MagicMock(return_value={"ingress": []})
+        self.p._put_configuration = MagicMock(return_value=True)
+        write = self._by_name(self.p.validate_permissions(write_probe=True))["tunnel_config_write"]
+        self.assertTrue(write["ok"])
+        self.assertNotIn("skipped", write)
 
 
 if __name__ == "__main__":

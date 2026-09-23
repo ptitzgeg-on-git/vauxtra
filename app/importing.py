@@ -40,9 +40,10 @@ def refuse_import(errors: list, conn, item: str, reason: str) -> None:
 def set_aside(skipped: list, item: str, reason: str) -> None:
     """Name a row the import passed over on purpose. Nothing is wrong, so nothing is logged.
 
-    "Quick import" sends the whole scan back, already-tracked rows included -- the confirm
-    dialog counts them out loud before it sends. They are the nominal case of that button, so
-    they are not failures: routing them through `errors` painted a successful re-import red,
+    A scan sent back whole carries rows Vauxtra already tracks: `import_services_from_sync`
+    passes on what it is given, and "Quick import" sent the whole scan up to 1.5.2 (it now
+    sends only the rows it offers). Re-importing a scan is a nominal case, so these
+    rows are not failures: routing them through `errors` painted a successful re-import red,
     and logging each one wrote a journal line per tracked service on every click (measured:
     twenty tracked hosts, twenty lines, every time). `check_all` in `app/api/services.py` had
     already settled that question for the same reason -- "One line for the run, not one per

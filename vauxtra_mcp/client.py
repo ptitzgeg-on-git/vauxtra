@@ -121,3 +121,8 @@ def delete(path: str, **kwargs) -> httpx.Response:
 def put(path: str, json=None, **kwargs) -> httpx.Response:
     with httpx.Client(base_url=VAUXTRA_URL, timeout=_timeout(), cookies=_SESSION_JAR) as c:
         return c.put(f"/api{path}", json=json, headers=auth_headers(), **kwargs)
+
+
+def patch(path: str, json=None, **kwargs) -> httpx.Response:
+    with httpx.Client(base_url=VAUXTRA_URL, timeout=_timeout(), cookies=_SESSION_JAR) as c:
+        return c.patch(f"/api{path}", json=json, headers=auth_headers(), **kwargs)

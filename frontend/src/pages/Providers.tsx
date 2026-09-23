@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { Database, Plug, Plus, RefreshCw } from 'lucide-react';
 import { api } from '@/api/client';
-import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { PROVIDER_TYPES_KEY, useProviderTypes } from '@/hooks/useProviderTypes';
 import { ProviderModal } from '@/components/features/ProviderModal';
 import { ProviderCard } from '@/components/features/providers/ProviderCard';
 import { ProviderInspector } from '@/components/features/providers/ProviderInspector';
@@ -173,7 +173,8 @@ export function Providers() {
   const [routeModal, setRouteModal] = useState<RouteModal | null>(null);
   const [inspectId, setInspectId] = useState<number | null>(null);
   const [focusFilter, setFocusFilter] = useState<FocusFilter>('all');
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  /** How far "Test all" has got, or null when it is not running. */
+  const [refreshRun, setRefreshRun] = useState<{ done: number; total: number } | null>(null);
   const [storedDiagnostics, setDiagnostics] = useState<DiagnosticsMap>(restoreDiagnostics);
   const testing = useBusyIds();
   const validating = useBusyIds();
@@ -338,45 +339,61 @@ export function Providers() {
   ]);
 
   // --- actions ------------------------------------------------------------
+  /**
+   * Test every enabled integration on screen, now, all at once.
+   *
+   * This used to await four refetches before sending a single test, and one of them is
+   * `GET /providers/health`, which tested every integration one after the other on the
+   * server. A refetch joins a first load still in flight, and cancels and restarts any later
+   * round, so the click waited for a whole round either way: every integration answering in
+   * turn, up to about three minutes for one silent call while the Cloudflare client sat on
+   * its SDK's default timeout. For all that time the button spun, disabled, and no card
+   * moved, which reads as a dead button. The tests only need the list already on screen; the
+   * rest is refreshed in the background once they are sent, and each card spins and settles
+   * on its own answer as it comes back.
+   */
   const handleRefresh = async () => {
-    if (isRefreshing) return;
-    setIsRefreshing(true);
+    if (refreshRun) return;
+    const enabled = providers.filter((p) => Boolean(p.enabled));
+    if (enabled.length === 0) {
+      toast(t('providers.refresh.none_enabled'));
+      void Promise.all([providersQuery.refetch(), typesQuery.refetch()]);
+      return;
+    }
+    setRefreshRun({ done: 0, total: enabled.length });
     try {
-      const [fresh] = await Promise.all([
-        providersQuery.refetch(),
-        typesQuery.refetch(),
-        tunnelHealthQuery.refetch(),
-        allHealthQuery.refetch(),
-      ]);
-      const list = Array.isArray(fresh.data) ? fresh.data : providers;
-      const enabled = list.filter((p) => Boolean(p.enabled));
-      if (enabled.length === 0) {
-        toast.success(t('providers.refresh.success_no_enabled'));
-        return;
-      }
-      const entries = await Promise.all(
+      const results = await Promise.all(
         enabled.map(async (provider) => {
+          const id = Number(provider.id);
+          testing.start(id);
+          let diag: ProviderDiagnostics;
           try {
-            const data = await api.post<ProviderDiagnostics>(`/providers/${provider.id}/test`);
-            return [Number(provider.id), { ...data, testedAt: Date.now() }] as const;
+            diag = await api.post<ProviderDiagnostics>(`/providers/${id}/test`);
           } catch (error: unknown) {
             const detail = translateApiError(error, t, t('providers.toast.connection_failed'));
-            return [
-              Number(provider.id),
-              { ok: false, provider: provider.name, health: { ok: false, status: 'error', error: detail }, testedAt: Date.now() },
-            ] as const;
+            diag = { ok: false, provider: provider.name, health: { ok: false, status: 'error', error: detail } };
+          } finally {
+            testing.end(id);
           }
+          storeDiagnostics(id, diag);
+          setRefreshRun((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
+          return Boolean(diag?.ok);
         }),
       );
-      setDiagnostics((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
-      const failed = entries.filter(([, data]) => !data?.ok).length;
+      const failed = results.filter((ok) => !ok).length;
       if (failed === 0) toast.success(t('providers.refresh.success_all_passed'));
       else toast.error(t('providers.refresh.failed_count', { count: failed, total: formatNumber(enabled.length) }));
     } catch {
       toast.error(t('providers.refresh.failed'));
     } finally {
-      setIsRefreshing(false);
+      setRefreshRun(null);
     }
+    // What the tests do not cover: the list itself, the catalogue, and the two periodic
+    // readings. Refreshed behind the verdicts, so none of them can hold one back again.
+    void queryClient.invalidateQueries({ queryKey: ['providers'] });
+    void queryClient.invalidateQueries({ queryKey: PROVIDER_TYPES_KEY });
+    void queryClient.invalidateQueries({ queryKey: ['providers-tunnel-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['providers-health'] });
   };
 
   const testConnection = useMutation({
@@ -540,8 +557,16 @@ export function Providers() {
               <Database className="h-4 w-4" aria-hidden="true" />
               {t('providers.import_link')}
             </Link>
-            <Button variant="secondary" leftIcon={<RefreshCw />} loading={isRefreshing} onClick={handleRefresh} disabled={providersQuery.isPending}>
-              {t('providers.refresh.button')}
+            <Button
+              variant="secondary"
+              leftIcon={<RefreshCw />}
+              loading={refreshRun !== null}
+              onClick={handleRefresh}
+              disabled={providersQuery.isPending}
+            >
+              {refreshRun
+                ? t('providers.refresh.progress', { count: refreshRun.done, total: formatNumber(refreshRun.total) })
+                : t('providers.refresh.button')}
             </Button>
             <Button leftIcon={<Plus />} onClick={openCreate}>
               {t('providers.add')}

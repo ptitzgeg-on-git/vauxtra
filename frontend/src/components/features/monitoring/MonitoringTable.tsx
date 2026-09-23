@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
-import { Activity, Radio, ServerOff, Waypoints } from 'lucide-react';
+import { Activity, Radio, ServerOff, Unplug, Waypoints } from 'lucide-react';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { EM_DASH } from '@/lib/format';
 import { Badge, EmptyState, IconButton, Skeleton, Tooltip, cn } from '@/components/ui';
 import type { Service, ServiceHistoryResponse } from '@/types/api';
+import { hasNoPort } from '@/components/features/services/helpers';
 import { UptimeStrip } from './UptimeStrip';
 import {
   STATUS_LABEL_KEY,
@@ -22,8 +23,9 @@ import {
  *
  * Latency has no column in `uptime_events`, so the cell shows what the session measured —
  * by a per-row check or by a fleet run, both of which report it — and an em dash until
- * then, never a zero pretending to be a measurement. Tunnel services are marked instead of
- * being shown as stale: neither the scheduler nor `check-all` ever probes them.
+ * then, never a zero pretending to be a measurement. Tunnel services and services without a
+ * port are marked instead of being shown as stale: neither the scheduler nor `check-all`
+ * ever probes them.
  */
 
 export interface MonitoringTableProps {
@@ -117,6 +119,7 @@ export function MonitoringTable({
             const status = serviceStatus(service);
             const host = serviceHost(service);
             const tunnel = isTunnelService(service);
+            const noPort = hasNoPort(service);
             const summary = summarizeUptime(history?.[String(service.id)], now);
             const probe = probes[service.id];
             const selected = selectedId === service.id;
@@ -161,7 +164,7 @@ export function MonitoringTable({
                     <Badge tone={STATUS_TONE[status]} dot size="sm">
                       {t(STATUS_LABEL_KEY[status])}
                     </Badge>
-                    {status === 'error' && (
+                    {status === 'error' && !noPort && (
                       <span className="text-[11px] text-destructive">
                         {tunnel
                           ? t('monitoring.error.check_tunnel')
@@ -171,19 +174,29 @@ export function MonitoringTable({
                     {status === 'disabled' && (
                       <span className="text-[11px] text-muted-foreground">{t('monitoring.status.disabled_by_user')}</span>
                     )}
+                    {noPort && status !== 'disabled' && (
+                      <span className="text-[11px] text-muted-foreground">{t('monitoring.no_port_caption')}</span>
+                    )}
                   </div>
                 </td>
 
                 <td className="px-3 py-2.5">
-                  {tunnel && summary.total === 0 ? (
+                  {(tunnel || noPort) && summary.total === 0 ? (
                     // The tooltip opens on hover only -- these spans are not focusable and must not
                     // become tab stops in a table -- so everything it says is also written out for
                     // screen readers, and the bubble stays pure redundancy.
-                    <Tooltip content={t('monitoring.tunnel_not_probed_hint')}>
+                    <Tooltip
+                      content={
+                        tunnel ? t('monitoring.tunnel_not_probed_hint') : t('monitoring.no_port_not_probed_hint')
+                      }
+                    >
                       <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                        <Waypoints className="h-3 w-3" aria-hidden />
+                        {tunnel ? <Waypoints className="h-3 w-3" aria-hidden /> : <Unplug className="h-3 w-3" aria-hidden />}
                         {t('monitoring.tunnel_not_probed')}
-                        <span className="sr-only"> — {t('monitoring.tunnel_not_probed_hint')}</span>
+                        <span className="sr-only">
+                          {' — '}
+                          {tunnel ? t('monitoring.tunnel_not_probed_hint') : t('monitoring.no_port_not_probed_hint')}
+                        </span>
                       </span>
                     </Tooltip>
                   ) : (
@@ -247,16 +260,21 @@ export function MonitoringTable({
                 </td>
 
                 <td className="px-3 py-2.5 text-right">
-                  <div onClick={(event) => event.stopPropagation()} role="presentation">
-                    <IconButton
-                      label={t('monitoring.check_row', { host })}
-                      icon={<Radio />}
-                      variant="ghost"
-                      size="icon"
-                      loading={checkingId === service.id}
-                      onClick={() => onCheck(service.id)}
-                    />
-                  </div>
+                  {/* No button without a port: the check would resolve the name and probe
+                      nothing, and a row has nowhere to show a name. The drawer does, and
+                      keeps its button. */}
+                  {!noPort && (
+                    <div onClick={(event) => event.stopPropagation()} role="presentation">
+                      <IconButton
+                        label={t('monitoring.check_row', { host })}
+                        icon={<Radio />}
+                        variant="ghost"
+                        size="icon"
+                        loading={checkingId === service.id}
+                        onClick={() => onCheck(service.id)}
+                      />
+                    </div>
+                  )}
                 </td>
               </tr>
             );

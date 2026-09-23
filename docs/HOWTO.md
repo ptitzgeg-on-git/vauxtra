@@ -261,9 +261,14 @@ Limitations:
    - **Zone → DNS → Edit** (required for DNS records)
 4. In Vauxtra: Add provider → Cloudflare Tunnel → enter tunnel ID, account ID, and token
 
-**Note on validation warnings:**
-- `tunnel_config_write: Write probe skipped (safe mode)` — normal, write is only tested when actually pushing
-- `zone_lookup: No hostname hint provided` — normal, DNS zones are checked when you create a service with a specific domain
+**Note on the checks that are not run:** a routine test leaves two of them out, and the card
+says so ("Passed, 2 checks not run") and lists them in grey. Neither is a warning, and
+neither costs health points. The API marks both with `"skipped": true`.
+- `tunnel_config_write: Write probe skipped (safe mode)`: write is only tested when actually pushing
+- `zone_lookup: No hostname hint provided`: DNS zones are checked when you create a service with a specific domain
+
+The plain Cloudflare DNS integration does the same with `dns_write`: the first real change is
+what proves the token can write.
 
 ### Pi-hole
 
@@ -554,6 +559,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_service` | Get full details of a service |
 | `create_service` | Create a new service |
 | `update_service` | Update an existing service |
+| `set_service_labels` | Set tags, environments or icon, no provider called |
 | `delete_service` | Delete a service |
 | `toggle_service` | Enable/disable a service |
 | `sync_services_from_providers` | Discover services from all providers |
@@ -864,10 +870,11 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/preflight` | Preflight validation. A check marked `blocking` is a promise that the save route refuses the same body. Add `service_id` to preflight an edit: the public target is then resolved from that service's stored row, exactly as the `PUT` resolves it. |
 | `POST` | `/api/services/sync` | Discover services from all providers |
 | `POST` | `/api/services/import` | Import services from sync |
-| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service. |
+| `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service, and `skipped` for the rest, split into `skipped_tunnel` (checked through their provider) and `skipped_no_port` (port 0, published in DNS alone). |
 | `POST` | `/api/services/bulk` | Enable, disable or delete several ids at once — `{ids: [1, 2], action: "enable"}`. Enabling and disabling are not a flag flip: each service also has its proxy host re-deployed or suspended and its DNS record added or removed, so a provider that refuses is named in `errors[]` while the rest still apply. |
 | `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
+| `PATCH` | `/api/services/{sid}` | Set `tag_ids`, `environment_ids` or `icon_url` and nothing else. No provider is called, a key left out keeps its value, any other key is a 422 |
 | `DELETE` | `/api/services/{sid}` | Delete a service |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |

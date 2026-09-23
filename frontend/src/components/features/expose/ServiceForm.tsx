@@ -302,6 +302,11 @@ export function ServiceForm({
   // preview a promise the server will not keep. It comes back when the name is publishable.
   const showFqdnPreview = !subdomainError && !domainError && !fqdnError;
 
+  // A name published in DNS alone needs no port: nothing forwards to it. Left empty it is
+  // saved as 0 and never probed (`NO_PORT` in `app/validators.py`). The other two modes
+  // forward to the port, and the server refuses them a 0.
+  const portOptional = formData.ui_expose_mode === 'dns_only';
+
   // Auto-sync tunnel_hostname when subdomain/domain change in tunnel mode.
   // Only auto-fill when the user hasn't typed a custom hostname.
   const prevFqdn = `${formData.subdomain}.${formData.domain}`;
@@ -531,6 +536,9 @@ export function ServiceForm({
                   ...prev,
                   ui_expose_mode: 'dns_proxy',
                   expose_mode: 'proxy_dns',
+                  // This mode forwards to the port, so one left empty by "DNS only" is
+                  // refilled with the 80 the field offered before it was emptied.
+                  target_port: prev.target_port || 80,
                   tunnel_provider_id: '',
                   tunnel_hostname: '',
                   extra_proxy_provider_ids: prev.expose_mode === 'tunnel' ? [] : prev.extra_proxy_provider_ids,
@@ -550,6 +558,7 @@ export function ServiceForm({
                   ...prev,
                   ui_expose_mode: 'tunnel',
                   expose_mode: 'tunnel',
+                  target_port: prev.target_port || 80,
                   public_target_mode: 'manual',
                   auto_update_dns: false,
                   proxy_provider_id: '',
@@ -595,12 +604,17 @@ export function ServiceForm({
             </Field>
           </div>
 
-          <Field label={t('expose.field.port')} required>
+          <Field
+            label={t('expose.field.port')}
+            required={!portOptional}
+            hint={portOptional ? t('expose.field.port_optional_hint') : undefined}
+          >
             <Input
               type="text"
               inputMode="numeric"
               pattern="[0-9]*"
-              required
+              required={!portOptional}
+              placeholder={portOptional ? t('expose.field.port_none') : undefined}
               className="text-center font-mono font-semibold"
               value={formData.target_port === 0 ? '' : formData.target_port}
               onChange={(e) => {
@@ -609,7 +623,9 @@ export function ServiceForm({
                 setFormData((prev) => ({ ...prev, target_port: num }));
               }}
               onBlur={() => {
-                if (!formData.target_port) setFormData((prev) => ({ ...prev, target_port: 80 }));
+                // Only where a port is required. In "DNS only" an empty field is the answer,
+                // and refilling it with 80 made the service one that every check probes.
+                if (!formData.target_port && !portOptional) setFormData((prev) => ({ ...prev, target_port: 80 }));
               }}
             />
           </Field>

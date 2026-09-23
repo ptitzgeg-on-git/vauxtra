@@ -5,7 +5,12 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from app.api.sync import push_extra_targets, withdraw_extra_targets, withdraw_service_routes
+from app.api.sync import (
+    _records_named,
+    push_extra_targets,
+    withdraw_extra_targets,
+    withdraw_service_routes,
+)
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -23,15 +28,17 @@ from app.public_target import (
     resolve_public_target,
     suggest_public_targets,
 )
+from app.security import redact_query_secrets
 from app.text import plural, verb
 from app.validators import (
     DOMAIN_REASONS,
     FQDN_REASONS,
+    NO_PORT,
     SUBDOMAIN_REASONS,
     domain_problem,
     fqdn_problem,
     is_valid_hostname,
-    is_valid_port,
+    is_valid_service_port,
     normalize_domain,
     subdomain_problem,
 )
@@ -350,21 +357,37 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
     # Vauxtra that cannot see the target's VLAN while the reverse proxy can, a firewall that
     # only opens for the proxy, a backend switched off while its route is prepared, a name
     # only the proxy's Docker network resolves.
-    started = time.monotonic()
-    reachable, detail = _service_target_reachable(body.target_ip, body.target_port)
-    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-    checks.append(
-        {
-            "name": "target_reachable",
-            "ok": reachable,
-            "blocking": False,
-            **(
-                _detail("target_reachable", detail, ms=elapsed_ms)
-                if reachable
-                else _detail("target_unreachable", f"Target not reachable: {detail}", reason=detail)
-            ),
-        }
-    )
+    #
+    # A service published in DNS alone has no port, so there is nothing to connect to: the
+    # check says so instead of probing port 0 and reporting the target down.
+    if body.target_port == NO_PORT:
+        checks.append(
+            {
+                "name": "target_reachable",
+                "ok": True,
+                "blocking": False,
+                **_detail(
+                    "target_no_port",
+                    "No port: the service is only published in DNS, so there is nothing to reach",
+                ),
+            }
+        )
+    else:
+        started = time.monotonic()
+        reachable, detail = _service_target_reachable(body.target_ip, body.target_port)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        checks.append(
+            {
+                "name": "target_reachable",
+                "ok": reachable,
+                "blocking": False,
+                **(
+                    _detail("target_reachable", detail, ms=elapsed_ms)
+                    if reachable
+                    else _detail("target_unreachable", f"Target not reachable: {detail}", reason=detail)
+                ),
+            }
+        )
 
     if body.forward_scheme == "https" and int(body.target_port) == 80:
         checks.append(
@@ -698,8 +721,8 @@ class ServiceIn(BaseModel):
     @field_validator("target_port")
     @classmethod
     def val_port(cls, v):
-        if not is_valid_port(v):
-            raise ValueError("Invalid port (1–65535)")
+        if not is_valid_service_port(v):
+            raise ValueError("Invalid port (1–65535, or 0 for a service published in DNS only)")
         return int(v)
 
     @field_validator("forward_scheme")
@@ -748,6 +771,23 @@ class ServiceIn(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_port_when_forwarded(self):
+        # `NO_PORT` is a service that is a name in DNS and nothing else, and it is accepted
+        # for that alone. A proxy host or a tunnel rule forwards to a port: pointed at 0 it
+        # is a route to nowhere, so it is refused here, before any provider is asked.
+        forwarded = (
+            self.expose_mode == "tunnel"
+            or bool(self.proxy_provider_id)
+            or bool(self.extra_proxy_provider_ids)
+        )
+        if self.target_port == NO_PORT and forwarded:
+            raise ValueError(
+                "A port is required when a proxy or a tunnel forwards to the service "
+                "(0 is only for a service published in DNS alone)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_hostname_length(self):
         # A rule about the pair, so it cannot live on either field: a 250-character
         # subdomain and a 10-character domain are each acceptable on their own and the name
@@ -761,6 +801,28 @@ class ServiceIn(BaseModel):
 
 class ServicePreflightIn(ServiceIn):
     service_id: int | None = None
+
+
+class ServiceLabelsIn(BaseModel):
+    """What `PATCH /api/services/{sid}` changes: what a service carries, not what it publishes.
+
+    Found in production on 2026-09-22 (the `PUT` was not tried there) and read in the code:
+    nothing could put a tag on an existing service except a `PUT` carrying the whole service,
+    and a `PUT` pushes. On a tunnel service that push rewrites the ingress rule, so labelling
+    a row was, seen from the API, the same act as republishing its route. These three fields
+    live in Vauxtra's own tables and nowhere else.
+
+    A field left out, or sent as null, stays as it is. A list replaces the stored one, as it
+    does on the `PUT`: `tag_ids: [3]` on a service carrying 1 and 2 leaves it carrying 3
+    alone. Any other key is a 422, like `ServiceIn`, so a routing field sent here by mistake
+    is refused instead of looking saved.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tag_ids:         list[int] | None = None
+    environment_ids: list[int] | None = None
+    icon_url:        str | None       = None
 
 
 @router.get("/api/services/public-target/suggest")
@@ -879,11 +941,13 @@ def services_history(request: Request):
     return result
 
 
-@router.get("/api/services/{sid}")
-def get_service(sid: int, request: Request):
-    """Return one service with provider metadata, tags, environments and push targets."""
-    require_auth(request)
-    conn = get_db()
+def _service_detail(conn, sid: int) -> dict | None:
+    """One service as `GET /api/services/{sid}` answers it, or None when there is no such row.
+
+    Read on the caller's connection, which stays open. The update route and the label route
+    both answer with the service they have just written; the first used to carry its own
+    copy of these queries.
+    """
     row = conn.execute(
         """
         SELECT s.*,
@@ -898,10 +962,8 @@ def get_service(sid: int, request: Request):
         """,
         (sid,),
     ).fetchone()
-
     if not row:
-        conn.close()
-        raise HTTPException(404, "Service not found")
+        return None
 
     push_targets_rows = conn.execute(
         """
@@ -918,7 +980,6 @@ def get_service(sid: int, request: Request):
         (sid,),
     ).fetchall()
     tags_for_service, envs_for_service = labels_by_service(conn, [sid])
-    conn.close()
 
     service = row_to_service(
         row, tags_for_service.get(sid, []), envs_for_service.get(sid, [])
@@ -940,6 +1001,77 @@ def get_service(sid: int, request: Request):
     service["extra_dns_provider_ids"] = [
         t["provider_id"] for t in push_targets if t["role"] == "dns"
     ]
+    return service
+
+
+@router.get("/api/services/{sid}")
+def get_service(sid: int, request: Request):
+    """Return one service with provider metadata, tags, environments and push targets."""
+    require_auth(request)
+    conn = get_db()
+    service = _service_detail(conn, sid)
+    conn.close()
+    if service is None:
+        raise HTTPException(404, "Service not found")
+    return service
+
+
+@router.patch("/api/services/{sid}")
+def update_service_labels(sid: int, request: Request, body: ServiceLabelsIn):
+    """Change a service's tags, environments or icon, and call no provider at all.
+
+    Not the proxy, not the DNS server, not the tunnel: the three fields are written to
+    Vauxtra's own tables and the route answers from them. `PUT` is the route that publishes,
+    and it still does on every call, so a change that is only a label comes here. The answer
+    is the service as `GET` gives it; there is no `errors` key because nothing outside the
+    database was asked.
+
+    404 when the service does not exist, 400 when the body names none of the three fields or
+    an id that names no row (and then nothing is written), 422 for any other key.
+    """
+    require_auth(request, scope="write")
+    conn = get_db()
+    row = conn.execute(
+        "SELECT subdomain, domain, expose_mode, tunnel_hostname FROM services WHERE id=?", (sid,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Service not found")
+
+    changed = [
+        name
+        for name, value in (
+            ("tags", body.tag_ids),
+            ("environments", body.environment_ids),
+            ("icon", body.icon_url),
+        )
+        if value is not None
+    ]
+    if not changed:
+        conn.close()
+        raise HTTPException(400, "Nothing to change -- send tag_ids, environment_ids or icon_url")
+
+    unknown = _unknown_ids(conn, "tags", body.tag_ids or [], "tag") + _unknown_ids(
+        conn, "environments", body.environment_ids or [], "environment"
+    )
+    if unknown:
+        conn.close()
+        raise HTTPException(400, f"Nothing was changed -- unknown {', '.join(unknown)}")
+
+    if body.tag_ids is not None:
+        set_tags(conn, sid, body.tag_ids)
+    if body.environment_ids is not None:
+        set_environments(conn, sid, body.environment_ids)
+    if body.icon_url is not None:
+        conn.execute("UPDATE services SET icon_url=? WHERE id=?", (body.icon_url, sid))
+    public_host = _service_public_hostname(
+        row["expose_mode"] or "proxy_dns", row["tunnel_hostname"] or "", row["subdomain"], row["domain"]
+    )
+    add_log("info", f"Service labels updated: {public_host} ({', '.join(changed)}), no provider called", conn)
+    conn.commit()
+
+    service = _service_detail(conn, sid)
+    conn.close()
     return service
 
 
@@ -988,6 +1120,25 @@ def _hostname_taken(conn, public_host: str, exclude_id: int | None = None) -> st
     )
 
 
+def _unknown_ids(conn, table: str, ids, label: str) -> list[str]:
+    """`"<label> <id>"` for every id in `ids` that names no row of `table`, in id order.
+
+    Every id is asked about, 0 included. Tag and environment ids used to go through `if i`
+    first, which is right for a provider column, where 0 means none, and wrong for a label
+    list, where it names nothing: `tag_ids: [0]` passed the check, the providers were
+    called, and `set_tags` then failed on the foreign key with a 500.
+    """
+    wanted = sorted({int(i) for i in ids})
+    if not wanted:
+        return []
+    marks = ",".join("?" * len(wanted))
+    found = {
+        r["id"]
+        for r in conn.execute(f"SELECT id FROM {table} WHERE id IN ({marks})", tuple(wanted))
+    }
+    return [f"{label} {i}" for i in wanted if i not in found]
+
+
 def _unknown_references(conn, body: ServiceIn) -> list[str]:
     """Name every id in the payload that points at nothing.
 
@@ -1001,29 +1152,16 @@ def _unknown_references(conn, body: ServiceIn) -> list[str]:
     Checking here costs one query per kind and turns that 500-and-an-orphan into a 400 that
     names the offending id, before anything reaches a provider.
     """
-    unknown: list[str] = []
-
-    def _check(table: str, ids, label: str) -> None:
-        wanted = sorted({int(i) for i in ids if i})
-        if not wanted:
-            return
-        marks = ",".join("?" * len(wanted))
-        found = {
-            r["id"]
-            for r in conn.execute(f"SELECT id FROM {table} WHERE id IN ({marks})", tuple(wanted))
-        }
-        unknown.extend(f"{label} {i}" for i in wanted if i not in found)
-
-    _check("tags", body.tag_ids or [], "tag")
-    _check("environments", body.environment_ids or [], "environment")
-    _check(
-        "providers",
-        [body.proxy_provider_id, body.dns_provider_id, body.tunnel_provider_id]
-        + list(body.extra_proxy_provider_ids or [])
-        + list(body.extra_dns_provider_ids or []),
-        "provider",
+    providers = [
+        body.proxy_provider_id, body.dns_provider_id, body.tunnel_provider_id,
+        *(body.extra_proxy_provider_ids or []), *(body.extra_dns_provider_ids or []),
+    ]
+    return (
+        _unknown_ids(conn, "tags", body.tag_ids or [], "tag")
+        + _unknown_ids(conn, "environments", body.environment_ids or [], "environment")
+        # A provider id of 0 or None is the absence of one, not an id.
+        + _unknown_ids(conn, "providers", [p for p in providers if p], "provider")
     )
-    return unknown
 
 
 @router.post("/api/services", status_code=201)
@@ -1244,6 +1382,23 @@ def add_service(request: Request, body: ServiceIn):
     return JSONResponse({"id": sid, "fqdn": public_host, "errors": errors}, status_code=201 if not errors else 207)
 
 
+def _dns_record_kept(dns, host: str, answer: str) -> bool:
+    """Whether `dns` still holds `host` -> `answer` after refusing to delete it.
+
+    A refused `delete_rewrite` is not always a record left behind. The Cloudflare one
+    answers False when nothing matched, and a disabled service is withdrawn again on every
+    edit, long after the first withdrawal took its record. Only the listing tells the two
+    apart. A listing that fails tells nothing, and that counts as kept: "withdrawn" is
+    the one claim nothing here has established.
+    """
+    wanted = (answer or "").strip().rstrip(".").lower()
+    try:
+        held = _records_named(dns, host)
+    except Exception:
+        return True
+    return any(str(r.get("answer") or "").strip().rstrip(".").lower() == wanted for r in held)
+
+
 @router.put("/api/services/{sid}")
 def update_service(sid: int, request: Request, body: ServiceIn):
     require_auth(request, scope="write")
@@ -1346,11 +1501,21 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             # PUT without ever reading `enabled`: a request that disabled a service used to
             # re-publish the very route it was meant to cut. The configuration stays in
             # Vauxtra and is published again on re-enable.
+            #
+            # Cloudflare Tunnel reports a refusal by answering False, not by raising, and
+            # that answer was dropped here: the journal read "withdrawn", `errors` stayed
+            # empty, and the interface showed the service off while the tunnel went on
+            # serving its hostname. The bulk route already read it.
             try:
-                create_provider(tunnel_row).delete_host(new_public_host)
-                add_log("info", f"Tunnel route withdrawn (service disabled): {new_public_host}")
+                if create_provider(tunnel_row).delete_host(new_public_host):
+                    add_log(
+                        "info", f"Tunnel route withdrawn (service disabled): {new_public_host}"
+                    )
+                else:
+                    errors.append("Failed to withdraw the tunnel route on disable")
+                    add_log("error", f"Tunnel route still published: {new_public_host}")
             except Exception as e:
-                errors.append(str(e))
+                errors.append(redact_query_secrets(str(e)))
             if old_mode == "tunnel" and old["tunnel_provider_id"] and (
                 old["tunnel_provider_id"] != body.tunnel_provider_id
                 or old_public_host != new_public_host
@@ -1360,9 +1525,15 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                 old_tunnel_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["tunnel_provider_id"],)).fetchone()
                 if old_tunnel_row:
                     try:
-                        create_provider(old_tunnel_row).delete_host(old_public_host)
+                        if not create_provider(old_tunnel_row).delete_host(old_public_host):
+                            errors.append(
+                                f"Failed to withdraw the previous tunnel route: {old_public_host}"
+                            )
+                            add_log("error", f"Tunnel route still published: {old_public_host}")
                     except Exception as e:
                         add_log("warn", f"Could not withdraw the previous tunnel route: {e}")
+                        reason = redact_query_secrets(str(e))
+                        errors.append(f"Could not withdraw the previous tunnel route: {reason}")
         else:
             try:
                 tunnel = create_provider(tunnel_row)
@@ -1488,11 +1659,28 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                     targets = {(new_public_host, dns_ip)}
                     if old_mode == "proxy_dns" and old["dns_provider_id"] == body.dns_provider_id and old_dns_ip:
                         targets.add((old_public_host, old_dns_ip))
+                    # Each answer was dropped here, and an exception reached the journal
+                    # alone: a DNS server that refused left the hostname resolving, with no
+                    # error in the answer and the service shown as off. A refusal is read
+                    # against the listing before it is reported -- see `_dns_record_kept`.
+                    withheld = True
                     for record_host, record_ip in sorted(targets):
-                        dns.delete_rewrite(record_host, record_ip)
-                    add_log("info", f"DNS record withheld (service disabled): {new_public_host}")
+                        if dns.delete_rewrite(record_host, record_ip):
+                            continue
+                        if _dns_record_kept(dns, record_host, record_ip):
+                            withheld = False
+                            errors.append(
+                                f"Failed to withdraw the DNS record on disable: {record_host}"
+                            )
+                            add_log("error", f"DNS record still published: {record_host}")
+                    if withheld:
+                        add_log(
+                            "info", f"DNS record withheld (service disabled): {new_public_host}"
+                        )
                 except Exception as e:
                     add_log("warn", f"Could not withdraw the DNS record of a disabled service: {e}")
+                    reason = redact_query_secrets(str(e))
+                    errors.append(f"Could not withdraw the DNS record on disable: {reason}")
         elif body.dns_provider_id and dns_ip:
             dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
             if dns_row:
@@ -1563,6 +1751,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
              new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
              stored_dns_ip, next_npm_host_id, body.icon_url, sid),
         )
+        # The last probe of a service that no longer has a port measured a port it no
+        # longer names. Nothing probes it from now on, so an "error" left standing would
+        # be the last word about it forever.
+        if body.target_port == NO_PORT:
+            conn.execute("UPDATE services SET status='unknown' WHERE id=?", (sid,))
     except sqlite3.IntegrityError:
         refusal = _hostname_taken(conn, new_public_host, exclude_id=sid)
         conn.close()
@@ -1753,53 +1946,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     # said nothing about it -- the one place an operator looks to find out what Vauxtra did.
     conn.commit()
 
-    row = conn.execute("""
-        SELECT s.*,
-               dp.name AS dns_provider_name, dp.type AS dns_type,
-               pp.name AS proxy_provider_name, pp.type AS proxy_type,
-             tp.name AS tunnel_provider_name, tp.type AS tunnel_type
-        FROM services s
-        LEFT JOIN providers dp ON s.dns_provider_id  = dp.id
-        LEFT JOIN providers pp ON s.proxy_provider_id = pp.id
-         LEFT JOIN providers tp ON s.tunnel_provider_id = tp.id
-        WHERE s.id=?""", (sid,)).fetchone()
-    push_targets_rows = conn.execute(
-        """
-        SELECT spt.role,
-               p.id AS provider_id,
-               p.name AS provider_name,
-               p.type AS provider_type,
-               p.enabled AS provider_enabled
-        FROM service_push_targets spt
-        JOIN providers p ON p.id = spt.provider_id
-        WHERE spt.service_id=?
-        ORDER BY p.name
-        """,
-        (sid,),
-    ).fetchall()
-    tags_for_service, envs_for_service = labels_by_service(conn, [sid])
+    service = _service_detail(conn, sid)
     conn.close()
-
-    service = row_to_service(
-        row, tags_for_service.get(sid, []), envs_for_service.get(sid, [])
-    )
-    push_targets = [
-        {
-            "role": t["role"],
-            "provider_id": t["provider_id"],
-            "provider_name": t["provider_name"],
-            "provider_type": t["provider_type"],
-            "provider_enabled": bool(t["provider_enabled"]),
-        }
-        for t in push_targets_rows
-    ]
-    service["push_targets"] = push_targets
-    service["extra_proxy_provider_ids"] = [
-        t["provider_id"] for t in push_targets if t["role"] == "proxy"
-    ]
-    service["extra_dns_provider_ids"] = [
-        t["provider_id"] for t in push_targets if t["role"] == "dns"
-    ]
 
     return {**service, "errors": errors}
 
@@ -1907,13 +2055,18 @@ def _check_one(sid: int) -> dict:
 
     status     = "unknown"
     latency_ms = None
+    # A service without a port is a name in DNS and nothing more: there is no connection to
+    # open, and a probe of port 0 would only write "down" into its history. Its name is
+    # still resolved below, which is the one thing about it that can be checked.
+    tested     = int(svc["target_port"] or 0) != NO_PORT
     start      = time.monotonic()
-    try:
-        with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
-            status     = "ok"
-            latency_ms = round((time.monotonic() - start) * 1000, 1)
-    except OSError:
-        status = "error"
+    if tested:
+        try:
+            with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
+                status     = "ok"
+                latency_ms = round((time.monotonic() - start) * 1000, 1)
+        except OSError:
+            status = "error"
 
     public_host = _service_public_hostname(
         (svc["expose_mode"] or "proxy_dns").strip().lower(),
@@ -1929,18 +2082,28 @@ def _check_one(sid: int) -> dict:
     except socket.gaierror:
         dns_resolved = []
 
-    conn.execute(
-        "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-        (status, sid),
-    )
-    conn.execute(
-        "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-        (sid, status),
-    )
+    if tested:
+        conn.execute(
+            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
+            (status, sid),
+        )
+        conn.execute(
+            "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+            (sid, status),
+        )
+    else:
+        conn.execute("UPDATE services SET status='unknown' WHERE id=?", (sid,))
     conn.commit()
     conn.close()
-    add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
-    return {"id": sid, "status": status, "latency_ms": latency_ms, "dns_resolved": dns_resolved}
+    if tested:
+        add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
+    return {
+        "id": sid,
+        "status": status,
+        "latency_ms": latency_ms,
+        "dns_resolved": dns_resolved,
+        "tested": tested,
+    }
 
 
 @router.post("/api/services/{sid}/check")
@@ -1978,8 +2141,16 @@ def check_all(request: Request):
     # the LATENCY column.
     results: list[dict] = []
 
+    skipped_tunnel = skipped_no_port = 0
     for svc in services:
+        # Tunnels are checked through their provider, and a service without a port has
+        # nothing to connect to: neither is probed. They are counted apart because the panel
+        # says why a service was left out, and the two reasons have nothing in common.
         if (svc["expose_mode"] or "").strip().lower() == "tunnel":
+            skipped_tunnel += 1
+            continue
+        if not svc["target_port"]:
+            skipped_no_port += 1
             continue
         status     = "unknown"
         latency_ms = None
@@ -2012,10 +2183,13 @@ def check_all(request: Request):
         f"Manual check of {plural(len(results), 'service')}: {ok_count} ok, {error_count} error",
     )
     return {
-        "checked": len(services),
-        "ok":      ok_count,
-        "error":   error_count,
-        "results": results,
+        "checked":         len(services),
+        "ok":              ok_count,
+        "error":           error_count,
+        "skipped":         skipped_tunnel + skipped_no_port,
+        "skipped_tunnel":  skipped_tunnel,
+        "skipped_no_port": skipped_no_port,
+        "results":         results,
     }
 
 
@@ -2169,8 +2343,17 @@ def bulk_action(body: _BulkActionBody, request: Request):
                             dns.add_rewrite(pub, svc["dns_ip"])
                             add_log("info", f"DNS re-added on enable: {pub} → {svc['dns_ip']}", conn)
                         else:
-                            dns.delete_rewrite(pub, svc["dns_ip"])
-                            add_log("info", f"DNS removed on disable: {pub}", conn)
+                            # Same reading as `update_service`: the answer was dropped, and
+                            # a refusal is read against the listing before it is reported.
+                            if dns.delete_rewrite(pub, svc["dns_ip"]) or not _dns_record_kept(
+                                dns, pub, svc["dns_ip"]
+                            ):
+                                add_log("info", f"DNS removed on disable: {pub}", conn)
+                            else:
+                                errors.append(
+                                    f"Service {sid_b}: failed to withdraw the DNS record"
+                                )
+                                add_log("error", f"DNS record still published: {pub}", conn)
                 except Exception as e:
                     errors.append(f"Service {sid_b}: DNS state error — {e}")
 

@@ -56,7 +56,7 @@ def create_service(
     subdomain: str,
     domain: str,
     target_ip: str,
-    target_port: Annotated[int, Field(ge=1, le=65535)],
+    target_port: Annotated[int, Field(ge=0, le=65535)],
     forward_scheme: Literal["http", "https"] = "http",
     expose_mode: Literal["proxy_dns", "tunnel"] = "proxy_dns",
     proxy_provider_id: int | None = None,
@@ -74,6 +74,10 @@ def create_service(
 
     expose_mode: 'proxy_dns' for NPM/Traefik + DNS, 'tunnel' for Cloudflare Tunnel.
     public_target_mode: 'manual' (use dns_ip) or 'auto' (detect WAN IP).
+
+    target_port 0 is a service published in DNS alone -- a machine's A record, a VPN
+    endpoint -- which nothing forwards to and nothing probes. It is refused with a proxy or
+    in tunnel mode, since both forward to a port.
 
     tag_ids and environment_ids attach labels. Both default to none, and every id has to
     name a row that exists: `list_tags` and `list_environments` are where they come from,
@@ -129,7 +133,7 @@ def create_service(
 def update_service(
     service_id: int,
     target_ip: str | None = None,
-    target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
+    target_port: Annotated[int, Field(ge=0, le=65535)] | None = None,
     forward_scheme: Literal["http", "https"] | None = None,
     subdomain: str | None = None,
     domain: str | None = None,
@@ -152,6 +156,10 @@ def update_service(
     replaces rather than merges. So `tag_ids=[3]` on a service carrying 1 and 2 leaves it
     carrying 3 alone, and `tag_ids=[]` strips every label. Read the service back with
     `get_service` and send its ids plus the new one to add rather than replace.
+
+    To change labels and nothing else, use `set_service_labels`. This tool sends the
+    whole service back through `PUT`, which publishes it again on its proxy or tunnel,
+    and a label is not something any provider holds.
 
     `forward_scheme` carries the same `Literal` as `create_service`: the route validates
     the merged body with `ServiceIn`, so an override it refuses fails the whole update,
@@ -189,6 +197,44 @@ def update_service(
 
 
 @mcp.tool()
+def set_service_labels(
+    service_id: int,
+    tag_ids: list[int] | None = None,
+    environment_ids: list[int] | None = None,
+    icon_url: str | None = None,
+) -> dict[str, Any]:
+    """Set a service's tags, environments or icon, and call no provider to do it.
+
+    These three are Vauxtra's own metadata: no proxy host, DNS record or tunnel rule carries
+    them. `update_service` sends the whole service back through `PUT`, which publishes it
+    again on its proxy or tunnel, so a tag change rewrote the tunnel rule as well, and the
+    tunnel provider used to rebuild that rule with its origin settings (`noTLSVerify` among
+    them) cleared. This tool goes through `PATCH /api/services/{id}`, which writes the three
+    columns and nothing else.
+
+    An argument left out, or None, keeps what the service has. A list replaces the whole set
+    rather than adding to it: `tag_ids=[3]` on a service carrying 1 and 2 leaves it carrying
+    3 alone, `tag_ids=[]` strips every tag, and `icon_url=""` removes the icon. To add a tag,
+    read the service with `get_service` and send its ids plus the new one.
+
+    Refused with nothing written: 400 when no argument is given, 400 naming every id that
+    matches no tag or environment (`list_tags` and `list_environments` are where they come
+    from), 404 for a service that does not exist. The answer is the service as `get_service`
+    returns it, with no `errors` key, because no provider was asked anything.
+    """
+    payload: dict[str, Any] = {}
+    if tag_ids is not None:
+        payload["tag_ids"] = tag_ids
+    if environment_ids is not None:
+        payload["environment_ids"] = environment_ids
+    if icon_url is not None:
+        payload["icon_url"] = icon_url
+    r = client.patch(f"/services/{service_id}", json=payload)
+    client.check(r)
+    return r.json()
+
+
+@mcp.tool()
 def delete_service(service_id: int) -> dict[str, Any]:
     """Delete a service and take its routes down from every provider that held one.
 
@@ -208,11 +254,16 @@ def toggle_service(service_id: int, enabled: bool) -> dict[str, Any]:
     """Enable or disable a service without removing its configuration.
 
     The answer carries an `errors` list, and on this tool it is the part that matters most.
-    Disabling a service does not only flip a flag: a tunnel-mode service is exposed by its
-    ingress rule alone, so the route withdraws that rule, and a proxy-mode one has its host
-    updated at the provider. The database row is written either way. If the provider refused
-    or was unreachable, the sentence lands in `errors` and nowhere else -- Vauxtra shows the
-    service as disabled while its public hostname is still live and still serving traffic.
+    Disabling a service does not only flip a flag. A tunnel-mode service loses its ingress
+    rule. A proxy-mode one has its proxy host suspended, or deleted where the provider has
+    no suspension, and its DNS record withdrawn; on the extra proxies and DNS servers it is
+    also published on, the host and the record are deleted. Enabling puts them back. The
+    database row is written either way, so a withdrawal that failed leaves the service off
+    in Vauxtra while its public hostname is still live and still serving traffic.
+
+    A withdrawal the provider refused lands in `errors`, and so does an error raised by the
+    tunnel or the DNS server. An error raised by the service's proxy provider does not: it
+    is written to the journal (`get_logs`) as a warning and appears nowhere in this answer.
     A non-empty `errors` after disabling means the service is off in Vauxtra and still
     reachable from the internet; say so rather than reporting the toggle done.
     """
@@ -230,7 +281,17 @@ def sync_services_from_providers() -> dict[str, Any]:
     Discover existing services from all enabled providers.
 
     Returns proxy_hosts (from NPM, Zoraxy, Traefik, Cloudflare Tunnel) and dns_rewrites
-    (from Pi-hole, AdGuard, Cloudflare DNS) that can be imported into Vauxtra.
+    (from Pi-hole, AdGuard, Cloudflare DNS) that can be imported into Vauxtra, plus:
+      providers        one line per integration asked, in the order they were added:
+                       id, name, type, ok, count, and when ok is false the error (its
+                       routes are missing from this scan, the rest is not a full picture);
+      declared_domains the domains declared in Settings > DNS domains.
+
+    Every row carries _zone (the zone its name is filed under) and _declared (whether that
+    zone is a declared domain). A DNS token can read zones the operator never declared:
+    import the rows whose _declared is true unless told otherwise. A name answered by two
+    integrations appears once per integration; the import keeps the first and refuses the
+    others by name.
     """
     r = client.post("/services/sync")
     client.check(r)
@@ -248,8 +309,10 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
       imported (int)      new services created;
       linked   (int)      existing services that gained the DNS half they were missing;
       skipped  (list[str]) rows passed over on purpose, nothing is wrong with them: a name
-                          Vauxtra already tracks, or the 2nd..Nth name of a proxy host that
-                          answers for several, since a service carries one name;
+                          Vauxtra already tracks (a link never replaces the DNS half a
+                          service already has, and a tunnel service takes none), or the
+                          2nd..Nth name of a proxy host that answers for several, since a
+                          service carries one name;
       errors   (list[str]) rows that are wrong and that the operator has somewhere to fix.
 
     A skipped list is not a failure: re-importing a scan Vauxtra already knows fills it and

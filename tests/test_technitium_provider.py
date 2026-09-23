@@ -150,7 +150,7 @@ class TestTechnitiumListRewrites(unittest.TestCase):
 
         self.provider.session.get = MagicMock(side_effect=mock_get)
         result = self.provider.list_rewrites()
-        self.assertEqual(result, [{"domain": "myapp.home.local", "answer": "192.168.1.10"}])
+        self.assertEqual(result, [{"domain": "myapp.home.local", "answer": "192.168.1.10", "zone": "home.local"}])
 
     def test_list_rewrites_skips_disabled(self) -> None:
         def mock_get(url: str, params: dict | None = None, **kwargs) -> MagicMock:

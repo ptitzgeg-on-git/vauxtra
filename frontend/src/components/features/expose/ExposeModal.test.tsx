@@ -19,10 +19,10 @@
  */
 
 import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
-import type { Provider, Service } from '@/types/api';
+import type { Environment, PreflightResult, Provider, Service, Tag } from '@/types/api';
 
 const PROXY: Provider = {
   id: 7,
@@ -64,6 +64,16 @@ const SERVICE: Service = {
   environments: [],
 };
 
+/** The labels the instance offers. */
+const TAGS: Tag[] = [
+  { id: 1, name: 'prod', color: '' },
+  { id: 2, name: 'media', color: '' },
+];
+const ENVIRONMENTS: Environment[] = [
+  { id: 5, name: 'staging', color: '' },
+  { id: 6, name: 'lab', color: '' },
+];
+
 /** How the suggestion answers: with an address, with none, with a failure, or never. */
 type Answer = 'address' | 'nothing' | 'fails' | 'never';
 
@@ -82,6 +92,14 @@ function suggestion(): Promise<unknown> {
   });
 }
 
+/** A preflight with nothing to report, so the review step has a summary to read. */
+const PREFLIGHT: PreflightResult = {
+  ok: true,
+  public_host: 'grafana.example.test',
+  checks: [],
+  summary: { blocking_failures: 0, warnings: 0, total: 0 },
+};
+
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn((path: string) => {
@@ -89,15 +107,19 @@ vi.mock('@/api/client', () => ({
       if (path === '/providers') return Promise.resolve([PROXY, DNS]);
       if (path === '/providers/types') return Promise.resolve({});
       if (path === '/domains') return Promise.resolve(['example.test']);
+      if (path === '/tags') return Promise.resolve(TAGS);
+      if (path === '/environments') return Promise.resolve(ENVIRONMENTS);
       return Promise.resolve([]);
     }),
-    post: vi.fn(() => Promise.resolve({ ok: true })),
+    post: vi.fn((path: string) => Promise.resolve(path === '/services/preflight' ? PREFLIGHT : { ok: true })),
     put: vi.fn(() => Promise.resolve({ ok: true })),
+    patch: vi.fn(() => Promise.resolve(SERVICE)),
     delete: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }));
 
 const { ExposeModal, withHostHighlighted } = await import('./ExposeModal');
+const { api } = await import('@/api/client');
 
 const show = () =>
   renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={SERVICE} />);
@@ -205,6 +227,186 @@ describe('ExposeModal, once a target is typed by hand', () => {
     // The automatic-update switch below reads the same lookup, so the failure still
     // describes something the operator is about to decide on.
     expect(unreadAlert()).not.toBeNull();
+  });
+});
+
+/**
+ * A route without a port, sent from the form.
+ *
+ * `validate_port_when_forwarded` (`app/api/services.py`) takes port 0 only for a name
+ * published in DNS alone: a proxy host or a tunnel rule pointed at it is a route to nowhere.
+ * The form required a port in every mode, so the one route that has none could not be
+ * saved, and the 0 of a saved one came back as 80.
+ */
+describe('ExposeModal, a route without a port', () => {
+  const DNS_ONLY: Service = {
+    ...SERVICE,
+    target_port: 0,
+    proxy_provider_id: null,
+    public_target_mode: 'manual',
+    auto_update_dns: false,
+    dns_ip: '203.0.113.5',
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.post).mockClear();
+  });
+
+  it('sends a route published in DNS alone to the checks with no port', async () => {
+    renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={DNS_ONLY} />);
+    await targetField();
+    await userEvent.click(continueButton());
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/services/preflight', expect.objectContaining({ target_port: 0 })),
+    );
+    expect(screen.queryByText('expose.validation.port_required')).toBeNull();
+  });
+
+  it('refuses a route behind a proxy that has no port', async () => {
+    renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={{ ...SERVICE, target_port: 0 }} />);
+    await targetField();
+    // Submitted directly: a click stops at the browser's own `required` on the empty field
+    // first, and this is the rule behind it, the one the API applies.
+    const button = continueButton();
+    if (!(button instanceof HTMLButtonElement) || !button.form) throw new Error('Continue is not tied to the form');
+    fireEvent.submit(button.form);
+
+    expect(await screen.findByText('expose.validation.port_required')).not.toBeNull();
+    expect(api.post).not.toHaveBeenCalledWith('/services/preflight', expect.anything());
+  });
+});
+
+/**
+ * A change of tags or environments, and nothing else, saved without the checks and the push.
+ *
+ * Found in production on 2026-09-22 and confirmed in the code: no API route set a label
+ * alone, so the only way to label a route was the whole wizard, whose last step is a `PUT`
+ * that publishes the route again. That was not tried there, on purpose: a tag cost a round
+ * of provider calls, and on a tunnel it rewrote the rule, which came back without its origin
+ * settings. No provider holds a label, so an edit that moves labels alone is one `PATCH`,
+ * sent from the first step, with the keys that moved.
+ */
+describe('ExposeModal, an edit that only changes labels', () => {
+  const LABELLED: Service = { ...SERVICE, tags: TAGS.slice(0, 1) };
+
+  const open = (service: Service = LABELLED) =>
+    renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={service} />);
+
+  /** A tag or an environment, once the list it belongs to has loaded. */
+  const chip = async (group: string, name: string) =>
+    within(await screen.findByRole('group', { name: group })).findByRole('button', { name });
+
+  const saveLabelsButton = () => screen.queryByRole('button', { name: 'expose.labels_only.save' });
+
+  const saveLabels = async () => {
+    const button = saveLabelsButton();
+    if (!button) throw new Error('the form offers no labels-only save');
+    await userEvent.click(button);
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.post).mockClear();
+    vi.mocked(api.put).mockClear();
+    vi.mocked(api.patch).mockClear();
+  });
+
+  it('saves a tag with one PATCH, and runs neither the checks nor the push', async () => {
+    open();
+    await userEvent.click(await chip('expose.field.tags', 'media'));
+
+    // The line under the title stops promising the push, and says it once: `getByText`
+    // throws on a second copy, so a footer that repeated it would fail here.
+    expect(screen.getByText('expose.labels_only.hint')).not.toBeNull();
+    expect(screen.queryByText('expose.description.edit')).toBeNull();
+
+    await saveLabels();
+
+    expect(await screen.findByText('expose.done.labels_title')).not.toBeNull();
+    // The receipt says no provider was contacted; the line above it must not say otherwise.
+    expect(screen.queryByText('expose.description.edit')).toBeNull();
+    expect(api.patch).toHaveBeenCalledTimes(1);
+    expect(api.patch).toHaveBeenCalledWith('/services/42', { tag_ids: [1, 2] });
+    expect(api.post).not.toHaveBeenCalled();
+    expect(api.put).not.toHaveBeenCalled();
+
+    // Configure is ticked. Review never ran, so it keeps its number rather than a tick.
+    const steps = within(screen.getByRole('list', { name: 'expose.steps.label' }));
+    expect(steps.queryByText('1')).toBeNull();
+    expect(steps.getByText('2')).not.toBeNull();
+  });
+
+  it('sends only the half that moved', async () => {
+    open();
+    await userEvent.click(await chip('expose.field.environments', 'staging'));
+    await saveLabels();
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/services/42', { environment_ids: [5] }));
+  });
+
+  it('sends a label that travels with a route change through the checks, as before', async () => {
+    open();
+    expect(await screen.findByText(FOUND)).not.toBeNull();
+    await userEvent.click(await chip('expose.field.tags', 'media'));
+    const port = screen.getByRole('textbox', { name: /^expose\.field\.port/ });
+    await userEvent.clear(port);
+    await userEvent.type(port, '3001');
+
+    expect(saveLabelsButton()).toBeNull();
+    expect(screen.getByText('expose.description.edit')).not.toBeNull();
+    expect(screen.queryByText('expose.labels_only.hint')).toBeNull();
+    await userEvent.click(continueButton());
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        '/services/preflight',
+        expect.objectContaining({ tag_ids: [1, 2], target_port: 3001 }),
+      ),
+    );
+    expect(api.patch).not.toHaveBeenCalled();
+  });
+
+  it('keeps an untouched form on Continue, because saving it unchanged publishes it again', async () => {
+    open();
+    await chip('expose.field.tags', 'prod');
+
+    expect(continueButton()).not.toBeNull();
+    expect(saveLabelsButton()).toBeNull();
+    expect(screen.queryByText('expose.labels_only.hint')).toBeNull();
+    expect(screen.getByText('expose.description.edit')).not.toBeNull();
+  });
+
+  it('does not count a tag unticked and ticked again as a change', async () => {
+    open({ ...SERVICE, tags: TAGS });
+    await userEvent.click(await chip('expose.field.tags', 'prod'));
+    expect(saveLabelsButton()).not.toBeNull();
+
+    // Back in the list, at the end of it this time: [2, 1] against the [1, 2] it was saved with.
+    await userEvent.click(await chip('expose.field.tags', 'prod'));
+    expect(saveLabelsButton()).toBeNull();
+    expect(continueButton()).not.toBeNull();
+  });
+
+  it('saves while the public-target lookup is failing, which only the route depends on', async () => {
+    suggestAnswer = 'fails';
+    open();
+    expect(await screen.findByText('expose.detect_unread')).not.toBeNull();
+    await userEvent.click(await chip('expose.field.tags', 'media'));
+    await saveLabels();
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/services/42', { tag_ids: [1, 2] }));
+    expect(screen.queryByText('expose.validation.auto_target_unread')).toBeNull();
+  });
+
+  it('stays on the form and says why when the save is refused', async () => {
+    vi.mocked(api.patch).mockRejectedValueOnce(new Error('service 42 is gone'));
+    open();
+    await userEvent.click(await chip('expose.field.tags', 'media'));
+    await saveLabels();
+
+    // In the banner: `renderWithProviders` mounts no toaster, so this is the only copy.
+    expect(await screen.findByText('service 42 is gone')).not.toBeNull();
+    expect(screen.queryByText('expose.done.labels_title')).toBeNull();
+    expect(saveLabelsButton()).not.toBeNull();
   });
 });
 
