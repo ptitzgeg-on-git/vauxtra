@@ -14,8 +14,8 @@ consistent and neither has read the other.
 
 What it reads
 -------------
-Every `api.post(...)` / `api.put(...)` under `frontend/src` that carries a body, with the
-key set resolved by binding names the way the language binds them:
+Every `api.post(...)`, `api.put(...)` or `api.patch(...)` under `frontend/src` that carries a
+body, with the key set resolved by binding names the way the language binds them:
 
   * an inline object literal, `...spread` included, resolved recursively;
   * an identifier bound by the innermost *enclosing* function's parameter list -- annotated
@@ -71,7 +71,7 @@ PANEL_ROOT = Path("frontend") / "src"
 # stops a cycle the `seen` sets miss from running forever.
 MAX_DEPTH = 8
 
-CALL = re.compile(r"\bapi\.(post|put)\s*(?:<[^(]*?>)?\s*\(")
+CALL = re.compile(r"\bapi\.(post|put|patch)\s*(?:<[^(]*?>)?\s*\(")
 IDENT = re.compile(r"^[A-Za-z_$][\w$]*$")
 CALL_HEAD = re.compile(r"^([A-Za-z_$][\w$]*)\s*\(")
 KEY = re.compile(r"^\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][\w$]*))\s*(?::|$)")
@@ -835,7 +835,7 @@ class PanelIndex:
 
 @dataclass
 class PanelCall:
-    """One `api.post` / `api.put` in the panel, with whatever could be read of its body."""
+    """One `api.post`, `api.put` or `api.patch` in the panel, and what could be read of its body."""
 
     file: str
     line: int
@@ -861,7 +861,7 @@ def route_path(url_expr: str) -> str | None:
 
 
 def collect_panel_calls(index: PanelIndex) -> list[PanelCall]:
-    """Every body-carrying `api.post` / `api.put` the panel makes."""
+    """Every body-carrying `api.post`, `api.put` or `api.patch` the panel makes."""
     calls: list[PanelCall] = []
     for src in index.sources:
         for m in CALL.finditer(src.code):

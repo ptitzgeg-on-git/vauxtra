@@ -43,6 +43,9 @@ export const api = {
   put<T = unknown>(url: string, data?: unknown, config?: Parameters<typeof _axios.put>[2]): Promise<T> {
     return _axios.put<T>(url, data, config) as unknown as Promise<T>;
   },
+  patch<T = unknown>(url: string, data?: unknown, config?: Parameters<typeof _axios.patch>[2]): Promise<T> {
+    return _axios.patch<T>(url, data, config) as unknown as Promise<T>;
+  },
   delete<T = unknown>(url: string, config?: Parameters<typeof _axios.delete>[1]): Promise<T> {
     return _axios.delete<T>(url, config) as unknown as Promise<T>;
   },
