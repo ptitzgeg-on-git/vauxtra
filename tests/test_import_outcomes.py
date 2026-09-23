@@ -208,9 +208,9 @@ class WhichRecordWinsIsWrittenDownTests(_IsolatedDB):
 
     Nothing in the repository used to fix it: the map was built by a comprehension, so the
     *last* record won, and the service silently carried that provider and that address into
-    every later `push_service`. `sync_services` selects providers with no `ORDER BY`, so
-    which record arrives first is not the repository's to promise -- but which of the two
-    *arrived* records is retained is, and it is the first.
+    every later `push_service`. Which of the two *arrived* records is retained is pinned
+    here, and it is the first. Which arrives first is pinned by `sync_services`, which asks
+    the integrations in the order they were added (`test_scan_zones.py`).
     """
 
     def test_the_first_record_is_the_one_kept_and_both_providers_are_named(self) -> None:
@@ -367,6 +367,79 @@ class ImportCountsTheLinkItWritesTests(_IsolatedDB):
         row = self._rows()[0]
         self.assertEqual(row["dns_provider_id"], 3, row)
         self.assertEqual(row["dns_ip"], "10.0.0.11", row)
+
+
+class ALinkNeverRepointsATrackedServiceTests(_IsolatedDB):
+    """A link fills the DNS half a service is missing. It never replaces the half it has.
+
+    "Quick import" sent the whole scan back, tracked names included, and the import linked
+    every DNS record whose name it already tracked. On a name two integrations answer for it
+    keeps the first record, so a tracked service whose DNS lived on AdGuard could be
+    re-pointed at whatever another integration held for the same name. Production had that
+    shape on 2026-09-22: a media server answering inside from AdGuard and outside from a
+    Cloudflare record that points somewhere else entirely.
+    """
+
+    def _seed(
+        self, *, mode: str = "proxy_dns", dns_provider_id: int | None = None, dns_ip: str = "",
+        tunnel_hostname: str = "",
+    ) -> None:
+        conn = models.get_db()
+        conn.execute(
+            """INSERT INTO services (subdomain, domain, target_ip, target_port, expose_mode,
+                                     dns_provider_id, dns_ip, tunnel_hostname)
+               VALUES ('jellyfin', 'vxlab.test', '10.0.0.6', 8096, ?, ?, ?, ?)""",
+            (mode, dns_provider_id, dns_ip, tunnel_hostname),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_a_service_that_has_its_dns_half_keeps_it(self) -> None:
+        self._seed(dns_provider_id=3, dns_ip="10.0.0.2")
+
+        result = sync_api.import_services(
+            _request(), {"dns_rewrites": [_dns("jellyfin.vxlab.test", "192.0.2.96", 1, "Technitium")]}
+        )
+
+        self.assertEqual((result["imported"], result["linked"], len(result["skipped"])), (0, 0, 1), result)
+        self.assertEqual(result["errors"], [], result)
+        row = self._rows()[0]
+        self.assertEqual((row["dns_provider_id"], row["dns_ip"]), (3, "10.0.0.2"), row)
+
+    def test_a_tunnel_service_gains_no_dns_provider(self) -> None:
+        """Its tunnel writes the record; a tunnel row stores no DNS provider at all."""
+        self._seed(mode="tunnel")
+
+        result = sync_api.import_services(
+            _request(), {"dns_rewrites": [_dns("jellyfin.vxlab.test", "abc.cfargotunnel.com")]}
+        )
+
+        self.assertEqual((result["linked"], len(result["skipped"])), (0, 1), result)
+        self.assertIsNone(self._rows()[0]["dns_provider_id"])
+
+    def test_a_tunnel_is_found_by_the_hostname_it_publishes(self) -> None:
+        """The record its tunnel wrote carries that hostname, not the subdomain and domain."""
+        self._seed(mode="tunnel", tunnel_hostname="media.vxlab.test")
+
+        result = sync_api.import_services(
+            _request(), {"dns_rewrites": [_dns("media.vxlab.test", "abc.cfargotunnel.com")]}
+        )
+
+        self.assertEqual((result["imported"], result["linked"], len(result["skipped"])), (0, 0, 1), result)
+        self.assertIn("through a tunnel", result["skipped"][0])
+        self.assertEqual(len(self._rows()), 1)
+
+    def test_a_service_missing_its_dns_half_is_still_linked(self) -> None:
+        """The witness: a guard that refused every link would pass the two tests above."""
+        self._seed()
+
+        result = sync_api.import_services(
+            _request(), {"dns_rewrites": [_dns("jellyfin.vxlab.test", "10.0.0.2", 3, "AdGuard")]}
+        )
+
+        self.assertEqual(result["linked"], 1, result)
+        row = self._rows()[0]
+        self.assertEqual((row["dns_provider_id"], row["dns_ip"]), (3, "10.0.0.2"), row)
 
 
 class EverySubmittedRowIsAccountedForTests(_IsolatedDB):

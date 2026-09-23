@@ -21,6 +21,7 @@
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
 import { ThemeProvider } from '@/theme';
 import type { ProviderItem, SyncResult } from '@/components/features/setup';
@@ -57,6 +58,7 @@ vi.mock('@/api/client', () => ({
 }));
 
 const { Setup } = await import('./Setup');
+const { api } = await import('@/api/client');
 
 const NPM: ProviderItem = { id: 1, name: 'nginx-proxy-manager', type: 'npm' };
 
@@ -175,5 +177,25 @@ describe('Setup, the import screen after a refresh', () => {
     reloadOnImportStep();
     expect(await screen.findByText('setup.import.no_providers')).toBeInTheDocument();
     expect(syncCalls).toBe(0);
+  });
+});
+
+describe('Setup, importing from the scan', () => {
+  it('sends back the names ticked, and nothing else', async () => {
+    // The import declares the zone of every service it creates, so a name left unticked must
+    // not travel at all. The flat list this step used to show kept to that; the zones must too.
+    syncResult = {
+      proxy_hosts: [
+        { domain_names: ['app.example.com'], forward_host: '10.0.0.9', forward_port: 8080, _provider_id: 1, _provider_name: 'nginx-proxy-manager', _provider_type: 'npm', _zone: 'example.com' },
+        { domain_names: ['shop.other.net'], forward_host: '10.0.0.8', forward_port: 80, _provider_id: 1, _provider_name: 'nginx-proxy-manager', _provider_type: 'npm', _zone: 'other.net' },
+      ],
+      dns_rewrites: [],
+    };
+    reloadOnImportStep();
+    await userEvent.click(await screen.findByRole('checkbox', { name: /app\.example\.com/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'setup.import.finish_import' }));
+
+    const importCall = vi.mocked(api.post).mock.calls.find(([path]) => path === '/services/import');
+    expect(importCall?.[1]).toEqual({ proxy_hosts: [syncResult.proxy_hosts?.[0]], dns_rewrites: [] });
   });
 });
