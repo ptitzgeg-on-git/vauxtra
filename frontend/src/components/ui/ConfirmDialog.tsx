@@ -43,6 +43,15 @@ export interface ConfirmDialogProps {
    * call site actually passes the word.
    */
   requireText?: string;
+  /**
+   * The button that has the focus when the dialog opens. Without it the variant decides:
+   * Confirm for `info`, Cancel for everything else.
+   *
+   * `info` says an action adds rather than removes, and it can still weigh a great deal. An
+   * import writes one service per route it is given: the colour is right, the Enter is not.
+   * Such a question passes `'cancel'`.
+   */
+  initialFocus?: 'confirm' | 'cancel';
   /** While true the confirm button spins and neither Escape, the backdrop nor the buttons close the dialog. */
   loading?: boolean;
   /** Replaces the variant's icon. */
@@ -76,10 +85,14 @@ const VARIANT_STYLES: Record<ConfirmVariant, { icon: string; variant: ButtonVari
  * Styled confirmation dialog in place of `window.confirm()`.
  *
  * Anything that removes something opens with focus on Cancel, so a stray Enter cannot destroy
- * what the dialog is asking about; only `info`, which adds, opens on Confirm. Escape, the
- * backdrop and the close button all cancel, unless
- * `loading` says the confirmed action is still running. The panel is mounted fresh on
- * every opening, so the typed confirmation text never carries over.
+ * what the dialog is asking about; only `info`, which adds, opens on Confirm, and a caller can
+ * still ask for Cancel with `initialFocus`. Escape, the backdrop and the close button all
+ * cancel, unless `loading` says the confirmed action is still running. The panel is mounted
+ * fresh on every opening, so the typed confirmation text never carries over.
+ *
+ * Only two things answer yes: activating the confirm button, and Enter in the typed-text box
+ * once it matches. Losing the focus answers nothing, and neither does a held Enter (see
+ * `ignoreHeldEnter`).
  */
 export function ConfirmDialog({ open, ...panel }: ConfirmDialogProps) {
   if (!open || typeof document === 'undefined') return null;
@@ -101,6 +114,7 @@ function ConfirmDialogPanel({
   cancelLabel,
   variant = 'danger',
   requireText,
+  initialFocus,
   loading = false,
   icon,
   onConfirm,
@@ -135,15 +149,16 @@ function ConfirmDialogPanel({
   // forced removal of an integration services still depend on, a domain that is in use, a
   // reconcile that writes to a live provider. Keying the focus on `danger` alone armed the
   // destructive button on exactly those. Only `info`, which adds without removing, opens on
-  // Confirm.
+  // Confirm, unless the caller asked for Cancel.
   useEffect(() => {
+    const opensOn = initialFocus ?? (variant === 'info' ? 'confirm' : 'cancel');
     const target = requireText
       ? inputRef.current
-      : variant === 'info'
+      : opensOn === 'confirm'
         ? confirmRef.current
         : cancelRef.current;
     target?.focus({ preventScroll: true });
-  }, [requireText, variant]);
+  }, [requireText, variant, initialFocus]);
 
   const textMatches = !requireText || typed.trim() === requireText.trim();
   const canConfirm = textMatches && !loading;
@@ -156,10 +171,19 @@ function ConfirmDialogPanel({
     if (e.target === e.currentTarget) requestCancel();
   };
 
+  // A held Enter repeats, and a button answers Enter on key down. When Enter opened the dialog,
+  // the key is still down as the dialog appears, and each repeat lands on whatever just took
+  // the focus: on an `info` dialog, the button that confirms. So the question was answered by
+  // the tail of the key press that asked it. An answer takes a fresh press; a repeat does
+  // nothing here, on either button.
+  const ignoreHeldEnter = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.repeat && e.key === 'Enter') e.preventDefault();
+  };
+
   const handleInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      handleConfirm();
+      if (!e.repeat) handleConfirm();
     }
   };
 
@@ -174,6 +198,7 @@ function ConfirmDialogPanel({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-xs animate-in fade-in animate-duration-150"
       onClick={handleBackdropClick}
+      onKeyDownCapture={ignoreHeldEnter}
     >
       <div
         ref={dialogRef}
@@ -258,6 +283,7 @@ export interface ConfirmOptions {
   cancelLabel?: string;
   variant?: ConfirmVariant;
   requireText?: string;
+  initialFocus?: 'confirm' | 'cancel';
   icon?: ReactNode;
 }
 
@@ -307,6 +333,7 @@ export function useConfirmDialog() {
       cancelLabel={options?.cancelLabel}
       variant={options?.variant}
       requireText={options?.requireText}
+      initialFocus={options?.initialFocus}
       icon={options?.icon}
       onConfirm={() => settle(true)}
       onCancel={() => settle(false)}
