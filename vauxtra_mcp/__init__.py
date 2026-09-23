@@ -13,4 +13,4 @@ bridge is deliberately not in the image, so out here it would always read `dev`.
 which is where this repository has kept its release number since v1.0.0.
 """
 
-__version__ = "1.5.2"
+__version__ = "1.6.0"
