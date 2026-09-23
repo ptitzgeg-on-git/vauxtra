@@ -156,6 +156,23 @@ def _records_named(provider, name: str) -> list[dict]:
     ]
 
 
+def _dns_record_kept(dns, host: str, answer: str) -> bool:
+    """Whether `dns` still holds `host` -> `answer` after refusing to delete it.
+
+    A refused `delete_rewrite` is not always a record left behind. The Cloudflare one
+    answers False when nothing matched, and a disabled service is withdrawn again on every
+    edit, long after the first withdrawal took its record. Only the listing tells the two
+    apart. A listing that fails tells nothing, and that counts as kept: "withdrawn" is
+    the one claim nothing here has established.
+    """
+    wanted = (answer or "").strip().rstrip(".").lower()
+    try:
+        held = _records_named(dns, host)
+    except Exception:
+        return True
+    return any(str(r.get("answer") or "").strip().rstrip(".").lower() == wanted for r in held)
+
+
 def _answers_elsewhere(conn, public_host: str, published: str, attached: set) -> list[dict]:
     """Warnings for the DNS integrations that answer `public_host` without being pushed to.
 
@@ -488,7 +505,7 @@ def withdraw_service_routes(
             else:
                 errors.append(f"Failed to delete proxy host on {row['name']}")
         except Exception as e:
-            errors.append(f"Proxy ({row['name']}): {e}")
+            errors.append(f"Proxy ({row['name']}): {redact_query_secrets(str(e))}")
 
     for row in dns_rows:
         try:
@@ -505,12 +522,16 @@ def withdraw_service_routes(
             if not ip:
                 continue
 
+            # A refusal is read against the listing before it is reported. A disabled service
+            # is withdrawn from its extra DNS servers again on every edit, and the Cloudflare
+            # integration refuses a deletion that matched nothing: every save of such a
+            # service reported a failure about a record that had been gone since the first.
             if dns.delete_rewrite(public_host, ip):
                 add_log("info", f"{log_prefix} DNS record removed on {row['name']}: {public_host}", conn)
-            else:
+            elif _dns_record_kept(dns, public_host, ip):
                 errors.append(f"Failed to delete DNS rewrite on {row['name']}")
         except Exception as e:
-            errors.append(f"DNS ({row['name']}): {e}")
+            errors.append(f"DNS ({row['name']}): {redact_query_secrets(str(e))}")
 
     if expose_mode == "tunnel" and not proxy_rows and only_provider_ids is None:
         # Only when the whole service is being withdrawn. A narrowed withdrawal legitimately
@@ -584,7 +605,7 @@ def withhold_service_routes(
         except Exception as e:
             # Deliberately not falling through to the deletion: the provider just failed to
             # answer, and a delete would fail the same way or, worse, half-succeed.
-            errors.append(f"Proxy ({primary_row['name']}): {e}")
+            errors.append(f"Proxy ({primary_row['name']}): {redact_query_secrets(str(e))}")
 
     rest = ({r["id"] for r in proxy_rows} | {r["id"] for r in dns_rows}) - suspended
     if rest:
@@ -647,7 +668,7 @@ def _build_withhold_plan(conn, svc, sid: int) -> dict:
                 if supports_suspension(proxy):
                     action = "suspend"
             except Exception as e:
-                errors.append(f"Proxy ({row['name']}): {e}")
+                errors.append(f"Proxy ({row['name']}): {redact_query_secrets(str(e))}")
                 continue
 
         proxy_actions.append(
@@ -768,7 +789,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
                 }
             )
         except Exception as e:
-            errors.append(f"Proxy ({row['name']}): {e}")
+            errors.append(f"Proxy ({row['name']}): {redact_query_secrets(str(e))}")
 
     if expose_mode != "tunnel":
         if not dns_target and dns_targets:
@@ -1111,7 +1132,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
 
             add_log("info", f"[Push] Proxy synced on {row['name']}: {public_host}", conn)
         except Exception as e:
-            errors.append(f"Proxy ({row['name']}): {e}")
+            errors.append(f"Proxy ({row['name']}): {redact_query_secrets(str(e))}")
 
     if expose_mode != "tunnel":
         dns_target_mode = (svc["public_target_mode"] or "manual") if _has_column(svc, "public_target_mode") else "manual"
@@ -1165,7 +1186,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
 
                     add_log("info", f"[Push] DNS synced on {row['name']}: {public_host} → {dns_target}", conn)
                 except Exception as e:
-                    errors.append(f"DNS ({row['name']}): {e}")
+                    errors.append(f"DNS ({row['name']}): {redact_query_secrets(str(e))}")
 
     conn.commit()
     return {"ok": not errors, "errors": errors}
