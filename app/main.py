@@ -213,6 +213,15 @@ if os.path.exists(frontend_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
 
 
+# Every file this route serves keeps its name from one build to the next, index.html first,
+# and index.html names the hashed bundles of its own build. Sent with a Last-Modified and no
+# Cache-Control, a browser reused it without asking (heuristic freshness): measured on
+# 2026-09-23, a page loaded after an upgrade came out of the browser's cache with the
+# previous build's bundle, while /api/health answered the new version. `no-cache` keeps the
+# copy and asks before each use. The hashed bundles under /assets are not served here.
+_REVALIDATE = {"Cache-Control": "no-cache"}
+
+
 def _resolve_frontend_file(full_path: str) -> str | None:
     """Resolve a request path inside the frontend build, or None if it escapes it."""
     if not full_path:
@@ -230,11 +239,11 @@ async def serve_frontend(full_path: str):
 
     file_path = _resolve_frontend_file(full_path)
     if file_path is not None:
-        return FileResponse(file_path)
+        return FileResponse(file_path, headers=dict(_REVALIDATE))
 
     index_path = os.path.join(frontend_dist, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=dict(_REVALIDATE))
 
     return JSONResponse(
         status_code=404,
