@@ -7,6 +7,226 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The provider scan offered zones nobody had declared, and never said which rows sat in
+  them.** Measured on a production instance with one DNS domain declared: a first scan listed
+  91 routes, 59 of them in twelve zones the operator had never declared, behind a "Quick
+  Import (91 new)" button that writes them all after a single confirmation. A second scan,
+  minutes later, with 32 services imported in between, listed 32. That looked like a
+  declared-domain filter that only engaged once a service existed. There was no such filter
+  anywhere: the scan returned whatever each integration could read. The instance's journal,
+  read afterwards, rules out a failed listing: none failed on either pass, no integration was
+  edited in between, and the Zone ID field was empty. By elimination, what changed is what
+  the token could read: its zone resources were narrowed on the Cloudflare side between the
+  two scans, and it now reads the declared zone only. That part is not a code defect. What
+  the code did get wrong is that its answer could show none of it. No row said which zone it
+  belonged to or whether that zone was declared, integrations were read in no set order, and
+  an integration whose listing raised was written to the journal and nowhere else, so a
+  failed listing would have looked the same: fewer routes, without a word. The scan now files
+  each row under its zone (the longest declared domain it sits under, then the zone the
+  provider reports, then its first dot), says whether that zone is declared, returns the
+  declared domains and one line per integration with how many entries it listed or why it
+  could not, and reads the integrations in the order they were added. Settings > Data opens
+  on the declared domains, says how many routes that hides, marks an undeclared zone on its
+  row, filters by zone, and names an integration it could not read, with a link to the
+  integrations page.
+
+- **The import split a name at its first dot.** `nas.maison.example.org` became `nas` under
+  `maison.example.org`, whatever zone it came from. The check for a service already tracked
+  under that name used the same split, so a service stored as `nas.maison` under
+  `example.org` was not found: the import created it a second time and declared
+  `maison.example.org` as a domain on the way. The import now splits at the zone the scan
+  filed the row under, finds a tracked service by its whole name and by its tunnel hostname,
+  and refuses the apex of a zone it knows, declared or reported by the integration, with the
+  reason on the row, as it already refused a name with no dot. The apex used to go through
+  the same split as any name: `example.net` became a service `example` under a domain `net`,
+  declared on the way. A name whose zone neither the declared domains nor the integration
+  give still falls back to its first dot, apex included.
+
+- **Linking a DNS record overwrote the DNS half a service already had.** When a scanned
+  record matched a tracked service, the import set the service's DNS integration and address
+  to the record's, whatever the service already had: a service published through one DNS
+  integration was moved to another, and a tunnel service was given a DNS integration it does
+  not use. A link now fills only the half that is missing, and a service that already has a
+  DNS integration, or is published through a tunnel, is set aside with the reason. When two
+  integrations answer for one name, the message says the other record is left as it is and
+  not tracked: expected with split-horizon DNS, a stale record otherwise.
+
+- **"Quick Import" sent the whole scan back.** Rows already tracked and rows in zones nobody
+  had declared went with it, and its confirmation counted them without a word about zones.
+  A tracked row sent back is what let a DNS record re-link a service, as described above. It
+  now sends the importable rows on screen and nothing else, and of a row that links a tracked
+  service, only its DNS record. Its confirmation says how many tracked services will be
+  linked, how many routes sit in zones not declared, how many names several DNS records
+  answer for, how many use a local TLD, and how many importable routes the filters leave
+  out. Both import confirmations now open on Cancel. The setup wizard's import step shows
+  one row per name and, since importing a service declares its domain, names the domains an
+  import is about to declare, above the button that does it.
+
+- **An Enter held down could answer a confirmation.** A dialog of the `info` variant opens
+  with the focus on its confirm button, and a browser keeps firing an Enter that is held
+  down: the Enter that asked the question came back as a repeat on the confirm button and
+  answered yes. A repeat is now ignored inside the dialog, on its buttons and in its typed
+  confirmation alike, and a caller can ask for the focus to open on Cancel (`initialFocus`).
+  The report of an import confirmed without its button being clicked was not reproduced, and
+  this is one way it can happen, not a proof that it did. The other ways the report suggested
+  a question could end are now pinned by tests: the focus leaving the dialog or the window
+  answers nothing, the page that asked going away answers no, and a second question answers
+  the first one no.
+
+- **"Test all" on the Integrations page could sit through a whole health round before testing
+  anything.** It refetched four queries before sending a single test, one of them the health
+  round that tested every integration one after the other. A refetch joins a first load still
+  in flight, and cancels and restarts any later round, so the click waited for a whole round
+  either way, the button busy and disabled all along. That explains a click that sent no test
+  for a while, not by itself the report's three clicks that sent no request at all: only a
+  refresh already running before them would silence those, and nothing in the report says one
+  was. It was not reproduced against the instance the report measured. The tests now go out
+  at once: each card spins until its own answer comes back, the button counts them, and with
+  no integration enabled the page says there is nothing to test instead of reporting a
+  refresh. The health round itself now tests up to eight integrations at a time.
+
+- **"Scan providers" said nothing about the domains it files names under.** The report
+  measured a button that sent no request until a DNS domain was declared. That was not
+  reproduced: with no domain declared the button sends its request, and no code path holds it
+  back. What was missing is the reason a declared domain matters. The panel now says, before
+  the scan, that it files names under the declared domains and that none is declared, with a
+  link to Settings > DNS Domains; it does not claim so while the list of domains could not be
+  read, and the declared-only filter stands aside while there is nothing to filter on.
+
+- **The provider wizard called an empty form complete, and asked for the name last.** "Name
+  the integration" folded the guided steps away and showed "Everything is filled in. Validate
+  the connection to continue." above an empty address, username and password. The name is
+  now asked first, in every mode. "Next" waits for the required fields of its step, the step
+  dots cannot jump past the first step still missing something, and the last step lists what
+  is missing, each field asked on an earlier step linking back to it, and says everything is
+  filled in only once it is. Behind the banner, the forms disagreed on what is required: the
+  guided steps marked the NPM e-mail required, the expert form of the same dialog called it
+  optional, the dialog's "Next" and step dots checked nothing, and the e-mail could be left
+  blank all the way to a failed login. One rule now serves both forms and the setup wizard: a
+  field is required when the local rules say so, or when a guided step asks for it without
+  marking it optional. That adds the username of NPM, AdGuard Home and Technitium, whose
+  login cannot go without one, and an edit is held to it too: only the secret may stay blank
+  there, to keep the stored one. An optional field is marked once, where five labels also
+  said "(optional)". In the setup wizard, picking another type gives the form that type's
+  name and an empty address instead of the previous type's, a connection verdict is dropped
+  by the next edit so "Connect" never answers for values nobody tested, and a hosted API's
+  address field now shows in the expert form, optional, saying what a blank one does.
+
+- **A DNS record with no port was probed on port 80 and reported down.** The import gave a
+  DNS record port 80, so a name published in DNS alone, an A record for a UDP service or a
+  CNAME to a tunnel, was probed over TCP on a port nothing listens on and turned red: on the
+  instance measured, two of the three services reported down were exactly that. A service's
+  port can now be 0, meaning none. The import writes 0 for a DNS record, the "DNS only" form
+  accepts an empty port and no longer refills it with 80 when the field loses focus, and
+  nothing probes such a service: not the scheduler, not "Check all services", which counts
+  it apart from the tunnels in its summary, and not "Check now", which still resolves the
+  name and says there is no port to test. The server refuses 0 where a proxy or a tunnel
+  forwards to the port, and saving a service without a port resets its status to unknown.
+  Monitoring writes "No port: not testable" on its row and explains it in the drawer, and the
+  latency card counts only the latencies actually measured, where it used to read "Measured
+  on 1 service this session" under a dash after a check that measured nothing. A service
+  imported before this version keeps its port 80: emptying the port in the "DNS only" form is
+  what stops the probe.
+
+- **The drift report never looked at a DNS integration the service was not published to.** A
+  name that two integrations answer with two different addresses is what a drift report is
+  for, and the report only read the integrations attached to the service: a name published
+  through one integration and answered differently by another read `ok: true` with no issue,
+  the one real drift on the instance measured included. For an enabled service that
+  publishes an address in DNS, tunnels aside, the report now asks every other DNS
+  integration for the name, and raises `dns_answered_elsewhere`, with what the other answers
+  and what the service publishes, or `dns_elsewhere_check_failed` when one cannot be read.
+  Both are warnings: `ok` is unchanged and Reconcile leaves them alone, since that record is
+  not the service's to rewrite and split-horizon DNS is built on that very difference, so
+  expect the warning on every split-horizon name. The scheduler's automatic reconcile does
+  not run this check. The drawer no longer says "in sync" above a warning, and keeps
+  Reconcile off, saying why, when nothing it could push is reported. Cloudflare answers with
+  a zone lookup and one listing filtered by name, where the generic answer lists the zones
+  and then three record types in each: forty calls at least for the thirteen zones one token
+  read on the instance measured.
+  `docs/TROUBLESHOOTING.md` describes the symptom.
+
+- **The scan folded a name several integrations answer into one row, without a word.** A row
+  now lists every record that answers for its name, a pill counts the integrations, and a
+  name served by several proxy hosts or answered by several DNS records says which one the
+  import keeps.
+
+- **A correctly configured Cloudflare tunnel topped out at 90/100.** Two checks the test skips
+  on purpose, the write probe in safe mode and the DNS scope check without a hostname, were
+  reported as warnings and cost ten points for good. A check that did not run now carries
+  `"skipped": true` and stays out of `warnings`, while its `ok` stays false, since it did not
+  pass either. The card reads "Passed, 2 checks not run", lists them in grey and takes no
+  points off, and `docs/HOWTO.md` says when each of the two runs. Cloudflare DNS marks its
+  skipped write test the same way.
+
+- **A credential carried in a query string could reach the journal.** Technitium takes its
+  token in the URL, and Pi-hole v5 its `auth`, so an error that quoted the URL carried the
+  credential into the journal, into the reason a listing was refused, which the screen shows
+  when an integration's DNS records cannot be listed, and into the details of a drift report.
+  A query-string parameter whose name ends in `token`, `auth`, `key`, `pass`, `password`,
+  `secret` or `sid` is now masked wherever such a message is written.
+
+- **Updating a tunnel route cleared its origin settings.** The ingress rule was dropped and
+  appended again as `{hostname, service, originRequest: {}}`, which cost it its
+  `originRequest`, a `noTLSVerify` among them, and its place in the list: moved to the end,
+  it fell behind any wildcard rule that used to come after it. The rule is now rewritten
+  where it stands, with only its `service` set; a second rule for the same name is still
+  dropped, and a `path` is not kept, since the route Vauxtra publishes serves the whole name.
+  A tunnel hostname that changes still gets a new rule, and a new rule starts with an empty
+  `originRequest`.
+
+- **The Cloudflare client could wait three minutes on a single call.** The SDK's default is a
+  60-second read timeout retried twice, and the integration never replaced it, so a
+  Cloudflare API that stopped answering held a scan, a test or a push for three minutes
+  before anything was said. It now uses `PROVIDER_TIMEOUT`, the 10 seconds `app/config.py`
+  sets for provider calls.
+
+- **A disable the provider refused could read as done.** Switching a service off, from the
+  services list or through the bridge's `toggle_service`, ignored the tunnel's answer when it
+  withdrew the ingress rule and the DNS server's answer when it withdrew the record.
+  Cloudflare Tunnel refuses by answering false rather than raising, so a refused withdrawal
+  came back with an empty `errors`, a journal line saying the route was withdrawn, and the
+  hostname still served. An error raised by the DNS server reached the journal only, and a
+  bulk disable ignored a DNS refusal the same way. Each answer is now read: a refusal lands
+  in `errors` with an error line in the journal, and an error raised by the tunnel or the
+  DNS server lands in `errors` too, masked like the journal. A DNS refusal is first checked
+  against the server's own listing. Cloudflare also answers false when there is nothing to
+  delete, which is the normal case when a service already disabled is edited again, and a
+  listing that cannot be read counts as the record still there. This was found by reading
+  the code and reproduced by tests, not observed on a running instance.
+
+- **The bridge's README said `toggle_service` left provider routes alone.** Disabling a
+  service withdraws its tunnel rule, or suspends its proxy host and withdraws its DNS record,
+  and a withdrawal the provider refuses lands in `errors`; the README now says so. The
+  tool's own description said a failure lands in `errors` and nowhere else. An error raised
+  by the service's proxy provider lands in the journal only, and the description now says
+  that too.
+
+- **This file dated 1.5.2 from 2026-09-20.** It was released on 2026-09-22.
+
+### Added
+
+- **`PATCH /api/services/{id}` sets a service's labels and calls no provider.** Putting a tag
+  on a service meant a `PUT` of the whole service, which pushes it again: on a tunnel, a
+  cosmetic change could not be told apart from a republication. The new route takes
+  `tag_ids`, `environment_ids` and `icon_url`, refuses any other key (422) and an unknown tag
+  or environment (400, nothing written), and writes one journal line saying no provider was
+  called. The expose assistant, editing a service where only tags or environments moved,
+  saves through it: no checks, no push, the line under its title says no provider is
+  contacted, and the Review step it skipped is not ticked. The MCP bridge offers it as
+  `set_service_labels`, which makes 85 tools, and CORS now allows `PATCH`. Along the way, a
+  tag or environment id of 0 is refused with a 400 on every service route, where it raised a
+  500 from the foreign key.
+
+- **A guard on the check labels of the expose review step.** The report listed nine check
+  names without a translation. The eight from `app/api/services.py` all had one, shown in the
+  Review step of the expose assistant; the ninth, `Environment Docker`, is the name Docker
+  discovery gives the local endpoint it falls back to, not a check. Two tests now hold the
+  list in both directions: every check name the API emits has a label, and no label outlives
+  the check it was written for.
+
 ---
 
 ## [1.5.2] — 2026-09-22
