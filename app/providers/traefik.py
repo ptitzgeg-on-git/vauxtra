@@ -164,5 +164,5 @@ class TraefikProvider(ProxyProvider):
         # Traefik manages ACME certs internally; not accessible via API
         return []
 
-    def find_best_certificate(self, domain_suffix: str):
+    def find_best_certificate(self, host: str):
         return None

@@ -189,6 +189,10 @@ class TestNPMUpdateHost(unittest.TestCase):
         self.npm = NPMProvider("http://npm:81", "admin@example.com", "secret")
         self.npm._token = "tok"
         self.npm._ensure_auth = MagicMock(return_value=True)
+        # The host is read before it is written (tests/test_npm_keeps_what_it_did_not_set.py).
+        self.npm.session.get = MagicMock(return_value=_response(200, {
+            "id": 1, "domain_names": ["app.example.com"], "certificate_id": 0,
+        }))
 
     def test_update_host_success(self):
         self.npm.session.put = MagicMock(return_value=_response(200, {"id": 1}))
@@ -317,16 +321,15 @@ class TestNPMCertificates(unittest.TestCase):
         self.assertEqual(certs[0]["id"], 1)
         self.assertEqual(certs[0]["nice_name"], "*.example.com")
 
-    def test_find_best_certificate_wildcard_exact(self):
-        # *.example.com should match example.com domain
-        cert_id = self.npm.find_best_certificate("example.com")
-        self.assertEqual(cert_id, 1)
+    def test_find_best_certificate_does_not_give_the_zone_its_wildcard(self):
+        # These two tests used to pass the zone, as the routes did, and expected the
+        # wildcard back. `*.example.com` does not cover `example.com`: the routes now pass
+        # the full name, and the zone gets only a certificate that names it.
+        self.assertIsNone(self.npm.find_best_certificate("example.com"))
 
-    def test_find_best_certificate_subdomain_match(self):
-        # sub.example.com matches example.com suffix
-        cert_id = self.npm.find_best_certificate("example.com")
-        # Wildcard (*) is preferred, should return wildcard cert
-        self.assertEqual(cert_id, 1)
+    def test_find_best_certificate_finds_a_certificate_issued_for_the_host(self):
+        # What the zone lookup never found, and every push then removed from the host.
+        self.assertEqual(self.npm.find_best_certificate("sub.example.com"), 2)
 
     def test_find_best_certificate_returns_none_when_nothing_covers_the_host(self):
         # Historically this returned "any certificate" as a last resort. That id then

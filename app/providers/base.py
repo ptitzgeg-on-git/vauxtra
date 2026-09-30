@@ -204,8 +204,8 @@ class ProxyProvider(ABC):
         """List available certificates."""
 
     @abstractmethod
-    def find_best_certificate(self, domain_suffix: str) -> int | None:
-        """Find the most suitable wildcard certificate for the domain."""
+    def find_best_certificate(self, host: str) -> int | None:
+        """A certificate that covers `host`, the service's full name (not its zone), or None."""
 
 
 def supports_suspension(proxy) -> bool:
