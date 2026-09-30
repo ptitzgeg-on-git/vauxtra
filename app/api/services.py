@@ -338,11 +338,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
             "ok": conflicting_id is None,
             "blocking": True,
             **(
-                _detail("host_free", "No existing route conflict")
+                _detail("host_free", "No other service uses this address")
                 if conflicting_id is None
                 else _detail(
                     "host_taken",
-                    f"Route already exists on service #{conflicting_id}",
+                    f"This address is already used by service #{conflicting_id}",
                     id=conflicting_id,
                 )
             ),
