@@ -7,6 +7,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Changed
+
+- **A new visual identity.** A petrol-teal palette, flat surfaces and a new logo replace the
+  neon-on-black look. The README shows the interface with a banner and screenshots taken on
+  a fresh demo instance.
+
+- **Dropdowns, checkboxes and chips belong to the design.** Every `<select>` is now a
+  themed listbox that keeps the native keyboard (arrows, Home/End, type-ahead, Escape that
+  closes the list without closing the dialog around it). The domain field of the service
+  form suggests the known zones in the same list instead of the browser's grey `<datalist>`.
+  Tags and environments are checkable chips.
+
+- **One word for what the operator creates: "service".** The interface said service,
+  endpoint, route or host for the same thing depending on the screen. 112 strings changed in
+  the eight languages, and the locale guard now pins the word in each of them. The menu
+  group that holds services, tunnels and certificates is called "Publishing".
+
+- **The installation and the add forms no longer contradict themselves.** The wizard, the
+  integration form and the service form were reworded step by step: buttons say what they
+  do, the integration name is asked first in the guided flow, and "Settings" is no longer
+  listed twice.
+
+### Fixed
+
+- **Setting a password in the setup wizard ended the wizard.** The server stops answering
+  "setup required" as soon as a password is set, and the application showed the wizard only
+  while it did: the recommended path landed on an empty dashboard after the second screen,
+  and a reload after the first integration did the same. The wizard now marks itself started
+  in the tab and stays until it is finished. Its restore screen, which asks for no typed
+  confirmation, is still offered only while the server calls the instance unconfigured.
+
+- **Every push to Nginx Proxy Manager removed a host's own certificate.** The certificate was
+  looked up by the service's zone, `example.com`, instead of its name, `vault.example.com`,
+  so a certificate issued for the host itself -- NPM's default, one per host -- was never
+  found, and the update wrote the host without one: HTTPS was gone after every push, edit or
+  reconcile. The update also wrote the whole host, resetting the aliases, custom locations,
+  HSTS, exploit blocking and meta the operator had set in NPM. The lookup now takes the full
+  name, and the update reads the host and sends only what Vauxtra owns: the forward target,
+  websockets, the service's name and a certificate that covers it. A certificate the lookup
+  cannot judge is kept; one that does not cover a renamed host is removed. Zoraxy used the
+  same lookup and is fixed with it. A wildcard is no longer offered for the zone's own name,
+  which it does not cover.
+
+### Security
+
+- `brace-expansion`, a development dependency of the lint tooling, is raised to 1.1.21 and
+  5.0.12 (GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p). It is not part of
+  the image.
+
 ---
 
 ## [1.6.1] — 2026-09-23
