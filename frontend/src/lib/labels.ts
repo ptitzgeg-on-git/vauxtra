@@ -23,9 +23,23 @@ export const labelTone = (half: LabelHalf): Tone => (half === 'tag' ? 'primary' 
 export const labelDotClass = (half: LabelHalf): string =>
   `inline-block h-2 w-2 rounded-full ${half === 'tag' ? 'bg-primary' : 'bg-info'}`;
 
+/** The colour names the Settings picker offers, each backed by a `--vx-label-*` token. */
+export const LABEL_COLORS = ['blue', 'teal', 'green', 'red', 'orange', 'purple', 'cyan', 'yellow', 'pink', 'lime', 'indigo'] as const;
+
+const NAMED = new Set<string>(LABEL_COLORS);
+
+/**
+ * The CSS value for a stored label colour. The picker stores CSS keywords, and painted as-is
+ * those are the raw web colours -- pure `blue` on the dark theme, `yellow` on the light one --
+ * so a known name goes through its theme-tuned token; anything else (a hex from an import or
+ * an older release) passes through untouched.
+ */
+export const labelColor = (color: string): string =>
+  NAMED.has(color.toLowerCase()) ? `rgb(var(--vx-label-${color.toLowerCase()}))` : color;
+
 /**
  * The label's own colour, or nothing at all. A label may have none, and an inline style of
  * `undefined` leaves the dot on its tone class rather than painting it transparent.
  */
 export const labelDotStyle = (color: string | null | undefined) =>
-  color ? { backgroundColor: color } : undefined;
+  color ? { backgroundColor: labelColor(color) } : undefined;

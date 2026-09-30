@@ -70,28 +70,29 @@ export function TunnelsCard({ data, loading, isError, refreshing, onRefresh }: T
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-3">
-        <div className="min-w-0">
-          <CardTitle className="flex items-center gap-2">
-            <Waypoints className="h-4 w-4 text-muted-foreground" aria-hidden />
-            {t('monitoring.tunnels.title')}
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex min-w-0 items-center gap-2">
+            <Waypoints className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="truncate">{t('monitoring.tunnels.title')}</span>
           </CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">{t('monitoring.tunnels.description')}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {items.length > 0 && (
-            <Badge tone={down.length > 0 ? 'danger' : 'success'} size="sm" dot>
-              {t('monitoring.tunnels.healthy_of', { count: items.length - down.length, total: formatNumber(items.length) })}
-            </Badge>
-          )}
           <IconButton
             label={t('monitoring.tunnels.refresh')}
             icon={<RefreshCw className={cn(refreshing && 'animate-spin')} />}
             variant="ghost"
             size="icon"
             onClick={onRefresh}
+            className="-my-1.5 shrink-0"
           />
         </div>
+        <p className="text-xs text-muted-foreground">{t('monitoring.tunnels.description')}</p>
+        {items.length > 0 && (
+          <div>
+            <Badge tone={down.length > 0 ? 'danger' : 'success'} size="sm" dot>
+              {t('monitoring.tunnels.healthy_of', { count: items.length - down.length, total: formatNumber(items.length) })}
+            </Badge>
+          </div>
+        )}
       </CardHeader>
 
       <CardContent>

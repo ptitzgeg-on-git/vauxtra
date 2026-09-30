@@ -155,8 +155,12 @@ export const ProviderCard = memo(function ProviderCard({
           <div className="min-w-0 flex-1">
             <h3 className="truncate text-base font-semibold leading-tight text-foreground">{provider.name}</h3>
             <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-              <span className="font-medium uppercase tracking-wider">{typeLabel}</span>
-              <span aria-hidden="true">·</span>
+              {typeLabel.toLowerCase() !== provider.name.trim().toLowerCase() && (
+                <>
+                  <span className="font-medium">{typeLabel}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              )}
               <span className="truncate font-mono" title={provider.url || undefined}>
                 {provider.url ? hostOf(provider.url) : t('providers.card.default_url')}
               </span>

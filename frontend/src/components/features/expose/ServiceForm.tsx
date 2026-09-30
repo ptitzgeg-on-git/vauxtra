@@ -4,6 +4,7 @@ import { ArrowRightLeft, Globe, RefreshCw, Server, Waypoints } from 'lucide-reac
 import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
+import { labelColor } from '@/lib/labels';
 import {
   domainProblem,
   domainProblemKey,
@@ -209,7 +210,7 @@ function TaxonomyChips({
               onClick={() => onToggle(item.id)}
               icon={
                 item.color ? (
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: labelColor(item.color) }} />
                 ) : undefined
               }
             >
