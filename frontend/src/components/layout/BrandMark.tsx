@@ -1,4 +1,3 @@
-import { useId } from 'react';
 import { cn } from '@/lib/cn';
 
 export interface BrandMarkProps {
@@ -14,32 +13,33 @@ const SIZES = {
   lg: { box: 'h-12 w-12', text: 'text-xl' },
 } as const;
 
-/** The Vauxtra mark: a primary-to-glow gradient square with a cut "V", plus an optional wordmark. */
+/**
+ * The Vauxtra mark: two routes converging on one node, drawn as a "V" on a flat primary tile.
+ * The right-hand route stops short of the node -- the missing link of the tagline.
+ * Same geometry as `public/favicon.svg` and `docs/assets/logo.svg`; change all three together.
+ */
 export function BrandMark({ size = 'md', withWordmark = false, className }: BrandMarkProps) {
-  const gradientId = `vx-brand-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
   return (
     <span className={cn('inline-flex select-none items-center gap-2.5', className)}>
       <svg
         viewBox="0 0 32 32"
-        className={cn('shrink-0 drop-shadow-xs', SIZES[size].box)}
+        className={cn('shrink-0', SIZES[size].box)}
         aria-hidden="true"
         focusable="false"
       >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" style={{ stopColor: 'rgb(var(--vx-primary))' }} />
-            <stop offset="100%" style={{ stopColor: 'rgb(var(--vx-primary-glow))' }} />
-          </linearGradient>
-        </defs>
-        <rect width="32" height="32" rx="9" fill={`url(#${gradientId})`} />
-        <path
-          d="M8 9.5h4.4l3.6 9.6 3.6-9.6H24l-6.2 14h-3.6z"
-          style={{ fill: 'rgb(var(--vx-primary-foreground))' }}
-        />
-        <path d="M18.4 9.5H24l-2.2 5h-5.6z" style={{ fill: 'rgb(var(--vx-primary-foreground))', opacity: 0.55 }} />
+        <rect width="32" height="32" rx="7" style={{ fill: 'rgb(var(--vx-primary))' }} />
+        <g style={{ stroke: 'rgb(var(--vx-primary-fg))' }} strokeWidth="2.6" strokeLinecap="round" fill="none">
+          <path d="M8.5 9 16 23" />
+          <path d="M23.5 9 19.6 16.3" />
+        </g>
+        <g style={{ fill: 'rgb(var(--vx-primary-fg))' }}>
+          <circle cx="8.5" cy="9" r="2.5" />
+          <circle cx="23.5" cy="9" r="2.5" />
+          <circle cx="16" cy="23" r="3" />
+        </g>
       </svg>
       {withWordmark && (
-        <span className={cn('font-extrabold tracking-tight text-foreground leading-none', SIZES[size].text)}>Vauxtra</span>
+        <span className={cn('font-semibold tracking-tight text-foreground leading-none', SIZES[size].text)}>Vauxtra</span>
       )}
     </span>
   );

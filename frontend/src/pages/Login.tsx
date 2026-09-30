@@ -144,7 +144,6 @@ export function Login({ onSuccess }: LoginPageProps) {
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-aurora" />
 
       <div className="relative grid min-h-screen lg:grid-cols-[1.05fr_1fr]">
         {/* Brand panel — the product's face while the operator is still outside. */}
@@ -154,7 +153,7 @@ export function Login({ onSuccess }: LoginPageProps) {
           <div className="max-w-md space-y-8">
             <div className="space-y-3">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">{t('login.eyebrow')}</p>
-              <h1 className="text-3xl font-extrabold leading-tight tracking-tight text-foreground">
+              <h1 className="text-3xl font-semibold leading-tight tracking-tight text-foreground">
                 {t('layout.tagline')}
               </h1>
             </div>

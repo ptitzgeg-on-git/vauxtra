@@ -68,7 +68,7 @@ export function WelcomeStep({ onFreshInstall, onRestore }: { onFreshInstall: () 
         <BrandMark size="lg" className="justify-center" />
         <div className="space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">{t('setup.welcome.eyebrow')}</p>
-          <h1 className="text-3xl font-extrabold tracking-tight text-foreground">{t('setup.welcome.title')}</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">{t('setup.welcome.title')}</h1>
           <p className="mx-auto max-w-md text-sm text-muted-foreground">{t('setup.welcome.subtitle')}</p>
         </div>
         <p className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">

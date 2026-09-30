@@ -357,7 +357,7 @@ export function Sidebar({
         <div className="flex min-w-0 items-center gap-3">
           <BrandMark size="md" />
           <div className="min-w-0">
-            <p className="text-base font-extrabold leading-none tracking-tight text-foreground">Vauxtra</p>
+            <p className="text-base font-semibold leading-none tracking-tight text-foreground">Vauxtra</p>
             <p className="mt-1 truncate text-[11px] leading-snug text-muted-foreground">{t('layout.tagline')}</p>
           </div>
         </div>
