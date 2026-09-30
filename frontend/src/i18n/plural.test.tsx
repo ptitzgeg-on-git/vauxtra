@@ -173,19 +173,19 @@ describe('t(), the number beside the one it inflects on', () => {
    * These are the sentences the first version of the quality check could not see. It only
    * asked about `{count}`, so a key could carry a second number with a noun of its own and
    * nothing would notice that the noun was frozen at whichever form the file happened to
-   * write. "1 route shown of 1" is the shape of the bug.
+   * write. "1 service shown of 1" is the shape of the bug.
    */
   it('agrees with the number it inflects on, not with the total', async () => {
     expect(await say('fr', 'services.meta', { count: 1, total: 5 })).toBe(
-      '1 route affichée sur 5',
+      '1 service affiché sur 5',
     );
     expect(await say('fr', 'services.meta', { count: 5, total: 5 })).toBe(
-      '5 routes affichées sur 5',
+      '5 services affichés sur 5',
     );
   });
 
   it('reads correctly when both numbers are one', async () => {
-    expect(await say('en', 'services.meta', { count: 1, total: 1 })).toBe('1 route shown of 1');
+    expect(await say('en', 'services.meta', { count: 1, total: 1 })).toBe('1 service shown of 1');
   });
 
   it('inflects an adjective English leaves alone', async () => {
@@ -207,7 +207,7 @@ describe('t(), the number beside the one it inflects on', () => {
     // Japanese counts the other way round, "of 5, showing 1". Which number comes first is the
     // file's business; that the noun agrees with `{count}` is not.
     expect(await say('ja', 'services.meta', { count: 1, total: 5 })).toBe(
-      '5件中1件のルートを表示',
+      '5件中1件のサービスを表示',
     );
   });
 });
