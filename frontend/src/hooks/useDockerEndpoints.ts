@@ -17,7 +17,9 @@ export function useDockerEndpoints() {
   const t = useT();
 
   const [name, setName] = useState('');
-  const [host, setHost] = useState('unix:///var/run/docker.sock');
+  // Empty, not the local socket: the server registers that one by itself (`ensure_default_docker_endpoint`),
+  // so pre-filling it offered a duplicate the API then refuses. The placeholder still shows the shape.
+  const [host, setHost] = useState('');
 
   // Returned whole, the way `useWebhookActions` returns its own: `endpoints = []` after a
   // failed fetch and `endpoints = []` on an instance with no Docker engine are the same
@@ -38,7 +40,7 @@ export function useDockerEndpoints() {
       queryClient.invalidateQueries({ queryKey: ['docker-endpoints'] });
       toast.success(t('settings.docker.endpoint_added'));
       setName('');
-      setHost('unix:///var/run/docker.sock');
+      setHost('');
     },
     onError: (err: unknown) => {
       toast.error(translateApiError(err, t, t('settings.docker.endpoint_add_failed')));

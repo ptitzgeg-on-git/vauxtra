@@ -283,7 +283,6 @@ const DECLARED = new Map(
     // A position in a sequence, which is an ordinal and not a quantity.
     'provider_modal.guided.go_to': { step: 'a position in the wizard' },
     'provider_modal.guided.step': { step: 'a position in the wizard', total: 'the wizard length, after "of"' },
-    'provider_modal.step': { step: 'a position in the wizard', total: 'the wizard length, after "of"' },
     'settings.logs.page_of': { page: 'a position in the log', pages: 'the page count, after "of"' },
     'setup.progress.step': { step: 'a position in the wizard', total: 'the wizard length, after "of"' },
     'ui.error.page_unavailable': { page: 'the name of the page, not a number' },
