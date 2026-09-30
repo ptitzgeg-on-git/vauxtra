@@ -24,6 +24,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { renderWithProviders } from '@/test/render';
+import { openOption, selectValue } from '@/test/select';
 import type { Provider, Service, Webhook } from '@/types/api';
 
 let webhookRows: Webhook[] = [];
@@ -281,24 +282,23 @@ describe('WebhooksTab, a scope with nothing to point at', () => {
     await row();
     await screen.findByText('settings.webhooks.scope_providers_unknown');
 
-    expect(screen.getByRole('option', { name: 'settings.webhooks.scope_provider' })).toBeDisabled();
+    const scope = screen.getByRole('combobox', { name: 'settings.webhooks.scope' });
+    expect(openOption(scope, 'settings.webhooks.scope_provider')).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('refuses the scope even when the shut option is set past the browser', async () => {
-    // The disabled attribute is the braces; `scopeUnavailable` in the change handler is the
-    // belt, and it is the one that decides what gets saved. Nothing in this file tested it
-    // on an unread list, which is the state this wave adds.
+  it('refuses the scope even when the shut option is clicked anyway', async () => {
+    // The disabled mark is the braces; `scopeUnavailable` in the change handler is the belt,
+    // and it is the one that decides what gets saved. The list now refuses a disabled option
+    // itself, so a click on it is the closest a browser gets to forcing it.
     providersFail = true;
     renderWithProviders(<WebhooksTab />);
     await row();
     await screen.findByText('settings.webhooks.scope_providers_unknown');
 
-    const select = screen
-      .getByRole('option', { name: 'settings.webhooks.scope_provider' })
-      .closest('select') as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: 'provider' } });
+    const scope = screen.getByRole('combobox', { name: 'settings.webhooks.scope' });
+    fireEvent.click(openOption(scope, 'settings.webhooks.scope_provider'));
 
-    expect(select.value).toBe('all');
+    expect(selectValue(scope)).toBe('all');
   });
 });
 

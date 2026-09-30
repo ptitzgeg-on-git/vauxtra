@@ -927,7 +927,7 @@ export function Services() {
               aria-label={t('services.filter.tag')}
               value={tagFilter ? String(tagFilter) : ''}
               onChange={(e) => setParam('tag', e.target.value || null)}
-              wrapperClassName="w-40"
+              wrapperClassName="min-w-40 max-w-60"
             >
               <option value="">{t('services.filter.all_tags')}</option>
               {orphanTagOption && (
@@ -943,7 +943,7 @@ export function Services() {
               aria-label={t('services.filter.environment')}
               value={envFilter ? String(envFilter) : ''}
               onChange={(e) => setParam('env', e.target.value || null)}
-              wrapperClassName="w-40"
+              wrapperClassName="min-w-40 max-w-60"
             >
               <option value="">{t('services.filter.all_environments')}</option>
               {orphanEnvironmentOption && (
@@ -959,7 +959,7 @@ export function Services() {
               aria-label={t('services.filter.status')}
               value={statusFilter ?? ''}
               onChange={(e) => setParam('status', e.target.value || null)}
-              wrapperClassName="w-36"
+              wrapperClassName="min-w-36 max-w-60"
             >
               <option value="">{t('services.filter.all_statuses')}</option>
               <option value="ok">{t('services.status.ok')}</option>
@@ -976,9 +976,9 @@ export function Services() {
                 icon={<LayoutList />}
                 tooltip
                 size="sm"
-                variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+                variant="ghost"
                 aria-pressed={viewMode === 'list'}
-                className="h-8 w-8"
+                className={cn('h-8 w-8', viewMode === 'list' ? 'bg-card text-primary shadow-sm hover:bg-card' : 'text-muted-foreground')}
                 onClick={() => setViewMode('list')}
               />
               <IconButton
@@ -986,9 +986,9 @@ export function Services() {
                 icon={<LayoutGrid />}
                 tooltip
                 size="sm"
-                variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+                variant="ghost"
                 aria-pressed={viewMode === 'grid'}
-                className="h-8 w-8"
+                className={cn('h-8 w-8', viewMode === 'grid' ? 'bg-card text-primary shadow-sm hover:bg-card' : 'text-muted-foreground')}
                 onClick={() => setViewMode('grid')}
               />
             </div>

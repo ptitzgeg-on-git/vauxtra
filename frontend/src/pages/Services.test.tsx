@@ -19,6 +19,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/render';
+import { optionLabels, selectValue } from '@/test/select';
 import type { Environment, Service, Tag } from '@/types/api';
 
 const TAG: Tag = { id: 5, name: 'edge', color: '#3b82f6' };
@@ -85,10 +86,9 @@ vi.mock('@/api/client', () => ({
 
 const { Services } = await import('./Services');
 
-const tagSelect = () => screen.getByRole('combobox', { name: 'services.filter.tag' }) as HTMLSelectElement;
-const environmentSelect = () =>
-  screen.getByRole('combobox', { name: 'services.filter.environment' }) as HTMLSelectElement;
-const labels = (select: HTMLSelectElement) => Array.from(select.options, (option) => option.textContent);
+const tagSelect = () => screen.getByRole('combobox', { name: 'services.filter.tag' });
+const environmentSelect = () => screen.getByRole('combobox', { name: 'services.filter.environment' });
+const labels = optionLabels;
 
 /** Waited for, so no assertion races the four queries this page opens. */
 const ready = () => screen.findByRole('combobox', { name: 'services.filter.tag' });
@@ -108,7 +108,7 @@ describe('Services, a filter whose target the page cannot name', () => {
     renderWithProviders(<Services />, { route: '/services?tag=5' });
     await ready();
     await waitFor(() => expect(labels(tagSelect())).toContain('edge'));
-    expect(tagSelect().value).toBe('5');
+    expect(selectValue(tagSelect())).toBe('5');
     expect(labels(tagSelect())).not.toContain('services.filter.tag_gone');
     expect(labels(tagSelect())).not.toContain('services.filter.tag_unread');
   });
@@ -119,7 +119,7 @@ describe('Services, a filter whose target the page cannot name', () => {
     await ready();
     await waitFor(() => expect(labels(tagSelect())).toContain('services.filter.tag_gone'));
     expect(labels(tagSelect())).not.toContain('services.filter.tag_unread');
-    expect(tagSelect().value).toBe('5');
+    expect(selectValue(tagSelect())).toBe('5');
   });
 
   it('claims nothing about the tag while its list is still in flight', async () => {
@@ -128,7 +128,7 @@ describe('Services, a filter whose target the page cannot name', () => {
     await ready();
     await waitFor(() => expect(labels(tagSelect())).toContain('services.filter.tag_unread'));
     expect(labels(tagSelect())).not.toContain('services.filter.tag_gone');
-    expect(tagSelect().value).toBe('5');
+    expect(selectValue(tagSelect())).toBe('5');
   });
 
   it('claims nothing about the tag when its list could not be loaded', async () => {
@@ -137,14 +137,14 @@ describe('Services, a filter whose target the page cannot name', () => {
     await ready();
     await waitFor(() => expect(labels(tagSelect())).toContain('services.filter.tag_unread'));
     expect(labels(tagSelect())).not.toContain('services.filter.tag_gone');
-    expect(tagSelect().value).toBe('5');
+    expect(selectValue(tagSelect())).toBe('5');
   });
 
   it('adds nothing at all when no tag filter is applied', async () => {
     tagsFail = true;
     renderWithProviders(<Services />, { route: '/services' });
     await ready();
-    expect(tagSelect().value).toBe('');
+    expect(selectValue(tagSelect())).toBe('');
     expect(labels(tagSelect())).toEqual(['services.filter.all_tags']);
   });
 
@@ -154,7 +154,7 @@ describe('Services, a filter whose target the page cannot name', () => {
     await ready();
     await waitFor(() => expect(labels(environmentSelect())).toContain('services.filter.environment_unread'));
     expect(labels(environmentSelect())).not.toContain('services.filter.environment_gone');
-    expect(environmentSelect().value).toBe('3');
+    expect(selectValue(environmentSelect())).toBe('3');
   });
 
   it('calls the environment deleted once its own list has answered', async () => {
@@ -162,7 +162,7 @@ describe('Services, a filter whose target the page cannot name', () => {
     renderWithProviders(<Services />, { route: '/services?env=3' });
     await ready();
     await waitFor(() => expect(labels(environmentSelect())).toContain('services.filter.environment_gone'));
-    expect(environmentSelect().value).toBe('3');
+    expect(selectValue(environmentSelect())).toBe('3');
   });
 
   it('judges the two lists apart, since either can be the one that failed', async () => {

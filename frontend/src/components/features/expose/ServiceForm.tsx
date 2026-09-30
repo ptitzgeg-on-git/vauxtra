@@ -24,6 +24,7 @@ import {
   Input,
   SectionHeading,
   Select,
+  SuggestInput,
   Skeleton,
   Switch,
 } from '@/components/ui';
@@ -208,6 +209,7 @@ function TaxonomyChips({
             <Chip
               key={item.id}
               size="sm"
+              checkable
               selected={selected.includes(item.id)}
               onClick={() => onToggle(item.id)}
               icon={
@@ -249,7 +251,6 @@ export function ServiceForm({
 }: ServiceFormProps) {
   const t = useT();
   const modeGroupName = useId();
-  const domainListId = useId();
   // Opening the form with both providers on "None" is not a mistake yet; it is one once the
   // operator has picked and cleared a provider. Until then "Continue" still refuses and says why.
   const [providersTouched, setProvidersTouched] = useState(false);
@@ -468,7 +469,7 @@ export function ServiceForm({
                 // "You have no domains" and "we could not read your domains" are the same
                 // empty array, and only one of them is worth a trip to the settings page.
                 // Keyed on the list still being empty, because a refresh can fail over data
-                // that already arrived -- and those domains are in the datalist below.
+                // that already arrived -- and those domains are in the suggestions below.
                 t('expose.field.domain_hint_unavailable')
               ) : domains.length === 0 && !isLoadingDomains ? (
                 <>
@@ -481,16 +482,15 @@ export function ServiceForm({
               ) : undefined
             }
           >
-            <Input
-              list={domains.length > 0 ? domainListId : undefined}
+            <SuggestInput
+              suggestions={domains}
               type="text"
               required
-              autoComplete="off"
               spellCheck={false}
               placeholder={isLoadingDomains ? t('common.loading') : t('expose.field.domain_placeholder')}
               value={formData.domain}
-              onChange={(e) => {
-                const dom = e.target.value.trim().toLowerCase();
+              onValueChange={(raw) => {
+                const dom = raw.trim().toLowerCase();
                 setFormData((prev) => {
                   const next: FormState = { ...prev, domain: dom };
                   if (prev.expose_mode === 'tunnel' && tunnelHostnameIsDefault && prev.subdomain && dom) {
@@ -501,13 +501,6 @@ export function ServiceForm({
               }}
             />
           </Field>
-          {domains.length > 0 && (
-            <datalist id={domainListId}>
-              {domains.map((domain) => (
-                <option key={domain} value={domain} />
-              ))}
-            </datalist>
-          )}
         </div>
 
         <fieldset className="space-y-2">
