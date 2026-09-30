@@ -31,6 +31,33 @@ def _numeric_host_id(host_id) -> int | None:
         return None
 
 
+def _name(value) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def _certificate_names(cert: dict) -> set[str]:
+    names = {_name(n) for n in cert.get("domains") or [] if n}
+    nice = _name(cert.get("nice_name"))
+    if nice:
+        names.add(nice)
+    names.discard("")
+    return names
+
+
+def _coverage(names: set[str], host: str) -> str | None:
+    """How a certificate carrying `names` covers `host`: "exact", "wildcard" or None.
+
+    A TLS wildcard covers exactly one label: `*.example.com` covers `vault.example.com`, and
+    neither `a.b.example.com` nor `example.com` itself.
+    """
+    if host in names:
+        return "exact"
+    parent = host.split(".", 1)[1] if "." in host else ""
+    if parent and f"*.{parent}" in names:
+        return "wildcard"
+    return None
+
+
 class NPMProvider(ProxyProvider):
 
     def __init__(self, url: str, email: str, password: str):
@@ -195,24 +222,52 @@ class NPMProvider(ProxyProvider):
     def update_host(self, host_id: int, domain: str, ip: str, port: int,
                     scheme: str = "http", websocket: bool = False,
                     cert_id: int | None = None) -> bool:
-        """Update an existing proxy host via PUT."""
+        """Point an existing proxy host at the service, and leave the rest of it as it is.
+
+        This used to PUT the host whole, built the way `create_host` builds a new one: one
+        domain name, no custom location, HSTS off, exploit blocking on, and the certificate
+        the lookup had found, or none. NPM applies the fields a PUT names and keeps the
+        others, so every push and every edit reset what the operator had set in NPM itself:
+        the other names of the host, its custom locations, HSTS, and the certificate of any
+        host the lookup did not recognise -- which then served without HTTPS.
+
+        The host is read first, and the PUT names what Vauxtra owns: the forward target,
+        websockets, the service's name, and the certificate when the lookup found one that
+        covers the name. `advanced_config`, the access list, caching, exploit blocking and
+        the other names stay the operator's. A host that cannot be read is not written:
+        writing it blind is what reset it.
+        """
         host_id = _numeric_host_id(host_id)
         if host_id is None or not self._ensure_auth():
             return False
-        payload = {
-            "domain_names": [domain],
+        current = self._read_host(host_id)
+        if current is None:
+            return False
+
+        names = [str(n) for n in current.get("domain_names") or [] if n]
+        renamed = _name(domain) not in {_name(n) for n in names}
+        if renamed:
+            # Vauxtra creates a host under a single name, the service's, so any other name
+            # was added in NPM by hand. A rename replaces the first and keeps the rest.
+            names = [domain, *names[1:]]
+        payload: dict = {
+            "domain_names": names or [domain],
             "forward_scheme": scheme,
             "forward_host": ip,
             "forward_port": port,
-            "certificate_id": cert_id,
-            "ssl_forced": cert_id is not None,
-            "http2_support": cert_id is not None,
-            "block_exploits": True,
             "allow_websocket_upgrade": websocket,
-            "hsts_enabled": False,
-            "locations": [],
-            "meta": {},
         }
+
+        held = current.get("certificate_id") or 0  # NPM stores 0 for "no certificate"
+        if cert_id is not None:
+            if cert_id != held:
+                payload.update(certificate_id=cert_id, ssl_forced=True, http2_support=True)
+        elif renamed and held and self._certificate_covers(held, domain) is False:
+            # The certificate was issued for the old name. Kept, it would answer HTTPS for
+            # the new one with a name the browser refuses -- the error wall that
+            # `find_best_certificate` exists to avoid.
+            payload.update(certificate_id=0, ssl_forced=False, http2_support=False, hsts_enabled=False)
+
         try:
             r = self.session.put(
                 f"{self.api_url}/nginx/proxy-hosts/{host_id}",
@@ -223,8 +278,8 @@ class NPMProvider(ProxyProvider):
         except requests.RequestException:
             return False
 
-    def _host_enabled(self, host_id: int) -> bool | None:
-        """Whether NPM serves this host right now, or None when the state could not be read."""
+    def _read_host(self, host_id: int) -> dict | None:
+        """The proxy host as NPM holds it, or None when it could not be read."""
         try:
             r = self.session.get(
                 f"{self.api_url}/nginx/proxy-hosts/{host_id}",
@@ -232,9 +287,31 @@ class NPMProvider(ProxyProvider):
             )
             if r.status_code != 200:
                 return None
-            return bool(r.json().get("enabled"))
+            data = r.json()
         except (requests.RequestException, ValueError):
             return None
+        return data if isinstance(data, dict) else None
+
+    def _certificate_covers(self, cert_id: int, host: str) -> bool | None:
+        """Whether this certificate covers `host`, or None when that cannot be told.
+
+        None when the certificate is not in the listing -- NPM shows a user only the
+        certificates it may see -- or the listing failed. The caller keeps the certificate
+        then: what cannot be judged is not removed.
+        """
+        try:
+            certificates = self.get_certificates()
+        except (requests.RequestException, RuntimeError, ValueError):
+            return None
+        for cert in certificates:
+            if cert.get("id") == cert_id:
+                return _coverage(_certificate_names(cert), _name(host)) is not None
+        return None
+
+    def _host_enabled(self, host_id: int) -> bool | None:
+        """Whether NPM serves this host right now, or None when the state could not be read."""
+        host = self._read_host(host_id)
+        return None if host is None else bool(host.get("enabled"))
 
     def toggle_host(self, host_id: int | str, enabled: bool) -> bool:
         """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints.
@@ -291,40 +368,36 @@ class NPMProvider(ProxyProvider):
             })
         return result
 
-    def find_best_certificate(self, domain_suffix: str) -> int | None:
-        """Return a certificate that actually covers the host, or None.
+    def find_best_certificate(self, host: str) -> int | None:
+        """Return a certificate that actually covers `host`, or None.
 
-        Callers pass the full service hostname. A certificate qualifies only when one
-        of its names covers that host: the exact name, or the wildcard of its parent
-        zone -- TLS wildcards cover exactly one label, so `*.example.com` covers
-        `vault.example.com` but not `a.b.example.com`. `*.host` is also accepted for
-        the case where the caller passes a bare zone.
+        `host` is the full name the proxy host answers on, `vault.example.com`, never the
+        zone. A certificate qualifies only when one of its names covers it: the exact name,
+        or the wildcard of its parent zone (`_coverage`). An exact certificate wins.
+
+        The callers used to pass the zone, and a `*.{zone}` rule here made that work for the
+        one case it could, a wildcard. A certificate issued for the host itself -- what NPM
+        requests by default, one per host -- was never found, and `update_host` then wrote
+        the host without it: every push took HTTPS away from such a host. The rule is gone
+        with the callers' mistake; it also handed `*.example.com` to `example.com`, which
+        that certificate does not cover.
 
         There is deliberately no last-resort fallback. `create_host` sets
         `"ssl_forced": cert_id is not None`: handing back an unrelated certificate
         forces HTTPS on a host it does not cover, and every visitor is met with
         ERR_CERT_COMMON_NAME_INVALID. No certificate is the honest answer.
         """
-        host = (domain_suffix or "").strip().lower().rstrip(".")
+        host = _name(host)
         if not host:
             return None
-        parent = host.split(".", 1)[1] if "." in host else ""
 
         exact: int | None = None
         wildcard: int | None = None
-
         for cert in self.get_certificates():
-            cid = cert["id"]
-            names = {str(n).strip().lower().rstrip(".") for n in cert["domains"] if n}
-            nice = str(cert.get("nice_name") or "").strip().lower().rstrip(".")
-            if nice:
-                names.add(nice)
-
-            if exact is None and host in names:
-                exact = cid
-            if wildcard is None and (
-                (parent and f"*.{parent}" in names) or f"*.{host}" in names
-            ):
-                wildcard = cid
+            coverage = _coverage(_certificate_names(cert), host)
+            if coverage == "exact" and exact is None:
+                exact = cert["id"]
+            elif coverage == "wildcard" and wildcard is None:
+                wildcard = cert["id"]
 
         return exact if exact is not None else wildcard

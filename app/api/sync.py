@@ -1073,7 +1073,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
 
         try:
             proxy   = create_provider(row)
-            cert_id = None if expose_mode == "tunnel" else proxy.find_best_certificate(svc["domain"])
+            cert_id = None if expose_mode == "tunnel" else proxy.find_best_certificate(public_host)
 
             host_id = None
             if expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
