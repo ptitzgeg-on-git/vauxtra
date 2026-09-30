@@ -29,7 +29,7 @@ export interface StatCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'onC
 const TREND_ICON = { up: <TrendingUp />, down: <TrendingDown />, flat: <Minus /> } as const;
 const TREND_TONE: Record<StatTrend['direction'], Tone> = { up: 'success', down: 'danger', flat: 'neutral' };
 
-/** A KPI tile: label, big tabular value, hint, tinted icon and an optional trend. */
+/** A KPI tile: label with a small toned icon, big tabular value, hint and an optional trend. */
 export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(function StatCard(
   { label, value, hint, icon, tone = 'primary', trend, loading = false, onClick, className, ...rest },
   ref,
@@ -40,19 +40,19 @@ export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(function StatC
 
   const body = (
     <>
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {icon && (
-          <span aria-hidden="true" className={cn('inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl [&>svg]:h-4 [&>svg]:w-4', c.bg, c.text)}>
+          <span aria-hidden="true" className={cn('inline-flex shrink-0 [&>svg]:h-3.5 [&>svg]:w-3.5', c.text)}>
             {icon}
           </span>
         )}
-      </div>
+        {label}
+      </p>
       <div className="mt-2 flex items-end justify-between gap-3">
         {loading ? (
           <Skeleton className="h-8 w-20" />
         ) : (
-          <p className="text-3xl font-bold tracking-tight text-foreground tabular-nums leading-none">{value}</p>
+          <p className="text-3xl font-semibold tracking-tight text-foreground tabular-nums leading-none">{value}</p>
         )}
         {trend && !loading && trendTone && (
           <span className={cn('inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-semibold tabular-nums', trendTone.bg, trendTone.text)}>
@@ -70,7 +70,7 @@ export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(function StatC
     </>
   );
 
-  const surface = 'rounded-2xl border border-border bg-card shadow-card p-5';
+  const surface = 'rounded-2xl border border-border bg-card shadow-card p-4';
 
   if (onClick) {
     return (
@@ -81,8 +81,8 @@ export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(function StatC
           aria-busy={loading || undefined}
           className={cn(
             surface,
-            'w-full text-left transition-[transform,box-shadow,border-color] duration-200 ease-out-expo',
-            'hover:-translate-y-0.5 hover:shadow-elevated hover:border-primary/30',
+            'w-full text-left transition-[background-color,border-color] duration-150',
+            'hover:border-primary/40 hover:bg-accent/40',
           )}
         >
           {body}

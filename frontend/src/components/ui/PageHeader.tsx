@@ -10,7 +10,7 @@ export interface PageHeaderProps extends Omit<HTMLAttributes<HTMLElement>, 'titl
   actions?: ReactNode;
   /** Small line under the description: counts, last refresh, status badges. */
   meta?: ReactNode;
-  /** Icon shown in a tinted square to the left of the title. */
+  /** Small icon shown before the eyebrow (or before the title when there is no eyebrow). */
   icon?: ReactNode;
 }
 
@@ -25,20 +25,18 @@ export const PageHeader = forwardRef<HTMLElement, PageHeaderProps>(function Page
       className={cn('flex flex-col gap-4 md:flex-row md:items-start md:justify-between', className)}
       {...rest}
     >
-      <div className="min-w-0 flex items-start gap-4">
-        {icon && (
-          <span
-            aria-hidden="true"
-            className="mt-0.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary [&>svg]:h-5 [&>svg]:w-5"
-          >
-            {icon}
-          </span>
-        )}
+      <div className="min-w-0">
         <div className="min-w-0 space-y-1">
           {eyebrow && (
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{eyebrow}</p>
+            <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {icon && <span aria-hidden="true" className="inline-flex text-primary [&>svg]:h-3.5 [&>svg]:w-3.5">{icon}</span>}
+              {eyebrow}
+            </p>
           )}
-          <h1 className="text-2xl font-bold tracking-tight text-foreground leading-tight">{title}</h1>
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight text-foreground leading-tight">
+            {icon && !eyebrow && <span aria-hidden="true" className="inline-flex text-primary [&>svg]:h-5 [&>svg]:w-5">{icon}</span>}
+            {title}
+          </h1>
           {description && <p className="text-sm text-muted-foreground max-w-2xl">{description}</p>}
           {meta && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-xs text-muted-foreground">{meta}</div>}
         </div>

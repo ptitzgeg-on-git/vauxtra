@@ -50,12 +50,6 @@ function unwrapHealth(raw: unknown): ProvidersHealthMap | undefined {
   return raw as ProvidersHealthMap;
 }
 
-function greetingKey(hour: number): string {
-  if (hour < 12) return 'dashboard.greeting.morning';
-  if (hour < 18) return 'dashboard.greeting.afternoon';
-  return 'dashboard.greeting.evening';
-}
-
 export function Dashboard() {
   const t = useT();
   const { formatDate, formatTime, formatNumber } = useFormat();
@@ -65,7 +59,6 @@ export function Dashboard() {
 
   // One "now" for the whole page so relative times agree; ticks every 30 s.
   const [now, setNow] = useState(() => Date.now());
-  const [hour] = useState(() => new Date().getHours());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(id);
@@ -312,9 +305,8 @@ export function Dashboard() {
   return (
     <div className="mx-auto max-w-7xl space-y-6 pb-8 animate-in fade-in animate-duration-300">
       <PageHeader
-        eyebrow={t('nav.dashboard')}
         icon={<LayoutDashboard />}
-        title={t(greetingKey(hour))}
+        title={t('nav.dashboard')}
         description={t('dashboard.description')}
         meta={
           <>
