@@ -11,6 +11,7 @@ import { api } from './api/client';
 import { translateApiError } from './lib/errors';
 import { useT } from './i18n';
 import { AUTH_STATUS_KEY, useAuthStatus } from './hooks/useAuthStatus';
+import { useWizardInProgress } from './lib/setupSession';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const Services = lazy(() => import('./pages/Services').then((m) => ({ default: m.Services })));
@@ -84,7 +85,8 @@ function BootError({ error, onRetry, busy }: { error: unknown; onRetry: () => vo
   );
 }
 
-function AuthGate() {
+/** The boot gate: login, setup wizard or the app. Exported so a test can ask it which. */
+export function AuthGate() {
   const qc = useQueryClient();
   const {
     data: auth,
@@ -94,6 +96,9 @@ function AuthGate() {
     error,
     refetch,
   } = useAuthStatus();
+  // A wizard under way keeps the screen even once the server no longer requires setup: its
+  // own password step and its first saved integration both flip that answer mid-way.
+  const wizardInProgress = useWizardInProgress();
 
   // Listen for 401 events from Axios interceptor
   useEffect(() => {
@@ -118,10 +123,11 @@ function AuthGate() {
     return <Login onSuccess={() => qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY })} />;
   }
 
-  // Show setup wizard if server says setup is required
-  if (auth.setup_required) {
+  // Show the setup wizard while the server requires it, or while one is under way in this tab
+  if (auth.setup_required || wizardInProgress) {
     return (
       <Setup
+        canRestore={auth.setup_required}
         onComplete={async () => {
           // Mark setup as complete on server
           await api.post('/auth/setup-complete');
