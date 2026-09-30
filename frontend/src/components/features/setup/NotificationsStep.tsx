@@ -63,6 +63,7 @@ export function NotificationsStep({ onBack, onContinue }: NotificationsStepProps
         label: listUnread || webhooks.length > 0
           ? t('setup.providers.continue')
           : t('setup.providers.skip'),
+        variant: listUnread || webhooks.length > 0 ? undefined : 'outline',
         onClick: onContinue,
         disabled: webhooksQuery.isLoading,
       }}

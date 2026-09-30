@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useRef, useState } from 'react';
-import { BookOpen, ChevronRight, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
+import { BookOpen, Eye, EyeOff, GitMerge, Plus, Server, Shield, X, Zap } from 'lucide-react';
 import {
   Badge,
   Card,
@@ -123,7 +123,12 @@ export function ProviderFormStep({
   const required = requiredFields(formData.type, selectedMeta);
   const isRequired = (key: keyof ProviderFormState) => required.includes(key);
   const missing = missingFields(formData, selectedMeta);
-  const stepMissing = (currentGuidedStep?.fields ?? []).filter((field) => missing.includes(field.key)).map((field) => field.key);
+  // The name is asked on the first guided step only, so that step also holds "Next" for it:
+  // no later step can be reached with it blank, and none has to link back to it.
+  const stepMissing = [
+    ...(stepIndex === 0 && missing.includes('name') ? (['name'] as const) : []),
+    ...(currentGuidedStep?.fields ?? []).filter((field) => missing.includes(field.key)).map((field) => field.key),
+  ];
   const canSubmitProvider = Boolean(formData.type) && missing.length === 0;
 
   const isLastGuided = stepIndex === guidedSteps.length - 1;
@@ -349,7 +354,7 @@ export function ProviderFormStep({
               setWizardMode('guided');
               setGuidedStepIndex(0);
             }}
-            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-primary/30 bg-primary/5 p-5 text-left transition-colors hover:border-primary/50 hover:bg-primary/10 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-border bg-card p-5 text-left transition-colors hover:border-primary/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
               <BookOpen className="h-5 w-5" />
@@ -360,18 +365,19 @@ export function ProviderFormStep({
                 {t('setup.provider_form.guided_hint', { count: guidedSteps.length })}
               </span>
             </span>
-            <span className="mt-auto inline-flex items-center gap-1 pt-1 text-xs font-semibold text-primary">
-              {t('setup.password.recommended')}
-              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+            <span className="mt-auto pt-1">
+              <Badge tone="primary" size="sm">
+                {t('setup.password.recommended')}
+              </Badge>
             </span>
           </button>
 
           <button
             type="button"
             onClick={() => setWizardMode('expert')}
-            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-transparent bg-muted/50 p-5 text-left transition-colors hover:border-border hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-full flex-col items-start gap-3 rounded-xl border-2 border-border bg-card p-5 text-left transition-colors hover:border-primary/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-border bg-muted text-muted-foreground">
+            <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
               <Zap className="h-5 w-5" />
             </span>
             <span className="block">
@@ -386,15 +392,11 @@ export function ProviderFormStep({
       {showGuided && currentGuidedStep && (
         <Card>
           <CardContent className="space-y-5 p-5 sm:p-6">
-            {nameField('vx-guided-name')}
+            {/* First, as in the expert form, but asked once: it was repeated on every step. */}
+            {stepIndex === 0 && nameField('vx-guided-name')}
 
-            <div className="space-y-5 border-t border-border pt-5">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone="primary" size="sm" className="nums">
-                  {t('provider_modal.guided.step', { step: stepIndex + 1, total: guidedSteps.length })}
-                </Badge>
-                <h3 className="text-base font-semibold text-foreground">{currentGuidedStep.title}</h3>
-              </div>
+            <div className={cn('space-y-5', stepIndex === 0 && 'border-t border-border pt-5')}>
+              <h3 className="text-base font-semibold text-foreground">{currentGuidedStep.title}</h3>
 
               <p className="whitespace-pre-wrap rounded-xl border border-border bg-muted/50 p-4 text-sm leading-relaxed text-muted-foreground">
                 {currentGuidedStep.body}
@@ -426,6 +428,7 @@ export function ProviderFormStep({
                   </Field>
                 );
               })}
+
 
               {/* A field asked on an earlier step is a link back to it: the password is not kept
                   across a reload, so the last step can be reached with it gone. */}

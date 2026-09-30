@@ -153,6 +153,7 @@ export function ImportStep({
       primary={{
         label:
           chosen.length > 0 ? t('setup.import.finish_import', { count: chosen.length }) : t('setup.import.finish_skip'),
+        variant: chosen.length > 0 ? undefined : 'outline',
         onClick: onImportAndFinish,
         loading: importing,
       }}

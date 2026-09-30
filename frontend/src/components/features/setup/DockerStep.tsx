@@ -56,6 +56,7 @@ export function DockerStep({ onBack, onContinue }: DockerStepProps) {
         label: listUnread || endpoints.length > 0
           ? t('setup.providers.continue')
           : t('setup.providers.skip'),
+        variant: listUnread || endpoints.length > 0 ? undefined : 'outline',
         onClick: onContinue,
         disabled: endpointsQuery.isLoading,
       }}
