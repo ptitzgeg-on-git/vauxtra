@@ -8,8 +8,8 @@
  */
 
 import { useState } from 'react';
-import { AlertTriangle, ChevronRight, Eye, EyeOff, Globe, Lock } from 'lucide-react';
-import { Button, Field, InlineAlert, Input, cn } from '@/components/ui';
+import { AlertTriangle, Eye, EyeOff, Globe, Lock } from 'lucide-react';
+import { Badge, Field, InlineAlert, Input, cn } from '@/components/ui';
 import { MIN_PASSWORD_LENGTH } from '@/constants';
 import { useT } from '@/i18n';
 import { SetupStepShell } from './SetupStepShell';
@@ -54,7 +54,7 @@ function ModeCard({
           ? tone === 'primary'
             ? 'border-primary bg-primary/5'
             : 'border-warning/50 bg-warning/10'
-          : 'border-transparent bg-muted/50 hover:border-border hover:bg-muted',
+          : 'border-border bg-card hover:border-primary/40',
       )}
     >
       <span
@@ -104,9 +104,7 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
 
   const strength = password.length >= 20 ? 4 : password.length >= 16 ? 3 : password.length >= MIN_PASSWORD_LENGTH ? 2 : 1;
 
-  const strengthLabel = tooShort
-    ? t('setup.password.too_short', { min: MIN_PASSWORD_LENGTH })
-    : strength === 4
+  const strengthLabel = strength === 4
       ? t('setup.password.strength_strong')
       : strength === 3
         ? t('setup.password.strength_good')
@@ -141,46 +139,35 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
       bare
     >
       <div className="space-y-5">
-        {(skipPassword === null || !password) && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <ModeCard
-              selected={skipPassword === false}
-              onClick={() => setSkipPassword(false)}
-              icon={<Lock />}
-              title={t('setup.password.protect_title')}
-              body={t('setup.password.protect_body')}
-              tone="primary"
-              footer={
-                skipPassword === false ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
-                    {t('setup.password.selected')}
-                    <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
-                  </span>
-                ) : (
-                  <span className="text-xs font-medium text-muted-foreground">{t('setup.password.recommended')}</span>
-                )
-              }
-            />
-            <ModeCard
-              selected={skipPassword === true}
-              onClick={() => setSkipPassword(true)}
-              icon={<Globe />}
-              title={t('setup.password.open_title')}
-              body={t('setup.password.open_body')}
-              tone="warning"
-              footer={
-                skipPassword === true ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-warning">
-                    <AlertTriangle aria-hidden="true" className="h-3 w-3" />
-                    {t('setup.password.not_recommended')}
-                  </span>
-                ) : (
-                  <span className="text-xs font-medium text-muted-foreground">{t('setup.password.open_hint')}</span>
-                )
-              }
-            />
-          </div>
-        )}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <ModeCard
+            selected={skipPassword === false}
+            onClick={() => setSkipPassword(false)}
+            icon={<Lock />}
+            title={t('setup.password.protect_title')}
+            body={t('setup.password.protect_body')}
+            tone="primary"
+            footer={
+              <Badge tone="primary" size="sm">
+                {t('setup.password.recommended')}
+              </Badge>
+            }
+          />
+          <ModeCard
+            selected={skipPassword === true}
+            onClick={() => setSkipPassword(true)}
+            icon={<Globe />}
+            title={t('setup.password.open_title')}
+            body={t('setup.password.open_body')}
+            tone="warning"
+            footer={
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                <AlertTriangle aria-hidden="true" className="h-3 w-3" />
+                {t('setup.password.open_hint')}
+              </span>
+            }
+          />
+        </div>
 
         {skipPassword === false && (
           <div className="animate-in fade-in space-y-5 rounded-2xl border border-border bg-card p-5 shadow-card sm:p-6">
@@ -227,9 +214,12 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
                     />
                   ))}
                 </div>
-                <p className="text-xs text-muted-foreground" role="status">
-                  {strengthLabel}
-                </p>
+                {/* While too short, the field's own error already says so; the bar alone is enough here. */}
+                {!tooShort && (
+                  <p className="text-xs text-muted-foreground" role="status">
+                    {strengthLabel}
+                  </p>
+                )}
               </div>
             )}
 
@@ -248,10 +238,6 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
                 size="lg"
               />
             </Field>
-
-            <Button variant="link" size="sm" onClick={() => setSkipPassword(null)} className="text-muted-foreground">
-              {t('setup.password.change_choice')}
-            </Button>
           </div>
         )}
 
@@ -260,9 +246,6 @@ export function PasswordStep({ onBack, onContinue, onSetPassword, skipPassword, 
             <InlineAlert tone="warning" title={t('setup.password.open_warning_title')}>
               {t('setup.password.open_warning_body')}
             </InlineAlert>
-            <Button variant="link" size="sm" onClick={() => setSkipPassword(null)} className="text-muted-foreground">
-              {t('setup.password.change_choice')}
-            </Button>
           </div>
         )}
       </div>
