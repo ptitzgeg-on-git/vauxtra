@@ -139,9 +139,9 @@ class EmptyingTheDatabaseAsksForAWordTests(unittest.TestCase):
 class TheWizardRestoreIsTheOneExceptionTests(unittest.TestCase):
     """`RestoreStep.tsx` posts to `/restore` and asks for no word. That is deliberate.
 
-    It is the first-run wizard's "I have a backup" branch, and the server only offers the
-    wizard on an instance it considers unconfigured. Asking the operator to type RESTORE on
-    the screen whose entire purpose is to restore would be ceremony, not a guard.
+    It is the first-run wizard's "I have a backup" branch, and the wizard only offers it on an
+    instance the server considers unconfigured. Asking the operator to type RESTORE on the
+    screen whose entire purpose is to restore would be ceremony, not a guard.
 
     What makes the exception safe is the precondition, so the precondition is what is tested.
     If the wizard ever becomes reachable on a configured instance, these fail and the
@@ -157,11 +157,29 @@ class TheWizardRestoreIsTheOneExceptionTests(unittest.TestCase):
             "belongs in _WIPING_CALL_SITES and this exception should go",
         )
 
-    def test_the_wizard_is_only_mounted_while_setup_is_required(self):
+    def test_the_wizard_restore_is_only_offered_while_setup_is_required(self):
+        """The wizard itself may stay on screen past `setup_required`.
+
+        Its own password step and its first saved integration both flip that answer mid-way, so
+        a tab that started the wizard keeps it until it ends (`lib/setupSession.ts`). What must
+        not follow it there is this branch: the gate hands the server's verdict to the wizard,
+        and the welcome screen offers the restore only when the server still says so.
+        """
         app = (_SRC / "App.tsx").read_text(encoding="utf-8")
-        mount = re.search(r"if \(auth\.setup_required\) \{(.{0,200})", app, re.DOTALL)
+        mount = re.search(r"if \(auth\.setup_required \|\| wizardInProgress\) \{(.{0,300})", app, re.DOTALL)
         self.assertIsNotNone(mount, "App.tsx no longer gates the wizard on auth.setup_required")
         self.assertIn("<Setup", mount.group(1))
+        self.assertIn(
+            "canRestore={auth.setup_required}",
+            mount.group(1),
+            "the wizard no longer receives the server's verdict on whether its restore may open",
+        )
+        setup = (_SRC / "pages" / "Setup.tsx").read_text(encoding="utf-8")
+        self.assertIn(
+            "onRestore={canRestore ? () => setStep('restore') : undefined}",
+            setup,
+            "the welcome screen offers the unguarded restore without asking the server",
+        )
         # And nothing else renders the step.
         elsewhere = [
             p.relative_to(_SRC).as_posix()

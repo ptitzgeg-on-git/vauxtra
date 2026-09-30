@@ -39,4 +39,4 @@ export function setupProgress(step: StepName): number {
 }
 
 /** Session keys the wizard owns; cleared together when it finishes or a restore lands. */
-export const SETUP_SESSION_KEYS = ['step', 'skipPassword', 'formData', 'wizardMode', 'guidedStepIndex'] as const;
+export const SETUP_SESSION_KEYS = ['step', 'skipPassword', 'formData', 'wizardMode', 'guidedStepIndex', 'active'] as const;
