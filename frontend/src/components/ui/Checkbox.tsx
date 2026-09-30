@@ -44,9 +44,12 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(function Che
         aria-invalid={control.invalid || undefined}
         aria-describedby={control.describedBy}
         className={cn(
-          'peer h-4 w-4 cursor-pointer appearance-none rounded-sm border border-border bg-input shadow-sm transition-colors',
-          'checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary',
-          'focus:ring-2 focus:ring-primary/25 focus:ring-offset-0',
+          // The unchecked box used the card border colour, which on a white card is barely a line:
+          // a list of options read as plain text. The border is the muted text colour instead.
+          'peer h-4 w-4 cursor-pointer appearance-none rounded-[5px] border border-muted-foreground/45 bg-input shadow-xs transition-colors',
+          'hover:border-primary/70 checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary',
+          // Keyboard only: a ring left behind by every mouse click read as an error state.
+          'focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-0',
           'disabled:cursor-not-allowed disabled:opacity-50',
           control.invalid && 'border-destructive',
           className,
