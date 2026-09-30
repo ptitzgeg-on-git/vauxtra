@@ -112,7 +112,7 @@ describe('StatRow, the certificate tile', () => {
     certificates: { expiring: 3, expired: 0, total: 12, thresholdDays: 30 },
   };
 
-  /** The tinted bubble is `aria-hidden`, which is why the words below it have to carry this too. */
+  /** The toned icon is `aria-hidden`, which is why the words below it have to carry this too. */
   function certificateTone(): string {
     const card = screen.getByText('dashboard.stats.certificates').closest('button');
     return card?.querySelector('[aria-hidden="true"]')?.className ?? '';
@@ -134,20 +134,20 @@ describe('StatRow, the certificate tile', () => {
   it('is drawn the way every other live failure on this page is drawn', () => {
     renderWithProviders(<StatRow {...SOME_LAPSED} />);
 
-    expect(certificateTone()).toContain('bg-destructive/10');
+    expect(certificateTone()).toContain('text-destructive');
   });
 
   it('stays a warning, and names the estate, while nothing has lapsed yet', () => {
     renderWithProviders(<StatRow {...NONE_LAPSED} />);
 
     expect(screen.getByText('dashboard.stats.certificates_hint')).toBeInTheDocument();
-    expect(certificateTone()).toContain('bg-warning/10');
+    expect(certificateTone()).toContain('text-warning');
   });
 
   it('claims nothing has lapsed when the expiry check itself never answered', () => {
     renderWithProviders(<StatRow {...ALL_FAILED} />);
 
     expect(screen.getByText('dashboard.stats.certificates_unknown')).toBeInTheDocument();
-    expect(certificateTone()).not.toContain('bg-destructive/10');
+    expect(certificateTone()).not.toContain('text-destructive');
   });
 });

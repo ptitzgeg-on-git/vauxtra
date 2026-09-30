@@ -13,7 +13,7 @@ const BASE =
   'select-none disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]';
 
 const VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow-glow',
+  primary: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
   secondary: 'bg-secondary text-secondary-foreground border border-border hover:bg-accent',
   outline: 'border border-border bg-card text-foreground shadow-sm hover:bg-accent hover:text-foreground',
   ghost: 'text-muted-foreground hover:bg-accent hover:text-foreground',
