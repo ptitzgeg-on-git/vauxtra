@@ -70,17 +70,17 @@ Publishing a new self-hosted app usually means touching three tools: a DNS recor
 <table>
   <tr>
     <td width="50%" valign="top">
-      <b>Endpoints</b> — every published route with its target, providers, tags and health.<br><br>
+      <b>Services</b> — every published service with its public address, target, providers, tags and health.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/services-dark.webp">
-  <img alt="Endpoints list" src="docs/assets/screenshots/services-light.webp">
+  <img alt="Services list" src="docs/assets/screenshots/services-light.webp">
 </picture>
     </td>
     <td width="50%" valign="top">
-      <b>Route a new service</b> — DNS only, DNS + reverse proxy, or Tunnel, in one guided form.<br><br>
+      <b>Add a service</b> — DNS only, DNS + reverse proxy, or Tunnel, in one guided form.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/wizard-dark.webp">
-  <img alt="Route a new service wizard" src="docs/assets/screenshots/wizard-light.webp">
+  <img alt="Add a service form" src="docs/assets/screenshots/wizard-light.webp">
 </picture>
     </td>
   </tr>
@@ -93,7 +93,7 @@ Publishing a new self-hosted app usually means touching three tools: a DNS recor
 </picture>
     </td>
     <td width="50%" valign="top">
-      <b>Monitoring</b> — 24 h availability per route and Cloudflare Tunnel connectors.<br><br>
+      <b>Monitoring</b> — 24 h availability per service and Cloudflare Tunnel connectors.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/monitoring-dark.webp">
   <img alt="Monitoring page" src="docs/assets/screenshots/monitoring-light.webp">
