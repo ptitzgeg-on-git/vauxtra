@@ -7,6 +7,7 @@ import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
+import { LABEL_COLORS, labelColor } from '@/lib/labels';
 import {
   Badge,
   Button,
@@ -27,7 +28,7 @@ import { SettingsSection } from './SettingsSection';
 import { TaxonomyDeleteBody } from './TaxonomyDeleteBody';
 
 /** CSS colour names the backend stores as-is; the label of each one is translated. */
-const TAG_COLORS = ['blue', 'teal', 'green', 'red', 'orange', 'purple', 'cyan', 'yellow', 'pink', 'lime', 'indigo'] as const;
+const TAG_COLORS = LABEL_COLORS;
 const SEARCH_THRESHOLD = 6;
 
 type Kind = 'tags' | 'env';
@@ -67,10 +68,11 @@ export function TaxonomyTab() {
   );
 }
 
-function swatchStyle(color: string) {
+function swatchStyle(stored: string) {
+  const color = labelColor(stored);
   return {
-    backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
-    borderColor: `color-mix(in srgb, ${color} 40%, transparent)`,
+    backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
+    borderColor: `color-mix(in srgb, ${color} 35%, transparent)`,
     color,
   };
 }
@@ -423,7 +425,7 @@ function TaxonomyEditor({ kind }: { kind: Kind }) {
                 className="inline-flex items-center gap-1.5 rounded-full border py-1 pl-2.5 pr-1 text-xs font-medium"
                 style={swatchStyle(item.color)}
               >
-                <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
+                <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ backgroundColor: labelColor(item.color) }} />
                 <span className="max-w-48 truncate">{item.name}</span>
                 {held.services.length > 0 && (
                   <span className="rounded-full bg-foreground/10 px-1.5 leading-4 tabular-nums">

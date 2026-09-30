@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, CloudOff, Sparkles } from 'lucide-react';
 import { useT } from '@/i18n';
-import { Card, InlineAlert, SectionHeading, SkeletonRow, cn, toneClasses, type Tone } from '@/components/ui';
+import { Badge, Card, InlineAlert, SectionHeading, SkeletonRow, cn, toneClasses, type Tone } from '@/components/ui';
 
 export interface AttentionItem {
   id: string;
@@ -65,7 +65,7 @@ export function NeedsAttention({ items, loading, incomplete = false }: NeedsAtte
       {partial}
       <Card className="p-5 sm:p-6 animate-in fade-in">
         <SectionHeading title={t('dashboard.attention.title')} description={t('dashboard.attention.description')}>
-          <span className="text-xs font-semibold tabular-nums text-muted-foreground">{items.length}</span>
+          <Badge tone="neutral" size="sm" className="tabular-nums">{items.length}</Badge>
         </SectionHeading>
         <ul className="mt-4 divide-y divide-border/60">
           {items.map((item) => {

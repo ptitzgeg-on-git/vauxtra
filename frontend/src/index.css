@@ -258,6 +258,20 @@
     --vx-info-fg: 255 255 255;
     --vx-ring: 11 110 130;
 
+    /* Tag and environment colours: the names stored in the database, tuned per theme so
+     * every one of them stays readable (a raw `blue` or `yellow` did not). */
+    --vx-label-blue: 29 78 216;
+    --vx-label-teal: 15 118 110;
+    --vx-label-green: 21 128 61;
+    --vx-label-red: 185 28 28;
+    --vx-label-orange: 194 65 12;
+    --vx-label-purple: 126 34 206;
+    --vx-label-cyan: 14 116 144;
+    --vx-label-yellow: 161 98 7;
+    --vx-label-pink: 190 24 93;
+    --vx-label-lime: 77 124 15;
+    --vx-label-indigo: 67 56 202;
+
     --vx-shadow-card:
       0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.05);
     --vx-shadow-elevated:
@@ -291,6 +305,18 @@
     --vx-info: 110 160 245;
     --vx-info-fg: 10 25 55;
     --vx-ring: 70 160 178;
+
+    --vx-label-blue: 96 165 250;
+    --vx-label-teal: 45 212 191;
+    --vx-label-green: 74 222 128;
+    --vx-label-red: 248 113 113;
+    --vx-label-orange: 251 146 60;
+    --vx-label-purple: 192 132 252;
+    --vx-label-cyan: 34 211 238;
+    --vx-label-yellow: 250 204 21;
+    --vx-label-pink: 244 114 182;
+    --vx-label-lime: 163 230 53;
+    --vx-label-indigo: 129 140 248;
 
     --vx-shadow-card:
       0 1px 2px 0 rgb(0 0 0 / 0.35), 0 1px 3px 0 rgb(0 0 0 / 0.3);
