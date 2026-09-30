@@ -20,6 +20,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
+import { allOptionLabels } from '@/test/select';
 import type { Provider } from '@/types/api';
 
 const PROXY: Provider = {
@@ -83,12 +84,9 @@ describe('TemplateModal, the two lists its choices are drawn from', () => {
     show();
     await ready();
     // The only test here that waits for data to land rather than for a notice to appear.
-    // The poll is a text query on purpose: `getByRole` with a name recomputes an accessible
-    // name for every option in the form, worth paying once and not on every tick.
-    await screen.findAllByText('npm-home');
-    expect(screen.getByRole('option', { name: 'npm-home' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'cf-home' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'example.test' })).toBeInTheDocument();
+    await waitFor(() => expect(allOptionLabels()).toContain('npm-home'));
+    expect(allOptionLabels()).toContain('cf-home');
+    expect(allOptionLabels()).toContain('example.test');
     expect(alert()).toBeNull();
     expect(invitations()).toHaveLength(0);
     expect(hints()).toHaveLength(0);
