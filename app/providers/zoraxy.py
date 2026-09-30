@@ -655,16 +655,16 @@ class ZoraxyProvider(ProxyProvider):
             })
         return result
 
-    def find_best_certificate(self, domain_suffix: str) -> str | None:
-        """Return a certificate that actually covers the host, or None.
+    def find_best_certificate(self, host: str) -> str | None:
+        """Return a certificate that actually covers `host`, the full name, or None.
 
         Same rule as the NPM provider, for the same reason: an exact name or the wildcard
-        of the parent zone, and nothing else. Zoraxy would serve the host anyway (it
+        of the parent zone, and nothing else -- not `*.example.com` for `example.com`. Zoraxy would serve the host anyway (it
         matches by SNI on its own), but recording an unrelated certificate as preferred
         is what a later `DisableSNI` would then serve, so no certificate is the honest
         answer when nothing covers the host.
         """
-        host = (domain_suffix or "").strip().lower().rstrip(".")
+        host = (host or "").strip().lower().rstrip(".")
         if not host:
             return None
         parent = host.split(".", 1)[1] if "." in host else ""
@@ -680,9 +680,7 @@ class ZoraxyProvider(ProxyProvider):
 
             if exact is None and host in names:
                 exact = cid
-            if wildcard is None and (
-                (parent and f"*.{parent}" in names) or f"*.{host}" in names
-            ):
+            if wildcard is None and parent and f"*.{parent}" in names:
                 wildcard = cid
 
         return exact if exact is not None else wildcard
