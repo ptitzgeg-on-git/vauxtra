@@ -4,16 +4,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import {
   Activity,
-  Bell,
   BookOpen,
   Bug,
   ExternalLink,
-  FileTerminal,
   GitMerge,
   Globe,
-  Key,
   Keyboard,
-  Languages,
   LayoutDashboard,
   LayoutTemplate,
   LogOut,
@@ -25,7 +21,6 @@ import {
   Settings,
   ShieldCheck,
   Sun,
-  Tag,
   TriangleAlert,
   X,
 } from 'lucide-react';
@@ -166,13 +161,7 @@ export function Sidebar({
     [certExpiryKnown, certExpiry?.certificates, certExpiry?.warn_threshold_days, expiringSoonCount],
   );
 
-  const settingsTab = new URLSearchParams(location.search).get('tab') || 'general';
-
   const isItemActive = (item: NavItem): boolean => {
-    if (item.href.startsWith('/settings?tab=')) {
-      const tab = item.href.split('tab=')[1] || 'general';
-      return location.pathname === '/settings' && settingsTab === tab;
-    }
     if (item.href === '/') return location.pathname === '/';
     return location.pathname === item.href || location.pathname.startsWith(`${item.href}/`);
   };
@@ -214,13 +203,7 @@ export function Sidebar({
     {
       title: t('nav.group.system'),
       items: [
-        { icon: <Settings />, label: t('settings.tab.general'), href: '/settings?tab=general' },
-        { icon: <Languages />, label: t('settings.language.title'), href: '/settings?tab=language' },
-        { icon: <Globe />, label: t('settings.tab.dns'), href: '/settings?tab=dns' },
-        { icon: <Tag />, label: t('settings.tab.taxonomy'), href: '/settings?tab=taxonomy' },
-        { icon: <Key />, label: t('settings.tab.apikeys'), href: '/settings?tab=apikeys' },
-        { icon: <Bell />, label: t('settings.tab.webhooks'), href: '/settings?tab=webhooks' },
-        { icon: <FileTerminal />, label: t('settings.tab.logs'), href: '/settings?tab=logs' },
+        { icon: <Settings />, label: t('nav.settings'), href: '/settings' },
       ],
     },
   ];
@@ -356,10 +339,7 @@ export function Sidebar({
       <div className="flex items-center justify-between gap-2 px-4 pb-3 pt-5">
         <div className="flex min-w-0 items-center gap-3">
           <BrandMark size="md" />
-          <div className="min-w-0">
-            <p className="text-base font-semibold leading-none tracking-tight text-foreground">Vauxtra</p>
-            <p className="mt-1 truncate text-[11px] leading-snug text-muted-foreground">{t('layout.tagline')}</p>
-          </div>
+          <p className="text-base font-semibold leading-none tracking-tight text-foreground">Vauxtra</p>
         </div>
         {isMobile
           ? onClose && <IconButton label={t('layout.menu.close')} icon={<X />} onClick={onClose} className="h-8 w-8 text-muted-foreground" />

@@ -22,6 +22,7 @@ import { toast } from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -139,7 +140,11 @@ export function Services() {
 
   // --- persisted UI state -------------------------------------------------
   const [search, setSearch] = useLocalStorage('vauxtra.services.search', '');
-  const [viewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
+  const [savedViewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
+  // The table needs a desktop's width; below `md` it only scrolls sideways, so phones get the
+  // cards whatever was saved, and the toggle that could not change that is hidden.
+  const isNarrow = useMediaQuery('(max-width: 767px)');
+  const viewMode: ViewMode = isNarrow ? 'grid' : savedViewMode;
   const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all');
 
   // --- URL-driven filters (shared links from the dashboard) ---------------
@@ -965,7 +970,7 @@ export function Services() {
                 {t('services.clear_filters')}
               </Button>
             )}
-            <div className="ml-auto inline-flex items-center gap-1 rounded-xl bg-muted p-1" role="group" aria-label={t('services.view.label')}>
+            <div className="ml-auto hidden items-center gap-1 rounded-xl bg-muted p-1 md:inline-flex" role="group" aria-label={t('services.view.label')}>
               <IconButton
                 label={t('services.view.list')}
                 icon={<LayoutList />}

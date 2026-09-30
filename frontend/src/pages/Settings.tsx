@@ -1,9 +1,9 @@
 import type { ComponentType } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Settings as SettingsIcon } from 'lucide-react';
+import { Settings as SettingsIcon } from 'lucide-react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
-import { ErrorBoundary, PageHeader, Tab, TabList, TabPanel, Tabs, buttonVariants } from '@/components/ui';
+import { ErrorBoundary, PageHeader, Tab, TabList, TabPanel, Tabs } from '@/components/ui';
 import {
   ApiKeysTab,
   DataTab,
@@ -62,12 +62,6 @@ export function Settings() {
         eyebrow={t('settings.eyebrow')}
         title={t('settings.title')}
         description={t('settings.description')}
-        actions={
-          <Link to="/" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
-            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-            {t('common.back')}
-          </Link>
-        }
       />
 
       <div className="lg:grid lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-8">

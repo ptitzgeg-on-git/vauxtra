@@ -74,14 +74,14 @@ export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(function StatC
 
   if (onClick) {
     return (
-      <div ref={ref} className={cn('relative', className)} {...rest}>
+      <div ref={ref} className={cn('relative h-full', className)} {...rest}>
         <button
           type="button"
           onClick={onClick}
           aria-busy={loading || undefined}
           className={cn(
             surface,
-            'w-full text-left transition-[background-color,border-color] duration-150',
+            'h-full w-full text-left transition-[background-color,border-color] duration-150',
             'hover:border-primary/40 hover:bg-accent/40',
           )}
         >
