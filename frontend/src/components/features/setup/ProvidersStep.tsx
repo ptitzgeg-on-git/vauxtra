@@ -101,6 +101,8 @@ export function ProvidersStep({
         label: loading || loadFailed || providers.length > 0
           ? t('setup.providers.continue')
           : t('setup.providers.skip'),
+        // Skipping is allowed, not suggested: it stays a plain button, the dashed "add" is the call.
+        variant: loading || loadFailed || providers.length > 0 ? undefined : 'outline',
         onClick: onContinue,
         disabled: loading,
       }}
@@ -163,7 +165,10 @@ export function ProvidersStep({
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium text-foreground">{provider.name}</span>
                           <span className="block truncate text-xs text-muted-foreground">
-                            {meta?.label || getDescription(provider.type, meta, t)}
+                            {/* The type, unless the name already is the type: then what it is for. */}
+                            {meta?.label && meta.label.toLowerCase() !== provider.name.trim().toLowerCase()
+                              ? meta.label
+                              : getDescription(provider.type, meta, t)}
                           </span>
                         </span>
                         <Button

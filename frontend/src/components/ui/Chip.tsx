@@ -1,4 +1,5 @@
 import { forwardRef, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react';
+import { Check } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { toneClasses, type Tone } from './tone';
 
@@ -9,11 +10,17 @@ export interface ChipProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>,
   /** Small count to the right of the label. */
   count?: number | string;
   size?: 'sm' | 'md';
+  /**
+   * Shows a check on selected chips. For chips that toggle several values (tags on a form),
+   * where the tint alone left "which ones did I pick?" to guesswork; single-choice filters
+   * do not need it.
+   */
+  checkable?: boolean;
 }
 
 /** A selectable filter chip (`aria-pressed`); selected chips take the tone colour. */
 export const Chip = forwardRef<HTMLButtonElement, ChipProps>(function Chip(
-  { selected = false, tone = 'primary', icon, count, size = 'md', className, children, ...rest },
+  { selected = false, tone = 'primary', icon, count, size = 'md', checkable = false, className, children, ...rest },
   ref,
 ) {
   const c = toneClasses(tone);
@@ -25,7 +32,9 @@ export const Chip = forwardRef<HTMLButtonElement, ChipProps>(function Chip(
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full border font-medium whitespace-nowrap transition-colors duration-150',
         size === 'sm' ? 'h-7 px-2.5 text-xs' : 'h-8 px-3 text-sm',
-        selected ? cn(c.bg, c.text, c.border) : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
+        selected
+          ? cn(c.bg, c.text, checkable ? 'border-current/40' : c.border)
+          : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
         'disabled:opacity-50 disabled:pointer-events-none',
         className,
       )}
@@ -33,6 +42,7 @@ export const Chip = forwardRef<HTMLButtonElement, ChipProps>(function Chip(
     >
       {icon && <span aria-hidden="true" className="inline-flex shrink-0 [&>svg]:h-3.5 [&>svg]:w-3.5">{icon}</span>}
       {children}
+      {checkable && selected && <Check aria-hidden="true" strokeWidth={3} className="h-3.5 w-3.5 shrink-0" />}
       {count !== undefined && (
         <span
           className={cn(

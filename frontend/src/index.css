@@ -38,18 +38,16 @@
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
 
-  --radius-xl: 12px;
-  --radius-2xl: 16px;
-  --radius-3xl: 24px;
+  --radius-xl: 8px;
+  --radius-2xl: 10px;
+  --radius-3xl: 14px;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-md:
     0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
   --shadow-card: var(--vx-shadow-card);
   --shadow-elevated: var(--vx-shadow-elevated);
-  --shadow-glow:
-    0 0 0 1px rgb(var(--vx-primary) / 0.25),
-    0 8px 24px -8px rgb(var(--vx-primary) / 0.45);
+  --shadow-glow: 0 0 0 1px rgb(var(--vx-primary) / 0.35);
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 
@@ -212,45 +210,6 @@
   --vx-animate-duration: 500ms;
 }
 
-@utility bg-aurora {
-  /* Radial "aurora" wash for hero areas: brand indigo, violet and a touch of sky. */
-  background-image:
-    radial-gradient(
-      60% 50% at 10% 0%,
-      rgb(var(--vx-primary) / 0.16) 0%,
-      transparent 60%
-    ),
-    radial-gradient(
-      50% 40% at 90% 10%,
-      rgb(var(--vx-primary-glow) / 0.14) 0%,
-      transparent 60%
-    ),
-    radial-gradient(
-      40% 40% at 50% 100%,
-      rgb(var(--vx-info) / 0.08) 0%,
-      transparent 60%
-    );
-}
-
-@utility bg-gradient-primary {
-  background-image: linear-gradient(
-    135deg,
-    rgb(var(--vx-primary)) 0%,
-    rgb(var(--vx-primary-glow)) 100%
-  );
-}
-
-@utility text-gradient-primary {
-  background-image: linear-gradient(
-    135deg,
-    rgb(var(--vx-primary)) 0%,
-    rgb(var(--vx-primary-glow)) 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
 @utility nums {
   /* Tailwind ships `tabular-nums` already; `nums` is the short alias used in stats. */
   font-variant-numeric: tabular-nums;
@@ -266,37 +225,52 @@
 @layer utilities {
   /* ---------------------------------------------------------------------------
  * Design tokens — RGB triplets so Tailwind can apply `<alpha-value>`.
- * Light: warm off-white ground, white cards, slate text, indigo → violet brand.
- * Dark: deep navy/charcoal ground (never pure black), slightly lifted cards,
- * soft borders, a lighter indigo that keeps ≥ 4.5:1 on cards.
+ * Light: neutral grey ground, white cards, near-black text, petrol-teal brand.
+ * Dark: neutral charcoal ground (never pure black, no navy cast), slightly lifted
+ * cards, quiet borders, a lighter teal that keeps ≥ 4.5:1 on cards. The brand hue
+ * sits between success (emerald) and info (blue) without touching either.
  * ------------------------------------------------------------------------- */
   :root {
-    --vx-bg: 248 247 244;
-    --vx-fg: 15 23 42;
+    --vx-bg: 246 247 249;
+    --vx-fg: 17 24 39;
     --vx-card: 255 255 255;
     --vx-card-elevated: 255 255 255;
-    --vx-border: 228 228 231;
+    --vx-border: 226 229 234;
     --vx-input: 255 255 255;
-    --vx-muted: 244 244 245;
-    --vx-muted-fg: 100 116 139;
-    --vx-accent: 241 245 249;
-    --vx-accent-fg: 30 41 59;
-    --vx-primary: 79 70 229;
+    --vx-muted: 241 243 246;
+    --vx-muted-fg: 95 107 124;
+    --vx-accent: 239 242 245;
+    --vx-accent-fg: 31 41 55;
+    --vx-primary: 11 110 130;
     --vx-primary-fg: 255 255 255;
-    --vx-primary-glow: 139 92 246;
-    --vx-secondary: 241 245 249;
-    --vx-secondary-fg: 30 41 59;
-    --vx-destructive: 220 38 38;
+    --vx-primary-glow: 11 110 130;
+    --vx-secondary: 239 242 245;
+    --vx-secondary-fg: 31 41 55;
+    --vx-destructive: 205 38 38;
     --vx-destructive-fg: 255 255 255;
     --vx-popover: 255 255 255;
-    --vx-popover-fg: 15 23 42;
+    --vx-popover-fg: 17 24 39;
     --vx-success: 4 120 87;
     --vx-success-fg: 255 255 255;
-    --vx-warning: 180 83 9;
+    --vx-warning: 175 82 9;
     --vx-warning-fg: 255 255 255;
-    --vx-info: 3 105 161;
+    --vx-info: 37 99 199;
     --vx-info-fg: 255 255 255;
-    --vx-ring: 79 70 229;
+    --vx-ring: 11 110 130;
+
+    /* Tag and environment colours: the names stored in the database, tuned per theme so
+     * every one of them stays readable (a raw `blue` or `yellow` did not). */
+    --vx-label-blue: 29 78 216;
+    --vx-label-teal: 15 118 110;
+    --vx-label-green: 21 128 61;
+    --vx-label-red: 185 28 28;
+    --vx-label-orange: 194 65 12;
+    --vx-label-purple: 126 34 206;
+    --vx-label-cyan: 14 116 144;
+    --vx-label-yellow: 161 98 7;
+    --vx-label-pink: 190 24 93;
+    --vx-label-lime: 77 124 15;
+    --vx-label-indigo: 67 56 202;
 
     --vx-shadow-card:
       0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.05);
@@ -305,32 +279,44 @@
   }
 
   html.dark {
-    --vx-bg: 11 15 25;
-    --vx-fg: 226 232 240;
-    --vx-card: 17 24 39;
-    --vx-card-elevated: 24 32 50;
-    --vx-border: 41 50 69;
-    --vx-input: 13 18 31;
-    --vx-muted: 30 38 56;
-    --vx-muted-fg: 148 163 184;
-    --vx-accent: 30 38 56;
-    --vx-accent-fg: 226 232 240;
-    --vx-primary: 129 140 248;
-    --vx-primary-fg: 15 23 42;
-    --vx-primary-glow: 167 139 250;
-    --vx-secondary: 30 38 56;
-    --vx-secondary-fg: 226 232 240;
-    --vx-destructive: 248 113 113;
-    --vx-destructive-fg: 15 23 42;
-    --vx-popover: 24 32 50;
-    --vx-popover-fg: 226 232 240;
-    --vx-success: 52 211 153;
-    --vx-success-fg: 6 40 30;
-    --vx-warning: 251 191 36;
-    --vx-warning-fg: 69 26 3;
-    --vx-info: 56 189 248;
-    --vx-info-fg: 8 47 73;
-    --vx-ring: 129 140 248;
+    --vx-bg: 14 16 19;
+    --vx-fg: 229 231 235;
+    --vx-card: 21 24 28;
+    --vx-card-elevated: 28 32 37;
+    --vx-border: 42 47 54;
+    --vx-input: 17 19 23;
+    --vx-muted: 33 37 43;
+    --vx-muted-fg: 150 158 170;
+    --vx-accent: 33 37 43;
+    --vx-accent-fg: 229 231 235;
+    --vx-primary: 70 160 178;
+    --vx-primary-fg: 8 28 33;
+    --vx-primary-glow: 70 160 178;
+    --vx-secondary: 33 37 43;
+    --vx-secondary-fg: 229 231 235;
+    --vx-destructive: 244 113 113;
+    --vx-destructive-fg: 20 16 16;
+    --vx-popover: 28 32 37;
+    --vx-popover-fg: 229 231 235;
+    --vx-success: 52 199 142;
+    --vx-success-fg: 6 36 26;
+    --vx-warning: 240 180 41;
+    --vx-warning-fg: 56 26 3;
+    --vx-info: 110 160 245;
+    --vx-info-fg: 10 25 55;
+    --vx-ring: 70 160 178;
+
+    --vx-label-blue: 96 165 250;
+    --vx-label-teal: 45 212 191;
+    --vx-label-green: 74 222 128;
+    --vx-label-red: 248 113 113;
+    --vx-label-orange: 251 146 60;
+    --vx-label-purple: 192 132 252;
+    --vx-label-cyan: 34 211 238;
+    --vx-label-yellow: 250 204 21;
+    --vx-label-pink: 244 114 182;
+    --vx-label-lime: 163 230 53;
+    --vx-label-indigo: 129 140 248;
 
     --vx-shadow-card:
       0 1px 2px 0 rgb(0 0 0 / 0.35), 0 1px 3px 0 rgb(0 0 0 / 0.3);

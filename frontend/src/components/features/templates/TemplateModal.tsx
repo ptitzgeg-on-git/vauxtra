@@ -104,6 +104,7 @@ function LabelSection({
             <Chip
               key={item.id}
               size="sm"
+              checkable
               tone={labelTone(half)}
               icon={<span className={labelDotClass(half)} style={labelDotStyle(item.color)} />}
               selected={selected.includes(item.id)}

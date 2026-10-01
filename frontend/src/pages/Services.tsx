@@ -22,6 +22,7 @@ import { toast } from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
 import {
@@ -139,7 +140,11 @@ export function Services() {
 
   // --- persisted UI state -------------------------------------------------
   const [search, setSearch] = useLocalStorage('vauxtra.services.search', '');
-  const [viewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
+  const [savedViewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
+  // The table needs a desktop's width; below `md` it only scrolls sideways, so phones get the
+  // cards whatever was saved, and the toggle that could not change that is hidden.
+  const isNarrow = useMediaQuery('(max-width: 767px)');
+  const viewMode: ViewMode = isNarrow ? 'grid' : savedViewMode;
   const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all');
 
   // --- URL-driven filters (shared links from the dashboard) ---------------
@@ -922,7 +927,7 @@ export function Services() {
               aria-label={t('services.filter.tag')}
               value={tagFilter ? String(tagFilter) : ''}
               onChange={(e) => setParam('tag', e.target.value || null)}
-              wrapperClassName="w-40"
+              wrapperClassName="min-w-40 max-w-60"
             >
               <option value="">{t('services.filter.all_tags')}</option>
               {orphanTagOption && (
@@ -938,7 +943,7 @@ export function Services() {
               aria-label={t('services.filter.environment')}
               value={envFilter ? String(envFilter) : ''}
               onChange={(e) => setParam('env', e.target.value || null)}
-              wrapperClassName="w-40"
+              wrapperClassName="min-w-40 max-w-60"
             >
               <option value="">{t('services.filter.all_environments')}</option>
               {orphanEnvironmentOption && (
@@ -954,7 +959,7 @@ export function Services() {
               aria-label={t('services.filter.status')}
               value={statusFilter ?? ''}
               onChange={(e) => setParam('status', e.target.value || null)}
-              wrapperClassName="w-36"
+              wrapperClassName="min-w-36 max-w-60"
             >
               <option value="">{t('services.filter.all_statuses')}</option>
               <option value="ok">{t('services.status.ok')}</option>
@@ -965,15 +970,15 @@ export function Services() {
                 {t('services.clear_filters')}
               </Button>
             )}
-            <div className="ml-auto inline-flex items-center gap-1 rounded-xl bg-muted p-1" role="group" aria-label={t('services.view.label')}>
+            <div className="ml-auto hidden items-center gap-1 rounded-xl bg-muted p-1 md:inline-flex" role="group" aria-label={t('services.view.label')}>
               <IconButton
                 label={t('services.view.list')}
                 icon={<LayoutList />}
                 tooltip
                 size="sm"
-                variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+                variant="ghost"
                 aria-pressed={viewMode === 'list'}
-                className="h-8 w-8"
+                className={cn('h-8 w-8', viewMode === 'list' ? 'bg-card text-primary shadow-sm hover:bg-card' : 'text-muted-foreground')}
                 onClick={() => setViewMode('list')}
               />
               <IconButton
@@ -981,9 +986,9 @@ export function Services() {
                 icon={<LayoutGrid />}
                 tooltip
                 size="sm"
-                variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+                variant="ghost"
                 aria-pressed={viewMode === 'grid'}
-                className="h-8 w-8"
+                className={cn('h-8 w-8', viewMode === 'grid' ? 'bg-card text-primary shadow-sm hover:bg-card' : 'text-muted-foreground')}
                 onClick={() => setViewMode('grid')}
               />
             </div>

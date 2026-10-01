@@ -19,6 +19,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/render';
+import { allOptionLabels } from '@/test/select';
 import type { DockerContainer, DockerEndpoint, Provider } from '@/types/api';
 
 let endpointRows: DockerEndpoint[] = [];
@@ -213,20 +214,20 @@ describe('DockerSection, the two lists an import is configured from', () => {
   const importAlert = () => screen.queryByText('settings.docker.import_lists_failed');
   const retryImport = () => screen.getByRole('button', { name: 'common.retry' });
   const providerHints = () => screen.queryAllByText('settings.docker.provider_list_unread');
-  const option = (name: string) => screen.queryByRole('option', { name });
+  const hasOption = (name: string) => allOptionLabels().includes(name);
 
   it('names both integrations and offers the real domain when both lists answer', async () => {
     // The control the rest is measured against: every choice the import needs is a real
     // one, and nothing on the panel says otherwise.
     show();
     await ready();
-    expect(await screen.findByRole('option', { name: 'npm-home' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'cf-home' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'example.test' })).toBeInTheDocument();
+    await waitFor(() => expect(hasOption('npm-home')).toBe(true));
+    expect(hasOption('cf-home')).toBe(true);
+    expect(hasOption('example.test')).toBe(true);
     expect(importAlert()).toBeNull();
     expect(providerHints()).toHaveLength(0);
-    expect(option('settings.docker.domain_unread')).toBeNull();
-    expect(option('settings.docker.domain_none')).toBeNull();
+    expect(hasOption('settings.docker.domain_unread')).toBe(false);
+    expect(hasOption('settings.docker.domain_none')).toBe(false);
   });
 
   it('says the integration list could not be read rather than narrowing it in silence', async () => {
@@ -269,8 +270,8 @@ describe('DockerSection, the two lists an import is configured from', () => {
     await ready();
     await screen.findByText('settings.docker.import_lists_failed');
 
-    expect(option('settings.docker.domain_unread')).toBeInTheDocument();
-    expect(option('settings.docker.domain_none')).toBeNull();
+    expect(hasOption('settings.docker.domain_unread')).toBe(true);
+    expect(hasOption('settings.docker.domain_none')).toBe(false);
   });
 
   it('still says the instance has no domain once the list has come back with none', async () => {
@@ -279,8 +280,8 @@ describe('DockerSection, the two lists an import is configured from', () => {
     show();
     await ready();
 
-    expect(await screen.findByRole('option', { name: 'settings.docker.domain_none' })).toBeInTheDocument();
-    expect(option('settings.docker.domain_unread')).toBeNull();
+    await waitFor(() => expect(hasOption('settings.docker.domain_none')).toBe(true));
+    expect(hasOption('settings.docker.domain_unread')).toBe(false);
     expect(importAlert()).toBeNull();
   });
 
@@ -311,7 +312,7 @@ describe('DockerSection, the two lists an import is configured from', () => {
     const paths = vi.mocked(api.get).mock.calls.map(([path]) => path);
     expect(paths).toContain('/providers');
     expect(paths).not.toContain('/domains');
-    expect(await screen.findByRole('option', { name: 'npm-home' })).toBeInTheDocument();
+    await waitFor(() => expect(hasOption('npm-home')).toBe(true));
   });
 
   it('leaves the retry usable while a sibling read is still in flight', async () => {
@@ -328,7 +329,7 @@ describe('DockerSection, the two lists an import is configured from', () => {
     providersAnswer = 'rows';
     await userEvent.click(retryImport());
     await waitFor(() => expect(importAlert()).toBeNull());
-    expect(await screen.findByRole('option', { name: 'npm-home' })).toBeInTheDocument();
+    await waitFor(() => expect(hasOption('npm-home')).toBe(true));
   });
 
   it('makes the operator confirm a write that will attach no integration', async () => {
@@ -355,7 +356,7 @@ describe('DockerSection, the two lists an import is configured from', () => {
   it('asks the ordinary way once the integration list has been read', async () => {
     show();
     await ready();
-    await screen.findByRole('option', { name: 'npm-home' });
+    await waitFor(() => expect(hasOption('npm-home')).toBe(true));
 
     await userEvent.click(screen.getByRole('button', { name: 'settings.docker.discover' }));
     await userEvent.click(

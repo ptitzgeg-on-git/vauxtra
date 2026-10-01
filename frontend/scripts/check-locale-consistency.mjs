@@ -39,22 +39,6 @@ const bareWord = (value, pattern) =>
   new RegExp(String.raw`(?<![\{\p{L}\p{N}_])` + `(?:${pattern})` + String.raw`(?![\}\p{L}\p{N}_])`, 'iu').test(value);
 
 /**
- * "Endpoint" means two different things in this product, and only one of them is a word the
- * translations own.
- *
- * On the Endpoints page it is the thing the user creates, and it has to read the same in the
- * menu, the title and the delete dialog. In the Docker settings and the integration guides it
- * is an API URL -- "the Docker endpoint", "the deSEC endpoint" -- and there a translated word
- * is the right word: "point d'acces Docker" and "eindpunt" are correct Dutch and French for a
- * URL and wrong for the product noun.
- *
- * These prefixes are the second sense. They are excluded from the endpoint rule only, and
- * folding them in was tried first: it asked six locales to un-translate a sentence that was
- * never about the product.
- */
-const API_URL_SENSE = /^(settings\.docker\.|provider_guide\.|provider_modal\.|providers\.card\.default_url|settings\.webhooks\.url_hint)/;
-
-/**
  * For each concept: the English word that marks a key as being about it, and the stem each
  * locale settled on. Stems, not whole words: "integracao" does not contain "integracoes" and
  * "certificado" does not contain "certificados", and an early version of this rule reported
@@ -68,10 +52,15 @@ const API_URL_SENSE = /^(settings\.docker\.|provider_guide\.|provider_modal\.|pr
  */
 const CONCEPTS = [
   {
-    name: 'endpoint',
-    english: 'endpoints?',
-    excludeKeys: API_URL_SENSE,
-    stems: { fr: 'endpoint', de: 'endpoint|endpunkt', nl: 'endpoint', es: 'endpoint', pt: 'endpoint', ja: 'エンドポイント', zh: '端点' },
+    // The thing the operator creates. It was called "endpoint" in the menu and "route" in
+    // the form and the dialogs -- three words for one object, which is the inconsistency
+    // this rule exists to keep out. "Route" survives only for what a provider holds (the
+    // routes a scan discovers, a proxy route missing on drift), and "endpoint" only for an
+    // API URL (a Docker endpoint); neither is this noun. Dutch had split between "dienst"
+    // and "service" and was brought back to the second, which it used four times as often.
+    name: 'service',
+    english: 'services?',
+    stems: { fr: 'service', de: 'dienst', nl: 'service', es: 'servicio', pt: 'servi(ç|c)o', ja: 'サービス', zh: '服务' },
   },
   {
     name: 'integration',

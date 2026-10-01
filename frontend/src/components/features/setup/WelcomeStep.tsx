@@ -59,7 +59,12 @@ function ChoiceCard({
   );
 }
 
-export function WelcomeStep({ onFreshInstall, onRestore }: { onFreshInstall: () => void; onRestore: () => void }) {
+/**
+ * `onRestore` is left out when the instance is no longer unconfigured (a wizard resumed after
+ * its password or first integration): the restore it opens asks for no typed word, which is
+ * acceptable only on an instance that has nothing to lose. See `canRestore` in `Setup`.
+ */
+export function WelcomeStep({ onFreshInstall, onRestore }: { onFreshInstall: () => void; onRestore?: () => void }) {
   const t = useT();
 
   return (
@@ -68,7 +73,7 @@ export function WelcomeStep({ onFreshInstall, onRestore }: { onFreshInstall: () 
         <BrandMark size="lg" className="justify-center" />
         <div className="space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">{t('setup.welcome.eyebrow')}</p>
-          <h1 className="text-3xl font-extrabold tracking-tight text-foreground">{t('setup.welcome.title')}</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">{t('setup.welcome.title')}</h1>
           <p className="mx-auto max-w-md text-sm text-muted-foreground">{t('setup.welcome.subtitle')}</p>
         </div>
         <p className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
@@ -77,7 +82,7 @@ export function WelcomeStep({ onFreshInstall, onRestore }: { onFreshInstall: () 
         </p>
       </div>
 
-      <div className="mx-auto grid max-w-lg grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className={cn('mx-auto grid grid-cols-1 gap-4', onRestore ? 'max-w-lg sm:grid-cols-2' : 'max-w-xs')}>
         <ChoiceCard
           icon={<Zap />}
           title={t('setup.welcome.fresh_title')}
@@ -86,13 +91,15 @@ export function WelcomeStep({ onFreshInstall, onRestore }: { onFreshInstall: () 
           recommended
           recommendedLabel={t('setup.welcome.recommended')}
         />
-        <ChoiceCard
-          icon={<Upload />}
-          title={t('setup.welcome.restore_title')}
-          body={t('setup.welcome.restore_body')}
-          onClick={onRestore}
-          recommendedLabel={t('setup.welcome.recommended')}
-        />
+        {onRestore && (
+          <ChoiceCard
+            icon={<Upload />}
+            title={t('setup.welcome.restore_title')}
+            body={t('setup.welcome.restore_body')}
+            onClick={onRestore}
+            recommendedLabel={t('setup.welcome.recommended')}
+          />
+        )}
       </div>
 
       <p className="mx-auto max-w-md text-xs text-muted-foreground">{t('setup.welcome.footer')}</p>

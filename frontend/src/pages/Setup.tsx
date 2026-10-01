@@ -37,6 +37,7 @@ import {
 } from '@/hooks/useProviderMutations';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { AUTH_STATUS_KEY, authStatusQuery } from '@/hooks/useAuthStatus';
+import { SETUP_STORAGE_PREFIX, markWizardStarted, notifyWizardSession } from '@/lib/setupSession';
 import {
   DockerStep,
   DoneStep,
@@ -66,7 +67,7 @@ function useSessionState<T>(
    *  stable reference — an inline arrow would re-run the effect on every render. */
   sanitize?: (value: T) => T,
 ): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const storageKey = `vauxtra.setup.${key}`;
+  const storageKey = `${SETUP_STORAGE_PREFIX}${key}`;
   const [value, setValue] = useState<T>(() => {
     try {
       const stored = sessionStorage.getItem(storageKey);
@@ -83,6 +84,8 @@ function useSessionState<T>(
     try {
       sessionStorage.setItem(storageKey, JSON.stringify(sanitize ? sanitize(value) : value));
     } catch { /* ignore */ }
+    // The boot gate keeps the wizard on screen while it is under way (`lib/setupSession`).
+    notifyWizardSession();
   }, [storageKey, value, sanitize]);
 
   return [value, setValue];
@@ -103,16 +106,29 @@ const withoutProviderSecrets = (form: ProviderFormState): ProviderFormState => (
 function clearWizardSession() {
   SETUP_SESSION_KEYS.forEach((key) => {
     try {
-      sessionStorage.removeItem(`vauxtra.setup.${key}`);
+      sessionStorage.removeItem(`${SETUP_STORAGE_PREFIX}${key}`);
     } catch { /* ignore */ }
   });
+  // And tells the boot gate the wizard no longer holds the screen.
+  notifyWizardSession();
 }
 
 /* ────────────────────────────────────────────────────────────────
    Main Setup Component
    ──────────────────────────────────────────────────────────────── */
 
-export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }) {
+export function Setup({
+  onComplete,
+  canRestore = true,
+}: {
+  onComplete: () => void | Promise<void>;
+  /**
+   * Whether the server still considers this instance unconfigured. The wizard can now be on
+   * screen after that stops being true (resumed past its password or first integration), and
+   * its restore branch asks for no typed word -- acceptable only while there is nothing to lose.
+   */
+  canRestore?: boolean;
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { t, lang, setLang } = useI18n();
@@ -419,7 +435,6 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background font-sans text-foreground">
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-aurora" />
 
       <div className="relative mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-5 sm:px-6 lg:px-8">
         <header className="flex items-center justify-between gap-4">
@@ -466,8 +481,11 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
             {step === 'welcome' && (
               <WelcomeStep
-                onFreshInstall={() => setStep('password')}
-                onRestore={() => setStep('restore')}
+                onFreshInstall={() => {
+                  markWizardStarted();
+                  setStep('password');
+                }}
+                onRestore={canRestore ? () => setStep('restore') : undefined}
               />
             )}
 

@@ -1,10 +1,14 @@
-# Vauxtra
-
-> **The missing link in your network stack.**  
-> Self-hosted DNS & reverse proxy management panel — built for homelab.  
-> Orchestrate Nginx Proxy Manager, Traefik, Zoraxy, Cloudflare, Pi-hole, AdGuard Home, and more from one unified interface.
-
 <div align="center">
+
+<a href="https://github.com/ptitzgeg-on-git/vauxtra">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
+    <img alt="Vauxtra — The missing link in your network stack" src="docs/assets/banner-light.png" width="720">
+  </picture>
+</a>
+
+**Self-hosted DNS & reverse proxy management panel — built for homelab.**<br>
+Orchestrate Nginx Proxy Manager, Traefik, Zoraxy, Cloudflare, Pi-hole, AdGuard Home, and more from one unified interface.
 
 [![Tests](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml/badge.svg)](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml)
 [![Latest Release](https://img.shields.io/github/v/release/ptitzgeg-on-git/vauxtra?label=release)](https://github.com/ptitzgeg-on-git/vauxtra/releases)
@@ -15,7 +19,26 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-green)](https://fastapi.tiangolo.com/)
 [![MCP Ready](https://img.shields.io/badge/MCP-Ready-purple)](https://modelcontextprotocol.io/)
 
+[**Quick Start**](#quick-start-docker) · [**Features**](#features) · [**Screenshots**](#screenshots) · [**Providers**](docs/PROVIDERS.md) · [**Docs**](#documentation-map) · [**MCP**](#mcp-integration)
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/dashboard-dark.webp">
+  <img alt="Vauxtra dashboard" src="docs/assets/screenshots/dashboard-light.webp">
+</picture>
+
 </div>
+
+---
+
+## Why Vauxtra?
+
+Publishing a new self-hosted app usually means touching three tools: a DNS record in Cloudflare or Pi-hole, a proxy host in Nginx Proxy Manager or Traefik, maybe a Cloudflare Tunnel route — and then remembering to keep them in sync. Vauxtra turns that into **one service record**: pick a hostname, a target and the providers that should publish it, and Vauxtra pushes, monitors and reconciles every piece for you.
+
+- **One form, every provider** — DNS, reverse proxy and tunnel configured together, with preflight checks and dry-run.
+- **Keeps itself honest** — health checks, drift detection, auto-reconcile and certificate expiry alerts.
+- **Bring your own stack** — Vauxtra drives the tools you already run; it never replaces them.
 
 ---
 
@@ -39,6 +62,63 @@
 | **Webhook alerts** | Apprise-compatible webhooks for service down/recovery, provider state changes, and reconcile events |
 | **Environments & Tags** | Organise services with colour-coded labels |
 | **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — 8 locales |
+
+---
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <b>Services</b> — every published service with its public address, target, providers, tags and health.<br><br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/services-dark.webp">
+  <img alt="Services list" src="docs/assets/screenshots/services-light.webp">
+</picture>
+    </td>
+    <td width="50%" valign="top">
+      <b>Add a service</b> — DNS only, DNS + reverse proxy, or Tunnel, in one guided form.<br><br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/wizard-dark.webp">
+  <img alt="Add a service form" src="docs/assets/screenshots/wizard-light.webp">
+</picture>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>Integrations</b> — reverse proxies, tunnels and DNS providers with live health.<br><br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/providers-dark.webp">
+  <img alt="Integrations page" src="docs/assets/screenshots/providers-light.webp">
+</picture>
+    </td>
+    <td width="50%" valign="top">
+      <b>Monitoring</b> — 24 h availability per service and Cloudflare Tunnel connectors.<br><br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/monitoring-dark.webp">
+  <img alt="Monitoring page" src="docs/assets/screenshots/monitoring-light.webp">
+</picture>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>Certificates</b> — expiry tracking across NPM and Zoraxy, flagged 30 days ahead.<br><br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/certificates-dark.webp">
+  <img alt="Certificates page" src="docs/assets/screenshots/certificates-light.webp">
+</picture>
+    </td>
+    <td width="50%" valign="top">
+      <b>Templates</b> — reusable presets that pre-fill the service form in one click.<br><br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/templates-dark.webp">
+  <img alt="Templates page" src="docs/assets/screenshots/templates-light.webp">
+</picture>
+    </td>
+  </tr>
+</table>
+
+> Screenshots follow your GitHub theme: switch between light and dark mode to see both UI themes.
 
 ---
 

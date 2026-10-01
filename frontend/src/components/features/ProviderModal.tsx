@@ -101,7 +101,7 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
     setIsDockerMode(false);
     setEdited(false);
     docker.setName('');
-    docker.setHost(DEFAULT_DOCKER_HOST);
+    docker.setHost('');
     onClose();
   };
 
@@ -171,9 +171,9 @@ export function ProviderModal({ isOpen, onClose, provider = null }: ProviderModa
   const busy = validateDraft.isPending || createProvider.isPending || updateProvider.isPending || docker.addEndpoint.isPending;
 
   const title = editMode ? t('provider_modal.edit_title') : t('provider_modal.title');
-  const description = editMode
-    ? t('provider_modal.edit.description', { name: provider?.name || '' })
-    : t('provider_modal.step', { step, total: 2 });
+  // No "Step x of 2" when adding: the guided form below carries its own counter, and two
+  // counters stacked in one dialog ("Step 2 of 2" over "Step 1 of 3") read as a contradiction.
+  const description = editMode ? t('provider_modal.edit.description', { name: provider?.name || '' }) : undefined;
 
   let footer: React.ReactNode;
   if (editMode) {

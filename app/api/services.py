@@ -338,11 +338,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
             "ok": conflicting_id is None,
             "blocking": True,
             **(
-                _detail("host_free", "No existing route conflict")
+                _detail("host_free", "No other service uses this address")
                 if conflicting_id is None
                 else _detail(
                     "host_taken",
-                    f"Route already exists on service #{conflicting_id}",
+                    f"This address is already used by service #{conflicting_id}",
                     id=conflicting_id,
                 )
             ),
@@ -1253,7 +1253,7 @@ def add_service(request: Request, body: ServiceIn):
             if row:
                 try:
                     proxy = create_provider(row)
-                    cert_id = proxy.find_best_certificate(body.domain)
+                    cert_id = proxy.find_best_certificate(public_host)
                     result = proxy.create_host(
                         public_host,
                         body.target_ip,
@@ -1632,7 +1632,7 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                 failed_before = len(errors)
                 try:
                     proxy = create_provider(proxy_row)
-                    cert_id = proxy.find_best_certificate(body.domain)
+                    cert_id = proxy.find_best_certificate(new_public_host)
 
                     if old_mode == "proxy_dns" and old["proxy_provider_id"] == body.proxy_provider_id and old["npm_host_id"]:
                         ok = proxy.update_host(
@@ -1920,7 +1920,7 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                                 add_log("error", f"Proxy still suspended: {new_public_host}", conn)
                         else:
                             # Host was removed from provider when disabled — re-deploy it
-                            cert_id = proxy.find_best_certificate(body.domain)
+                            cert_id = proxy.find_best_certificate(new_public_host)
                             created = proxy.create_host(
                                 new_public_host, body.target_ip, body.target_port,
                                 body.forward_scheme, body.websocket, cert_id,
@@ -2342,7 +2342,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
                                     add_log("error", f"Proxy still suspended: {pub}", conn)
                             else:
                                 # Was deleted — re-deploy
-                                cert_id = proxy.find_best_certificate(svc["domain"])
+                                cert_id = proxy.find_best_certificate(pub)
                                 created = proxy.create_host(
                                     pub, svc["target_ip"], svc["target_port"],
                                     svc["forward_scheme"], bool(svc["websocket"]), cert_id,

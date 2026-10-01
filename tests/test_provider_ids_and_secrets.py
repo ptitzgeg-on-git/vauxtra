@@ -206,6 +206,8 @@ class TheOneProviderThatNeedsANumberChecksForOneTests(unittest.TestCase):
         self.npm.session.post.assert_not_called()
 
     def test_update_host_is_held_to_the_same_rule(self) -> None:
+        # The update reads the host before it writes it, so NPM has to hold one.
+        self.npm.session.get = MagicMock(return_value=_response(200, {"id": 9, "domain_names": ["a.example.com"]}))
         ok = self.npm.update_host("9", "a.example.com", "10.0.0.5", 80)
         self.assertTrue(ok)
         self.assertIn("/nginx/proxy-hosts/9", self.npm.session.put.call_args[0][0])

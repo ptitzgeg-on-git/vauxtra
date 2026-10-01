@@ -131,7 +131,9 @@ export function IntegrationsGlance({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium text-foreground">{p.name}</span>
-                  <span className="block truncate text-xs text-muted-foreground">{typeLabel}</span>
+                  {typeLabel.toLowerCase() !== p.name.trim().toLowerCase() && (
+                    <span className="block truncate text-xs text-muted-foreground">{typeLabel}</span>
+                  )}
                 </span>
                 {badge.error ? (
                   <Tooltip content={badge.error} placement="top">

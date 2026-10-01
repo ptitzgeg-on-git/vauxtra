@@ -421,8 +421,8 @@ class CloudflareTunnelProvider(ProxyProvider):
     def get_certificates(self) -> list[dict]:
         return []
 
-    def find_best_certificate(self, domain_suffix: str) -> int | None:
-        del domain_suffix
+    def find_best_certificate(self, host: str) -> int | None:
+        del host
         return None
 
     # Diagnostics helpers

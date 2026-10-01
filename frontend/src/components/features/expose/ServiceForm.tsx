@@ -1,9 +1,10 @@
-import { type Dispatch, type ReactNode, type SetStateAction, useId } from 'react';
+import { type Dispatch, type ReactNode, type SetStateAction, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRightLeft, Globe, RefreshCw, Server, Waypoints } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
+import { labelColor } from '@/lib/labels';
 import {
   domainProblem,
   domainProblemKey,
@@ -23,6 +24,7 @@ import {
   Input,
   SectionHeading,
   Select,
+  SuggestInput,
   Skeleton,
   Switch,
 } from '@/components/ui';
@@ -144,12 +146,14 @@ function ExtraProviderList({
   selectedIds,
   onToggle,
   emptyText,
+  labelOf,
 }: {
   label: string;
   providers: Provider[];
   selectedIds: string[];
   onToggle: (id: string, checked: boolean) => void;
   emptyText: string;
+  labelOf: (p: Provider) => string;
 }) {
   const id = useId();
   return (
@@ -163,7 +167,7 @@ function ExtraProviderList({
             key={p.id}
             checked={selectedIds.includes(String(p.id))}
             onChange={(e) => onToggle(String(p.id), e.target.checked)}
-            label={`${p.name} · ${p.type}`}
+            label={labelOf(p)}
           />
         ))}
         {providers.length === 0 && <p className="text-xs text-muted-foreground">{emptyText}</p>}
@@ -205,11 +209,12 @@ function TaxonomyChips({
             <Chip
               key={item.id}
               size="sm"
+              checkable
               selected={selected.includes(item.id)}
               onClick={() => onToggle(item.id)}
               icon={
                 item.color ? (
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: labelColor(item.color) }} />
                 ) : undefined
               }
             >
@@ -246,7 +251,9 @@ export function ServiceForm({
 }: ServiceFormProps) {
   const t = useT();
   const modeGroupName = useId();
-  const domainListId = useId();
+  // Opening the form with both providers on "None" is not a mistake yet; it is one once the
+  // operator has picked and cleared a provider. Until then "Continue" still refuses and says why.
+  const [providersTouched, setProvidersTouched] = useState(false);
 
   // A list below is empty because the read failed, not because there is nothing in it. A
   // refresh that fails over rows that already arrived leaves those rows in the selects, and
@@ -300,7 +307,7 @@ export function ServiceForm({
       : null;
   // `subdomain.domain` is a claim about both halves, so one broken half makes the whole
   // preview a promise the server will not keep. It comes back when the name is publishable.
-  const showFqdnPreview = !subdomainError && !domainError && !fqdnError;
+  const showFqdnPreview = Boolean(fqdnOf(formData)) && !subdomainError && !domainError && !fqdnError;
 
   // A name published in DNS alone needs no port: nothing forwards to it. Left empty it is
   // saved as 0 and never probed (`NO_PORT` in `app/validators.py`). The other two modes
@@ -365,9 +372,16 @@ export function ServiceForm({
         : [...prev.environment_ids, id],
     }));
 
+  // The name the operator gave it, then the product when the name does not already say it.
+  // The raw type (`npm`, `cloudflare`) is an internal key, not something to read.
+  const providerLabel = (p: Provider) => {
+    const typeLabel = providerTypeMap?.[p.type]?.label;
+    return typeLabel && typeLabel.toLowerCase() !== p.name.trim().toLowerCase() ? `${p.name} · ${typeLabel}` : p.name;
+  };
+
   const providerOption = (p: Provider) => (
     <option key={p.id} value={p.id}>
-      {p.name} · {p.type}
+      {providerLabel(p)}
     </option>
   );
 
@@ -380,8 +394,9 @@ export function ServiceForm({
   const extraProxyCandidates = standardProxyProviders.filter((p) => String(p.id) !== formData.proxy_provider_id);
   const extraDnsCandidates = dnsProviders.filter((p) => String(p.id) !== formData.dns_provider_id);
 
-  const dnsValidationError =
-    formData.ui_expose_mode === 'dns_only' && !formData.dns_provider_id
+  const dnsValidationError = !providersTouched && !formData.proxy_provider_id && !formData.dns_provider_id
+    ? undefined
+    : formData.ui_expose_mode === 'dns_only' && !formData.dns_provider_id
       ? t('expose.validation.dns_required_dns_only')
       : formData.ui_expose_mode !== 'dns_only' && !formData.proxy_provider_id && !formData.dns_provider_id
         ? t('expose.validation.provider_required')
@@ -454,7 +469,7 @@ export function ServiceForm({
                 // "You have no domains" and "we could not read your domains" are the same
                 // empty array, and only one of them is worth a trip to the settings page.
                 // Keyed on the list still being empty, because a refresh can fail over data
-                // that already arrived -- and those domains are in the datalist below.
+                // that already arrived -- and those domains are in the suggestions below.
                 t('expose.field.domain_hint_unavailable')
               ) : domains.length === 0 && !isLoadingDomains ? (
                 <>
@@ -467,16 +482,15 @@ export function ServiceForm({
               ) : undefined
             }
           >
-            <Input
-              list={domains.length > 0 ? domainListId : undefined}
+            <SuggestInput
+              suggestions={domains}
               type="text"
               required
-              autoComplete="off"
               spellCheck={false}
               placeholder={isLoadingDomains ? t('common.loading') : t('expose.field.domain_placeholder')}
               value={formData.domain}
-              onChange={(e) => {
-                const dom = e.target.value.trim().toLowerCase();
+              onValueChange={(raw) => {
+                const dom = raw.trim().toLowerCase();
                 setFormData((prev) => {
                   const next: FormState = { ...prev, domain: dom };
                   if (prev.expose_mode === 'tunnel' && tunnelHostnameIsDefault && prev.subdomain && dom) {
@@ -487,13 +501,6 @@ export function ServiceForm({
               }}
             />
           </Field>
-          {domains.length > 0 && (
-            <datalist id={domainListId}>
-              {domains.map((domain) => (
-                <option key={domain} value={domain} />
-              ))}
-            </datalist>
-          )}
         </div>
 
         <fieldset className="space-y-2">
@@ -653,7 +660,7 @@ export function ServiceForm({
       </section>
 
       {/* ── Section 3: Provider strategy ── */}
-      <section className="space-y-4">
+      <section className="space-y-4" onChangeCapture={() => setProvidersTouched(true)}>
         <SectionHeading
           as="h3"
           size="sm"
@@ -735,6 +742,7 @@ export function ServiceForm({
                 </div>
 
                 <ExtraProviderList
+                  labelOf={providerLabel}
                   label={t('expose.field.extra_proxies')}
                   providers={standardProxyProviders}
                   selectedIds={formData.extra_proxy_provider_ids}
@@ -835,6 +843,7 @@ export function ServiceForm({
                 <div className={cn('grid grid-cols-1 gap-5', formData.ui_expose_mode !== 'dns_only' && 'md:grid-cols-2')}>
                   {formData.ui_expose_mode !== 'dns_only' && (
                     <ExtraProviderList
+                      labelOf={providerLabel}
                       label={t('expose.field.extra_proxies')}
                       providers={extraProxyCandidates}
                       selectedIds={formData.extra_proxy_provider_ids}
@@ -843,6 +852,7 @@ export function ServiceForm({
                     />
                   )}
                   <ExtraProviderList
+                    labelOf={providerLabel}
                     label={t('expose.field.extra_dns')}
                     providers={extraDnsCandidates}
                     selectedIds={formData.extra_dns_provider_ids}
