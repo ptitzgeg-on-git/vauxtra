@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+---
+
+## [1.7.0] — 2026-10-01
+
 ### Changed
 
 - **A new visual identity.** A petrol-teal palette, flat surfaces and a new logo replace the
@@ -4983,7 +4987,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.1...v1.5.2
