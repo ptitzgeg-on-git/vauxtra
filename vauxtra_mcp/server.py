@@ -74,9 +74,21 @@ def _http_bind() -> tuple[str, int]:
     return host, port
 
 
+def _http_run_kwargs() -> dict:
+    host, port = _http_bind()
+    # A loopback bind keeps other machines out, not the operator's own browser: a page it
+    # visits can rebind its hostname to 127.0.0.1 and call every tool with this bridge's key.
+    # "auto" refuses a Host or an Origin that is not the loopback address it listens on.
+    return {
+        "transport": "streamable-http",
+        "host": host,
+        "port": port,
+        "host_origin_protection": "auto",
+    }
+
+
 if __name__ == "__main__":
     if "--http" in sys.argv:
-        _host, _port = _http_bind()
-        mcp.run(transport="streamable-http", host=_host, port=_port)
+        mcp.run(**_http_run_kwargs())
     else:
         mcp.run()
