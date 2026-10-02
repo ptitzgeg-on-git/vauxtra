@@ -452,6 +452,9 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         }
                     )
             except Exception as e:
+                # Any integration can be named here, including the two that authenticate in
+                # the query string, and their exceptions quote the URL they called.
+                error = redact_query_secrets(str(e))
                 checks.append(
                     {
                         "name": "tunnel_health",
@@ -459,8 +462,8 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         "blocking": False,
                         **_detail(
                             "tunnel_check_failed",
-                            f"Tunnel health check failed: {e}",
-                            error=str(e),
+                            f"Tunnel health check failed: {error}",
+                            error=error,
                         ),
                     }
                 )
