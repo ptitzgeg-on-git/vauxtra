@@ -698,6 +698,26 @@ class AnImportedRouteIsCheckedLikeOneTypedInTests(_IsolatedDB):
         self.assertEqual(route["proxy_provider_id"], 2)
         self.assertIsNone(route["tunnel_provider_id"])
 
+    def test_a_dns_record_from_a_proxy_or_from_nowhere_is_refused(self) -> None:
+        for name, provider_id in (("npm", 2), ("ghost", 99), ("none", None)):
+            with self.subTest(provider_id=provider_id):
+                row = {**_dns(f"{name}.vxlab.test"), "_provider_id": provider_id}
+                result = sync_api.import_services(_request(), {"dns_rewrites": [row]})
+                self.assertEqual(result["imported"], 0, result)
+                self.assertTrue(any("DNS integration" in e for e in result["errors"]), result)
+
+    def test_a_dns_answer_that_is_not_an_address_is_refused(self) -> None:
+        row = _dns("odd.vxlab.test", answer='10.0.0.9";\n return 200;#')
+        result = sync_api.import_services(_request(), {"dns_rewrites": [row]})
+        self.assertEqual(result["imported"], 0, result)
+        self.assertEqual(self._services(), [])
+
+    def test_a_cname_answer_with_the_root_dot_still_imports(self) -> None:
+        result = sync_api.import_services(
+            _request(), {"dns_rewrites": [_dns("alias.vxlab.test", answer="target.vxlab.test.")]}
+        )
+        self.assertEqual(result["imported"], 1, result)
+
     def test_an_integration_that_is_not_configured_is_refused(self) -> None:
         result = self._import(_provider_id=99)
         self.assertEqual(result["imported"], 0, result)
