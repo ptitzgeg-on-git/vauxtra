@@ -247,7 +247,9 @@ export function StepCredentials({
               <span className="text-xs font-semibold uppercase tracking-wider text-primary">
                 {t('provider_modal.guided.step', { step: stepIndex + 1, total: guidedSteps.length })}
               </span>
-              <div className="flex gap-1.5" role="group" aria-label={t('provider_modal.mode.guided')}>
+              {/* Each button is a 24px target (WCAG 2.5.8) around an 8px dot; the negative
+                  vertical margin keeps the header row as tall as the dot alone. */}
+              <div className="-my-2 flex" role="group" aria-label={t('provider_modal.mode.guided')}>
                 {guidedSteps.map((_, i) => {
                   const locked = i > reachable;
                   return (
@@ -259,14 +261,22 @@ export function StepCredentials({
                       disabled={locked}
                       onClick={() => onGuidedStepChange(i)}
                       className={cn(
-                        'h-2 w-2 rounded-full transition-colors',
-                        i === stepIndex
-                          ? 'bg-primary'
-                          : locked
-                            ? 'cursor-not-allowed bg-muted-foreground/15'
-                            : 'bg-muted-foreground/30 hover:bg-muted-foreground/60',
+                        'group flex h-6 w-6 items-center justify-center rounded-full',
+                        locked && 'cursor-not-allowed',
                       )}
-                    />
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          'h-2 w-2 rounded-full transition-colors',
+                          i === stepIndex
+                            ? 'bg-primary'
+                            : locked
+                              ? 'bg-muted-foreground/15'
+                              : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/60',
+                        )}
+                      />
+                    </button>
                   );
                 })}
               </div>
