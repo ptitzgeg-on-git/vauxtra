@@ -12,7 +12,7 @@ Symptoms:
 Checks:
 
 ```bash
-docker ps | findstr vauxtra
+docker ps --filter name=vauxtra
 docker logs vauxtra --tail 120
 ```
 
@@ -52,18 +52,15 @@ sqlite3 data/vauxtra.db \
 
 Restart container after change.
 
-> **Delete both, or the instance stays locked.** This page used to name
-> `app_password_hash` alone, which is the one recipe that makes things worse: `auth_mode`
-> is the row that records *that* this instance was protected, so with the hash gone and the
-> marker still there Vauxtra refuses every single request rather than falling back to
-> anonymous access. That refusal is deliberate — it is what stops a database restored from
-> the wrong file from quietly opening a protected instance — but an operator who ran the
-> old one-row command reached it while trying to get back in.
+> **Delete both rows, or the instance stays locked.**
 >
-> If you are already in that state, the two rows disagree and you have two ways out: run
-> the command above to reopen the wizard, or keep the protection by setting `APP_PASSWORD`
-> to a `pbkdf2:`-prefixed hash and restarting. See
-> [HOWTO — Forgot your password?](HOWTO.md#forgot-your-password) for both, in full.
+> - Symptom: every request returns 401 saying the hash is no longer in the database.
+> - Cause: `app_password_hash` was deleted and `auth_mode` was not. `auth_mode` records that
+>   the instance was protected, so Vauxtra refuses every request rather than falling back to
+>   open access.
+> - Action: run the command above to reopen the wizard, or keep the protection by setting
+>   `APP_PASSWORD` to a `pbkdf2:`-prefixed hash and restarting. See
+>   [HOWTO: Forgot your password?](HOWTO.md#forgot-your-password) for both.
 
 ## 3. Provider Test Fails
 
@@ -74,7 +71,7 @@ Symptoms:
 
 Checks:
 
-1. The provider is enabled the way the rest of the code asks. Everything downstream reads `WHERE enabled=1`, while the panel draws the switch from whether the value is truthy, so a row saved by a version before this fix holding any other number looks connected and is used by nothing -- no sync, no certificate lookup, no Docker discovery, and absent from the multi-sync target list. `SELECT id, name, enabled FROM providers WHERE enabled NOT IN (0, 1);` lists them, and saving each one again from the editor puts it back in range. The same versions could rename a provider to the empty string; those are `SELECT id, type FROM providers WHERE trim(name) = '';` and need a name typed back in.
+1. The `enabled` column holds 0 or 1. A provider shown as enabled but used by nothing (no sync, no certificate lookup, no Docker discovery) can hold another value written by an older version. `SELECT id, name, enabled FROM providers WHERE enabled NOT IN (0, 1);` lists them; save each one again from the editor. A provider with an empty name (`SELECT id, type FROM providers WHERE trim(name) = '';`) needs a name typed back in.
 2. Reachability from Vauxtra runtime to provider URL.
 3. Correct credentials/token.
 4. Correct URL format for provider type.
@@ -86,6 +83,7 @@ Provider URL notes:
 - Zoraxy: management URL `http://<host>:8000`, admin credentials (empty with `-noauth`); a 403 `CSRF token invalid` means the URL is fronted by a proxy that drops cookies
 - Pi-hole: base URL only (`http://pihole`), not `/admin`
 - AdGuard: web/API URL (commonly `:3000`)
+- Cloudflare Tunnel: the token needs `Account → Cloudflare Tunnel → Edit` and `Zone → DNS → Edit`; the Account ID is the 32-character account ID, not a zone ID
 
 Actions:
 
@@ -107,7 +105,7 @@ Checks:
 Actions:
 
 - For local socket, ensure mount exists: `/var/run/docker.sock:/var/run/docker.sock:ro`
-- For remote host, verify `tcp://` or `ssh://` URL correctness.
+- For remote host, verify the `tcp://` URL. `ssh://` endpoints fail in the Docker image, which ships no `paramiko` and no SSH client; use `tcp://`, ideally through a read-only socket proxy.
 
 ## 5. Push/Reconcile or Drift Issues
 
@@ -132,17 +130,17 @@ Checks:
 2. Service target and domain fields valid.
 3. Provider type supports writes (Traefik is read-only; Zoraxy only manages host rules, and a rule renamed in Zoraxy is reported as drift).
 4. The service is enabled. A push converges the providers on the record, so pushing a **disabled** service withdraws it instead of publishing it: the primary proxy host is suspended, everything else is removed. Drift on a disabled service asks the opposite question and reports what still answers (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than what is missing.
-5. No provider was dropped from the service while it was published. Emptying the proxy or the DNS field in the editor, and removing a target from the multi-sync list, both withdraw that provider's route as the service saves. If the provider refuses the withdrawal the save answers with it -- `Former target: ...`, in the warning the editor shows beside *Service updated* -- and writes the same thing to the journal. Act on it then: the target row is unlinked regardless, and the columns the route would be found through are the ones just emptied, so nothing in Vauxtra can reach that route afterwards. It has to be removed on the provider itself. The same is true of any route left over from before these fixes.
+5. No provider was dropped from the service while it was published. Emptying the proxy or the DNS field in the editor, and removing a target from the multi-sync list, both withdraw that provider's route as the service saves. If the provider refuses the withdrawal the save answers with it -- `Former target: ...`, in the warning the editor shows beside *Service updated* -- and writes the same thing to the journal. Act on it then: the target row is unlinked regardless, and the columns the route would be found through are the ones just emptied, so nothing in Vauxtra can reach that route afterwards. It has to be removed on the provider itself.
 6. The proxy host is not suspended. Disabling a service suspends its primary proxy host rather than deleting it, so a route can exist and answer nothing -- and a failed re-enable leaves exactly that. Drift reports it as `proxy_route_suspended`, and a push lifts the suspension as it updates the host. If a disable reports `Failed to suspend the proxy host`, the host is still there and still serving: the provider refused the call, and Vauxtra stops rather than deleting a host it was only asked to switch off. The three ways to disable -- the push, the `enabled` field on `PUT /api/services/{sid}`, and the bulk action -- all report it the same way. Fix the provider (an expired token is the usual cause) and disable again.
-7. No two services carry one hostname in two spellings. An import made before this fix stored the name the way the provider spelled it, so `NAS.maison.lan` and `nas.maison.lan` were two rows the unique index on `(subdomain, domain)` could not tell apart -- and both push, and drift, under `nas.maison.lan`, because the public hostname is derived lowercased. Vauxtra says so at startup (`Duplicate service hostnames prevent the uniqueness index`) and this lists them: `SELECT lower(subdomain || '.' || domain) AS h, count(*) FROM services GROUP BY h HAVING count(*) > 1;`. Merge what you need out of the extra row, delete it, and restart so the index is created.
+7. No two services carry one hostname in two spellings. Symptom: the startup log says `Duplicate service hostnames prevent the uniqueness index`. Cause: an older import stored names as the provider spelled them, so `NAS.maison.lan` and `nas.maison.lan` are two rows that both push, and drift, under `nas.maison.lan`. This query lists them: `SELECT lower(subdomain || '.' || domain) AS h, count(*) FROM services GROUP BY h HAVING count(*) > 1;`. Merge what you need out of the extra row, delete it, and restart so the index is created.
 8. A save that answered `409` after the providers had already been called. Both write endpoints check the hostname before they touch a provider and store the row after, so a second operator saving the same hostname in between passes the same check and the unique index refuses whichever write lands second. The refusal names the service that won, and the journal carries what the refused save had already done: `<host> was published on <providers> and then refused` for a creation, `Service #<id> was reconfigured for <host> ... run a drift check` for a rename. Act on the journal line, not only on the refusal. Nothing is withdrawn on purpose -- the winning service holds that hostname on those same providers now, so a withdrawal keyed on the name would remove its records instead of the orphaned ones. After a refused creation there is no service row at all, so the providers the line names have to be cleaned by hand; after a refused rename the row still spells its old hostname while its providers answer for the new one, and a push puts the two back in step.
-9. An alert list replaced with nothing. `POST /api/services/{sid}/alerts` replaces every rule of the service, so a body that did not carry its `alerts` key -- an empty body, or one whose key was misspelled -- used to delete them all and answer `ok`, and an entry inside the list that had lost its `webhook_id` used to be skipped, which after the deletion means removed. Both are refused now, with a `422` naming the field, and the stored rules are left alone. If a service went quiet before this version, open its alert tab: an empty list there is the symptom, and the rules have to be added back. Clearing them deliberately is still one request, and it is `{"alerts": []}`. An id naming no row is answered before anything is deleted -- `404 Service not found` for the service, or a `400` naming every unknown webhook at once -- so a refused request never costs you the rules you already had.
+9. An alert list replaced with nothing. Symptom: a service stopped alerting and its alert tab shows an empty list. Cause: older versions accepted a `POST /api/services/{sid}/alerts` body without its `alerts` key and deleted every rule. Action: add the rules back. Such a body is now refused with a `422` naming the field, and an unknown service or webhook id is refused (`404` or `400`) before anything is deleted. To clear the rules on purpose, send `{"alerts": []}`.
 
-10. A route reported missing that is still on the provider. A drift check reads a listing with no matching record as a route that has disappeared, so a provider that refused the listing used to produce exactly that report, with a Reconcile button beside it whose only meaning would have been "publish it again". Four providers answered an empty list for a read that had failed -- NPM, Traefik, Zoraxy and Cloudflare Tunnel -- and they no longer do: a listing that could not be finished is reported as `proxy_check_failed`, naming the provider and what it said. If you see `route_missing` now, the provider answered and the record really is absent. If you see `proxy_check_failed`, fix the provider first (an expired token or a restarted container is the usual cause) and re-run the check before reconciling anything.
+10. A route reported missing that is still on the provider. `route_missing` means the provider answered and the record is absent. `proxy_check_failed` means the provider could not be listed, and names the provider and what it said. For the second, fix the provider first (an expired token or a restarted container is the usual cause) and re-run the check before reconciling anything.
 
-11. A tunnel service reported in sync while nothing answers on its hostname. Before this version every service was read as if it were in `proxy_dns` mode, because the test that asked the row which mode it was in could only ever answer "no". A tunnel service has no `proxy_provider_id`, so it was compared against no provider at all, and the silence was reported as agreement: `mode: proxy_dns`, `ok: true`, `issues: []`, with a dry-run beside it saying `would_change: false`. Upgrade first, then re-run the drift check on every service exposed through a tunnel: the ones that were never actually published now report `route_missing` on the tunnel provider, and a push creates the ingress rule. Two related symptoms have the same origin. A tunnel service whose `tunnel_hostname` differs from `subdomain.domain` was read, compared and withdrawn under the wrong name, so a delete or a disable made before this version may have left a live ingress rule behind -- check the tunnel's configuration for the hostname the service actually served. And a service set to resolve its public target automatically was pushed as if it were set to the manual address: if its DNS record has been pointing at a stale address, one push now re-resolves it and the journal says where the new value came from.
+11. A tunnel service reported in sync while nothing answers on its hostname. Symptom: drift answers `mode: proxy_dns`, `ok: true` for a tunnel service. Cause: versions before 1.5.0 read every service as `proxy_dns`, so tunnel services were never compared or published. Action: upgrade, re-run the drift check on every tunnel service, and push the ones that report `route_missing`. Those versions also withdrew a tunnel service whose `tunnel_hostname` differs from `subdomain.domain` under the wrong name, so check the tunnel configuration for leftover ingress rules. A service in automatic public-target mode whose DNS record points at a stale address is fixed by one push.
 
-12. A warning that names a DNS integration the service is not published to. The drift check also asks every other enabled DNS integration for the service's public hostname, because a name can be answered in more places than the service writes to. An integration that answers with another address is reported as `dns_answered_elsewhere`, with both addresses; one that could not be read is reported as `dns_elsewhere_check_failed`, with what it said. Both are warnings: `ok` stays `true`, the scheduled auto-reconcile does not run this check, and Reconcile leaves the record alone, because it writes only to the integrations the service is published to. With split-horizon DNS, where a LAN resolver gives a private address and a public zone gives a public one, the warning is expected: it puts both answers side by side. Otherwise the record is usually left over from an earlier setup. Remove it on that integration, or add that integration to the service as a DNS target if the service should be published there too. Before this version the check read only the service's own integrations, so the same situation was reported as `ok: true, issues: []`.
+12. A warning that names a DNS integration the service is not published to. The drift check also asks every other enabled DNS integration for the service's public hostname, because a name can be answered in more places than the service writes to. An integration that answers with another address is reported as `dns_answered_elsewhere`, with both addresses; one that could not be read is reported as `dns_elsewhere_check_failed`, with what it said. Both are warnings: `ok` stays `true`, the scheduled auto-reconcile does not run this check, and Reconcile leaves the record alone, because it writes only to the integrations the service is published to. With split-horizon DNS, where a LAN resolver gives a private address and a public zone gives a public one, the warning is expected: it puts both answers side by side. Otherwise the record is usually left over from an earlier setup. Remove it on that integration, or add that integration to the service as a DNS target if the service should be published there too.
 
 Actions:
 
@@ -164,8 +162,9 @@ Checks:
 
 Actions:
 
-- If credentials cannot decrypt post-restore, re-enter provider secrets or restore matching `.secret_key`.
-- Keep DB and `.secret_key` backed up together.
+- Symptom: provider tests fail and the log says `Cannot decrypt a stored secret: SECRET_KEY does not match`. Cause: `vauxtra.db` was restored without the `.secret_key` it was written with, or `SECRET_KEY` changed. Action: put the original `data/.secret_key` (or the original `SECRET_KEY` value) back and restart. If it is lost, re-enter the provider passwords.
+- A plain backup (`GET /api/backup`) carries no credentials: re-enter provider passwords and webhook URLs after restoring it. A secure backup restores them, re-encrypted with the current key.
+- Keep `vauxtra.db` and `.secret_key` backed up together. See [DEPLOYMENT: Restoring a data/ snapshot](DEPLOYMENT.md#restoring-a-data-snapshot).
 
 ## 7. API Docs Missing
 
@@ -191,7 +190,7 @@ Then restart service.
 
 ```bash
 # Container status
-docker ps | findstr vauxtra
+docker ps --filter name=vauxtra
 
 # Recent logs
 docker logs vauxtra --tail 200
