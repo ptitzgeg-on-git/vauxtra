@@ -78,6 +78,10 @@ reach every Vauxtra route, so it binds to loopback only. To expose it, set
 tunnel to the loopback port instead. The server prints a warning whenever it binds
 anything other than `127.0.0.1`.
 
+On the loopback, a request whose `Host` or `Origin` names anything other than that address
+is refused (421 or 403). Without that check, a web page open in your browser could reach the
+port through DNS rebinding and call the tools with your key.
+
 ---
 
 ## Environment variables
@@ -89,6 +93,7 @@ anything other than `127.0.0.1`.
 | `VAUXTRA_TIMEOUT` | `120` | Seconds to wait for a Vauxtra call. A push walks every provider in series. |
 | `VAUXTRA_MCP_HOST` | `127.0.0.1` | Interface `--http` binds to. Anything else is published without authentication. |
 | `VAUXTRA_MCP_PORT` | `9000` | Port `--http` binds to |
+| `VAUXTRA_MCP_BACKUP_DIR` | `~/.vauxtra-mcp/backups` | Where `create_secure_backup` writes its files |
 
 ---
 
@@ -181,14 +186,16 @@ provider rows follow, so reaching underneath them is a way to manufacture drift.
 | Tool | Description |
 |---|---|
 | `get_auth_status` | Whether auth is configured, and whether this client is authenticated |
-| `auth_login` | Open a session with the admin password; the cookie is kept for later calls |
+| `auth_login` | Open a session with the admin password; the cookie is kept for later calls. Refused when `VAUXTRA_API_KEY` is set |
 | `auth_logout` | Close the session, on the server and in this bridge |
 | `setup_password` | Set the initial admin password when none is configured |
 | `change_password` | Change the admin password |
 | `mark_setup_complete` | Mark the setup wizard as finished |
 
 An API key is the better credential here: it carries a scope, `auth_login` does not — a
-session is always `admin`. Use `auth_login` only on an instance with no key yet.
+session is always `admin`. Use `auth_login` only on an instance with no key yet. With a key
+configured it is refused, because the server reads a session before a key and the login
+would make a bridge limited to a `read` key admin.
 
 **Settings and domains**
 
@@ -241,7 +248,7 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 | Tool | Description |
 |---|---|
 | `create_backup` | Export a backup without credentials |
-| `create_secure_backup` | Export a backup with credentials encrypted by a passphrase |
+| `create_secure_backup` | Export a backup with credentials encrypted by a passphrase, into a file on the bridge's machine (`VAUXTRA_MCP_BACKUP_DIR`). Only the path comes back: the conversation already holds the passphrase |
 | `restore_backup` | Restore from a backup payload — this replaces current data |
 | `reset_all_data` | Delete all application data |
 

@@ -1,5 +1,8 @@
 """MCP tools — auth, settings, domains, tags, envs, webhooks, api keys, backups."""
 import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -27,7 +30,15 @@ def auth_login(password: str) -> dict[str, Any]:
 
     Prefer `VAUXTRA_API_KEY`: a key carries the scopes it was minted with, a password login
     is always `admin`, and this route is rate-limited to a handful of attempts a minute.
+
+    Refused when `VAUXTRA_API_KEY` is set: the server reads a session before a key, so the
+    login would turn a bridge limited to a `read` key into an admin one for seven days.
     """
+    if client.has_api_key():
+        raise ValueError(
+            "VAUXTRA_API_KEY is set and this bridge authenticates with it. A password session "
+            "would be admin and would override the key's scope; use a key with the scope you need."
+        )
     r = client.post("/auth/login", json={"password": password})
     client.check(r)
     return r.json()
@@ -411,12 +422,29 @@ def create_backup() -> dict[str, Any]:
     return r.json()
 
 
+def _backup_dir() -> Path:
+    configured = os.environ.get("VAUXTRA_MCP_BACKUP_DIR", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".vauxtra-mcp" / "backups"
+
+
 @mcp.tool()
 def create_secure_backup(passphrase: str) -> dict[str, Any]:
-    """Export a backup with credentials encrypted by passphrase."""
+    """Export a backup with credentials encrypted by passphrase, into a file on this machine.
+
+    The file goes to `VAUXTRA_MCP_BACKUP_DIR` (default `~/.vauxtra-mcp/backups`), readable by
+    its owner only, and only its path comes back. Returned here, the backup would sit in the
+    conversation next to the passphrase that decrypts it.
+    """
     r = client.post("/backup/secure", json={"passphrase": passphrase})
     client.check(r)
-    return r.json()
+    directory = _backup_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / f"vauxtra-secure-{datetime.now(UTC):%Y%m%dT%H%M%S.%fZ}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(r.text)
+    counts = {key: len(value) for key, value in r.json().items() if isinstance(value, list)}
+    return {"ok": True, "path": str(path), "counts": counts}
 
 
 @mcp.tool()
