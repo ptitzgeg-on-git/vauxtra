@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from app.auth import require_auth, require_auth_or_setup
@@ -8,7 +10,7 @@ from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_ho
 from app.public_target import describe_public_target_failure, resolve_public_target
 from app.security import redact_query_secrets
 from app.text import plural
-from app.validators import NO_PORT
+from app.validators import NO_PORT, is_valid_port
 
 router = APIRouter()
 
@@ -1435,6 +1437,11 @@ def sync_services(request: Request):
     return result
 
 
+# What turns a target into something else once it is written into `scheme://target:port`:
+# a path, credentials, a query, a fragment or a second word.
+_ORIGIN_BREAKING = re.compile(r"[\s/@?#\\]")
+
+
 @router.post("/api/services/import")
 def import_services(request: Request, data: dict = Body(...)):
     """Turn scanned provider rows into services, and say what happened to every one of them.
@@ -1460,6 +1467,11 @@ def import_services(request: Request, data: dict = Body(...)):
     errors   = []
     conn     = get_db()
     declared = _declared_domains(conn)
+    # The rows come back from the panel, so nothing in them is trusted: the mode follows the
+    # stored integration, and a route is held to the rules of one created by hand.
+    provider_types = {
+        row["id"]: row["type"] for row in conn.execute("SELECT id, type FROM providers").fetchall()
+    }
 
     # Built one row at a time rather than by a comprehension: the comprehension dropped a
     # nameless record, and a second record for a name already in the map, without either the
@@ -1549,7 +1561,34 @@ def import_services(request: Request, data: dict = Body(...)):
                 set_aside(skipped, fqdn, "Vauxtra already tracks this name")
                 continue
 
-            provider_type = (h.get("_provider_type") or "").strip().lower()
+            row = f"{fqdn} ({where})"
+            try:
+                provider_id = int(h.get("_provider_id"))
+            except (TypeError, ValueError):
+                provider_id = None
+            provider_type = provider_types.get(provider_id)
+            if provider_type is None:
+                refuse_import(errors, conn, row, "the integration it was read from is not configured here")
+                continue
+            if not (PROVIDER_TYPES.get(provider_type, {}).get("capabilities") or {}).get("proxy"):
+                refuse_import(errors, conn, row, "the integration it was read from does not publish routes")
+                continue
+            scheme = str(h.get("scheme", h.get("forward_scheme", "http")) or "").strip().lower()
+            if scheme not in ("http", "https"):
+                refuse_import(
+                    errors, conn, row,
+                    f"it forwards over {scheme or 'no scheme'}, and Vauxtra publishes http and https services only",
+                )
+                continue
+            target = str(h.get("host", h.get("forward_host", "")) or "").strip()
+            if not target or _ORIGIN_BREAKING.search(target):
+                refuse_import(errors, conn, row, f"its target {target!r} is not a host name or an address")
+                continue
+            port = h.get("port", h.get("forward_port", 80))
+            if not is_valid_port(port):
+                refuse_import(errors, conn, row, f"its port {port} is not between 1 and 65535")
+                continue
+            port = int(port)
 
             dns_provider_id = dns_match.get("_provider_id") if dns_match else None
             dns_ip          = dns_match.get("answer", "") if dns_match else ""
@@ -1564,12 +1603,12 @@ def import_services(request: Request, data: dict = Body(...)):
                     (
                         subdomain,
                         domain,
-                        h.get("host", h.get("forward_host", "")),
-                        int(h.get("port", h.get("forward_port", 80))),
-                        h.get("scheme", h.get("forward_scheme", "http")),
+                        target,
+                        port,
+                        scheme,
                         int(bool(h.get("websocket", h.get("allow_websocket_upgrade", False)))),
                         "tunnel",
-                        h.get("_provider_id"),
+                        provider_id,
                         fqdn,
                         None,
                         "",
@@ -1581,12 +1620,9 @@ def import_services(request: Request, data: dict = Body(...)):
                        (subdomain, domain, target_ip, target_port, forward_scheme,
                         websocket, proxy_provider_id, npm_host_id, dns_provider_id, dns_ip)
                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (subdomain, domain,
-                     h.get("host", h.get("forward_host", "")),
-                     int(h.get("port", h.get("forward_port", 80))),
-                     h.get("scheme", h.get("forward_scheme", "http")),
+                    (subdomain, domain, target, port, scheme,
                      int(bool(h.get("websocket", h.get("allow_websocket_upgrade", False)))),
-                     h.get("_provider_id"), h.get("id"), dns_provider_id, dns_ip),
+                     provider_id, h.get("id"), dns_provider_id, dns_ip),
                 )
             conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
             imported += 1
