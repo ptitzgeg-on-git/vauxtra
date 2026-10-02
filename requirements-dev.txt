@@ -2,5 +2,8 @@
 # The MCP bridge is not shipped in the Docker image, but tests/test_mcp_*.py import
 # it. Without this the suite cannot even be collected in CI.
 -r vauxtra_mcp/requirements.txt
-pytest>=9.1.1
-ruff>=0.11
+# Exact pins for the tools that judge the code. With a floor, a ruff release that adds a
+# rule to a selected family turns CI red on a commit that changed nothing. Dependabot bumps
+# these on dev, where a new finding arrives as a reviewable PR instead of a broken build.
+pytest==9.1.1
+ruff==0.16.10
