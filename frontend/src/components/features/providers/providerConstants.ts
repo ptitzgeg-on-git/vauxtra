@@ -124,7 +124,7 @@ export function isDnsType(type: string, meta?: ProviderTypeMeta): boolean {
 
 // ─── Metadata fallbacks (authoritative source is now /api/providers/types) ───
 
-export const descByType: Record<string, string> = {
+const descByType: Record<string, string> = {
   cloudflare: 'DNS records via Cloudflare API',
   cloudflare_tunnel: 'Cloudflare Zero Trust Tunnel',
   pihole: 'Local DNS & ad filtering',
@@ -224,7 +224,7 @@ export function getGuidedSteps(type: string, meta?: ProviderTypeMeta, t?: Transl
   return localizeSteps(type, parseApiSteps(meta.guided_steps), t);
 }
 
-export const projectUrlByType: Record<string, string> = {
+const projectUrlByType: Record<string, string> = {
   npm: 'https://nginxproxymanager.com',
   adguard: 'https://github.com/AdguardTeam/AdGuardHome',
   pihole: 'https://pi-hole.net',
@@ -286,13 +286,13 @@ const urlOptionalTypes = new Set(['cloudflare', 'cloudflare_tunnel', 'desec']);
  * Whether a secret is mandatory for this type. The API may say so explicitly
  * (`requires_password`); otherwise the local list of auth-less proxies decides.
  */
-export function requiresPassword(type: string, meta?: Pick<ProviderTypeMeta, 'requires_password'>): boolean {
+function requiresPassword(type: string, meta?: Pick<ProviderTypeMeta, 'requires_password'>): boolean {
   if (typeof meta?.requires_password === 'boolean') return meta.requires_password;
   return !passwordOptionalTypes.has(type);
 }
 
 /** Whether a username / account id is mandatory: API flag first, tunnel account id otherwise. */
-export function requiresUsername(type: string, meta?: Pick<ProviderTypeMeta, 'requires_username'>): boolean {
+function requiresUsername(type: string, meta?: Pick<ProviderTypeMeta, 'requires_username'>): boolean {
   if (typeof meta?.requires_username === 'boolean') return meta.requires_username;
   return type === 'cloudflare_tunnel';
 }
@@ -303,7 +303,7 @@ export function isUrlOptional(type: string): boolean {
 }
 
 /** Every field of the form, in the order both forms draw them. */
-export const FORM_FIELDS: ReadonlyArray<keyof ProviderFormState> = ['name', 'url', 'username', 'password', 'tunnel_id'];
+const FORM_FIELDS: ReadonlyArray<keyof ProviderFormState> = ['name', 'url', 'username', 'password', 'tunnel_id'];
 
 function isFormField(key: string): key is keyof ProviderFormState {
   return (FORM_FIELDS as ReadonlyArray<string>).includes(key);
@@ -360,7 +360,7 @@ export function canSubmitProvider(formData: ProviderFormState, meta?: Requiremen
 }
 
 /** The guided step that asks for `key`, or -1 when none does. */
-export function stepOfField(steps: WizardStep[], key: keyof ProviderFormState): number {
+function stepOfField(steps: WizardStep[], key: keyof ProviderFormState): number {
   return steps.findIndex((step) => step.fields?.some((field) => field.key === key));
 }
 
@@ -380,7 +380,7 @@ export function firstIncompleteStep(steps: WizardStep[], missing: ReadonlyArray<
  * fields names them this way, so it never calls a field something the form in front of it does
  * not.
  */
-export function formFieldLabel(
+function formFieldLabel(
   key: keyof ProviderFormState,
   type: string,
   meta: ProviderTypeMeta | undefined,
@@ -459,7 +459,7 @@ export function getProviderGroup(type: string, meta?: ProviderTypeMeta): Provide
 }
 
 /** Capability flags shown as badges, in display order. */
-export const CAPABILITY_BADGES: ProviderCapability[] = ['proxy', 'dns', 'public_dns', 'supports_tunnel', 'certificates'];
+const CAPABILITY_BADGES: ProviderCapability[] = ['proxy', 'dns', 'public_dns', 'supports_tunnel', 'certificates'];
 
 /** The capabilities a type declares true, in `CAPABILITY_BADGES` order. */
 export function listCapabilities(meta?: Pick<ProviderTypeMeta, 'capabilities'>): ProviderCapability[] {

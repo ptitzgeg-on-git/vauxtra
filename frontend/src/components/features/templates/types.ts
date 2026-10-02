@@ -191,8 +191,7 @@ export function validateTemplateForm(form: TemplateFormState, t: TFunction): Tem
 // ---------------------------------------------------------------------------
 
 // The rule and its fallback table live in `lib/providers.ts`, which every picker in the app
-// now shares. Re-exported here so the Templates screens keep one import.
-export { providerHasCapability };
+// now shares.
 
 export interface ProviderChoices {
   proxy: Provider[];

@@ -125,7 +125,7 @@ export function domainProblem(value: string, options: { requireDot?: boolean } =
 }
 
 /** A subdomain in the form the API stores, so the rule below measures the published name. */
-export function normalizeSubdomain(value: string): string {
+function normalizeSubdomain(value: string): string {
   return (value || '').trim().toLowerCase();
 }
 

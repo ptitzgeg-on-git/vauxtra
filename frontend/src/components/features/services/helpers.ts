@@ -8,7 +8,7 @@ export type StatusFilter = 'ok' | 'error';
 export const isStatusFilter = (value: string | null): value is StatusFilter => value === 'ok' || value === 'error';
 
 /** DNS providers that answer on the LAN, so their target is a private IP rather than a public one. */
-export const LOCAL_DNS_TYPES = ['pihole', 'adguard'];
+const LOCAL_DNS_TYPES = ['pihole', 'adguard'];
 export const isLocalDnsType = (type: string | null | undefined): boolean =>
   LOCAL_DNS_TYPES.includes(String(type || '').toLowerCase());
 

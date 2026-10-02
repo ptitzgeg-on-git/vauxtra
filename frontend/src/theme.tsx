@@ -13,13 +13,13 @@ type ThemeContextValue = {
   toggleTheme: () => void;
 };
 
-export const THEME_STORAGE_KEY = 'vauxtra.theme';
+const THEME_STORAGE_KEY = 'vauxtra.theme';
 
 /** The order `toggleTheme` walks through; exported so a toggle button can name the next stop. */
-export const THEME_CYCLE: readonly Theme[] = ['light', 'dark', 'system'];
+const THEME_CYCLE: readonly Theme[] = ['light', 'dark', 'system'];
 
 /** The theme `toggleTheme` would pick after `current`. */
-export function nextTheme(current: Theme): Theme {
+function nextTheme(current: Theme): Theme {
   const index = THEME_CYCLE.indexOf(current);
   return THEME_CYCLE[(index + 1) % THEME_CYCLE.length];
 }

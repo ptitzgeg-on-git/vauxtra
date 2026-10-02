@@ -60,7 +60,7 @@ export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; labelKey: string }
 ];
 
 /** Every value `?tab=` has ever accepted, including the aliases. */
-export const VALID_TABS: readonly string[] = [
+const VALID_TABS: readonly string[] = [
   'general',
   'language',
   'dns',

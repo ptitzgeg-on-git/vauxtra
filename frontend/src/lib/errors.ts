@@ -36,7 +36,7 @@ export interface ApiErrorBody {
 /** An axios rejection whose body follows the FastAPI convention. */
 export type ApiError = AxiosError<ApiErrorBody>;
 
-export function isApiError(err: unknown): err is ApiError {
+function isApiError(err: unknown): err is ApiError {
   return axios.isAxiosError(err);
 }
 
@@ -83,7 +83,7 @@ function validationItemToText(item: ApiValidationErrorItem): string {
 }
 
 /** A single sentence from a `detail` of any shape, or `undefined` when it holds none. */
-export function detailToMessage(detail: ApiErrorDetail | undefined): string | undefined {
+function detailToMessage(detail: ApiErrorDetail | undefined): string | undefined {
   if (detail === undefined || detail === null) return undefined;
   if (typeof detail === 'string') {
     const text = detail.trim();

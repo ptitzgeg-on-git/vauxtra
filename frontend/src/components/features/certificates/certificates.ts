@@ -35,7 +35,7 @@ export const CRITICAL_DAYS = 7;
 /** Fallback for `warn_threshold_days` when only `GET /api/certificates` answered. */
 export const WARN_DAYS = 30;
 
-export const CERT_BUCKETS = ['expired', 'critical', 'expiring', 'valid', 'unknown'] as const;
+const CERT_BUCKETS = ['expired', 'critical', 'expiring', 'valid', 'unknown'] as const;
 export type CertBucket = (typeof CERT_BUCKETS)[number];
 
 export type CertFilter = 'all' | CertBucket;
