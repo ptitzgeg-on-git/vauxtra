@@ -47,7 +47,9 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && if python -c 'import ensurepip' 2>/dev/null; then echo 'ensurepip survived its own removal'; exit 1; fi
 COPY app/ ./app/
 COPY --from=frontend-builder /build/dist ./frontend/dist/
-RUN mkdir -p /app/data && chown -R appuser:appuser /app
+# Only the data directory belongs to the user the server runs as. Owning the code too would
+# let any file-write bug rewrite the application or the frontend it serves.
+RUN mkdir -p /app/data && chown appuser:appuser /app/data
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8888
