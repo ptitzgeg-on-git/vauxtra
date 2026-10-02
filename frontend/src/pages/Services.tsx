@@ -53,6 +53,7 @@ import {
   MODE_FILTERS,
   buildServicePayload,
   bulkCheckSummary,
+  runBulkChecks,
   isStatusFilter,
   matchesMode,
   matchesSearch,
@@ -599,32 +600,39 @@ export function Services() {
 
   // Bulk "check" has no server endpoint — checks run one by one so the backend is not flooded.
   const [bulkChecking, setBulkChecking] = useState(false);
+  // Leaving the page aborts the run: no request is left queued behind it, no toast pops up
+  // on another page.
+  const bulkCheckAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => bulkCheckAbort.current?.abort(), []);
   const runBulkCheck = useCallback(
     async (targets: Service[]) => {
+      bulkCheckAbort.current?.abort();
+      const controller = new AbortController();
+      bulkCheckAbort.current = controller;
       setBulkChecking(true);
-      let ok = 0;
-      let failed = 0;
       // A service without a port comes back untested: `bulkCheckSummary` says why it is
       // counted apart.
-      let untested = 0;
-      for (const service of targets) {
-        startAction(service.id);
-        try {
-          const result = await api.post<ServiceCheckResult>(`/services/${service.id}/check`);
-          setCheckById((prev) => ({ ...prev, [service.id]: result }));
-          if (result.tested === false) untested += 1;
-          else if (result.status === 'ok') ok += 1;
-          else failed += 1;
-        } catch {
-          failed += 1;
-        } finally {
-          endAction(service.id);
-        }
-      }
+      const { counts, aborted, stoppedBy } = await runBulkChecks(
+        targets,
+        (service, signal) => api.post<ServiceCheckResult>(`/services/${service.id}/check`, undefined, { signal }),
+        {
+          signal: controller.signal,
+          onStart: (service) => startAction(service.id),
+          onResult: (service, result) => setCheckById((prev) => ({ ...prev, [service.id]: result })),
+          onEnd: (service) => endAction(service.id),
+        },
+      );
+      if (aborted) return;
+      if (bulkCheckAbort.current === controller) bulkCheckAbort.current = null;
       setBulkChecking(false);
       invalidateServices();
+      if (stoppedBy !== undefined) {
+        // The selection is kept so the same run can be started again once the cause is gone.
+        toast.error(translateApiError(stoppedBy, t, t('services.bulk.failed')));
+        return;
+      }
       clearSelection();
-      const { message, tone } = bulkCheckSummary({ ok, failed, untested }, t);
+      const { message, tone } = bulkCheckSummary(counts, t);
       if (tone === 'warning') toast(message, { icon: '⚠️', duration: 6000 });
       else if (tone === 'success') toast.success(message);
       else toast(message, { duration: 6000 });
