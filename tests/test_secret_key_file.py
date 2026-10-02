@@ -15,10 +15,10 @@ class TheGeneratedKeyFile(unittest.TestCase):
         created_modes: list[int] = []
         real_open = os.open
 
-        def recording_open(path, flags, mode=0o777, *args, **kwargs):
+        def recording_open(path, flags, *args, **kwargs):
             if str(path).endswith(".secret_key") and flags & os.O_CREAT:
-                created_modes.append(mode)
-            return real_open(path, flags, mode, *args, **kwargs)
+                created_modes.append(args[0] if args else kwargs.get("mode"))
+            return real_open(path, flags, *args, **kwargs)
 
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(config, "DATA_DIR", directory), \

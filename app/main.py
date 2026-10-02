@@ -42,10 +42,9 @@ _SECRET_KEY_MIN_LENGTH = 32
 def _warn_if_secret_key_is_short() -> None:
     if len(SECRET_KEY) < _SECRET_KEY_MIN_LENGTH:
         _logger.warning(
-            "SECURITY: SECRET_KEY is %d characters long. It signs the session cookie and "
-            "encrypts the stored provider credentials, so use %d random characters or more. "
-            "Changing it makes the stored credentials unreadable: re-enter them afterwards.",
-            len(SECRET_KEY),
+            "SECURITY: SECRET_KEY is shorter than %d characters. It signs the session cookie "
+            "and encrypts the stored credentials, so use a longer random value. Changing it "
+            "makes the stored credentials unreadable: re-enter them afterwards.",
             _SECRET_KEY_MIN_LENGTH,
         )
 
