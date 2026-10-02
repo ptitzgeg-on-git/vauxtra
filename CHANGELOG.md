@@ -16,6 +16,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - **The setup route could claim an instance whose password hash had disappeared.** Every
   other route refuses in that state, and `POST /api/auth/setup-password` now does too.
 - A `SECRET_KEY` shorter than 32 characters is named in a warning at startup.
+- **`POST /api/services/import` stored what the request said.** A route is now refused when
+  it forwards over anything but `http` or `https`, when its target would rewrite the origin
+  URL, or when its port is out of range, and the publishing mode follows the stored
+  integration rather than the request. A tunnel rule with an `ssh://` or `unix:` origin, or
+  a proxy rule with no origin, is now named in `errors` instead of becoming a service with
+  no usable target.
+- **The MCP bridge's HTTP transport refused nothing on the loopback.** A page open in the
+  operator's browser could reach it through DNS rebinding and call every tool with the
+  bridge's key. A `Host` or `Origin` other than the loopback address is now refused, which
+  takes `fastmcp` 4.0 or later.
+- **`create_secure_backup` returned the encrypted backup into the conversation**, next to the
+  passphrase that decrypts it. The bridge now writes it to a file on its own machine
+  (`VAUXTRA_MCP_BACKUP_DIR`, mode 600) and returns the path.
+- **`auth_login` could turn a bridge limited to a `read` key into an admin one.** The server
+  reads a session before a key, so the login is now refused when `VAUXTRA_API_KEY` is set.
+- The notification test routes no longer return the text of a send exception, which could
+  quote the stored URL and the token inside it.
+- `data/.secret_key` is created with mode 600 instead of being narrowed after the write.
+- In the image, only `/app/data` belongs to the user the server runs as, not the code.
 
 ### Documentation
 
