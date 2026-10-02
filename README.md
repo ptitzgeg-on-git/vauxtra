@@ -164,24 +164,29 @@ Two things to know before you open the port to your network:
   discovery (the Docker screens then say the daemon is unavailable), or point Vauxtra at a
   read-only socket proxy.
 
-To build from source instead: clone the repository and run `docker compose up --build -d`.
+To build from source instead: clone the repository, run `cp .env.example .env` (the compose
+file reads `.env` and will not start without it), then `docker compose up --build -d`.
 
 ## Configuration
 
-All settings are environment variables. Copy `.env.example` to `.env` to start.
+All settings are environment variables. Copy `.env.example` to `.env` to start. The table
+lists the main ones; [`.env.example`](.env.example) is the full list, with a comment on each.
 
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | generated | Signs the session cookie and encrypts provider credentials. Generated into `data/.secret_key` when empty. **Do not change it after adding providers**: the stored credentials become unreadable. |
 | `APP_PASSWORD` | *(none)* | Admin password, as a PBKDF2 hash. Leave empty to set it in the setup wizard. |
+| `ALLOW_PLAINTEXT_APP_PASSWORD` | `false` | Accept a plaintext `APP_PASSWORD`. Leave off outside a lab. |
 | `TZ` | `UTC` | Timezone for the scheduler and log timestamps. |
 | `HTTPS_ONLY` | `false` | Set to `true` whenever the panel is reached over `https://`, including behind a reverse proxy that terminates TLS. Marks the cookie `Secure` and sends HSTS. |
 | `FORWARDED_ALLOW_IPS` | *(empty)* | Address of the reverse proxy in front of Vauxtra. Without it, every visitor shares one rate-limit counter, so five failed sign-ins from anywhere lock you out. Do not set it without a proxy in front. |
 | `CORS_ORIGINS` | *(empty)* | Cross-origin callers allowed to use the API. Leave empty: the interface is served by the same application. Every origin listed may send the session cookie. |
 | `DEBUG` | `false` | Serves `/api/docs` and `/openapi.json`, allows the Vite dev server and logs verbosely. |
-| `DOCKER_HOST` | *(env default)* | Socket used for the first Docker endpoint. |
+| `DOCKER_HOST` | `unix:///var/run/docker.sock` | Seeds the first Docker endpoint on an empty database, nothing more. Change endpoints later in **Settings > Data**. |
+| `VAUXTRA_BIND` | `127.0.0.1` | Host interface the compose file publishes port 8888 on. Read by Docker Compose, not by Vauxtra. |
 | `VAUXTRA_REWRITE_LOCALHOST` | `true` | Rewrites `localhost` in provider URLs to a host alias when running in Docker. |
 | `VAUXTRA_LOCALHOST_ALIAS` | `host.docker.internal` | The alias used by that rewrite. |
+| `VAUXTRA_PROVIDER_PLUGINS` | *(empty)* | Extra provider types, as importable Python modules. Their code runs with Vauxtra's privileges. See [PROVIDERS](docs/PROVIDERS.md#adding-a-provider-without-forking). |
 | `VAUXTRA_URL` | `http://localhost:8888` | Base URL of this instance, for the MCP server. |
 | `VAUXTRA_API_KEY` | *(none)* | API key for the MCP server. Create one in **Settings > API Keys**. |
 
@@ -230,13 +235,14 @@ credential each one accepts:
 user's email and password.
 
 **Traefik.** Read-only: Traefik configures itself from labels and files. Expose its API
-(for example `http://traefik:8080`), add a `traefik` provider, then use **Sync > Import** to
-bring in existing routes.
+(for example `http://traefik:8080`), add a `traefik` provider, then use **Import from
+providers** on the Services or Integrations page to bring in existing routes (also in
+**Settings > Data > Synchronization & Import**).
 
 **Zoraxy.** Zoraxy has a single admin account and no API keys, so Vauxtra signs in with the
 same credentials as the browser. Keep the management port on your LAN or VPN. Add a
 `zoraxy` provider with `http://zoraxy:8000` (leave the credentials empty for an instance
-started with `-noauth`), then **Sync > Import**. Vauxtra manages host rules with one upstream
+started with `-noauth`), then **Import from providers**. Vauxtra manages host rules with one upstream
 each; virtual directories, stream proxies and extra upstreams are left alone.
 
 **Cloudflare DNS.** Create an API token with *Zone > DNS > Edit*, limited to your zones, and
@@ -264,7 +270,8 @@ empty to let Vauxtra find the matching one.
 
 Vauxtra ships an [MCP](https://modelcontextprotocol.io/) server that exposes its operations
 as tools: services, templates, preflight and push, drift and reconcile, providers, Docker
-discovery and monitoring. The [full list](docs/HOWTO.md#11-mcp-integration) is in the HOWTO.
+discovery and monitoring. The [full list](vauxtra_mcp/README.md#available-tools) is in the
+MCP server's README.
 
 It runs next to your MCP client, not inside the image:
 
@@ -311,14 +318,16 @@ The routes and the scope each one needs are listed in [HOWTO](docs/HOWTO.md).
 
 ## Upgrading
 
-`latest` follows the newest release:
+`latest` follows `main`, and `main` only receives releases:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-The database migrates itself at startup. Back up `data/` before a major version.
+The database migrates itself at startup. Migrations only move forward, so back up `data/`
+before upgrading if you may want to go back. To stay on one release line, pin a tag such as
+`:1.7` ([pinning a version](docs/DEPLOYMENT.md#pinning-a-version)).
 
 ## Development
 
@@ -347,10 +356,16 @@ the final image.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch model, the commit convention and how to
 add a provider or an MCP tool.
 
-To add a translation, copy [`frontend/src/locales/en.json`](frontend/src/locales/en.json) to
-the [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) of the language,
-add it to `SUPPORTED_LANGUAGES` in [`frontend/src/i18n/index.tsx`](frontend/src/i18n/index.tsx)
-and open a pull request. No backend change is needed.
+To add a translation:
+
+1. Copy [`frontend/src/locales/en.json`](frontend/src/locales/en.json) to the
+   [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) of the language.
+2. In [`frontend/src/i18n/index.tsx`](frontend/src/i18n/index.tsx), add the code to the `Lang`
+   union, to `SUPPORTED_LANGUAGES` and to `LOCALE_TAGS` (the BCP-47 tag used for dates and
+   numbers).
+3. Run `npm run i18n:check` in `frontend/`. It lists missing keys and the plural forms
+   (`_one`, `_other`, `_few`, `_many`) the language needs.
+4. Open a pull request. No backend change is needed.
 
 ## How it's built
 
