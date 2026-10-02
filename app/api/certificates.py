@@ -1,8 +1,4 @@
-"""Certificate management endpoints.
-
-Provides certificate listing and expiry monitoring across every proxy provider that
-exposes its certificate store (NPM, Zoraxy).
-"""
+"""Certificate listing and expiry monitoring for proxy providers with a certificate store."""
 
 from __future__ import annotations
 
@@ -33,13 +29,7 @@ def _certificate_provider_rows(conn) -> list:
 
 
 def _with_domain_names(cert: dict) -> dict:
-    """The certificate with `domain_names` filled from `domains` when a provider omits it.
-
-    The providers hand back `domains`; the frontend was written against `domain_names`
-    and the Dashboard dereferences it without a guard, so one expiring certificate from
-    a provider that only says `domains` took the whole Dashboard route down. Both
-    spellings are kept so nothing that reads the other one changes.
-    """
+    """Fill `domain_names` from `domains` when a provider only sends the latter (the UI reads it)."""
     if "domain_names" not in cert:
         cert["domain_names"] = list(cert.get("domains") or [])
     return cert
@@ -93,12 +83,8 @@ def certificate_expiry(request: Request):
             certs    = provider.get_certificates()
         except Exception as e:
             add_log("error", f"Certificate expiry check {p['name']}: {e}")
-            # A store that did not answer is not a store holding nothing. Dropping it here
-            # and saying nothing left the page with a total, five counters and a provider
-            # filter drawn entirely from whoever did answer: an estate with one certificate
-            # expiring tomorrow behind an unreachable proxy read exactly like a clean one.
-            # The identity travels so the page can say which store is missing; the error
-            # stays in the journal, where it cannot put a URL or a credential on screen.
+            # Listed so the page does not present a partial answer as complete. The error
+            # itself stays in the log, where it cannot leak a URL or credential.
             unreachable.append({"id": p["id"], "name": p["name"], "type": p["type"]})
             continue
 
@@ -134,11 +120,7 @@ def certificate_expiry(request: Request):
         x["days_remaining"] if x["days_remaining"] is not None else 9999,
     ))
 
-    # One number for two states, deliberately: both need renewing, and a badge showing two
-    # figures where an operator wants one would be worse. Nothing is lost by the merge --
-    # `expired` and `expiring_soon` travel on every row -- but a reader that wants to say
-    # "already broken" rather than "due soon" has to count the rows, because this figure
-    # cannot. `certificateUrgency` on the frontend is the one that does.
+    # Expired and expiring-soon share one count; each row still carries both flags.
     expiring_count = sum(1 for c in result if c["expiring_soon"] or c["expired"])
     return {
         "certificates": result,

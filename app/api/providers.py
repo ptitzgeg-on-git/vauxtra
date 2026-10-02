@@ -19,9 +19,7 @@ router = APIRouter()
 
 _CLOUDFLARE_DEFAULT_URL = "https://api.cloudflare.com/client/v4"
 
-# Provider types whose endpoint is a hosted service rather than something the operator
-# runs: the form leaves the URL blank and the well-known address is filled in here, so a
-# missing URL is a default and not a validation error.
+# Hosted providers: a blank URL means this well-known address, not a validation error.
 _DEFAULT_PROVIDER_URLS = {
     "cloudflare": _CLOUDFLARE_DEFAULT_URL,
     "cloudflare_tunnel": _CLOUDFLARE_DEFAULT_URL,
@@ -167,21 +165,10 @@ class ProviderIn(BaseModel):
 
 
 class ProviderUpdate(BaseModel):
-    """The body of `PUT /api/providers/{pid}`, where absent means "keep what is stored".
+    """Body of PUT /api/providers/{pid}; absent fields keep the stored value.
 
-    `ProviderIn` above refuses a name that is only spaces, and this accepted one: the route
-    reads `body.name or row["name"]`, so `""` fell through to the stored name while `"   "`
-    was truthy, reached `.strip()`, and renamed the provider to nothing. Two spellings of the
-    same empty answer, one kept and one destroyed. `name` is refused here now in the sentence
-    the create already writes, and stripped for the same reason it is stripped there.
-
-    `enabled` is a flag, and it is asked as one: ten queries across the API and the scheduler
-    read `WHERE enabled=1`. Declared `int`, it took any integer, and a provider stored as `7`
-    matched none of those ten while `GET /api/providers` still listed it and the panel, which
-    reads it through `Boolean()`, still drew it as on -- a provider that looks connected and
-    is used by nothing. `WebhookUpdateIn` has always declared this field `bool`; so does the
-    `update_provider` tool in `vauxtra_mcp`. This is the API saying the same thing, and the
-    panel's own `enabled ? 1 : 0` is still read as the boolean it means.
+    A blank name is refused, as on create. `enabled` is a bool because every reader
+    filters on enabled=1.
     """
 
     name:     str | None = None
@@ -207,9 +194,7 @@ class ProviderValidationOptions(BaseModel):
 
 
 class ProviderDraftValidationIn(ProviderIn):
-    # Nothing is written by this route, so there is nothing to name. Inheriting the required
-    # `name` from `ProviderIn` meant every caller that did not invent one got a 422 -- which
-    # is exactly what the MCP bridge did, on every single call, since the tool was written.
+    # Nothing is written, so a name is optional.
     name: str = "(draft)"
     hostname_hint: str = ""
     write_probe: bool = False
@@ -234,10 +219,7 @@ def list_providers(request: Request):
 def _health_of(row) -> dict[str, Any]:
     try:
         provider = create_provider(dict(row))
-        # `test_connection` answers False; it does not raise. Every other caller in the
-        # code base reads that boolean. This one dropped it, so an integration that had
-        # just refused the connection was written down as healthy -- and this map is
-        # what paints the dashboard tiles and feeds the Integrations page score.
+        # test_connection returns False rather than raising.
         ok = bool(provider.test_connection())
         return {"status": "healthy" if ok else "unhealthy", "error": None}
     except Exception as e:
@@ -259,10 +241,7 @@ def all_providers_health(request: Request):
     if not rows:
         return {}
 
-    # One after the other, this answered in the SUM of every integration's answer time, and
-    # one that hangs held all the others back until its own timeout, on a map the dashboard
-    # and the Integrations page both poll every minute. No test needs another's answer, so
-    # nothing is gained by waiting for the previous one.
+    # Tested in parallel so one hanging integration does not delay the others.
     with ThreadPoolExecutor(max_workers=min(_HEALTH_WORKERS, len(rows))) as pool:
         verdicts = list(pool.map(_health_of, rows))
     return {str(r["id"]): verdict for r, verdict in zip(rows, verdicts, strict=True)}
@@ -406,8 +385,7 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
         conn.close()
         raise HTTPException(404, "Provider not found")
 
-    # `.strip()` still runs on the stored name: a row renamed to spaces by this route
-    # before the model refused it is still in the table.
+    # Strip the stored name too: older rows may hold only spaces.
     name     = (body.name if body.name is not None else row["name"]).strip()
     url_src  = body.url if body.url is not None else row["url"]
     try:
@@ -415,9 +393,7 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
     except ValueError as e:
         conn.close()
         raise HTTPException(400, str(e)) from e
-    # The stored secret goes wherever the URL points, so a `write` key that moves the URL
-    # must bring the secret with it. An admin can already export every secret, so the
-    # move is theirs to make.
+    # The stored secret goes wherever the URL points, so moving the URL needs admin scope.
     if (
         row["password"]
         and not body.password
@@ -432,9 +408,7 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
             "entered for.",
         )
     username = body.username if body.username is not None else row["username"]
-    # The stored value is read through `bool` as well, so a row left holding a number
-    # that is neither 0 nor 1 by an earlier version is put back in range by the next
-    # save rather than being carried forward untouched.
+    # bool() also normalizes a legacy out-of-range value on the next save.
     enabled  = int(body.enabled) if body.enabled is not None else int(bool(row["enabled"]))
     if body.extra is not None:
         extra = body.extra
@@ -458,13 +432,7 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
 
 
 def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
-    """Services that lose a provider link the moment `pid` is deleted.
-
-    `app/models.py` declares those links `ON DELETE SET NULL` (and `service_push_targets`
-    `ON DELETE CASCADE`), and `app/db.py` really does turn foreign keys on -- so the deletion
-    always succeeds and always blanks the services silently. This is what makes it worth
-    asking first.
-    """
+    """Services that lose a provider link when `pid` is deleted (SET NULL / CASCADE)."""
     rows = conn.execute(
         """
         SELECT s.id, s.subdomain, s.domain, s.enabled,
@@ -498,10 +466,7 @@ def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
             if extra and extra not in roles:
                 roles.append(f"extra {extra}")
 
-        # What the service is left with once this provider is gone. A multi-sync service
-        # keeps being published by its other targets, and telling its operator it "stops
-        # being pushed anywhere" was simply false -- the one thing that does happen to it is
-        # the record left live on the provider being removed, which is what `withdraw` is for.
+        # A multi-sync service stays published by its other targets.
         attached = {row["proxy_id"], row["dns_id"], row["tunnel_id"]}
         attached.update(
             int(x) for x in str(row["all_extra_ids"] or "").split(",") if x.strip().isdigit()
@@ -521,20 +486,7 @@ def _provider_dependents(conn, pid: int) -> list[dict[str, Any]]:
 
 
 def _provider_template_dependents(conn, pid: int) -> list[dict[str, Any]]:
-    """Service templates that lose a provider choice the moment `pid` is deleted.
-
-    `app/models.py` declares the schema's seven references to `providers.id`. Four of them
-    live on `services` and `service_push_targets` and `_provider_dependents` reads them. The
-    other three are `service_templates.proxy_provider_id`, `.dns_provider_id` and
-    `.tunnel_provider_id`, and nothing asked about them: a provider only a template pointed
-    at was deleted with no question at all, and the template came back with an empty provider
-    field that nobody had emptied.
-
-    A template is not a service and does not belong in the same list. Nothing is published
-    from a template, so there is no record to withdraw and no hostname to go dark -- what is
-    lost is a choice the operator typed, and the only useful thing to do about it is say so
-    before the deletion rather than let them find it on the next service they create.
-    """
+    """Service templates whose proxy/DNS/tunnel provider is `pid` (blanked on delete)."""
     rows = conn.execute(
         """
         SELECT id, name, proxy_provider_id, dns_provider_id, tunnel_provider_id
@@ -558,20 +510,7 @@ def _provider_template_dependents(conn, pid: int) -> list[dict[str, Any]]:
 
 
 def _provider_webhook_dependents(conn, pid: int) -> list[dict[str, Any]]:
-    """Notification webhooks scoped to `pid`, which the deletion silences without a word.
-
-    The two helpers above were written from the schema's declared foreign keys, and they
-    cover every one of them. `webhooks.scope_ref_id` is the eighth reference to
-    `providers.id` and the only one that is not declared: the column is a bare INTEGER, so
-    no `ON DELETE` clause fires, nothing cascades, and nothing blanks it. The row outlives
-    the provider still holding its id, `_service_matches_scope` (`app/scheduler.py`) answers
-    False for every service from then on, and the Settings list goes on showing the webhook
-    as enabled. It is dead and it looks armed.
-
-    Which is also the reason `tests/test_integrity_guards.py` no longer asks
-    `PRAGMA foreign_key_list` what depends on a provider: that is the question this column
-    was never in the answer to.
-    """
+    """Webhooks scoped to provider `pid`. scope_ref_id has no FK, so nothing cascades."""
     rows = conn.execute(
         """
         SELECT id, name, enabled
@@ -590,15 +529,7 @@ def _describe_provider_removal(
     templates: list[dict[str, Any]],
     webhooks: list[dict[str, Any]],
 ) -> str:
-    """What the operator actually gets, told apart service by service.
-
-    The single sentence this replaces said every dependent service "stops being pushed
-    anywhere until another provider is chosen". For a service whose only DNS server is the
-    one being removed, that is true. For a multi-sync service it is not: the other targets
-    keep publishing it, and the thing that really happens is the record already written on
-    the provider being removed, which outlives the deletion and which Vauxtra can no longer
-    see once the provider row is gone.
-    """
+    """Build the 409 message describing, per dependent, what deleting the provider does."""
     kept = [d for d in dependents if d.get("still_published")]
     orphaned = [d for d in dependents if not d.get("still_published")]
 
@@ -627,9 +558,7 @@ def _describe_provider_removal(
             "take those records off it first, or ?force=true alone to leave them in place."
         )
     if templates:
-        # Deliberately a separate sentence, not a second row in the service list. A template
-        # publishes nothing, so none of the language above applies to it: no hostname goes
-        # dark, and there is no record left behind to withdraw.
+        # Separate sentence: a template publishes nothing.
         names = ", ".join(f'"{d["name"]}"' for d in templates[:3])
         if len(templates) > 3:
             names += f", and {len(templates) - 3} more"
@@ -642,11 +571,7 @@ def _describe_provider_removal(
             f"{verb(len(templates), 'it', 'them')} simply starts with no provider."
         )
     if webhooks:
-        # A third kind of dependent and a third paragraph, for the same reason the template
-        # half got its own: none of the language above is true of a webhook. It publishes
-        # nothing, so no hostname goes dark and there is no record to withdraw -- and unlike
-        # a service or a template, nothing blanks it either. The scope stays exactly as the
-        # operator left it, pointing at an id that is gone.
+        # Separate sentence: a webhook keeps pointing at the deleted id.
         hook_names = ", ".join(f'"{d["name"]}"' for d in webhooks[:3])
         if len(webhooks) > 3:
             hook_names += f", and {len(webhooks) - 3} more"
@@ -684,20 +609,8 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
     templates = _provider_template_dependents(conn, pid)
     hooks = _provider_webhook_dependents(conn, pid)
     if (dependents or templates or hooks) and not force:
-        # The frontend has been sending `?force=true` and reading a `detail.services` list
-        # since it was written (`useProviderMutations.ts`, `Providers.tsx`); the API never
-        # answered 409, so its "N service(s) depend on this provider" dialog was unreachable
-        # and every deletion went through unannounced. This is that missing half.
-        #
-        # `templates` is the other half of the same question. A provider only a template
-        # named used to fall straight through this branch -- no services, no 409, no word to
-        # anybody -- and `ON DELETE SET NULL` blanked the template on the way out.
-        #
-        # `hooks` is the third, and it is the one the schema could not have told us about.
-        # The census was taken over the declared foreign keys to `providers.id`; a webhook
-        # scoped to a provider references it without declaring it, so a provider only a
-        # webhook watched went through here unannounced too -- and unlike the template,
-        # nothing blanked it afterwards either.
+        # Refuse with 409 listing dependent services, templates and scoped webhooks;
+        # the UI resends with ?force=true after confirmation.
         conn.close()
         raise HTTPException(
             409,
@@ -709,9 +622,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
             },
         )
 
-    # Asked for: take this provider's own routes down before forgetting it. Only its own --
-    # the other targets of a multi-sync service are none of this deletion's business, and a
-    # service left with no target at all still keeps its configuration in Vauxtra.
+    # withdraw=true: remove only this provider's routes; other targets are untouched.
     withdrawal_errors: list[str] = []
     if dependents and withdraw:
         for dep in dependents:
@@ -735,9 +646,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
         names = ", ".join(d["fqdn"] for d in dependents[:5])
         if len(dependents) > 5:
             names += f", and {len(dependents) - 5} more"
-        # Named either way: without `withdraw` these hostnames are exactly what stays
-        # published on a provider Vauxtra no longer knows about, and this line is the only
-        # trace left of it.
+        # Logged either way: without withdraw these hostnames stay published there.
         what = "withdrawn from it and unlinked" if withdraw else "unlinked, still served by it"
         add_log(
             "warn",
@@ -746,9 +655,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
     elif not templates and not hooks:
         add_log("info", f"Provider deleted: {row['name']}")
     if templates:
-        # Its own line rather than a clause on the one above, because a template loss is the
-        # whole story when no service was involved and the journal is where an operator goes
-        # to find out why a template came back empty.
+        # Own log line, so a template emptied by the deletion can be traced.
         tpl_names = ", ".join(d["name"] for d in templates[:5])
         if len(templates) > 5:
             tpl_names += f", and {len(templates) - 5} more"
@@ -758,10 +665,7 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
             f"lost the provider {verb(len(templates), 'it named', 'they named')} ({tpl_names})",
         )
     if hooks:
-        # The journal is the only place this leaves a mark at all. The webhook row is
-        # untouched by the deletion -- same name, same URL, same enabled flag, same
-        # `scope_ref_id` -- so an operator reading Settings a week later sees a rule that
-        # looks configured and armed, with nothing to suggest the provider under it is gone.
+        # The webhook row is unchanged, so the log is the only trace.
         hook_names = ", ".join(d["name"] for d in hooks[:5])
         if len(hooks) > 5:
             hook_names += f", and {len(hooks) - 5} more"
@@ -894,21 +798,8 @@ def test_provider(pid: int, request: Request):
         }
 
 
-# ──────────────────────────────────────────────────────────────
-# Helper functions for capability-based routing
-# ──────────────────────────────────────────────────────────────
-
 def _check_provider_capability(provider_type: str, capability: str) -> tuple[bool, str]:
-    """
-    Check if a provider supports a specific capability.
-    
-    Args:
-        provider_type: The provider type (e.g., 'adguard', 'npm')
-        capability: The capability to check ('dns', 'proxy')
-    
-    Returns:
-        (has_capability, error_message)
-    """
+    """Return (has_capability, error_message) for `capability` ('dns', 'proxy') on a provider type."""
     provider_meta = PROVIDER_TYPES.get(provider_type, {})
     capabilities = provider_meta.get("capabilities", {})
 
@@ -920,12 +811,10 @@ def _check_provider_capability(provider_type: str, capability: str) -> tuple[boo
 
 
 def _provider_client(row):
-    """Build the client for a stored integration, and keep our own faults ours.
+    """Build the client for a stored integration.
 
-    `create_provider` opens no connection: it looks the type up in the registry and decrypts
-    the stored secret. An unknown type, or a secret this instance can no longer read, is a
-    fault on this side of the wire. It is built here rather than inside the `try` that wraps
-    the call, so that it cannot leave as a 502 blaming a provider nobody ever contacted.
+    Done outside the provider-call try block so a local fault (unknown type, unreadable
+    secret) is a 500, not a 502 blaming the provider.
     """
     try:
         return create_provider(row)
@@ -933,18 +822,7 @@ def _provider_client(row):
         raise HTTPException(500, f"Could not build a client for '{row['name']}': {str(e)}")
 
 
-# ──────────────────────────────────────────────────────────────
-# DNS Records CRUD (All providers with 'dns' capability)
-# ──────────────────────────────────────────────────────────────
-#
-# The six record routes below and in the proxy section share one shape: build the client,
-# then ask the far end. A refusal from that far end answers 502, not 500. Vauxtra did not
-# break -- it relayed a question and got back nothing it could use, and a 500 made the
-# integration inspector print "the server had a problem" over an expired AdGuard token, next
-# to a Retry button that could not help until the token was renewed. 503 is not the code
-# either: it says *this* server is unavailable, which is the same false accusation in
-# another number. 504 would claim a timeout, and a bare provider exception does not let us
-# tell a timeout from a flat refusal. What stays 500 is `_provider_client` above.
+# DNS record and proxy host routes: provider errors answer 502 (upstream failure), not 500.
 
 class DNSRecordIn(BaseModel):
     domain: str
@@ -1024,9 +902,7 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
     try:
         # If answer not provided, find it from list
         if not answer:
-            # Same comparison the sync layer makes: a record is the same record whatever
-            # case the provider echoes it in, and answering 404 on a spelling difference
-            # sends the operator looking for a record that is right there.
+            # Case-insensitive, like the sync layer.
             wanted = domain.strip().lower()
             records = provider.list_rewrites() or []
             for r in records:
@@ -1047,10 +923,6 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
     except Exception as e:
         raise HTTPException(502, f"Failed to delete DNS record: {str(e)}")
 
-
-# ──────────────────────────────────────────────────────────────
-# Proxy Hosts CRUD (All providers with 'proxy' capability)
-# ──────────────────────────────────────────────────────────────
 
 class ProxyHostIn(BaseModel):
     domain_names: list[str] = Field(min_length=1)
@@ -1141,13 +1013,7 @@ def delete_proxy_host(pid: int, host_id: str, request: Request):
 
     provider = _provider_client(row)
     try:
-        # Passed through. A route identifier does not have the same shape for every
-        # provider: NPM numbers its hosts, Cloudflare Tunnel addresses its ingress rules by
-        # hostname, Traefik by router name. `int(host_id)` therefore raised ValueError for
-        # anything that was not NPM -- caught by the `except Exception` below and returned
-        # as `500 Failed to delete proxy host: invalid literal for int()`. Deleting a tunnel
-        # route through the API was impossible, and the message said nothing about why.
-        # Reading its own identifier is the provider's job.
+        # Passed through as is: NPM uses numbers, Cloudflare Tunnel and Traefik use names.
         success = provider.delete_host(host_id)
         if not success:
             raise HTTPException(400, "Failed to delete proxy host (provider rejected)")

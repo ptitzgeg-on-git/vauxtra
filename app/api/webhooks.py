@@ -18,36 +18,14 @@ _SCOPE_TARGET_TABLE = {"provider": "providers", "service": "services"}
 
 
 class WebhookIn(BaseModel):
-    """The body of `POST /api/webhooks`, typed so a wrong value is answered as one.
+    """Body of POST /api/webhooks.
 
-    These four routes read their body as a plain `dict` and reached for what they wanted, so
-    every value arrived unchecked: a `name` that was a number raised on `.strip()`, a
-    `min_down_minutes` that was a word raised inside `int()`, and both came back as a 500
-    with no sentence for whoever sent it. The panel cannot produce any of that -- it types
-    its own state and clamps the minutes before it posts -- but `create_webhook`
-    (`vauxtra_mcp/tools/admin.py`) hands the body straight through, and what is on the other
-    side of it is a language model writing JSON.
-
-    Only the types live here. Every refusal these routes already wrote by hand stays where it
-    was, so the sentence an operator reads for a mistake they can actually make does not
-    change: the empty name is still `Name and URL are required`, the URL apprise will not
-    parse is still refused by `_validate_apprise_url`, and a scope target naming nothing is
-    still `_normalize_scope`. `scripts/check_api_mcp_parity.py` compares an MCP tool's
-    payload against the model of the route it calls, and had nothing to compare for these.
-
-    `scope_type` and `scope_ref_id` stay untyped on purpose. `_normalize_scope` already reads
-    both through `str()` and `int()` inside a handler and answers a different sentence for
-    each way they can be wrong -- an unknown word, a missing target, a target that is not a
-    number, a number naming no row. Declaring them here would refuse those before it, and
-    replace four accurate sentences with one generic one.
+    Types only; the routes keep their own validation messages. scope_type and
+    scope_ref_id stay untyped so `_normalize_scope` can return a specific error for each case.
     """
 
     name: str
     url: str
-    #: The panel has always sent this and `add_webhook` always wrote `1`, so a webhook asked
-    #: for disabled was created enabled and answered `201` saying so. Nothing renders that
-    #: contradiction -- the list reads the row back and shows the toggle on -- so the only way
-    #: to notice was to send `false` and watch it not take.
     enabled: bool = True
     scope_type: Any = "all"
     scope_ref_id: Any = None
@@ -60,13 +38,10 @@ class WebhookIn(BaseModel):
 
 
 class WebhookUpdateIn(BaseModel):
-    """The body of `PUT /api/webhooks/{wid}`, where every field is optional.
+    """Body of PUT /api/webhooks/{wid}; every field optional.
 
-    The enable toggle sends `{"enabled": false}` and nothing else, and the route fills the
-    rest from the stored row. A model whose fields all default to `None` cannot tell that
-    apart from a caller who wrote `null` on purpose, so the route reads
-    `model_dump(exclude_unset=True)`: what is in it is what the caller actually sent, which
-    is the question `body.get(name, existing[name])` was asking of the dict all along.
+    The route reads model_dump(exclude_unset=True), so an omitted field keeps the stored
+    value while an explicit null is still seen.
     """
 
     name: str | None = None
@@ -89,14 +64,8 @@ class WebhookUrlIn(BaseModel):
 
 
 class ServiceAlertIn(BaseModel):
-    """One rule of `POST /api/services/{sid}/alerts`.
-
-    `webhook_id` is required. It used to be read with `.get()` and the entry skipped when it
-    was absent, which was silent in the one place silence costs most: this route replaces the
-    whole list, so an entry that arrived without its id did not fail to be added, it removed
-    the rule that was already there. The answer was `{"ok": True}` and the service stopped
-    alerting. `ServiceAlertInput` in `frontend/src/types/api.ts` has always declared it
-    required; this is the API saying the same thing.
+    """One rule of POST /api/services/{sid}/alerts. `webhook_id` is required: the route
+    replaces the whole list, so a skipped entry would silently delete a rule.
     """
 
     webhook_id: int
@@ -106,35 +75,17 @@ class ServiceAlertIn(BaseModel):
 
 
 class ServiceAlertsIn(BaseModel):
-    """The body of `POST /api/services/{sid}/alerts`.
-
-    `alerts` has no default, so a body that does not carry it is refused instead of being
-    read as an empty list. Sending `{}` used to delete every rule of the service and answer
-    `ok`: the route is a replace, and a replace with nothing in it cannot be told apart from
-    a payload whose one key was misspelled. Clearing the rules is still a single request --
-    it is `{"alerts": []}`, which says so.
+    """Body of POST /api/services/{sid}/alerts. `alerts` is required, so `{}` is refused
+    rather than read as "delete every rule"; send `{"alerts": []}` to clear.
     """
 
     alerts: list[ServiceAlertIn]
 
 
 def _normalize_scope(body: dict, existing: dict | None = None, *, conn) -> tuple[str, int | None]:
-    """The `(word, id)` a webhook is stored under, refused when it names nothing.
+    """Return the (scope_type, scope_ref_id) to store, refusing ids that name no row.
 
-    `webhooks.scope_ref_id` carries no foreign key, which `_provider_webhook_dependents`
-    (`app/api/providers.py`) and `_webhooks_scoped_to` (`app/api/services.py`) both explain
-    at length: nothing cascades through a reference the schema does not declare, so deleting
-    the target leaves the webhook behind still holding its id. Both of them warn in the
-    journal when that happens. This is the other end of the same problem -- an id that named
-    nothing on the way *in* -- and it had no warning at all. `_service_matches_scope`
-    (`app/scheduler.py`) answers False for every service from then on and Settings goes on
-    showing the webhook as enabled: dead, and it looks armed.
-
-    The two words share one id space and mean different things in it, so a scope that changes
-    word cannot keep the id it had. Service 4 and provider 4 are unrelated rows, and carrying
-    the number across turns an alert on a service into an alert on whichever provider happens
-    to hold that id -- not silence, which someone would eventually notice, but a wrong
-    subject reported with confidence. Changing the word therefore asks for the new target.
+    Changing scope_type requires a new target: service and provider ids share one space.
     """
     current_scope_type = (existing or {}).get("scope_type", "all")
     current_scope_ref_id = (existing or {}).get("scope_ref_id")
@@ -166,33 +117,22 @@ def _normalize_scope(body: dict, existing: dict | None = None, *, conn) -> tuple
     return scope_type, scope_ref_id
 
 
-# apprise carries a family of generic schemes whose whole purpose is to POST a body to a
-# host the caller names: `json://`, `form://`, `xml://` and their TLS forms. For an operator
-# that is a notification target; for anyone else it is an arbitrary outbound request fired
-# from inside the network this instance runs in, and `POST /api/webhooks/test-url` fires one
-# immediately without storing anything.
-#
-# They are not refused -- posting JSON to your own service is a fair reason to run a tool
-# like this. They ask for `admin`, the same line drawn around `public_target_sources`, so
-# that a key minted for a dashboard cannot reach past the dashboard. The list is exhaustive
-# for apprise 1.10: no other scheme it accepts lets the caller choose the request body.
+# Apprise schemes that POST a caller-chosen body to a caller-chosen host. Allowed, but
+# admin only, since otherwise a dashboard key could fire arbitrary requests from inside the
+# network. Exhaustive for apprise 1.10.
 _GENERIC_HTTP_SCHEMES = ("json://", "jsons://", "form://", "forms://", "xml://", "xmls://")
 
 
 def _validate_apprise_url(url: str, request: Request | None = None) -> str:
     """Validate and normalize an Apprise URL string.
 
-    `request` is passed by the routes where the *caller* chose the URL. Left None, the
-    scheme check is skipped -- that is how a partial update keeps working: toggling
-    `enabled` on a webhook an admin created must not demand admin.
+    `request` is passed where the caller chose the URL; None skips the admin-scheme check
+    so a partial update of an existing webhook does not demand admin.
     """
     value = (url or "").strip()
     if not value:
         raise HTTPException(400, "URL is required")
-    # The read routes answer with `discord://***`. A caller that reads a webhook and writes
-    # it back -- an agent through the MCP bridge, a script -- would otherwise store the mask
-    # as the real URL and silently kill the alerting. apprise would likely refuse it anyway;
-    # relying on that would make the error message depend on which service the mask is for.
+    # Refuse the masked form a read returns, so a read-modify-write cannot store it.
     if "***" in value:
         raise HTTPException(
             400,
@@ -220,9 +160,8 @@ def _validate_apprise_url(url: str, request: Request | None = None) -> str:
 def _public_webhook(row) -> dict:
     """A webhook row without its URL, plus a masked form for display.
 
-    `url` is dropped rather than masked: a client that reads a webhook and writes it
-    back would otherwise store `discord://***` as the real URL. The update route
-    supports partial bodies, so a round-trip that omits `url` keeps the stored one.
+    Dropped rather than masked so a read-modify-write cannot store the mask; PUT keeps the
+    stored URL when `url` is omitted.
     """
     data = dict(row)
     data["url_masked"] = mask_secret_url(decrypt_secret(data.pop("url", "")))
@@ -231,12 +170,7 @@ def _public_webhook(row) -> dict:
 
 @router.get("/api/webhooks")
 def list_webhooks(request: Request):
-    """Return all configured webhooks (Apprise notification targets), URLs masked.
-
-    An API key is `read` by default and every GET is in that scope, so this list is the
-    widest door onto the one secret a webhook holds. `docs/HOWTO.md` promises `read`
-    grants "every GET" -- so the fix belongs here, not in the scope table.
-    """
+    """Return all configured webhooks (Apprise notification targets), URLs masked."""
     require_auth(request)
     conn = get_db()
     try:
@@ -263,9 +197,7 @@ def add_webhook(request: Request, body: WebhookIn):
     enabled                  = int(bool(body.enabled))
     conn = get_db()
     try:
-        # After the connection is open: a scope target is checked against the table its word
-        # names, and an unknown one is a 400 before anything is written. It reads the keys the
-        # caller sent rather than the model, so an omitted `scope_type` still means "all".
+        # Uses the keys actually sent, so an omitted scope_type still means "all".
         scope_type, scope_ref_id = _normalize_scope(body.model_dump(exclude_unset=True), conn=conn)
         cur = conn.execute(
             """INSERT INTO webhooks
@@ -368,15 +300,7 @@ def update_webhook(wid: int, request: Request, body: WebhookUpdateIn):
 
 @router.delete("/api/webhooks/{wid}")
 def delete_webhook(wid: int, request: Request):
-    """Delete a webhook by ID. 404 when there is nothing at that id.
-
-    `DELETE /api/webhooks/999999` on an instance that has no webhook 999999 answered
-    `200 {"ok": true}` -- a receipt for a deletion that never happened, handed to a caller
-    that had just been told the row existed. `update_webhook` above already answers 404 for
-    that same missing row, so the two verbs disagreed about whether the id was real, and the
-    MCP bridge (`vauxtra_mcp/tools/admin.py::delete_webhook`) returned the `ok` to its own
-    caller as proof. The lookup is the half that was missing here.
-    """
+    """Delete a webhook by ID. 404 when there is nothing at that id."""
     require_auth(request, scope="write")
     conn = get_db()
     try:
@@ -392,15 +316,8 @@ def delete_webhook(wid: int, request: Request):
         conn.close()
 
 
-# Both test routes below send one message and report what came back. A refusal from the
-# target answers 502, not 500. Nothing broke here: the URL parsed, the request left, and the
-# far end is the one that said no -- an unreachable collector, a revoked Discord webhook, a
-# host that drops the packet. Answering 500 made the notification tab tell the operator the
-# server had a problem, and sent them reading Vauxtra's own journal for a fault that was
-# never ours. 503 would be the same accusation written in another number, since it says
-# *this* server is unavailable; 504 would claim a timeout, and apprise reports a refusal and
-# a timeout with the same bare `False`. What stays 500 is the missing package: that one is
-# genuinely a broken installation of Vauxtra.
+# The test routes answer 502 when the target refuses (upstream failure), and 500 only
+# when apprise is not installed.
 @router.post("/api/webhooks/test-url")
 def test_webhook_url(request: Request, body: WebhookUrlIn):
     """Test a webhook URL without saving it (for pre-validation in setup wizard)."""
@@ -460,8 +377,6 @@ def test_webhook(wid: int, request: Request):
         )
 
 
-# ── Per-service alerts ─────────────────────────────────────────────────────
-
 @router.get("/api/services/{sid}/alerts")
 def get_service_alerts(sid: int, request: Request):
     require_auth(request)
@@ -490,16 +405,7 @@ def set_service_alerts(sid: int, request: Request, body: ServiceAlertsIn):
     require_auth(request, scope="write")
     conn = get_db()
     try:
-        # Both ids are real foreign keys, and both were left to the index to report. An id
-        # naming nothing raised `IntegrityError` out of the INSERT -- a 500 carrying no
-        # sentence -- and the DELETE that empties the service had already run in the same
-        # transaction. The rollback saved the rules that time, which is luck and not design:
-        # nothing in the route said its deletion depended on every id in the list being real.
-        #
-        # They are asked about first because they can be. An id that names no row is known
-        # before any work is done, unlike a hostname a second writer takes mid-request
-        # (`_hostname_taken`, `app/api/services.py`), where only the unique index can still
-        # tell and the route has to be ready to be refused by it.
+        # Check the ids before the DELETE, so an unknown one is a 400 with nothing changed.
         if not conn.execute("SELECT 1 FROM services WHERE id=?", (sid,)).fetchone():
             raise HTTPException(404, "Service not found")
         unknown = sorted({

@@ -1,4 +1,4 @@
-"""Authentication endpoints — login, logout, session check, password setup."""
+"""Authentication endpoints: login, logout, session check, password setup."""
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -55,12 +55,9 @@ def auth_me(request: Request):
         "authenticated": is_authenticated(request),
         "auth_required": has_password_configured(),
         "setup_required": (not setup_completed) and provider_count == 0,
-        # "open" means every request on this instance carries the admin scope, with no
-        # credential at all. The wizard lets you choose that, and until now nothing in the
-        # interface ever mentioned it again.
+        # "open": every request gets admin scope with no credential.
         "auth_mode": "password" if has_password_configured() else "open",
-        # Which of the two stores actually decides a login. The interface offered a
-        # change-password form in both cases; in one of them the form could not work.
+        # Which store decides a login; the password can only be changed in "database".
         "password_source": "environment" if password_is_env_managed() else "database",
     }
 
@@ -83,10 +80,9 @@ def mark_setup_complete(request: Request):
 @router.post("/api/auth/login")
 @limiter.limit("5/minute;20/hour")
 def auth_login(request: Request, body: LoginBody):
-    """Verify password and create an authenticated session.
-    
-    Rate limited to 5 attempts per minute, 20 per hour.
-    Failed attempts include a small delay to slow down brute-force attacks.
+    """Verify the password and create a session.
+
+    Rate limited (5/minute, 20/hour); failed attempts are delayed to slow brute force.
     """
     import time
 
@@ -96,15 +92,8 @@ def auth_login(request: Request, body: LoginBody):
     if not check_password(body.password):
         # Add delay on failed attempt to slow brute-force
         time.sleep(0.5)
-        # Somebody guessing at the password was the one thing this instance never recorded.
-        # No address in the line: `request.client.host` is the reverse proxy for every
-        # caller unless `FORWARDED_ALLOW_IPS` is set (app/limiter.py says why), so an
-        # address here would be a false lead in the investigation it is written for.
-        #
-        # Only the attempts that reach this branch are written. The 429s the limiter raises
-        # above them are not, and that is what bounds this to five lines a minute: a line
-        # per refused request would let an unauthenticated caller fill the table at its own
-        # rate.
+        # No client address: behind a proxy it is the proxy's unless FORWARDED_ALLOW_IPS is
+        # set. The rate limit bounds how many of these lines a caller can write.
         add_log("warn", "Sign-in refused: wrong password")
         raise HTTPException(401, "Invalid password")
 
@@ -172,15 +161,10 @@ def setup_password(request: Request, body: SetPasswordBody):
 @limiter.limit("3/minute")
 def change_password(request: Request, body: ChangePasswordBody):
     """Change the admin password (requires current password verification)."""
-    # `admin`, not merely "authenticated": an API key minted for a monitoring dashboard
-    # has no business attempting the admin password, even though the current password is
-    # still required below -- each attempt also burns the shared 3/minute rate limit.
+    # Admin scope: a dashboard key must not even attempt this (shared 3/minute limit).
     require_auth(request, scope="admin")
 
-    # Before anything is verified or written: with `APP_PASSWORD` set, `check_password`
-    # never reads the stored hash, so this route used to write one nobody would read and
-    # then bump the session epoch -- logging the operator out of everything and refusing
-    # the password they had just chosen.
+    # With APP_PASSWORD set the stored hash is never read, so refuse before writing one.
     if password_is_env_managed():
         raise HTTPException(
             409,
@@ -206,9 +190,7 @@ def change_password(request: Request, body: ChangePasswordBody):
             (password_hash,),
         )
         mark_password_configured(conn)
-        # Every other session dies with the old password. This is the whole point of
-        # changing it after a suspected compromise, and until now it did not happen: the
-        # thief's cookie kept working for the remaining days of its seven.
+        # Invalidate every other session, which is the point after a suspected compromise.
         bump_session_epoch(conn)
         add_log("info", "Admin password changed, and every other session was signed out", conn)
         conn.commit()

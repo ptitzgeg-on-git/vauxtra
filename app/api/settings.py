@@ -32,10 +32,7 @@ _VALID_SETTINGS = {
     "public_target_sources",
     "public_target_timeout",
     "public_target_priority",
-    # Read by `app/scheduler.py` since 1.1.0, and until now writable by nobody: the
-    # auto-reconcile job could not be switched on, and `CHANGELOG.md` advertised the webhook
-    # retention as "configurable via `webhook_retry_retention_days`" while the key was
-    # dropped by `save_settings` on the way in.
+    # Read by app/scheduler.py.
     "auto_reconcile_enabled",
     "auto_reconcile_interval",
     "webhook_retry_retention_days",
@@ -43,10 +40,8 @@ _VALID_SETTINGS = {
 _VALID_THEMES   = {"light", "dark"}
 _VALID_PUBLIC_TARGET_PRIORITY = {"server_public_ip", "proxy_provider_host", "current"}
 
-# Whole-number settings, with the range each one is allowed to hold. `check_interval` is the
-# one that mattered: it is read back with a bare `int()` at startup (`app/main.py`), so any
-# `write`-scoped caller writing "later" there kept the application from booting again --
-# a denial of service that survived every restart.
+# Whole-number settings and their allowed range. check_interval is parsed with a bare int()
+# at startup, so an invalid value would keep the app from booting.
 _SETTING_RANGES = {
     "check_interval": (0, 1440),            # 0 disables automatic health checks
     "log_retention_days": (1, 365),
@@ -55,33 +50,22 @@ _SETTING_RANGES = {
     "webhook_retry_retention_days": (1, 90),  # the bounds `_read_retention_days` clamps to
 }
 
-# `timezone` is read by the frontend (`hooks/useFormat.ts`) and by nothing on this side: the
-# server stores UTC and this decides how it is rendered. `TZ`, the container variable, is
-# the separate one -- it sets the clock the scheduler and the log lines are written from.
-# The value is validated for shape rather than against the IANA database on purpose:
-# `zoneinfo` needs the `tzdata` package on Windows, and a missing package would otherwise
-# reject every value there.
+# `timezone` only affects frontend rendering (the server stores UTC; the TZ env var sets the
+# server clock). Validated for shape, not against IANA data, because zoneinfo needs tzdata
+# on Windows.
 _TIMEZONE_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){0,2}$")
 
 _BOOLEAN_WORDS = {"true", "false", "1", "0", "yes", "no", "on", "off"}
 
-# The `settings` table also stores a server-side secret (the admin password hash) and internal
-# bookkeeping. Reads must go through this whitelist so an API key -- `read` by default -- never
-# walks away with a hash it can crack offline.
+# The settings table also holds the admin password hash; reads go through this whitelist.
 _READABLE_SETTINGS = _VALID_SETTINGS | {"schema_version", "setup_completed"}
 
-# Readable, but never in full: `webhook_url` is an Apprise URL, so its value is the
-# credential. The key stays in the response -- the operator needs to know one is set --
-# with everything past the scheme removed.
+# An Apprise URL is its own credential: returned with everything past the scheme masked.
 _MASKED_SETTINGS = {"webhook_url"}
 
-# Keys that must survive a reset or a restore: wiping the password hash would drop the instance
-# back to anonymous-admin, and importing one would let a backup file pick the admin password.
-# `auth_mode` belongs here for the same reason -- it is what makes that drop *visible*.
-# `session_epoch` is here for a subtler reason than the rest: it is a counter that only
-# ever goes up, and deleting it sends it back to 0 -- which is the epoch every cookie
-# minted before the last password change is still carrying. A reset would have handed
-# those sessions back their access.
+# Kept across reset and restore: dropping the password hash or auth_mode would reopen the
+# instance, importing them would let a backup pick the password, and resetting
+# session_epoch to 0 would revive sessions revoked by a password change.
 _PROTECTED_SETTINGS = (
     "app_password_hash",
     "setup_completed",
@@ -90,18 +74,11 @@ _PROTECTED_SETTINGS = (
     "session_epoch",
 )
 
-# The placeholders are built from the tuple, never written out by hand: the two DELETE
-# statements below used a literal `(?,?,?)`, so adding this fourth key would have raised
-# "Incorrect number of bindings" at the exact moment an operator asked for a reset.
+# Built from the tuple so the bindings always match its length.
 _PROTECTED_PLACEHOLDERS = ",".join("?" * len(_PROTECTED_SETTINGS))
 
 
-# `write` means "may change how this instance is configured". This key means something
-# else: it names URLs the instance itself then fetches, on a schedule, from inside the
-# network it is deployed in -- and `save_settings` asked for `write` and nothing more, so a
-# key minted for a monitoring dashboard could aim the scheduler at an internal admin panel
-# or a cloud metadata endpoint. The other two WAN-policy keys stay at `write`: a timeout is
-# a number, and a priority is one of three fixed words.
+# Admin only: these URLs are fetched by the scheduler from inside the network (SSRF).
 _ADMIN_ONLY_SETTINGS = frozenset({"public_target_sources"})
 
 
@@ -120,12 +97,7 @@ def _is_valid_public_target_priority(value: str) -> bool:
 
 
 def _validate_setting(key: str, value) -> tuple[str | None, str]:
-    """Return `(value to store, "")`, or `(None, reason)` when the value is not acceptable.
-
-    Every branch here used to be a bare `continue` in the write loop, followed by
-    `{"ok": true}`: the operator got a "Saved" toast and the previous value, with nothing
-    naming the field that was thrown away.
-    """
+    """Return `(value to store, "")`, or `(None, reason)` when the value is not acceptable."""
     text = str(value).strip() if value is not None else ""
 
     if key in _SETTING_RANGES:
@@ -154,19 +126,13 @@ def _validate_setting(key: str, value) -> tuple[str | None, str]:
         return "true" if text.lower() in {"true", "1", "yes", "on"} else "false", ""
 
     if key in {"webhook_url", "webhook_enabled"}:
-        # `GET /api/settings` masks the URL, and an agent that reads the settings and posts
-        # them back would otherwise store `discord://***` as the notification target: the
-        # alerting would keep reporting itself configured, and reach nobody. That message
-        # comes first because it names a mistake worth naming.
+        # GET /api/settings masks the URL, so a read-modify-write would store the mask.
         if "***" in text:
             return None, (
                 "that is the masked form the API returns, not a usable URL -- "
                 "retype the full one, or leave the key out to keep the stored value"
             )
-        # Neither key has fed delivery since the `webhooks` table arrived: the schedulers
-        # read `webhooks.url`. Writing here used to look like configuring alerting while
-        # configuring nothing. `_migrate_legacy_webhook_url` moves any stored value across
-        # at the next start; new ones go to the table directly.
+        # Delivery reads the webhooks table; legacy values are migrated at startup.
         return None, (
             "the global notification URL is retired -- create a target with "
             "POST /api/webhooks, which is what alert delivery reads"
@@ -208,18 +174,10 @@ def get_settings(request: Request):
 
 
 def _not_applied(collected: list[str], key: str, exc: Exception) -> None:
-    """Record a setting that was written but could not be handed to the running scheduler.
+    """Record a setting that was saved but could not be applied to the running scheduler.
 
-    The row is committed before either of these calls, so there are only two honest answers
-    left once one of them raises, and the code used to give neither. Letting the exception
-    out answers `500` for a setting that *was* saved, so the operator retries a write that
-    already happened. Swallowing it answers `{"ok": true, "saved": ["check_interval"]}` for
-    a value that is in the database and not in the scheduler, which is the more expensive of
-    the two: the settings page reads the stored value back and shows the new interval, while
-    the health checks go on running at the old one until the next restart quietly fixes it.
-
-    So the value stands, the answer names the key under `not_applied`, and the journal gets
-    the reason -- the same channel `_refuse_import` uses for a row it could not take.
+    The value stays stored, the key is returned under `not_applied` and the reason logged,
+    so the answer is neither a 500 for a saved value nor a silent success.
     """
     collected.append(key)
     add_log("warning", f"Saved {key}, but it could not be applied now: {type(exc).__name__}: {exc}")
@@ -239,10 +197,8 @@ def save_settings(request: Request, body: dict):
 
     for key, value in body.items():
         if key not in _VALID_SETTINGS:
-            # Not an error: `GET /api/settings` also returns `schema_version` and
-            # `setup_completed`, so a caller that reads the settings and posts them back --
-            # the MCP bridge does exactly that -- hands over keys nobody may write. They are
-            # dropped, but the answer says which, instead of pretending they were saved.
+            # GET also returns read-only keys, so a read-modify-write sends them back.
+            # Dropped and listed under `ignored`.
             ignored.append(key)
             continue
         stored, reason = _validate_setting(key, value)
@@ -252,9 +208,7 @@ def save_settings(request: Request, body: dict):
             accepted[key] = stored
 
     if rejected:
-        # Nothing is written when part of the payload is bad. A settings form applied by
-        # halves is harder to reason about than one that was refused outright, and the
-        # operator now learns which field, and why.
+        # All or nothing: nothing is written when any field is rejected.
         detail = "; ".join(f"{k}: {reason}" for k, reason in sorted(rejected.items()))
         raise HTTPException(400, f"Nothing was saved -- {detail}")
 
@@ -271,12 +225,7 @@ def save_settings(request: Request, body: dict):
     not_applied: list[str] = []
 
     if "check_interval" in accepted:
-        # `_validate_setting` stores `str(number)` or refuses the whole payload, so the
-        # conversion here cannot fail and is not what this guards. `configure` is: it talks
-        # to APScheduler, and the old `except (ImportError, TypeError, ValueError): pass`
-        # caught two exceptions this line cannot raise and let the scheduler's own through,
-        # while hiding the one that mattered -- a missing scheduler module, which left the
-        # interval stored and never running under a `{"ok": true}`.
+        # The int() cannot fail after validation; this guards the scheduler call.
         try:
             from app.scheduler import configure
             configure(int(accepted["check_interval"]))
@@ -284,9 +233,7 @@ def save_settings(request: Request, body: dict):
             _not_applied(not_applied, "check_interval", exc)
 
     if {"auto_reconcile_enabled", "auto_reconcile_interval"} & set(accepted):
-        # Applied now rather than at the next restart, the same way `check_interval` is.
-        # Either key can move alone, so the other is read back from the database instead of
-        # being assumed unchanged.
+        # Applied now; the other key is read back since either can change alone.
         try:
             from app.scheduler import configure_reconcile
             conn = get_db()
@@ -301,10 +248,8 @@ def save_settings(request: Request, body: dict):
                 int(cfg.get("auto_reconcile_interval") or 0),
             )
         except Exception as exc:  # noqa: BLE001 -- named in the answer, not swallowed
-            # `int()` is kept inside the guard here, unlike above: this value is read back
-            # out of the database rather than from the payload just validated, and a row
-            # written before `_SETTING_RANGES` existed can still hold a word. Both keys are
-            # named because either of them can be the one that moved.
+            # int() is inside the guard here: the value comes from the database, where an
+            # older row may hold a non-number.
             _not_applied(not_applied, "auto_reconcile", exc)
 
     return {
@@ -319,19 +264,8 @@ def save_settings(request: Request, body: dict):
 def get_stats(request: Request):
     require_auth(request)
     conn  = get_db()
-    # `services`, `providers`, `logs` and `tags` are sizes of the estate and count everything.
-    # `services_ok` and `services_error` are health, and health is only measured on services
-    # the scheduler actually checks: it reads `WHERE enabled=1` (app/scheduler.py), and
-    # disabling a service never clears its `status` column -- the only writer is
-    # `UPDATE services SET enabled=?`. So a service disabled while failing keeps `status`
-    # 'error' for good, and counting it here reported a fault nobody was watching and nobody
-    # could clear. `serviceStatus()` in frontend/src/components/features/monitoring/uptime.ts
-    # is where the product answers this question -- `if (!service.enabled) return 'disabled'`,
-    # a state of its own, neither ok nor error -- and these two counters now answer it the
-    # same way. The Dashboard reads them in front of its own list
-    # (`stats?.services_ok ?? servicesOk`), and that list counts enabled services only, so
-    # before this the same tile showed a different number depending on whether this route had
-    # answered, and could read "2 enabled, 2 ok, 2 error".
+    # services_ok and services_error count enabled services only: the scheduler never checks
+    # disabled ones, so their status is frozen. Matches serviceStatus() in the frontend.
     stats = {
         "services":       conn.execute("SELECT COUNT(*) FROM services").fetchone()[0],
         "providers":      conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0],
@@ -346,19 +280,8 @@ def get_stats(request: Request):
 
 @router.get("/api/logs")
 def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = ""):
-    """Read the activity log. `admin`, for the same reason emptying it is.
-
-    `POST /api/logs/clear` was raised to `admin` because of what this table holds, and
-    everything that argument says about erasing it says about reading it. The rows are
-    "Sign-in refused: wrong password", "Signed in", "Admin password changed", "Secure
-    backup exported with encrypted secrets", and "API key created: deploy (scopes:
-    admin)" -- the name and the reach of every key on the instance.
-
-    A `read` key is what an operator mints for a status page, a dashboard or an agent they
-    do not entirely trust. At `read` that key could page through the whole file at 200 rows
-    a call and learn which key to go after, when the admin is at the keyboard, and whether
-    somebody else was already guessing at the password. None of that is needed to read the
-    estate, which is what the key was for.
+    """Read the activity log. Admin scope: it records sign-ins, key creation with scopes and
+    password changes, which a read key must not see.
     """
     require_auth(request, scope="admin")
     page     = max(1, page)
@@ -401,16 +324,8 @@ def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = "
 @router.post("/api/logs/clear")
 def clear_logs(request: Request):
     """Empty the activity log. `admin`, and the emptying is itself recorded."""
-    # Not `write`, though the verb says so. This table is where a failed sign-in, an API
-    # key created and the scopes it was given, a key revoked and a password change are
-    # written down; `write` is the scope a deployment script or a home-automation job
-    # carries, and at `write` such a key could erase the record of its own work and of
-    # somebody guessing at the panel password. Every other operation that reaches the whole
-    # instance rather than one service is already `admin` -- backup, restore, factory reset,
-    # the credentials, and the settings keys that aim the scheduler at a host of the caller's
-    # choosing -- and the scope table in docs/HOWTO.md calls that row "credentials and the
-    # whole instance". The log is both. The line below means an admin cannot erase the fact
-    # of having erased.
+    # Admin, not write: the log is the audit trail, and a write key must not erase it.
+    # The clear itself is logged.
     require_auth(request, scope="admin")
     conn = get_db()
     conn.execute("DELETE FROM logs")
@@ -424,12 +339,7 @@ def clear_logs(request: Request):
 def test_webhook(request: Request):
     """Send a test notification to every enabled webhook.
 
-    This used to read `settings.webhook_url`, a key nothing delivered through: it answered
-    `{"ok": true}` from a target that would never carry a real alert. It now exercises the
-    rows the schedulers actually read, so a success here means alerting works.
-
-    `write`, like every other test-send route: this delivers a real notification to whatever
-    the operator configured, which is a side effect outside Vauxtra.
+    Write scope: it delivers a real notification outside Vauxtra.
     """
     require_auth(request, scope="write")
     conn = get_db()
@@ -463,8 +373,7 @@ def test_webhook(request: Request):
             else:
                 entry["error"] = "send failed (service unavailable, or the URL is wrong)"
         except Exception as e:  # one bad target must not hide the state of the others
-            # The class only: an Apprise URL is its own credential, and an exception raised
-            # while sending to it may quote it back to a key that is not allowed to read it.
+            # Class name only: the exception may quote the Apprise URL, a credential.
             entry["error"] = f"the send raised {type(e).__name__}"
         results.append(entry)
 
@@ -477,12 +386,8 @@ def test_webhook(request: Request):
 def reset_all(request: Request):
     require_auth(request, scope="admin")
     conn = get_db()
-    # Five tables used to survive this: `docker_endpoints` kept a Docker host and its TLS
-    # material, `service_templates` kept provider ids pointing at deleted rows,
-    # `webhook_delivery_log` kept queued notifications addressed to deleted webhooks --
-    # which the retry job would then try to send -- and `scheduler_state` kept the alert
-    # bookkeeping of services that no longer exist. A reset that leaves credentials and a
-    # send queue behind is not the reset the button offers.
+    # Wipes every business table, including Docker endpoints, templates, the webhook
+    # delivery queue and scheduler state, so no credential or pending send survives.
     conn.executescript("""
         DELETE FROM service_alerts;
         DELETE FROM service_tags;
@@ -501,9 +406,7 @@ def reset_all(request: Request):
         DELETE FROM scheduler_state;
         DELETE FROM logs;
     """)
-    # Reset the business data, never the credentials: deleting `app_password_hash` would leave
-    # the instance answering anonymously with admin scope, and nothing in the {"ok": true}
-    # response would say so.
+    # Never the credentials: without the password hash the instance would answer anonymously.
     conn.execute(
         f"DELETE FROM settings WHERE key NOT IN ({_PROTECTED_PLACEHOLDERS})",  # noqa: S608
         _PROTECTED_SETTINGS,
@@ -526,12 +429,7 @@ def list_domains(request: Request):
 
 
 class DomainIn(BaseModel):
-    """The body of `POST /api/domains`.
-
-    `normalize_domain` lowercases and strips, so it needed a string in order to be handed
-    one; a number reached it and raised. Everything a domain can be wrong about is still
-    answered by `domain_problem`, in the sentence `DOMAIN_REASONS` already writes.
-    """
+    """Body of POST /api/domains. Validation messages come from `domain_problem`."""
 
     name: str
 
@@ -551,14 +449,9 @@ def add_domain(request: Request, body: DomainIn):
 
 
 def _log_domain_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
-    """The only trace a domain deletion leaves, so it carries what still holds the name.
+    """Log a domain deletion with the services and templates that still use the name.
 
-    An operator who removes a root domain and comes back a week later has the Logs screen and
-    nothing else: the pickers no longer list the name, and the rows still built on it never
-    said where it came from. The name also returns on its own -- `INSERT OR IGNORE INTO
-    domains` runs in the Docker discovery (`app/api/docker.py`) and in both provider imports
-    (`app/api/sync.py`) -- so the list can disagree with itself between two visits with no
-    record of why.
+    Discovery and imports re-add domains automatically, so the log is the only record.
     """
     total = len(services) + len(templates)
     if not total:
@@ -581,31 +474,15 @@ def _log_domain_removal(conn, name: str, services: list[str], templates: list[st
 
 @router.delete("/api/domains/{name:path}")
 def delete_domain(name: str, request: Request):
-    """Delete a root domain by name. 404 when there is nothing by that name.
-
-    Two things were missing here and each hid the other. `add_domain` above stores
-    `normalize_domain(...)` -- trimmed, lower-cased, no trailing dot -- while this route put
-    the raw path segment into the DELETE, so `Example.test` matched nothing on an instance
-    holding `example.test`. And with no lookup and no read of the row count, matching nothing
-    was indistinguishable from deleting something: the answer was `{"ok": true}` either way.
-    The MCP bridge (`vauxtra_mcp/tools/admin.py::delete_domain`) hands that `ok` straight back
-    to its caller, so an assistant reports a domain removed that is still in the list. It is
-    the receipt-for-nothing `delete_webhook` closed in `app/api/webhooks.py`, and this was the
-    last DELETE route in the API still without the lookup the other ten do.
-    """
+    """Delete a root domain by name (normalized like add_domain). 404 when absent."""
     require_auth(request, scope="write")
     wanted = normalize_domain(name)
     conn = get_db()
     try:
         if not conn.execute("SELECT name FROM domains WHERE name=?", (wanted,)).fetchone():
             raise HTTPException(404, "Domain not found")
-        # Nothing is refused and nothing else is touched. `services.domain` and
-        # `service_templates.domain` hold the name as text with no reference declared, and no
-        # runtime path reads this table: the scheduler, the DNS push and the proxy push all
-        # work off `services.domain`, and the only readers of `domains` are the list route
-        # above, the three pickers it feeds and the backup. A service on a deleted domain goes
-        # on routing exactly as it did -- which is why these two lists are collected for the
-        # journal rather than for a refusal.
+        # Nothing else is touched: services and templates hold the domain as plain text and
+        # keep routing. They are only collected for the log.
         services = [
             # `.strip(".")` the way every other fqdn in the API is built: an apex route
             # stores an empty subdomain, and the naive join names it `.example.test`.
@@ -630,11 +507,9 @@ def delete_domain(name: str, request: Request):
 
 
 async def _log_stream(request: Request):
-    """Push every log line written from now on, for as long as the credential holds.
+    """Yield every new log line for as long as the credential stays valid.
 
-    Module level rather than a closure inside the route so the loop can be driven without
-    an HTTP client. It is the only place in this API where authorisation is a question
-    asked more than once, and `tests/test_session_and_headers.py` asks it here.
+    Module level so tests can drive the loop without an HTTP client.
     """
     conn = get_db()
     row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()
@@ -644,25 +519,8 @@ async def _log_stream(request: Request):
     while True:
         if await request.is_disconnected():
             break
-        # Every other route settles authorisation once because it answers once. This one
-        # holds the socket open for as long as the browser keeps it and pushes every line
-        # the instance writes: a refused sign-in, a key created and the scopes it carries,
-        # a service changed. Settling it once at connect time meant the one move an
-        # operator makes after "I think someone has my session" -- changing the password,
-        # which raises the stored epoch and refuses that cookie on every later request --
-        # left the thief's live feed running until they closed the tab, and revoking a key
-        # did the same to a key. Asking again each tick re-reads both: the epoch, and the
-        # key row revocation deletes. It costs one small read of a local file every 2 s.
-        #
-        # Before the read, not after it, so no line written after the credential died is
-        # sent. The browser sees the stream end, falls back to polling, and the poll comes
-        # back 401, which is what puts the login screen up.
-        #
-        # `scope="admin"` and not a bare "is this caller someone", which is what this asked
-        # while the door below asked the same weak question. Now that both ask for `admin`,
-        # a tick that settled for less would be a gate that reopens two seconds after it
-        # closes: the stream would outlive any narrowing of the credential that opened it,
-        # which is the whole defect this loop exists to prevent, one rung lower down.
+        # Re-check auth (admin scope) on every tick so a password change or key revocation
+        # ends an open stream. Checked before reading, so nothing written after revocation is sent.
         if not is_authorized(request, scope="admin"):
             break
         conn = get_db()
@@ -680,15 +538,9 @@ async def _log_stream(request: Request):
 
 @router.get("/api/logs/stream")
 async def stream_logs(request: Request):
-    """Server-Sent Events stream: pushes new log rows every 2 s.
+    """Server-Sent Events stream of new log rows every 2 s. Admin scope, like GET /api/logs.
 
-    Checked here so a caller with no credential gets a 401 rather than an empty stream,
-    and checked again on every tick inside `_log_stream`, which is what ends a stream the
-    password change or the key revocation was meant to end.
-
-    `admin`, like `GET /api/logs` it streams and like `POST /api/logs/clear` that empties
-    it: this is the live form of the same file, and a scope that would be wrong to hand the
-    file to is no more right for a feed of it as it is written.
+    Auth is checked here (401 instead of an empty stream) and again on every tick.
     """
     require_auth(request, scope="admin")
     if not _HAS_SSE:

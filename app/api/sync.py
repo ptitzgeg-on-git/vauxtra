@@ -16,21 +16,9 @@ router = APIRouter()
 
 
 def _has_column(row, name: str) -> bool:
-    """Whether *row* carries a column called *name*.
+    """Whether `row` has a column `name` (works for sqlite3.Row and dict).
 
-    `name in row` is the obvious spelling and it asks a `sqlite3.Row` the wrong question:
-    a row is a sequence, so `in` searches its VALUES, not its column names. Every service
-    row read here answered False to `"expose_mode" in svc` -- no column of a service ever
-    holds the string "expose_mode" -- so the six sites that asked fell through to their
-    default and nothing ever contradicted them.
-
-    Tunnel services paid for it. Read as `proxy_dns`, which has no tunnel target, they were
-    collected against no provider at all: the drift check compared them to nothing and
-    answered "in sync" about a route that had never been published, and the push plan beside
-    it said there was nothing to do. `public_target_mode` was read the same way, so `auto`
-    never re-resolved the public address it exists to follow.
-
-    A dict answers on its keys, and so does this.
+    `name in row` searches a Row's values, not its keys.
     """
     keys = getattr(row, "keys", None)
     return name in (keys() if callable(keys) else row)
@@ -46,13 +34,7 @@ def _service_public_host(service_row) -> str:
 
 
 def _refused(kind: str, provider_name: str, attempted: str) -> str:
-    """Turn a provider's bare `False` into something an operator can act on.
-
-    `update_host`, `create_host`, `add_rewrite` and `delete_rewrite` all answer with a plain
-    boolean or `None`: the reason -- expired credentials, a revoked token, a host that no
-    longer exists on the other side -- never leaves the provider. Saying that much is still
-    worth more than a bare "failed", because it says where to look.
-    """
+    """Message for a provider call that returned False without saying why."""
     return (
         f"{kind} ({provider_name}): the provider refused the {attempted}. "
         "It gave no reason -- check its credentials, that it is reachable, "
@@ -108,26 +90,13 @@ def _collect_push_targets(conn, svc, sid: int) -> tuple[str, str, list, list]:
 
 
 def _host_serves(host: dict, wanted: str) -> bool:
-    """Whether a provider's host record answers for `wanted`, already lowercased.
-
-    Shared rather than written out at each site, because it was written out at each site and
-    they did not agree: the push compared case-insensitively and the drift check did not, so
-    a rule Zoraxy kept under the spelling it was typed with came back as a missing route with
-    a Reconcile button beside it -- and the push that button fires found the host, updated it,
-    and left the same error on screen afterwards.
-    """
+    """Whether a provider host record serves `wanted` (already lowercased), ignoring case."""
     domains = host.get("domains") or host.get("domain_names") or []
     return any(str(d).strip().lower() == wanted for d in domains)
 
 
 def _rewrite_for(rewrites, public_host: str) -> dict | None:
-    """The record a DNS provider holds for `public_host`, compared the same way.
-
-    AdGuard and Technitium echo the name as it was written, and a rewrite is the same rewrite
-    whatever case it is spelled in. Reading past one is not harmless here: the withdrawal then
-    falls back to the address Vauxtra last stored, and the push reads "no record" and adds a
-    second one beside the first.
-    """
+    """Return the record a DNS provider holds for `public_host`, compared case-insensitively."""
     wanted = (public_host or "").strip().lower()
     return next(
         (r for r in rewrites or [] if str(r.get("domain") or "").strip().lower() == wanted),
@@ -142,11 +111,7 @@ def _is_dns_type(ptype: str) -> bool:
 
 
 def _records_named(provider, name: str) -> list[dict]:
-    """What `provider` holds for `name`, through `records_for` when it has one.
-
-    `register_provider_type` checks no base class, so a plugin written before `records_for`
-    existed still answers here, through the listing every DNS provider has.
-    """
+    """Records `provider` holds for `name`, via `records_for` or, for older plugins, the full listing."""
     ask = getattr(provider, "records_for", None)
     if callable(ask):
         return ask(name) or []
@@ -161,11 +126,8 @@ def _records_named(provider, name: str) -> list[dict]:
 def _dns_record_kept(dns, host: str, answer: str) -> bool:
     """Whether `dns` still holds `host` -> `answer` after refusing to delete it.
 
-    A refused `delete_rewrite` is not always a record left behind. The Cloudflare one
-    answers False when nothing matched, and a disabled service is withdrawn again on every
-    edit, long after the first withdrawal took its record. Only the listing tells the two
-    apart. A listing that fails tells nothing, and that counts as kept: "withdrawn" is
-    the one claim nothing here has established.
+    Some providers refuse a deletion that matched nothing, so the listing decides. A
+    listing that fails counts as kept.
     """
     wanted = (answer or "").strip().rstrip(".").lower()
     try:
@@ -176,21 +138,10 @@ def _dns_record_kept(dns, host: str, answer: str) -> bool:
 
 
 def _answers_elsewhere(conn, public_host: str, published: str, attached: set) -> list[dict]:
-    """Warnings for the DNS integrations that answer `public_host` without being pushed to.
+    """Warn about DNS integrations that resolve `public_host` without being attached.
 
-    The drift check read the integrations a service is attached to and nothing else, so a
-    record anywhere else could not show. Measured in production on 2026-09-22:
-    a media server was imported with AdGuard attached, whose rewrite gave it a LAN address;
-    a grey Cloudflare A record gave the same name a public one, and the drift answer was
-    `ok: true, issues: []`.
-
-    Two answers for one name is what split-horizon means, and it is also what a leftover
-    looks like. Nothing here can tell them apart, so it says what it found and stops there:
-    a warning, never an error. `ok` does not move: auto-reconcile acts on it and pushes only
-    to the integrations the service is attached to, so an error here would set off a push
-    every round that could never clear it. Reconcile has nothing to offer about one either.
-    An integration that cannot be read is a warning of its own, because its silence would
-    read as nobody else answering.
+    Warnings only: could be split-horizon or a leftover. Never sets ok=false, since
+    auto-reconcile cannot fix it. An unreadable integration is its own warning.
     """
     issues: list[dict] = []
     for row in conn.execute("SELECT * FROM providers WHERE enabled=1 ORDER BY id").fetchall():
@@ -228,21 +179,7 @@ def _answers_elsewhere(conn, public_host: str, published: str, attached: set) ->
 
 
 def _imported_name(value) -> str:
-    """A hostname read off a provider, reduced to the spelling a service is stored under.
-
-    `ServiceIn` lowercases the subdomain and `normalize_domain` lowercases the domain, so
-    every service the editor writes is stored in lower case. The import route wrote what the
-    provider spelled. Nothing downstream noticed, because `_service_fqdn` lowercases the
-    public hostname it derives -- so a service stored as `NAS.maison.lan` pushed, and drifted,
-    under `nas.maison.lan`, exactly like the service already tracking that name.
-
-    The three consequences were all silent. The row was offered as new on every scan, since
-    `_already_imported` compared against the stored spelling. Ticking it inserted a second
-    service, since the "Vauxtra already tracks this name" lookup compared the same way and so
-    does the unique index on `(subdomain, domain)`. And a proxy host and a DNS record for one
-    name, spelled differently by their two providers, stopped pairing: two services, each
-    holding half of what one should have held.
-    """
+    """Normalize a hostname read from a provider the way services are stored (stripped, lowercase)."""
     return str(value or "").strip().lower()
 
 
@@ -256,22 +193,10 @@ def _longest_zone(name: str, zones) -> str:
 
 
 def _zone_of(name: str, declared, hint="") -> tuple[str, bool]:
-    """The zone a scanned name belongs to, and whether the operator declared it.
+    """Return (zone, declared) for a scanned name.
 
-    Three answers, in this order:
-
-    - The longest declared domain the name sits under. It wins over a longer zone the
-      provider reports, because it is where the operator said their services live: a
-      record read from a delegated `maison.example.org` still files under a declared
-      `example.org`, as `nas.maison`, which is how the editor would have stored it.
-    - The zone the provider read the record from (`zone` on a DNS row), when the name
-      really is under it.
-    - Everything after the first dot, which is how every name used to be split, and what
-      is left when neither of the above knows the name. It is right only for a name one
-      label below its zone: `a.b.example.net` lands under `b.example.net`, which an import
-      would declare as a domain of its own, and a zone apex `example.net` under `net`.
-
-    A single-label name has no zone at all ("").
+    Prefers the longest declared domain, then the zone the provider reported, then
+    everything after the first dot. A single-label name has zone "".
     """
     zone = _longest_zone(name, declared)
     if zone:
@@ -289,14 +214,9 @@ def _declared_domains(conn) -> list[str]:
 
 
 def _tracked_id(conn, fqdn: str, *, tunnels: bool = False):
-    """The id of the service already published under *fqdn*, or None.
+    """Id of the service published under `fqdn` (whole-name match), or None.
 
-    Compared on the whole name. The import used to ask for its own split of the name,
-    `subdomain=? AND domain=?`, and a split is not a name: a service the editor stored as
-    `nas.maison` under `example.org` was not found under `nas` + `maison.example.org`. The
-    scan compared whole names and marked that row tracked, but "Quick import" sent it back all
-    the same, and the import made a second one. *tunnels* also matches a tunnel's own
-    hostname, which is the name that service publishes.
+    `tunnels` also matches a tunnel service's own hostname.
     """
     query = "SELECT id FROM services WHERE lower(subdomain || '.' || domain) = ?"
     params: tuple = (fqdn,)
@@ -308,15 +228,7 @@ def _tracked_id(conn, fqdn: str, *, tunnels: bool = False):
 
 
 def _tracked_row(conn, fqdn: str):
-    """The service already published under *fqdn*, with the two columns a link has to read.
-
-    A tunnel's own hostname counts, as it does for `_tracked_id`: the CNAME a tunnel writes is
-    a record a DNS scan lists under that very name. Without it, a tunnel service published
-    under a hostname other than its subdomain and domain is not found, and its own record
-    comes in as a second service. The screens mark that row tracked (`trackServices`) and
-    never send it, but a caller that sends the scan as it is, the MCP bridge for one, has
-    only this test to stop it.
-    """
+    """The service published under `fqdn`, tunnel hostnames included, with the columns a link reads."""
     return conn.execute(
         "SELECT id, expose_mode, dns_provider_id FROM services "
         "WHERE lower(subdomain || '.' || domain) = ? OR lower(COALESCE(tunnel_hostname, '')) = ?",
@@ -325,11 +237,9 @@ def _tracked_row(conn, fqdn: str):
 
 
 def _split_for_import(fqdn: str, declared, hint="") -> tuple[str, str, str]:
-    """`(subdomain, domain, "")` for a name that can become a service, `("", "", why)` if not.
+    """Return (subdomain, domain, "") for an importable name, or ("", "", reason).
 
-    Split at the zone `_zone_of` finds, not at the first dot. The first dot filed
-    `a.b.example.net` under a domain `b.example.net`, declared it in passing, and stored a
-    service the editor would have written as `a.b` under `example.net`.
+    Splits at the zone `_zone_of` finds, not at the first dot.
     """
     if "." not in fqdn:
         return "", "", "a domain needs at least one dot, so this name has no subdomain to split off"
@@ -343,15 +253,9 @@ def _split_for_import(fqdn: str, declared, hint="") -> tuple[str, str, str]:
 
 
 def _find_host(proxy, public_host: str) -> dict | None:
-    """The provider's host record for `public_host`, or None.
+    """Return the provider's host record for `public_host` (case-insensitive), or None.
 
-    Hostnames compare case-insensitively: Zoraxy keeps a rule under the spelling it was
-    typed with, and a rule created as "App.Example.com" is the same host as the service
-    Vauxtra spells "app.example.com".
-
-    The whole record rather than its id, because `enabled` lives nowhere else. A host that
-    is held and not served is the state a disabled service leaves behind, and the id alone
-    cannot tell it from a host that answers.
+    The whole record, because `enabled` tells a suspended host from a serving one.
     """
     wanted = (public_host or "").strip().lower()
     try:
@@ -364,13 +268,7 @@ def _find_host(proxy, public_host: str) -> dict | None:
 
 
 def _host_is_served(host: dict | None) -> bool:
-    """Whether a host that exists is also answering.
-
-    NPM and Zoraxy suspend rather than delete, so the rule stays in the listing and this
-    flag is the only thing that says it stopped serving. Providers with no suspension do not
-    report it at all, and `True` is the right default for them: read the other way, every
-    route they hold would be called suspended.
-    """
+    """Whether a host is serving. Missing `enabled` (no suspension support) means True."""
     return bool(host is None or host.get("enabled", True))
 
 
@@ -381,13 +279,7 @@ def _find_host_id(proxy, public_host: str):
 
 
 def _stored_host_id(hostname_keyed: bool, svc, public_host: str):
-    """The stored primary-proxy id, unless the provider keys hosts on a name that moved.
-
-    For a provider whose id is the hostname, an id that no longer spells the service's
-    public host names a rule that is gone -- a service renamed before the rename was
-    written back, or renamed by hand. Returning None sends the caller to the live
-    lookup instead of to a rule that does not exist.
-    """
+    """The stored primary-proxy id, or None when a hostname-keyed id no longer matches `public_host`."""
     host_id = svc["npm_host_id"]
     if not host_id:
         return None
@@ -397,12 +289,9 @@ def _stored_host_id(hostname_keyed: bool, svc, public_host: str):
 
 
 def _all_route_holders(conn, svc, sid: int) -> tuple[str, str, list, list]:
-    """Every provider that may still hold a route for this service, enabled or not.
+    """Every provider that may still hold a route for this service, disabled ones included.
 
-    `_collect_push_targets` skips disabled providers on purpose: republishing to a target
-    the operator turned off would be wrong. Withdrawing is the mirror case -- disabling a
-    provider inside Vauxtra does not take the route it published off the internet -- so a
-    removal has to try all of them.
+    Unlike a push, a withdrawal must reach disabled providers too.
     """
     public_host = _service_public_host(svc)
     expose_mode = (svc["expose_mode"] or "proxy_dns").strip().lower() if _has_column(svc, "expose_mode") else "proxy_dns"
@@ -455,26 +344,11 @@ def withdraw_service_routes(
     conn, svc, sid: int, *, only_provider_ids: set[int] | None = None,
     log_prefix: str = "[Delete]",
 ) -> list[str]:
-    """Take a service's public route off every provider that may still serve it.
+    """Remove a service's public route from every provider that may serve it.
 
-    Deleting a service walked `proxy_provider_id` and `dns_provider_id` and stopped there.
-    The extra targets in `service_push_targets` -- the second proxy, the second DNS server,
-    the ones a push writes to on every cycle -- were never told: their routes outlived the
-    deletion, the hostname stayed resolvable, the proxy kept forwarding, and nothing was
-    left in Vauxtra to show for it.
-
-    `only_provider_ids` narrows the withdrawal to part of the holders, for the three cases
-    where the service itself survives: a multi-sync target dropped from an edit, a provider
-    being deleted while other targets go on serving the same hostname, and a service being
-    disabled.
-
-    `log_prefix` is the why, and the journal is where an operator reconstructs it. Three of
-    the four callers really are deleting something; a disabled service still exists, and a
-    line reading `[Delete] Proxy route removed` beside it would be read as the deletion that
-    never happened -- the primary path says `DNS record withheld (service disabled)` for the
-    same reason.
-
-    Returns one message per failure; an empty list means everything is withdrawn.
+    only_provider_ids: restrict to these providers (edit, provider deletion, disable).
+    log_prefix: journal prefix, so a disable is not logged as a deletion.
+    Returns one message per failure; empty means fully withdrawn.
     """
     expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
     if only_provider_ids is not None:
@@ -489,9 +363,7 @@ def withdraw_service_routes(
             proxy = create_provider(row)
             host_id = None
             if host_id_is_hostname(proxy, row["type"]):
-                # Cloudflare Tunnel and Zoraxy address their rules by hostname, not by a
-                # numeric id, so the service's own hostname is the route to withdraw --
-                # whatever an older rename may have left in `npm_host_id`.
+                # Hostname-keyed providers: withdraw by name, whatever npm_host_id holds.
                 host_id = public_host
             elif row["id"] == svc["proxy_provider_id"]:
                 host_id = svc["npm_host_id"]
@@ -524,10 +396,8 @@ def withdraw_service_routes(
             if not ip:
                 continue
 
-            # A refusal is read against the listing before it is reported. A disabled service
-            # is withdrawn from its extra DNS servers again on every edit, and the Cloudflare
-            # integration refuses a deletion that matched nothing: every save of such a
-            # service reported a failure about a record that had been gone since the first.
+            # A refusal is checked against the listing: some providers refuse a deletion
+            # that matched nothing.
             if dns.delete_rewrite(public_host, ip):
                 add_log("info", f"{log_prefix} DNS record removed on {row['name']}: {public_host}", conn)
             elif _dns_record_kept(dns, public_host, ip):
@@ -536,9 +406,7 @@ def withdraw_service_routes(
             errors.append(f"DNS ({row['name']}): {redact_query_secrets(str(e))}")
 
     if expose_mode == "tunnel" and not proxy_rows and only_provider_ids is None:
-        # Only when the whole service is being withdrawn. A narrowed withdrawal legitimately
-        # leaves the tunnel out of the selection, and reporting that as a missing provider
-        # would turn "this DNS server no longer serves it" into a failure.
+        # Only for a full withdrawal; a narrowed one may leave the tunnel out on purpose.
         errors.append("No tunnel provider left to remove the route from")
 
     return errors
@@ -547,25 +415,11 @@ def withdraw_service_routes(
 def withhold_service_routes(
     conn, svc, sid: int, *, only_provider_ids: set[int] | None = None
 ) -> list[str]:
-    """Take a disabled service out of service, the way disabling it does.
+    """Take a disabled service offline the way the disable path does.
 
-    A push converges the providers on what the record says, and for a disabled service the
-    record says "not reachable". `withdraw_service_routes` is the wrong tool for the primary
-    proxy: it deletes the host, and the disable path in `update_service` suspends it. The
-    difference is not cosmetic. NPM keeps the custom locations, the advanced configuration
-    and the certificate binding that Vauxtra does not model, and `npm_host_id` stays valid so
-    the re-enable can toggle the same host back on. Deleting it here would leave that column
-    pointing at a host that no longer exists, and the re-enable would then fail on a dead id.
-    That failure is reported now -- the enable paths tell a refused toggle from an unsupported
-    one -- but it would be reported about a service whose configuration is already gone, which
-    is why the deletion is reserved for providers that genuinely cannot suspend.
-
-    Everything else is removed rather than suspended, for the reasons the two neighbours
-    already carry: DNS has no suspension, and Vauxtra never stores the host ids of the extra
-    proxies, so a suspension there could never be lifted -- `withdraw_extra_targets` spells
-    that out.
-
-    Returns one message per failure, in the shape both push routes already put in `errors`.
+    The primary proxy is suspended when the provider supports it (keeps NPM config and
+    npm_host_id valid for re-enable); DNS and extra proxies are removed.
+    Returns one message per failure.
     """
     expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
     if only_provider_ids is not None:
@@ -573,9 +427,7 @@ def withhold_service_routes(
         dns_rows = [r for r in dns_rows if r["id"] in only_provider_ids]
     errors: list[str] = []
 
-    # Tunnel mode has no primary proxy to suspend: Cloudflare Tunnel addresses its rules by
-    # hostname and does not implement `toggle_host`, so the withdrawal below is the whole
-    # answer there, which is also what the tunnel branch of `update_service` does.
+    # Tunnel mode has no primary proxy to suspend.
     primary_id = svc["proxy_provider_id"] if expose_mode != "tunnel" else None
     primary_row = next((r for r in proxy_rows if r["id"] == primary_id), None) if primary_id else None
     stored_host_id = svc["npm_host_id"]
@@ -597,12 +449,7 @@ def withhold_service_routes(
                 else:
                     errors.append(f"Failed to remove the proxy host on {primary_row['name']}")
             else:
-                # The fallback is for a provider that has no suspension, never for one whose
-                # suspension refused the call. NPM and Zoraxy answer the same `False` either
-                # way, and reading it as "unsupported" turned a provider that hiccupped into
-                # a deletion of the host -- with the custom locations, the advanced
-                # configuration and the certificate binding this suspension exists to keep,
-                # and `npm_host_id` blanked so nothing could be put back.
+                # Deletion is only for providers without suspension, never after a failed suspend.
                 errors.append(f"Failed to suspend the proxy host on {primary_row['name']}")
         except Exception as e:
             # Deliberately not falling through to the deletion: the provider just failed to
@@ -619,22 +466,10 @@ def withhold_service_routes(
 
 
 def _build_withhold_plan(conn, svc, sid: int) -> dict:
-    """What the push would do to a service the record says is off.
+    """Dry-run plan for a disabled service: what the push would withdraw or suspend.
 
-    The dry-run is the documented way to find out what a push will write -- `docs/TROUBLESHOOTING.md`
-    says to run it first -- so it has to describe the withdrawal, not the publication that
-    used to happen. Read as if every service were published, the plan promised to create the
-    route on every provider and the push then removed it from every provider, which is the
-    one answer a dry-run must never give.
-
-    It reaches the providers only to ask what they are, never what they hold: `create_provider`
-    builds the client, and whether the primary can be suspended is a property of its class.
-    The publication plan calls out to look a host up because "create" and "update" are
-    different writes; here they are not, so the plan costs no round trip.
-
-    As in the publication plan, an action is what the push will attempt rather than a diff
-    against the provider, and `would_change` follows it -- the same reading that makes an
-    `update` on an unchanged host count as a change.
+    Contacts no provider beyond building its client. Actions are what the push will
+    attempt, not a diff, and `would_change` follows them.
     """
     expose_mode, public_host, proxy_rows, dns_rows = _all_route_holders(conn, svc, sid)
 
@@ -664,9 +499,7 @@ def _build_withhold_plan(conn, svc, sid: int) -> dict:
         if row["id"] == primary_id and stored_host_id:
             try:
                 proxy = create_provider(row)
-                # The fallback in `withhold_service_routes` is not a guess: a provider that
-                # does not override `toggle_host` inherits the base's `return False`, so the
-                # suspension it would try can only fail, and the route has to be deleted.
+                # Without a toggle_host override the suspension can only fail, so delete.
                 if supports_suspension(proxy):
                     action = "suspend"
             except Exception as e:
@@ -760,11 +593,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
             host_id = None
             if expose_mode != "tunnel" and row["id"] == svc["proxy_provider_id"]:
                 host_id = _stored_host_id(host_id_is_hostname(proxy, row["type"]), svc, public_host)
-            # The listing is read even when the stored id already answers, because `enabled`
-            # lives nowhere else and the push now acts on it. It costs the primary proxy one
-            # call the plan did not make before, and it is the call that stops the plan from
-            # answering "update" about a provider it cannot reach -- which is how it already
-            # behaves for every other proxy in this loop.
+            # Always read the listing: `enabled` lives nowhere else.
             live = _find_host(proxy, public_host)
             if not host_id:
                 host_id = live.get("id") if live else None
@@ -772,10 +601,7 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
             if not host_id:
                 action = "create"
             elif not _host_is_served(live) and supports_suspension(proxy):
-                # The push updates this host and then lifts its suspension, and those are
-                # different answers to "what will happen". Naming the second one is the
-                # difference between a plan that explains the drift report beside it and one
-                # that leaves the operator to assume an update also turns a route back on.
+                # Reported separately from "update": the push also lifts the suspension.
                 action = "resume"
             else:
                 action = "update"
@@ -844,19 +670,13 @@ def _build_push_plan(conn, svc, sid: int) -> dict:
     }
 
 
-#: Drift details used to be English sentences built here, which is the one place they can
-#: never be translated. Each templated shape now also carries the key its sentence was
-#: written from and the values it was built out of, so the UI can say the same thing in the
-#: reader's language. `detail` stays as the plain-text fallback (logs, older clients).
+# Drift details carry `detail` (English fallback) plus `detail_key` and params for i18n.
 def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) -> dict:
     expose_mode, public_host, proxy_targets, dns_targets = _collect_push_targets(conn, svc, sid)
     issues: list[dict] = []
 
     expected_origin = f"{svc['forward_scheme']}://{svc['target_ip']}:{svc['target_port']}"
-    # Drift is the distance between the record and the providers, and a disabled service has
-    # the opposite expectation rather than no expectation. Read as if every service were
-    # published, a correctly disabled one came back as "out of sync, 2 errors" -- with a
-    # Reconcile button beside it whose only honest meaning would have been "publish it again".
+    # A disabled service is expected to be absent from its providers.
     service_enabled = bool(svc["enabled"])
 
     for row in proxy_targets:
@@ -866,10 +686,7 @@ def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) 
             hit = next((h for h in hosts if _host_serves(h, public_host)), None)
 
             if not service_enabled:
-                # NPM and Zoraxy suspend a host rather than delete it, so the route stays in
-                # the listing and `enabled` is the only thing that says whether it still
-                # answers. Providers with no suspension do not report the flag at all, and
-                # `True` is the right default for them: a rule that exists is a rule serving.
+                # A suspended host stays listed; `enabled` says whether it still serves.
                 if hit and _host_is_served(hit):
                     issues.append(
                         {
@@ -896,12 +713,7 @@ def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) 
                 )
                 continue
 
-            # Held and not served, which is how Vauxtra itself switches a service off. Only
-            # the hostname and the origin were ever compared, so the flag Vauxtra had written
-            # read back as perfectly in sync while the hostname answered nothing -- and
-            # `update_host` is a PUT that does not carry the flag, so the Reconcile button
-            # beside this line walked over the host without lifting anything. Both halves are
-            # fixed together: the push resumes, and this is what asks it to.
+            # Held but suspended: report it so the push resumes it.
             if not _host_is_served(hit):
                 issues.append(
                     {
@@ -938,10 +750,7 @@ def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) 
                 }
             )
 
-    # `dns_ip` is the address the records are compared against, so an empty one used to mean
-    # there was nothing to compare. A disabled service is not comparing anything: it is asking
-    # whether a record is still there, which is a question worth answering even once Vauxtra
-    # has forgotten which address it pointed at.
+    # A disabled service is checked for leftover records even without a stored dns_ip.
     if expose_mode != "tunnel" and (svc["dns_ip"] or not service_enabled):
         for row in dns_targets:
             try:
@@ -997,9 +806,8 @@ def _compute_service_drift(conn, svc, sid: int, *, look_elsewhere: bool = True) 
                     }
                 )
 
-    # A record on an integration the service is not pushed to is invisible to the loop
-    # above, and it answers the same name all the same. Only an enabled service that
-    # publishes an address somewhere has an answer to hold it against.
+    # Records on integrations the service is not pushed to; only relevant for an
+    # enabled service with an address.
     published = str(svc["dns_ip"] or "").strip().lower()
     if look_elsewhere and expose_mode != "tunnel" and service_enabled and dns_targets and published:
         attached = {row["id"] for row in dns_targets}
@@ -1029,13 +837,7 @@ def push_service(sid: int, request: Request):
 
 
 def _execute_push(svc, sid: int) -> dict:
-    """Push a service from outside the HTTP layer -- the scheduler's auto-reconcile job.
-
-    `app/scheduler.py` has imported this name since auto-reconcile was written, and it was
-    never defined: the job raised `ImportError` on its first tick. Nobody noticed because
-    `auto_reconcile_enabled` was not writable either, so the job could never be scheduled.
-    Both halves are fixed together; a feature that cannot be switched on is not a feature.
-    """
+    """Push a service outside the HTTP layer (scheduler auto-reconcile)."""
     conn = get_db()
     try:
         return _push_service_row(conn, svc, sid)
@@ -1044,18 +846,10 @@ def _execute_push(svc, sid: int) -> dict:
 
 
 def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None = None) -> dict:
-    """The push itself. Commits; the caller owns the connection and closes it.
+    """Push one service to its providers. Commits; the caller closes the connection.
 
-    `only_provider_ids` narrows the push to part of the targets. `push_extra_targets` uses
-    it to reach the multi-sync providers on their own, once the write routes have dealt
-    with the primary proxy and the primary DNS server themselves.
-
-    A disabled service is withheld instead of published. The record is what a push converges
-    the providers on, and the record says this one is off -- publishing it here is how a
-    service the table showed as disabled came back. Two one-click paths reach this: the drift
-    drawer offers Reconcile beside the errors it just reported, and `ExposeModal` fires a push
-    of its own right after saving any service that has a multi-sync target, so pressing Save
-    on a disabled service republished it on every provider at once.
+    `only_provider_ids` restricts the push (used by push_extra_targets). A disabled service
+    is withheld instead of published.
     """
     if not svc["enabled"]:
         errors = withhold_service_routes(conn, svc, sid, only_provider_ids=only_provider_ids)
@@ -1084,10 +878,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
                 host_id = _find_host_id(proxy, public_host)
 
             if host_id:
-                # Providers report a refusal by returning False, not by raising: NPM answers
-                # False on an expired token, Cloudflare Tunnel on an ingress rule it could not
-                # write. Only the `except` below used to fill `errors`, so those cases came
-                # back as `ok: true` with a "Proxy synced" line in the journal.
+                # Providers signal some refusals with False rather than an exception.
                 pushed = proxy.update_host(
                     host_id,
                     public_host,
@@ -1103,13 +894,8 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
                     # The live lookup found the rule under a name the row did not hold:
                     # write it back so the next cycle does not have to look again.
                     conn.execute("UPDATE services SET npm_host_id=? WHERE id=?", (host_id, sid))
-                # A host can be held without serving -- that is how Vauxtra switches a service
-                # off -- and `update_host` is a PUT that does not carry the flag. So the push
-                # wrote the right origin onto a suspended rule and left it suspended, and
-                # Reconcile, which is this push, could not converge the one state Vauxtra
-                # itself produces. A provider with no suspension is never asked, and the two
-                # that have one answer on the state the host ends up in rather than on the
-                # code of the call, so resuming a host already running is not a refusal.
+                # update_host does not carry the enabled flag, so resume a suspended host
+                # explicitly. Judged on the resulting state, so an already running host is fine.
                 if pushed and supports_suspension(proxy) and not proxy.toggle_host(host_id, True):
                     pushed = False
                     attempted = f"resume of host {host_id}"
@@ -1148,10 +934,7 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
         )
 
         if not dns_target and dns_targets:
-            # The dry-run has always refused this. The push skipped the loop below without a
-            # word and returned `{"ok": true, "errors": []}`, so the preview of the action and
-            # the action itself contradicted each other about the same service, and the one
-            # that reported success is the one that writes records.
+            # Refused, as the dry-run does.
             sentence = describe_public_target_failure(dns_target_source)[1]
             errors.append(sentence)
             add_log("error", f"[Push] Nothing pushed to DNS for {public_host}: {sentence}", conn)
@@ -1170,10 +953,8 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
                     actual_ip = (actual_entry or {}).get("ip") or (actual_entry or {}).get("answer", "")
                     failure = ""
                     if actual_ip and actual_ip != dns_target:
-                        # The stale record has to go first, and the `elif` matters: AdGuard and
-                        # Pi-hole happily hold two rewrites for one name, so adding after a
-                        # failed removal leaves the host resolving to whichever the resolver
-                        # picks. Not pushing at all is the lesser evil, and it is reported.
+                        # Remove the stale record first; if that fails do not add, since
+                        # some resolvers hold two rewrites for one name.
                         if not dns.delete_rewrite(public_host, actual_ip):
                             failure = f"removal of the stale {public_host} → {actual_ip} record"
                         elif not dns.add_rewrite(public_host, dns_target):
@@ -1195,17 +976,9 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
 
 
 def push_extra_targets(conn, sid: int) -> list[str]:
-    """Publish a service on the multi-sync targets its write route never touches.
+    """Push a service to its extra (multi-sync) targets after the write route handled the primaries.
 
-    `add_service` and `update_service` address one proxy and one DNS server -- the two
-    columns on the service row -- and record everything else in `service_push_targets`
-    afterwards. Nothing then pushed to those rows. A service created with a second DNS
-    server answered `201 {"errors": []}` while that server received nothing, and the very
-    next call to `/drift` reported `missing_dns_rewrite` on a service the operator had just
-    been told was published. The second target only ever filled in on the next scheduler
-    cycle, or on an explicit push nobody knew to make.
-
-    Returns one message per failure, in the shape both routes already put in `errors`.
+    Returns one message per failure.
     """
     svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not svc or not svc["enabled"]:
@@ -1226,27 +999,11 @@ def push_extra_targets(conn, sid: int) -> list[str]:
 
 
 def withdraw_extra_targets(conn, sid: int) -> list[str]:
-    """Take a disabled service off the multi-sync targets its write route never touches.
+    """Remove a disabled service from its extra (multi-sync) targets.
 
-    The mirror of `push_extra_targets`, and it was missing. `update_service` and the bulk
-    enable/disable walked `proxy_provider_id`, `dns_provider_id` and `tunnel_provider_id`
-    when the flag changed, so disabling a service suspended the primary proxy and deleted
-    the primary DNS record while the second proxy went on forwarding the same hostname and
-    the second DNS server went on resolving it. The interface showed the service as off,
-    which is the one state an operator reads as "this is not reachable any more", and the
-    only thing that had changed was who Vauxtra was still talking to.
-
-    The extras are deleted where the primary proxy is merely suspended, and that asymmetry
-    is load-bearing rather than an oversight. NPM's enable and disable live on their own
-    endpoints: `update_host` is a PUT that never touches the flag, so a suspended host stays
-    suspended through any number of pushes. The re-enable path here is `push_extra_targets`,
-    which finds the existing host by hostname and calls `update_host` -- it has no stored id
-    to toggle and no toggle to make. Suspending an extra would therefore leave it dark
-    forever after a re-enable, and silently: the PUT answers 200, so `errors` stays empty
-    and the journal reads "Proxy synced". Deleting it means the next push finds nothing and
-    calls `create_host`, which is what actually brings the route back.
-
-    Returns one message per failure, in the shape both routes already put in `errors`.
+    Extras are deleted, not suspended: Vauxtra stores no host id for them, so a suspended
+    extra could never be re-enabled. The next push recreates them.
+    Returns one message per failure.
     """
     svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not svc or svc["enabled"]:
@@ -1333,19 +1090,11 @@ def reconcile_service(sid: int, request: Request):
 
 @router.post("/api/services/sync")
 def sync_services(request: Request):
-    """Every route and record the enabled integrations hold, each marked with its zone.
+    """List every route and record the enabled integrations hold, each tagged with its zone.
 
-    Measured in production on 2026-09-22, two scans minutes apart answered 91 routes and then
-    32, with no setting changed in between according to the report. The 59 others came from
-    twelve zones nobody had declared, listed through one Cloudflare token by the first scan
-    and not by the second; and nothing in the answer said which integrations had been asked,
-    or that one had failed. So every row now carries `_zone` and `_declared` (see
-    `_zone_of`), and the answer says what was asked of whom: `providers` holds one line per
-    integration scanned, with its count and, when it failed, why; `declared_domains` the
-    domains the panel filters on.
-
-    Integrations are asked in the order they were added, so two scans that get the same rows
-    back list them in the same order, and the import keeps the same record of two.
+    Rows carry `_zone` and `_declared`; `providers` reports each integration scanned with its
+    count or error; `declared_domains` lists the domains the panel filters on. Integrations
+    are scanned in creation order so results are stable.
     """
     # Explicitly `read`: this only lists what the providers already hold.
     require_auth_or_setup(request, scope="read")
@@ -1444,21 +1193,10 @@ _ORIGIN_BREAKING = re.compile(r"[\s/@?#\\]")
 
 @router.post("/api/services/import")
 def import_services(request: Request, data: dict = Body(...)):
-    """Turn scanned provider rows into services, and say what happened to every one of them.
+    """Import scanned rows as services.
 
-    Four outcomes, because two were not enough to tell the operator anything. A row is
-    `imported` (a new service), `linked` (an existing service gained the DNS half it was
-    missing -- a real write that used to be reported as nothing at all), set aside on purpose
-    (`skipped`), or refused because something is wrong with it (`errors`).
-
-    Two rows can make one service, and that is the point of the pairing: a DNS record whose
-    name matches a proxy host in the same payload is folded into that host, and the pair is
-    counted once under `imported`. Apart from that fold every submitted row lands in exactly
-    one of the four -- and `skipped` may carry extra lines for names *inside* a row that could
-    not become a service of their own, so it is the one bucket that can outrun the row count.
-
-    `imported` and `errors` keep the meaning and the shape they always had, so every existing
-    caller keeps working; `linked` and `skipped` are additions.
+    Returns imported, linked (existing service gained a DNS record), skipped, errors.
+    A DNS row matching a proxy host in the same payload is merged and counted once.
     """
     require_auth_or_setup(request, scope="write")
     imported = 0
@@ -1473,28 +1211,9 @@ def import_services(request: Request, data: dict = Body(...)):
         row["id"]: row["type"] for row in conn.execute("SELECT id, type FROM providers").fetchall()
     }
 
-    # Built one row at a time rather than by a comprehension: the comprehension dropped a
-    # nameless record, and a second record for a name already in the map, without either the
-    # loop below or the caller ever hearing of them. Both shapes are real -- AdGuard and
-    # Pi-hole hold two rewrites for one name without complaining.
-    #
-    # Two deliberate changes live here, neither of them a side effect of rewriting the loop.
-    #
-    # Names are compared through `_imported_name`, stripped and lowercased. Unstripped,
-    # " nas.maison.lan " was a different key from "nas.maison.lan" and imported a second
-    # service whose subdomain was " nas" and whose domain was "maison.lan " -- a row that
-    # matches no scan and pushes nowhere. Uncased, "NAS.maison.lan" did the same thing, and
-    # kept doing it: the spelling a provider happens to use is not the spelling a service is
-    # stored under. The proxy loop normalizes the same way, so a padded or capitalized name
-    # on one side still pairs with a clean one on the other.
-    #
-    # And on a name two providers answer for, the comprehension kept the LAST record; this
-    # keeps the first. Neither is a better guess, only a steadier one: `sync_services` asks
-    # the integrations in the order they were added (`ORDER BY id`), so of two answers the
-    # one kept is the older integration's, scan after scan. What changed is that the choice
-    # is no longer silent -- the message below names both providers, so the operator settles
-    # it at the provider instead of discovering months later which address `push_service`
-    # has been writing.
+    # Explicit loop so duplicate and nameless records are reported, not dropped.
+    # Names are compared stripped and lowercased. When two providers answer for one name,
+    # the first (oldest provider, ORDER BY id) wins and both are named in the message.
     dns_by_fqdn: dict[str, dict] = {}
     for r in data.get("dns_rewrites", []):
         fqdn = _imported_name(r.get("domain"))
@@ -1523,20 +1242,14 @@ def import_services(request: Request, data: dict = Body(...)):
             kept = dns_by_fqdn[fqdn].get("_provider_name") or "the first provider"
             other = r.get("_provider_name") or "another provider"
             if kept == other:
-                # One provider answering twice for one name is not two integrations
-                # disagreeing, it is a duplicate row inside one of them, and naming the
-                # provider twice in the same sentence reads like a bug in the message.
+                # Duplicate within one provider: name it once.
                 reason = (
                     f"{kept} holds two records for this name. The first is the one imported; "
                     f"remove the duplicate at the provider"
                 )
             else:
-                # Two integrations answering one name is also what a split-horizon looks
-                # like: the LAN resolver hands out the local address, the public zone the
-                # tunnel. The old wording ("remove the other") told the operator to delete
-                # the half that makes it work, so the sentence now says what the import did
-                # and leaves the verdict to them. It stays in `errors` all the same: the
-                # record from {other} is not tracked, and that is still worth reading.
+                # May be split-horizon, so the message reports and does not tell the operator
+                # to remove anything.
                 reason = (
                     f"{kept} and {other} both answer for this name. The answer from {kept} is "
                     f"the one imported; the record at {other} is left as it is and not tracked. "
@@ -1643,9 +1356,7 @@ def import_services(request: Request, data: dict = Body(...)):
             dns_by_fqdn.pop(fqdn, None)
             add_log("info", f"Imported: {fqdn}" + (" (proxy + DNS)" if dns_match else ""), conn)
         except Exception as e:
-            # Through the helper like every other refusal: an exception here is still a row
-            # the operator ticked, and `str(e)` on its own named neither the row nor a place
-            # to look, and wrote nothing to the journal.
+            # Through the helper so the row is named and the refusal is logged.
             refuse_import(errors, conn, where, f"importing it raised {type(e).__name__}: {e}")
 
     for fqdn, r in dns_by_fqdn.items():
@@ -1662,11 +1373,7 @@ def import_services(request: Request, data: dict = Body(...)):
                 continue
             existing = _tracked_row(conn, fqdn)
             if existing is not None:
-                # A link fills the DNS half a service is missing, and only that. It used to
-                # overwrite whatever half was there: "Quick import" sent the whole scan back,
-                # tracked names included, so a name two integrations answer for re-pointed a
-                # tracked service at whichever had been read first, and a tunnel service -- which
-                # stores no DNS provider, its tunnel writes the record -- gained one.
+                # A link only fills a missing DNS half; tunnel services store no DNS provider.
                 if existing["expose_mode"] == "tunnel":
                     set_aside(
                         skipped, fqdn,
@@ -1680,15 +1387,11 @@ def import_services(request: Request, data: dict = Body(...)):
                     "UPDATE services SET dns_provider_id=?, dns_ip=? WHERE id=?",
                     (r.get("_provider_id"), ip, existing["id"]),
                 )
-                # Counted, because this writes to the row `push_service` reads next. It used
-                # to update the service, log it, and still answer `{"imported": 0,
-                # "errors": []}` -- the answer for "there was nothing to do".
+                # Counted: this writes to the row push_service reads.
                 linked += 1
                 add_log("info", f"DNS linked: {fqdn} -> {ip}", conn)
             else:
-                # No port: a DNS record names an address, not a service listening on it. The
-                # 80 written here before was a guess the monitor then took at its word, and
-                # a VPN endpoint or a hypervisor came in reported down on port 80 forever.
+                # No port: a DNS record names an address, not a listening service.
                 conn.execute(
                     """INSERT INTO services
                        (subdomain, domain, target_ip, target_port, dns_provider_id, dns_ip)
