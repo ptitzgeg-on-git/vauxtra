@@ -11,16 +11,18 @@ serves, a DNS server that will not write a record outside a zone it hosts.
 
 ## Run it
 
+From the repository root:
+
 ```sh
-cd lab && ./up.sh          # seed, start, wait, bootstrap
-cd .. && python lab/harness.py
+lab/up.sh                  # seed, start, wait, bootstrap
+python lab/harness.py
 ```
 
 `up.sh --fresh` destroys every container and volume first. Nothing in here is meant to
 survive; that is the point.
 
-Requirements: Docker, and the repository's own Python dependencies (`requirements.txt`).
-The harness installs nothing.
+Requirements: Docker, and the repository's Python dependencies
+(`pip install -r requirements-dev.txt`). The harness installs nothing.
 
 ## What runs
 
@@ -76,8 +78,9 @@ way. `bootstrap.sh` handles them and documents why:
 - **Nginx Proxy Manager 2.13** no longer ships `admin@example.com` / `changeme`. While
   `GET /api/` reports `"setup": false`, `POST /api/users` is open and creates the first
   administrator.
-- **Technitium** accepts a record only inside a zone it hosts, and Vauxtra derives the
-  zone from the last two labels — so `vxlab.test` has to exist first.
+- **Technitium** accepts a record only inside a zone it hosts. Vauxtra picks the longest
+  hosted zone that contains the name, and falls back to the last two labels when none does,
+  so `vxlab.test` has to exist first.
 - **PowerDNS** starts with an empty database and no zone at all, and its API answers 404
   for a name no hosted zone covers. `vxlab.test` is created through the API; a re-run
   gets a 409, which is the success case.
@@ -94,10 +97,11 @@ operation that logs in without logging out burns a seat for half an hour — and
 `list_rewrites` is what the drift check calls on every pass.
 
 ```sh
-docker compose rm -sf pihole && docker compose up -d pihole
+docker compose -f lab/compose.yaml rm -sf pihole
+docker compose -f lab/compose.yaml up -d pihole
 python lab/repro_pihole_seats.py
 ```
 
 It reports two things per call, because they fail independently: whether Pi-hole granted
-a session, and whether the seat came back. Before the fix the sixteenth call was refused;
-now twenty calls run with nothing left open.
+a session, and whether the seat came back. Twenty calls should run with nothing left open; a
+refusal around the sixteenth call means sessions are leaking again.
