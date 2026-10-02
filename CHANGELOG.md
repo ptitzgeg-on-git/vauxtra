@@ -7,6 +7,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Security
+
+- **A `write` key could send a provider's stored secret to another host.** Changing only the
+  URL of a provider kept its password or token, and the next test or health check sent it to
+  the new address. Moving a provider to another host, port or scheme now needs the secret
+  again, or an `admin` key.
+- **The setup route could claim an instance whose password hash had disappeared.** Every
+  other route refuses in that state, and `POST /api/auth/setup-password` now does too.
+- A `SECRET_KEY` shorter than 32 characters is named in a warning at startup.
+
+### Documentation
+
+- `docs/THREAT_MODEL.md`: what Vauxtra stores, what each API scope can reach, the narrowest
+  credential for each provider, and how to verify the image signature.
+- `SECURITY.md` no longer describes the CORS default that was removed.
+
 ---
 
 ## [1.7.0] — 2026-10-01
