@@ -22,8 +22,8 @@ What Vauxtra stores, who the defences are aimed at and where they stop is writte
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). In short:
 
 - **Credentials.** Provider passwords and tokens are encrypted at rest with Fernet, under a
-  key derived from `SECRET_KEY`. Notification URLs are stored in clear and masked in every
-  response. Backups take the `admin` scope: a plain one contains no secrets, an encrypted one
+  key derived from `SECRET_KEY`. Notification URLs, which carry their own tokens, are encrypted the same way and masked in
+  every response. Backups take the `admin` scope: a plain one contains no secrets, an encrypted one
   holds them under a passphrase you choose.
 - **Admin password.** PBKDF2-HMAC-SHA256 with 600,000 iterations, 12 characters minimum.
   Changing it ends every open session.
