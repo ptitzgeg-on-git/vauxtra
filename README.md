@@ -352,6 +352,14 @@ the [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) of t
 add it to `SUPPORTED_LANGUAGES` in [`frontend/src/i18n/index.tsx`](frontend/src/i18n/index.tsx)
 and open a pull request. No backend change is needed.
 
+## How it's built
+
+Vauxtra is written by one person, with heavy help from AI coding assistants (Claude Code).
+Every change goes through the same gates whoever wrote it: about 2,000 backend tests, an
+integration lab against real provider containers, lint, dependency and image scans, and a
+reviewed pull request before it reaches `main`. If something looks wrong, open an issue, or
+a [private advisory](SECURITY.md) for anything security-related.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

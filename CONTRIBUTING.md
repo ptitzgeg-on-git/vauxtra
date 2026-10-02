@@ -311,6 +311,6 @@ def my_tool(param: str) -> dict:
 - [ ] No new `any` types introduced
 - [ ] All UI text in English — no hardcoded strings in other languages
 - [ ] No secrets committed (`.env` is gitignored)
-- [ ] Public wording stays product-focused (no authoring-process or tool-attribution text)
+- [ ] Public wording stays product-focused (no authoring-process or tool-attribution text outside the README's "How it's built" section)
 - [ ] Commit messages follow Conventional Commits
 - [ ] Bug reports include reproduction steps; feature proposals start as an issue
