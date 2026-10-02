@@ -13,6 +13,7 @@ from app.auth import (
     is_authenticated,
     mark_password_configured,
     password_is_env_managed,
+    password_was_configured_once,
     require_auth,
     require_auth_or_setup,
 )
@@ -128,6 +129,14 @@ def setup_password(request: Request, body: SetPasswordBody):
     """Set the admin password during initial setup (only when no password exists)."""
     if has_password_configured():
         raise HTTPException(400, "Password is already configured")
+    # The hash vanished from an instance that had one. Every other route refuses in that
+    # state; this anonymous one would hand the instance to whoever called it first.
+    if password_was_configured_once():
+        raise HTTPException(
+            409,
+            "This instance had an admin password and its hash is no longer in the database. "
+            "Restore the database, or set APP_PASSWORD to a 'pbkdf2:'-prefixed hash.",
+        )
 
     password = body.password.strip()
     ok, why = validate_password_strength(password)
