@@ -2213,10 +2213,12 @@ def check_all(request: Request):
                 " last_checked=datetime('now') WHERE id=?",
                 (result.status, result.stored_detail, result.latency_ms, svc["id"]),
             )
-            # Same row the scheduler writes, so a manual run feeds the 24 h history too.
+            # Same row the scheduler writes, so a manual run feeds the 24 h history too. A
+            # service deleted while the probes ran gets no event.
             conn.execute(
-                "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-                (svc["id"], result.status),
+                "INSERT INTO uptime_events (service_id, status) "
+                "SELECT ?, ? WHERE EXISTS (SELECT 1 FROM services WHERE id=?)",
+                (svc["id"], result.status, svc["id"]),
             )
             results.append({
                 "id": svc["id"],
