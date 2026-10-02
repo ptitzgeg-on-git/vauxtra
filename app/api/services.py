@@ -837,7 +837,8 @@ def suggest_public_target(
     require_auth(request)
     conn = get_db()
     try:
-        return suggest_public_targets(conn, proxy_provider_id=proxy_provider_id)
+        # Any `read` key reaches this, and an uncached call costs up to three outbound lookups.
+        return suggest_public_targets(conn, proxy_provider_id=proxy_provider_id, wan_ip_max_age=60.0)
     finally:
         conn.close()
 

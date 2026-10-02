@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import threading
+import time
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -124,11 +126,35 @@ def _is_publicly_routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
     )
 
 
+# Answers kept for callers that pass `max_age`. The lock also makes concurrent callers wait
+# for one lookup instead of each sending their own.
+_detected: dict[tuple[tuple[str, ...], float], tuple[float, str]] = {}
+_detect_lock = threading.Lock()
+
+
 def detect_server_public_ip(
     sources: list[str] | None = None,
     timeout_seconds: float = 2.0,
+    max_age: float = 0.0,
 ) -> str:
-    """Return the first detected WAN IP from configured resolvers, else empty string."""
+    """Return the first detected WAN IP from configured resolvers, else empty string.
+
+    With `max_age`, an answer younger than that many seconds is reused rather than fetched
+    again: a route any `read` key can call should not send outbound requests on every hit.
+    """
+    if max_age <= 0:
+        return _detect_uncached(sources, timeout_seconds)
+    key = (tuple(sources or DEFAULT_PUBLIC_IP_SOURCES), float(timeout_seconds))
+    with _detect_lock:
+        hit = _detected.get(key)
+        if hit is not None and time.monotonic() - hit[0] < max_age:
+            return hit[1]
+        ip = _detect_uncached(sources, timeout_seconds)
+        _detected[key] = (time.monotonic(), ip)
+        return ip
+
+
+def _detect_uncached(sources: list[str] | None, timeout_seconds: float) -> str:
     for source in (sources or DEFAULT_PUBLIC_IP_SOURCES):
         try:
             req = Request(source, headers={"User-Agent": "Vauxtra/1.0"})
@@ -160,6 +186,7 @@ def suggest_public_targets(
     proxy_provider_id: int | None = None,
     current_value: str = "",
     server_public_ip: str | None = None,
+    wan_ip_max_age: float = 0.0,
 ) -> dict:
     """Return candidate targets and the recommended value."""
     policy = load_public_target_policy(conn)
@@ -189,6 +216,7 @@ def suggest_public_targets(
             detect_server_public_ip(
                 sources=policy["sources"],
                 timeout_seconds=policy["timeout_seconds"],
+                max_age=wan_ip_max_age,
             )
         )
     if wan_ip:
