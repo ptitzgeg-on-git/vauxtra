@@ -551,19 +551,20 @@ def _update_schema_version(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_encrypt_passwords(conn: sqlite3.Connection) -> None:
-    """Encrypt any plaintext provider passwords still in the database (one-time migration)."""
-    from app.config import encrypt_secret, fernet
+    """Encrypt any plaintext provider passwords still in the database.
+
+    This runs at every start. It used to treat any value this key could not decrypt as
+    plaintext, so one start with the wrong SECRET_KEY wrapped every password a second time,
+    and putting the right key back did not undo it. A Fernet token is now left alone
+    whichever key wrote it, as `_encrypt_webhook_urls` already does.
+    """
+    from app.config import encrypt_secret, is_encrypted
     rows = conn.execute("SELECT id, password FROM providers WHERE password != ''").fetchall()
     for row in rows:
-        pwd = row["password"]
-        try:
-            fernet.decrypt(pwd.encode())
-            # Already encrypted, nothing to do
-        except Exception:
-            # Plaintext → encrypt
+        if not is_encrypted(row["password"]):
             conn.execute(
                 "UPDATE providers SET password=? WHERE id=?",
-                (encrypt_secret(pwd), row["id"]),
+                (encrypt_secret(row["password"]), row["id"]),
             )
 
 
