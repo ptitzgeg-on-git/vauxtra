@@ -15,7 +15,7 @@ from app.public_target import (
     load_public_target_policy,
     resolve_public_target,
 )
-from app.security import mask_secret_url
+from app.security import mask_secret_url, redact_query_secrets
 from app.text import plural, time_to_expiry
 
 _scheduler = BackgroundScheduler(daemon=True)
@@ -189,25 +189,35 @@ def run_auto_reconcile() -> None:
     from app.api.sync import _compute_service_drift, _execute_push  # noqa: PLC0415
 
     conn = get_db()
-    services = conn.execute("SELECT * FROM services WHERE enabled=1").fetchall()
+    service_ids = [int(r["id"]) for r in conn.execute("SELECT id FROM services WHERE enabled=1")]
     conn.close()
 
     corrected: list[str] = []
     errors: list[str] = []
 
-    for svc in services:
-        sid  = int(svc["id"])
+    for sid in service_ids:
+        # Read fresh, and again before pushing: the drift check asks every provider, and the
+        # operator may disable or delete the service meanwhile. A stale row would publish it
+        # again.
+        svc = _enabled_service(sid)
+        if svc is None:
+            continue
         fqdn = f"{svc['subdomain']}.{svc['domain']}"
         try:
-            conn  = get_db()
-            # Only `ok` is read here, and a record on another integration never moves it:
-            # asking each of them about every service, every round, would buy nothing.
-            drift = _compute_service_drift(conn, svc, sid, look_elsewhere=False)
-            conn.close()
+            conn = get_db()
+            try:
+                # Only `ok` is read here, and a record on another integration never moves it:
+                # asking each of them about every service, every round, would buy nothing.
+                drift = _compute_service_drift(conn, svc, sid, look_elsewhere=False)
+            finally:
+                conn.close()
 
             if drift.get("ok"):
                 continue  # no drift, skip
 
+            svc = _enabled_service(sid)
+            if svc is None:
+                continue
             result = _execute_push(svc, sid)
             if result.get("ok"):
                 corrected.append(fqdn)
@@ -217,11 +227,21 @@ def run_auto_reconcile() -> None:
                 errors.append(f"{fqdn}: {err_detail}")
                 add_log("error", f"[AutoReconcile] Push failed for {fqdn}: {err_detail}")
         except Exception as e:
-            errors.append(f"{fqdn}: {e}")
-            add_log("error", f"[AutoReconcile] {fqdn}: {e}")
+            # This text goes to an outside webhook, so a token in a quoted URL is masked.
+            message = redact_query_secrets(str(e))
+            errors.append(f"{fqdn}: {message}")
+            add_log("error", f"[AutoReconcile] {fqdn}: {message}")
 
     if corrected:
         _fire_reconcile_webhook(corrected, errors)
+
+
+def _enabled_service(sid: int):
+    conn = get_db()
+    try:
+        return conn.execute("SELECT * FROM services WHERE id=? AND enabled=1", (sid,)).fetchone()
+    finally:
+        conn.close()
 
 
 # ── TCP health check ──────────────────────────────────────────────────────
