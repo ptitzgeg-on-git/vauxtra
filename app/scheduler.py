@@ -35,12 +35,9 @@ _WEBHOOK_RETRY_BACKOFF = [60, 300, 1800, 7200, 86400]
 
 
 def _utc_stamp(delay_seconds: int = 0) -> str:
-    """UTC timestamp in SQLite's own format.
+    """UTC timestamp in SQLite's `datetime('now')` format (space separator).
 
-    `datetime('now')` renders "YYYY-MM-DD HH:MM:SS" with a space. The retry queue is
-    polled with `next_retry_at <= datetime('now')`, a plain string comparison: an ISO
-    "T" separator sorts above the space, so a due retry only ever became due the day
-    after.
+    The retry queue compares these as strings, so an ISO "T" would sort wrong.
     """
     import datetime as _dt
     stamp = _dt.datetime.now(_dt.UTC) + _dt.timedelta(seconds=delay_seconds)
@@ -71,10 +68,8 @@ def _decode_tuple_key(raw_key) -> tuple[int, int] | None:
     return None
 
 
-# Anything below this is not a wall-clock timestamp. Vauxtra <= 1.1.0 persisted
-# `time.monotonic()` values, whose origin is arbitrary per process: reloaded after a
-# restart they made every elapsed time nonsensical, and the DOWN alerts never fired
-# again. Such leftovers are dropped rather than trusted.
+# Older versions stored time.monotonic() values, meaningless after a restart; anything
+# below this floor is not a wall-clock timestamp and is dropped.
 _EPOCH_SANITY_FLOOR = 1_000_000_000.0  # 2001-09-09
 
 
@@ -168,8 +163,6 @@ def _save_scheduler_state() -> None:
         add_log("error", f"Failed to save scheduler state: {traceback.format_exc()}")
 
 
-# ── Auto-reconcile job ────────────────────────────────────────────────────────
-
 def run_auto_reconcile() -> None:
     """Detect drift on all enabled services and push corrections automatically.
 
@@ -196,9 +189,7 @@ def run_auto_reconcile() -> None:
     errors: list[str] = []
 
     for sid in service_ids:
-        # Read fresh, and again before pushing: the drift check asks every provider, and the
-        # operator may disable or delete the service meanwhile. A stale row would publish it
-        # again.
+        # Re-read before pushing: the service may be disabled or deleted during the drift check.
         svc = _enabled_service(sid)
         if svc is None:
             continue
@@ -244,8 +235,6 @@ def _enabled_service(sid: int):
         conn.close()
 
 
-# ── TCP health check ──────────────────────────────────────────────────────
-
 def _tcp_ok(ip: str, port: int) -> str:
     try:
         with socket.create_connection((ip, port), timeout=3):
@@ -254,14 +243,8 @@ def _tcp_ok(ip: str, port: int) -> str:
         return "error"
 
 
-# ── Job principal ─────────────────────────────────────────────────────────
-
 def _sync_npm_once() -> None:
-    """Pull NPM's enable/disable state onto our services, once per cycle.
-
-    Its own connection, because it is its own transaction: it talks to NPM between two
-    services and nothing else in the cycle needs to see, or wait for, what it writes.
-    """
+    """Copy NPM's enable/disable state onto services, once per cycle, on its own connection."""
     try:
         from app.api.services import _sync_npm_statuses  # noqa: PLC0415
         conn = get_db()
@@ -275,22 +258,10 @@ def _sync_npm_once() -> None:
 
 
 def _purge_history(conn) -> None:
-    """Drop monitoring history, logs and settled webhook rows past their retention.
+    """Apply retention to uptime history, logs and settled webhook deliveries.
 
-    Three sweeps, each with its own handler, because they fail independently and because
-    this function is the only thing that bounds the three tables: a sweep that stops
-    working without saying so is a table that grows until the disk notices. One of them
-    used to carry `except Exception: pass` and the other two carried nothing at all,
-    which is one defect read from either end -- the first could never report a failure,
-    and the other two reported it by taking the rest of the cycle down with them.
-
-    The handler belongs here rather than around the call, because of what follows the
-    call. `run_health_checks` dispatches this cycle's alerts after the purge, and
-    `_provider_last_status` has already advanced to the status those alerts describe, so
-    an exception leaving this function does not delay an integration alert, it drops it:
-    the next cycle compares the new status against itself and finds no transition to
-    report. APScheduler logs what reaches it and keeps the job, so the cycle survives;
-    what does not survive is the round of notifications it was holding.
+    Each sweep has its own handler and logs its failure; an exception escaping here would
+    drop the alerts this cycle is about to send.
     """
     for table, sql, setting, default_days, bounds in (
         (
@@ -326,31 +297,19 @@ def _purge_history(conn) -> None:
             import traceback
             detail = traceback.format_exc()
             try:
-                # On this connection, for the reason spelt out over `_run_cert_expiry_alerts`:
-                # a second one opened here would wait on our own uncommitted write and raise
-                # "database is locked" from inside the handler that came to record a failure.
+                # Same connection: a second one would wait on our uncommitted write.
                 add_log("error", f"[Purge] {table} sweep failed: {detail}", conn)
             except Exception:
-                # The end of the line, and the one place in this function where silence is
-                # the answer. Recording the failure needs the same database that just refused
-                # the sweep, so the states that break a purge hardest -- a locked base, a full
-                # disk -- are the ones that also break the record of it. Raising here would
-                # hand the cycle the exact fate the handler above exists to prevent.
+                # Logging needs the database that just failed; never raise from here.
                 pass
 
 
 def run_health_checks() -> None:
     """Check all services, record uptime events, and dispatch alerts.
 
-    Every phase of this cycle talks to the network, and SQLite admits one writer at a
-    time. A write transaction left open across an HTTP call therefore does not merely
-    slow the panel down, it stops it: every other writer waits out `busy_timeout`
-    (15 s) and then fails with "database is locked" -- which is why `_sync_npm_statuses`
-    had grown a branch that swallows exactly that message.
-
-    So the cycle never holds a transaction across a network call. The probes below run
-    with no connection open at all, their results are written in one short burst, and
-    each phase after that commits per item rather than per phase.
+    Never holds a write transaction across a network call (SQLite has one writer): probes
+    run with no connection open, results are written in one burst, and later phases
+    commit per item.
     """
     with _lock:
         _sync_npm_once()
@@ -363,13 +322,8 @@ def run_health_checks() -> None:
         finally:
             conn.close()
 
-        # Probe with nothing open. A TCP probe against a host that is simply gone costs
-        # the full 3 s timeout, and a panel can hold dozens of services: run between two
-        # UPDATEs on one transaction, that alone was minutes of held write lock a cycle.
-        #
-        # Tunnel services are health-checked via the Cloudflare API, not TCP. Running TCP
-        # against cfargotunnel.com or similar targets always fails. A service without a
-        # port is a name in DNS and nothing more: there is no connection to open.
+        # Probe with no connection open. Tunnel services are checked through the Cloudflare
+        # API, and DNS-only services have no port, so neither gets a TCP probe.
         probes = [
             (svc, _tcp_ok(svc["target_ip"], svc["target_port"]))
             for svc in services
@@ -406,9 +360,7 @@ def run_health_checks() -> None:
                         f"[Auto] {fqdn} : {old_status} → {new_status}",
                         conn,
                     )
-            # One commit for the whole round of probes: these are writes only, with no
-            # network between them, so the lock is held for as long as they take and no
-            # longer. Every phase below commits per item instead, for the same reason.
+            # One commit for all probe results: local writes only, no network in between.
             conn.commit()
 
             _run_dns_auto_updates(conn)
@@ -488,9 +440,7 @@ def _run_provider_health_checks(conn) -> list[dict]:
                 conn,
             )
 
-        # Per provider, not per loop: the next iteration reaches across the network to
-        # somebody else's API, and a transaction still open while it does is a writer
-        # every other caller has to wait out.
+        # Commit per provider, before the next network call.
         conn.commit()
 
     for pid in list(_provider_last_status.keys()):
@@ -506,10 +456,10 @@ def _run_tunnel_health_checks(conn) -> list[dict]:
 
 
 def _run_dns_auto_updates(conn) -> bool:
-    """Refresh DNS targets for services configured with auto public target updates.
-    
-    Implements a circuit-breaker: after 3 consecutive failures per service,
-    auto-update is disabled until manually re-enabled via the UI.
+    """Refresh DNS targets of services with automatic public target updates.
+
+    Circuit breaker: after 3 consecutive failures for a service, its auto update is
+    disabled until re-enabled in the UI. Returns whether scheduler state changed.
     """
     global _dns_update_failures
 
@@ -592,14 +542,9 @@ def _run_dns_auto_updates(conn) -> bool:
         # provider's API, and the write above must not still be uncommitted while it does.
         conn.commit()
 
-    # No _save_scheduler_state() here, the flag is returned instead. Scheduler state is
-    # persisted once per cycle, by run_health_checks(), after the connection is closed --
-    # one file written once beats one written per service, and a helper that never guesses
-    # whether it owns the cycle cannot get the answer wrong.
+    # The caller persists scheduler state once per cycle.
     return state_changed
 
-
-# ── Certificate expiry alerts ────────────────────────────────────────────
 
 def _run_cert_expiry_alerts(conn) -> None:
     """Scan certificate-capable proxy providers for certificates close to expiry and log alerts.
@@ -643,10 +588,7 @@ def _run_cert_expiry_alerts(conn) -> None:
                     continue
 
                 days_left = (expires - now_utc).days
-                # Measured by its own subtraction rather than by negating `days_left`:
-                # `timedelta.days` floors, so the countdown above never overstates the
-                # time left, and that same floor applied to a lapsed certificate would
-                # overstate how long it has been down. See `time_to_expiry`.
+                # Own subtraction: timedelta.days floors, which would overstate time expired.
                 days_overdue = (now_utc - expires).days if days_left < 0 else 0
                 key = (provider_id, cert_id)
                 seen_keys.add(key)
@@ -683,35 +625,20 @@ def _run_cert_expiry_alerts(conn) -> None:
 
     except Exception:
         import traceback
-        # On this connection, not on a new one. The alerts above are written through
-        # `conn` and committed once per provider, so when this handler runs there may
-        # be an uncommitted write of ours holding the database's write lock. Opening a
-        # second connection to record the failure then waits on the first and raises
-        # "database is locked" from inside the handler, which loses the traceback it
-        # came here to write and takes the rest of the maintenance round with it.
+        # Same connection: a new one would wait on our own uncommitted write.
         add_log("error", f"[CertExpiry] Check failed: {traceback.format_exc()}", conn)
 
-
-# ── Webhook retry ─────────────────────────────────────────────────────────
 
 def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=None) -> bool:
     """Send a notification via Apprise, queueing it for retry when the send fails.
 
-    Returns True when the notification was delivered **or** safely queued in
-    `webhook_delivery_log`, and False only when the URL itself is unusable, in which
-    case nothing was sent and nothing will ever be retried. Callers that hold a
-    "already alerted" flag must clear it on False, or the alert stays silent forever.
-
-    `conn` is optional: the callers that notify run outside the health-check
-    transaction and hold no connection.
+    True when delivered or queued; False only when the URL is unusable (nothing sent or
+    queued), in which case callers holding an "already alerted" flag must clear it.
+    `conn` is optional.
     """
     import apprise as _apprise
     a = _apprise.Apprise()
-    # The URL carries the token. `add_log` writes straight into the `logs` table, which
-    # `GET /api/logs` and its SSE stream read back and the Logs tab shows in full -- masking
-    # here is what keeps a transient Discord outage from persisting the secret in normal
-    # operation. Both readers ask for `admin`, which narrows who sees a leaked token and
-    # does nothing about its being written.
+    # The URL carries the token, and log rows are readable through the API.
     safe_url = mask_secret_url(url)
     if not a.add(url):
         add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {safe_url}")
@@ -752,8 +679,8 @@ def _run_webhook_retry(conn) -> None:
 
     import apprise as _apprise
 
-    # +1 because attempt 1 is the original send, already counted when the row was
-    # queued: without it the last backoff tier (24 h) was never reachable.
+    # +1 because attempt 1 is the original send, counted when the row was queued;
+    # without it the last backoff tier (24 h) is unreachable.
     MAX_ATTEMPTS = len(_WEBHOOK_RETRY_BACKOFF) + 1
     try:
         rows = conn.execute(
@@ -823,13 +750,9 @@ def _run_webhook_retry(conn) -> None:
                     (new_attempt, next_retry, str(exc), dlid),
                 )
 
-        # Per row. Up to twenty of these run in a cycle, each one an HTTP POST to somebody
-        # else's endpoint; one transaction around the lot held the write lock for the sum
-        # of them, and lost every outcome in it if the process went down in the middle.
+        # Commit per row: each is an HTTP POST, and the lock must not span them.
         conn.commit()
 
-
-# ── Webhook ───────────────────────────────────────────────────────────────
 
 def _service_matches_scope(row, extra_target_map: dict[int, set[int]]) -> bool:
     scope_type = (row["scope_type"] or "all").lower()
@@ -1061,9 +984,7 @@ def _fire_service_webhooks() -> None:
                 webhook_id=webhook_id_by_url.get(url),
             )
             if not handled:
-                # `_alert_down_sent` is a one-shot latch: leaving a key in it after a
-                # send that never happened and is not queued silences that service for
-                # good.
+                # One-shot latch: clear it, or this service is silenced for good.
                 for key in keys_by_url.get(url, ()):
                     _alert_down_sent.discard(key)
 
@@ -1149,8 +1070,6 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
         import traceback
         add_log("error", f"Reconcile webhook failed: {traceback.format_exc()}")
 
-
-# ── Scheduler control ─────────────────────────────────────────────────────
 
 def configure(interval_minutes: int) -> None:
     """Reconfigure the health-check interval (0 = disabled)."""
