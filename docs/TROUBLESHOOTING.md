@@ -162,7 +162,7 @@ Checks:
 
 Actions:
 
-- Symptom: provider tests fail and the log says `Cannot decrypt a stored secret: SECRET_KEY does not match`. Cause: `vauxtra.db` was restored without the `.secret_key` it was written with, or `SECRET_KEY` changed. Action: put the original `data/.secret_key` (or the original `SECRET_KEY` value) back and restart. If it is lost, re-enter the provider passwords.
+- Symptom: provider tests fail and the log says `Cannot decrypt a stored secret: SECRET_KEY does not match`. Cause: `vauxtra.db` was restored without the `.secret_key` it was written with, or `SECRET_KEY` changed. Action: stop the container and restore the `data/` snapshot together with its key (see below), or re-enter the provider passwords. Putting the right key back on the current database is not enough: each start with the wrong key re-encrypts the passwords it cannot read.
 - A plain backup (`GET /api/backup`) carries no credentials: re-enter provider passwords and webhook URLs after restoring it. A secure backup restores them, re-encrypted with the current key.
 - Keep `vauxtra.db` and `.secret_key` backed up together. See [DEPLOYMENT: Restoring a data/ snapshot](DEPLOYMENT.md#restoring-a-data-snapshot).
 
