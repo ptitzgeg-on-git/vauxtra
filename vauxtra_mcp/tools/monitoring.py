@@ -19,19 +19,11 @@ def get_health() -> dict[str, Any]:
 
 @mcp.tool()
 def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dict[str, Any]:
-    """
-    Retrieve recent operational logs. Needs an `admin` key, not a `write` or `read` one.
+    """Retrieve recent activity logs. Needs an `admin` key (403 for `write` or `read`).
 
-    This is the activity log, and it is the same file `clear_logs` empties: a refused
-    sign-in, a successful one, a password change, a secure backup taken, and the name and
-    the scopes of every API key created or revoked. It sits with backup and restore rather
-    than with the tools that read the estate, so a key minted for a status page is refused
-    with 403 and the message names the scope.
-
-    level: filter by 'info', 'ok', 'warning' or 'error'. 'warn' is accepted and means
-    'warning' -- the two spellings were both written for a while and the second is the one
-    stored, so rows come back reading 'warning' whichever you asked for. Filtering by
-    'warning' finds the old 'warn' rows too, so there is no spelling that loses entries.
+    The log records sign-ins, password changes, backups and API key creation/revocation.
+    level: 'info', 'ok', 'warning' or 'error'; 'warn' is accepted as 'warning' and old
+    'warn' rows are included either way.
     """
     params: dict[str, Any] = {"page": page, "per_page": per_page}
     if level:
@@ -51,19 +43,12 @@ def get_certificates() -> list[dict[str, Any]]:
 
 @mcp.tool()
 def get_certificate_expiry() -> dict[str, Any]:
-    """
-    List all SSL certificates with their expiry dates and remaining days.
+    """List all SSL certificates with their expiry dates and remaining days.
 
-    Returns {"certificates": [...], "total": int, "expiring_soon_count": int,
-    "warn_threshold_days": int, "unreachable": [...]}. `expiring_soon_count` is
-    everything that needs renewing: still valid but inside `warn_threshold_days`
-    *plus* already past expiry. Those two are not equally urgent -- a lapsed
-    certificate is serving an error to every client reaching that host right now --
-    and the figure alone cannot say which it is made of, so read each row's own
-    `expired` flag before reporting it as a deadline. `unreachable` names the enabled
-    certificate providers this call could not read: the counts above cover only the
-    rest, so a non-empty `unreachable` means the answer is partial, not that nothing
-    is expiring.
+    Returns {"certificates", "total", "expiring_soon_count", "warn_threshold_days",
+    "unreachable"}. `expiring_soon_count` includes already expired certificates; check each
+    row's `expired` flag before reporting a deadline. A non-empty `unreachable` lists
+    certificate providers that could not be read, so the answer is partial.
     """
     r = client.get("/certificates/expiry")
     client.check(r)

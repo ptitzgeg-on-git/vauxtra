@@ -24,15 +24,10 @@ def get_auth_status() -> dict[str, Any]:
 def auth_login(password: str) -> dict[str, Any]:
     """Create an authenticated session using the admin password.
 
-    The session cookie is kept for the rest of the bridge's life, so the calls that follow
-    are authenticated by it. Until now it was dropped with the client that received it: this
-    answered `{"ok": true}` and authenticated nothing.
-
-    Prefer `VAUXTRA_API_KEY`: a key carries the scopes it was minted with, a password login
-    is always `admin`, and this route is rate-limited to a handful of attempts a minute.
-
-    Refused when `VAUXTRA_API_KEY` is set: the server reads a session before a key, so the
-    login would turn a bridge limited to a `read` key into an admin one for seven days.
+    The session cookie is kept for the bridge's lifetime. Prefer VAUXTRA_API_KEY: a key
+    has its own scopes, while a password login is always admin and rate-limited.
+    Refused when VAUXTRA_API_KEY is set, because the server reads a session before a key
+    and the login would silently raise a read-only bridge to admin.
     """
     if client.has_api_key():
         raise ValueError(
@@ -89,19 +84,11 @@ def get_settings() -> dict[str, Any]:
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Save one or more global settings. Send only the keys you mean to change.
 
-    The answer carries `saved` and `ignored`: read-only keys that `get_settings` also
-    returns (`schema_version`, `setup_completed`) land in `ignored`. A value the server
-    refuses fails the whole call with 400 and writes nothing -- notably `webhook_url` and
-    `webhook_enabled`, which are retired: notifications are configured with
-    `create_webhook`, which is what alert delivery reads.
-
-    `not_applied` is the third list and the one that changes what you report. A key lands
-    there when the value was written to the database but could not be handed to the running
-    scheduler: it is stored, the settings page reads it back, and the health checks go on at
-    the old cadence until Vauxtra restarts. `ok` is true and the key is in `saved`, because
-    saving is what happened -- so a caller reading only those two reports a new check
-    interval that is not running. If `not_applied` is non-empty, say the setting is saved
-    but needs a restart to take effect.
+    The answer lists `saved` and `ignored` (read-only keys such as schema_version and
+    setup_completed). A refused value fails the whole call with 400 and writes nothing;
+    webhook_url and webhook_enabled are retired, use `create_webhook`.
+    `not_applied` lists keys stored but not applied to the running scheduler: report
+    those as saved but needing a restart, even though `ok` is true.
     """
     r = client.post("/settings", json=settings)
     client.check(r)
@@ -202,17 +189,11 @@ def update_tag(tag_id: int, name: str, color: Literal[
 
 @mcp.tool()
 def delete_tag(tag_id: int) -> dict[str, Any]:
-    """Delete a tag by id. Nothing refuses it, and two kinds of row change with it.
+    """Delete a tag by id. Never refused.
 
-    Every service carrying the tag is unlinked on the spot, because `service_tags` declares
-    `ON DELETE CASCADE`: those services keep their hostname and stay published, and lose only
-    the label they were grouped and filtered by. Every service template naming the tag keeps
-    the dead id in its `tag_ids` until the next read and drops it then, so a service created
-    from that template afterwards starts without the tag.
-
-    Call `list_services` and `list_templates` first if you need to know what that is before
-    doing it: the tag id is gone from the database once this returns, and the journal line
-    written here is the only place the two counts are kept.
+    Services carrying it are unlinked (they stay published); templates naming it drop it
+    on their next read. Call `list_services` and `list_templates` first if you need to know
+    what is affected: afterwards only the log records it.
     """
     r = client.delete(f"/tags/{tag_id}")
     client.check(r)
@@ -358,16 +339,9 @@ def create_api_key(
 ) -> dict[str, Any]:
     """Create an API key and return the secret once.
 
-    `scopes` repeats the default and the minimum of one that `app.api.api_keys.ApiKeyCreate`
-    carries, because nothing derives this signature from that model: the bridge declares its
-    tools by hand, and a normal install publishes no schema to derive them from (`DEBUG` is
-    false by default, so `openapi_url` is None). Without them a model could send `scopes: []`
-    -- the list that used to be stored as an empty column and read back as one scope named
-    nothing, which authorized every unscoped route and no scoped one.
-
-    The default is a tuple rather than a list because a list default is ruff B006 here;
-    measured, the two build the same `{"default": ["read"], "minItems": 1}` in the tool
-    schema. `tests/test_api_key_scope_residues.py` fails if either end drifts.
+    `scopes` needs at least one of read, write, admin (default read), mirroring
+    ApiKeyCreate; tests/test_api_key_scope_residues.py keeps the two in sync. A tuple
+    default because ruff B006 forbids a list; the tool schema is the same.
     """
     r = client.post("/settings/api-keys", json={"name": name, "scopes": list(scopes)})
     client.check(r)
@@ -384,16 +358,10 @@ def revoke_api_key(key_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def clear_logs() -> dict[str, Any]:
-    """Delete every entry in the activity log. Needs an `admin` key, not a `write` one.
+    """Delete every entry in the activity log. Needs an `admin` key (403 for `write`).
 
-    The log is where a failed sign-in, an API key created and the scopes it carries, a key
-    revoked and a password change are written down, so emptying it sits with backup,
-    restore and factory reset rather than with the tools that change services. A `write`
-    key is refused with 403 and the message names the scope.
-
-    The clear is itself logged, so the answer is an empty log plus one line saying it was
-    emptied. Report that line rather than an empty log: it is the only record that the
-    entries before it existed.
+    The clear is itself logged, so the log then holds one line saying it was emptied.
+    Report that line: it is the only record that earlier entries existed.
     """
     r = client.post("/logs/clear")
     client.check(r)
@@ -405,9 +373,7 @@ def test_global_webhook() -> dict[str, Any]:
     """Send a real test notification to every enabled webhook.
 
     Answers `{"ok": bool, "results": [{"id", "name", "ok", "error"}]}` -- `ok` is true only
-    when every target accepted. It used to test `settings.webhook_url`, a key nothing
-    delivered through, so a success there proved nothing about alerting. 400 when no enabled
-    webhook exists.
+    when every target accepted. 400 when no enabled webhook exists.
     """
     r = client.post("/settings/test-webhook")
     client.check(r)
@@ -465,19 +431,11 @@ def reset_all_data() -> dict[str, Any]:
 
 @mcp.tool()
 def stream_logs_snapshot(max_events: int = 10, timeout_seconds: float = 5.0) -> dict[str, Any]:
-    """Read a bounded snapshot from the SSE logs stream endpoint. Needs an `admin` key.
+    """Read a bounded snapshot of the SSE log stream. Needs an `admin` key (403 otherwise).
 
-    The stream is the live form of what `get_logs` pages through and `clear_logs` empties,
-    and carries the same scope for the same reason. A `write` or `read` key is refused with
-    403 before a single event arrives.
-
-    This does not keep a persistent stream open; it reads up to `max_events` and returns.
-
-    `timeout_seconds` is how long to wait, not a promise that something will arrive. A quiet
-    instance writes no log lines, so the read times out -- which used to surface as a raw
-    `httpx.ReadTimeout` that threw away every event already collected. Silence is now an
-    answer: the events read so far come back with `timed_out: true`, and an empty list means
-    the instance was quiet, not that the call failed.
+    Reads up to `max_events` and returns; no stream is kept open. `timeout_seconds` is how
+    long to wait: on a quiet instance the events read so far come back with
+    `timed_out: true`, and an empty list means quiet, not failure.
     """
     max_events = max(1, min(max_events, 200))
     timeout_seconds = max(1.0, min(timeout_seconds, 30.0))

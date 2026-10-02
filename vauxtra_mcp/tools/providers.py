@@ -46,9 +46,7 @@ def create_provider(
 
     Args:
         name: Display name for this provider.
-        type: One of the ten types the API knows. The list used to be repeated in this
-            docstring and had lost `powerdns` and `desec`, which the API has accepted for
-            two releases; it is a `Literal` now, so the schema and the route cannot drift.
+        type: One of the provider types the API accepts (a Literal in the schema).
         url: Connection URL (e.g. http://npm:81). May be left empty for `cloudflare`,
             `cloudflare_tunnel` and `desec`, whose API endpoint the route fills in; every
             other type is refused with 422 without one.
@@ -115,24 +113,12 @@ def delete_provider(
 ) -> dict[str, Any]:
     """Delete a provider by ID.
 
-    Refuses with 409 while services still reference it, and the error carries the list
-    (`detail.services`, each with `id`, `fqdn` and the `roles` it fills). Call again with
-    `force=True` to delete anyway.
-
-    `withdraw` decides what happens to the records the provider is still serving, and it is
-    the whole question. Without it those services keep their public hostname and lose only
-    the link, which means the proxy host and the DNS record stay live on a provider Vauxtra
-    no longer knows about -- reachable, pointing wherever they pointed, and no longer
-    managed by anything. With `withdraw=True` the route takes this provider's own records
-    down first, touching only its own: the other targets of a multi-sync service are not
-    this deletion's business.
-
-    The answer says what became of each part. `unlinked_services`, `unlinked_templates` and
-    `orphaned_webhooks` are the ids left holding a reference to a provider that is gone;
-    `withdrawn` is whether the records were actually taken down; `errors` names each record
-    that could not be, one sentence per record, and those are still live. `ok` is false when
-    `errors` is non-empty -- the provider row is deleted either way, so a false `ok` here
-    means "deleted, but something is still published", not "nothing happened".
+    Refused with 409 while anything references it (`detail.services` lists id, fqdn and
+    roles); call again with `force=True` to delete anyway. `withdraw=True` first removes
+    this provider's own records; without it they stay live, unmanaged.
+    The answer lists `unlinked_services`, `unlinked_templates`, `orphaned_webhooks`,
+    `withdrawn`, and `errors` (records that could not be removed and are still live).
+    `ok` false means deleted, but something is still published.
     """
     params: dict[str, str] = {}
     if force:
