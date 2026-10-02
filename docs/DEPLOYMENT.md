@@ -241,10 +241,10 @@ docker compose exec vauxtra python -c \
 2. Move the current `data/` aside, then put the snapshot in its place. Remove any
    `vauxtra.db-wal` and `vauxtra.db-shm` that did not come from the same snapshot.
 3. Check the key matches **before starting**: the snapshot's `.secret_key`, or the
-   `SECRET_KEY` that was set when the snapshot was taken. At each start Vauxtra encrypts any
-   provider password it cannot decrypt, taking it for plaintext. With the wrong key, that
-   wraps the stored passwords a second time, and putting the right key back afterwards does
-   not undo it: only the snapshot, or re-entering the passwords, does.
+   `SECRET_KEY` that was set when the snapshot was taken. With the wrong key every test
+   fails with `Cannot decrypt a stored secret`; stop, put the right key back, and start again.
+   Versions up to 1.7.0 also re-encrypted the passwords on such a start, which the right key
+   could not undo: on those, only the snapshot or re-entering the passwords recovers them.
 4. Start the container and run **Test** on one integration.
 
 Restore a snapshot only into the same or a newer version of Vauxtra (see

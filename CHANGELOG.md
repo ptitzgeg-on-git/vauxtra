@@ -9,6 +9,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **One start with the wrong `SECRET_KEY` made every provider password unreadable for good.**
+  The start-up migration took any password it could not decrypt for plaintext and encrypted
+  it again, so restoring the right key afterwards no longer helped. A value that is already
+  a Fernet token is now left alone, whichever key wrote it.
 - **A `write` key could send a provider's stored secret to another host.** Changing only the
   URL of a provider kept its password or token, and the next test or health check sent it to
   the new address. Moving a provider to another host, port or scheme now needs the secret
