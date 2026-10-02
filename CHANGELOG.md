@@ -35,6 +35,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   quote the stored URL and the token inside it.
 - `data/.secret_key` is created with mode 600 instead of being narrowed after the write.
 - In the image, only `/app/data` belongs to the user the server runs as, not the code.
+- A version tag only publishes when it points at a commit on `main`. Branch protection does
+  not cover tags, so any pushed commit could be tagged, signed and shipped as `latest`.
+- The tunnel check of the preflight masks a token quoted in a provider's error.
+- `POST /api/services/check-all` probes before it writes, instead of holding the database
+  write lock across every three-second probe.
+- `GET /api/services/public-target/suggest` reuses a WAN address younger than 60 seconds
+  instead of querying the resolvers on every call.
 
 ### Documentation
 
