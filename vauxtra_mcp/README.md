@@ -8,10 +8,10 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
 2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `get_logs`, `clear_logs`, `stream_logs_snapshot`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, and `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches.
-3. Python 3.12+ with dependencies installed:
+3. Python 3.12+ with the bridge's own dependencies (FastMCP and httpx). The application's
+   `requirements.txt` is not needed: the bridge only talks to Vauxtra over HTTP.
 
 ```bash
-pip install -r requirements.txt
 pip install -r vauxtra_mcp/requirements.txt
 ```
 
@@ -19,7 +19,8 @@ pip install -r vauxtra_mcp/requirements.txt
 
 ## Connecting to Claude Desktop
 
-Edit `~/.config/claude/claude_desktop_config.json` (Linux/Mac) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit `claude_desktop_config.json`: `~/Library/Application Support/Claude/` on macOS,
+`%APPDATA%\Claude\` on Windows.
 
 ```json
 {
@@ -61,16 +62,18 @@ In Cursor settings → MCP → Add server:
 
 ---
 
-## HTTP/SSE transport (remote access)
+## HTTP transport (remote access)
 
-For remote instances or browser-based clients, run the server in HTTP mode:
+For clients that connect over HTTP rather than launching a process, run the server with the
+streamable HTTP transport:
 
 ```bash
 VAUXTRA_URL=http://vauxtra:8888 VAUXTRA_API_KEY=vx_... python -m vauxtra_mcp.server --http
-# Listens on http://127.0.0.1:9000
+# Listens on http://127.0.0.1:9000/mcp
 ```
 
-Then point your MCP client at `http://127.0.0.1:9000`.
+Then point your MCP client at `http://127.0.0.1:9000/mcp` (FastMCP's default path). This is
+streamable HTTP, not the older SSE transport.
 
 The HTTP transport has **no authentication of its own** while holding an API key that can
 reach every Vauxtra route, so it binds to loopback only. To expose it, set
@@ -259,8 +262,7 @@ would make a bridge limited to a `read` key admin.
 A tool's parameters are its whole contract. FastMCP builds the schema from the function
 signature, and a normal install publishes no OpenAPI document to derive one from
 (`DEBUG` is false, so `openapi_url` is None), so whatever the route enforces has to be
-repeated here by hand. Where that had not been done the bridge sent bodies the API refused
--- and, in one case, a body it accepted that nobody had asked for.
+repeated here by hand.
 
 | Parameter | Accepted values | Tools |
 |---|---|---|
@@ -276,8 +278,8 @@ repeated here by hand. Where that had not been done the bridge sent bodies the A
 A value outside one of these sets is refused by the schema, before any request is built.
 Two of them are worth knowing about specifically:
 
-- `bulk_service_action` used to take any string and let the API answer 400. `delete` is one
-  of the three words, so the round trip now being saved is one that deletes services.
+- `bulk_service_action` takes only its three words, and `delete` is one of them: a typo is
+  refused before it can reach a route that deletes services.
 - a tag colour the API does not know is not refused by the API: it is quietly stored as
   blue, with a 200 and no mention of the substitution. The bridge is the only place that
   can tell you the colour you asked for does not exist.
@@ -286,10 +288,8 @@ Two of them are worth knowing about specifically:
 `POST /api/services` requires a domain and a port, and a template may legitimately carry
 neither -- that is what lets one template serve several domains. So both stay optional on
 the tool and are taken from the template when the call omits them; when neither side has a
-value, the call is refused and nothing is sent. It used to fall back to `or 80` and `or ""`.
-The empty domain came back as a 422, but port 80 did not, because 80 is a valid port: a
-call that named no port, against a template that sets none, created a service pointing at a
-port nobody had chosen, and reported success.
+value, the call is refused and nothing is sent. There is no default port: a service never
+points at a port nobody chose.
 
 Labels are set on a service, not added to it. `create_service`, `update_service`,
 `set_service_labels`, `create_template` and `update_template` all take `tag_ids` and
@@ -302,15 +302,9 @@ service missing a label.
 
 On an existing service, `set_service_labels` is the one to reach for. It goes through
 `PATCH /api/services/{id}` and calls no provider. `update_service` sends the whole service
-through `PUT`, which publishes it again everywhere it is: a tag change used to rewrite the
-service's tunnel rule, and the rule came back without the origin settings set on it in the
-Cloudflare dashboard.
-
-Neither parameter used to exist. `create_service` sent an empty list it declared no way to
-fill and `update_service` declared neither at all, so every service the bridge created was
-unlabelled and nothing could label it afterwards: the eight tools for building tags and
-environments had nowhere to put one except a template, and `apply_template` froze whatever
-the template carried at the moment it was applied.
+through `PUT`, which publishes it again everywhere it is: a tag change through it rewrites
+the service's tunnel rule, and loses any origin settings set on that rule in the Cloudflare
+dashboard.
 
 One rule no parameter schema can carry: `expose_mode: tunnel` also needs a
 `tunnel_provider_id`. That is a rule about a pair of fields, and a schema describes one
@@ -327,18 +321,17 @@ build on any difference that is not in its commented exemption list.
 Errors carry what the API said, not just its status code:
 
 ```
-ApiError: POST /api/settings -> 400: Nothing was saved -- check_interval: must be between 30 and 86400
+ApiError: POST http://localhost:8888/api/settings -> 400: Nothing was saved -- check_interval: expected a whole number between 0 and 1440, got 5000
 ```
 
-`raise_for_status()` used to produce `Client error '400 Bad Request' for url ...`, which
-threw the `detail` away — and since 1.1 the detail is the useful part: which setting was
-refused and why, which provider still holds a service, that a hostname is already taken.
+The detail is the useful part: which setting was refused and why, which provider still
+holds a service, that a hostname is already taken.
 
 A `403` is the one worth reading differently. It says nothing about the request: it says the
 key does not carry the scope the route asks for, and the detail names which one.
 
 ```
-ApiError: POST /api/logs/clear -> 403: Insufficient scope: 'admin' required
+ApiError: POST http://localhost:8888/api/logs/clear -> 403: Insufficient scope: 'admin' required
 ```
 
 Retrying will not help, and neither will changing the arguments. The tools that need `admin`
