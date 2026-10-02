@@ -1,54 +1,55 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-Only the latest release on the `main` branch is actively maintained and receives security patches.
+Only the latest release receives security fixes.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Please **do not** open a public issue for sensitive vulnerabilities.
+Please do not open a public issue for a vulnerability. Open a
+[private security advisory](https://github.com/ptitzgeg-on-git/vauxtra/security/advisories/new)
+with:
 
-Contact the maintainer by [opening a GitHub Security Advisory](https://github.com/ptitzgeg-on-git/vauxtra/security/advisories/new) with:
-- Description of the problem
-- Estimated impact
-- Steps to reproduce
-- Suggested mitigation (if any)
+- a description of the problem and its impact
+- steps to reproduce
+- a suggested fix, if you have one
 
-An acknowledgement is expected within 72 hours, followed by an assessment and remediation plan.
+You should get an acknowledgement within 72 hours, then an assessment and a plan.
 
-## Project Security Practices
+## What is in place
 
-### Credentials & Secrets
-- Never commit `.env` files or private keys.
-- Provider credentials are encrypted at rest using Fernet symmetric encryption.
-- JSON backups do not export provider passwords.
-- Admin password is hashed with PBKDF2-HMAC-SHA256 (600k iterations) when configured via the Setup wizard.
+What Vauxtra stores, who the defences are aimed at and where they stop is written down in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). In short:
 
-### Authentication
-- **Password authentication**: Set during initial Setup wizard or via `APP_PASSWORD` env var.
-- **API keys**: Bearer tokens with `vx_` prefix, SHA-256 hashed before storage.
-- **Session cookies**: HttpOnly, SameSite=Strict, 7-day expiration.
-- No password = open access (intended for trusted local networks only).
+- **Credentials.** Provider passwords and tokens are encrypted at rest with Fernet, under a
+  key derived from `SECRET_KEY`. Notification URLs are stored in clear and masked in every
+  response. Backups take the `admin` scope: a plain one contains no secrets, an encrypted one
+  holds them under a passphrase you choose.
+- **Admin password.** PBKDF2-HMAC-SHA256 with 600,000 iterations, 12 characters minimum.
+  Changing it ends every open session.
+- **API keys.** `vx_` tokens, stored as SHA-256 hashes, shown once, scoped `read`, `write` or
+  `admin`.
+- **Sessions.** `HttpOnly`, `SameSite=Strict`, 7 days, and `Secure` when `HTTPS_ONLY=true`.
+- **Rate limits.** Sign-in: 5 a minute and 20 an hour per client address. Password setup and
+  change: 3 a minute. API key creation: 10 a minute.
+- **Headers.** A strict Content-Security-Policy, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and HSTS when `HTTPS_ONLY=true`.
+- **CORS.** No cross-origin caller by default: the interface is served by the same
+  application.
+- **Open mode.** Without a password, every request is admin. The default Compose file binds
+  the port to `127.0.0.1` for that reason.
+- **Supply chain.** Dependencies are audited with `pip-audit` and `npm audit`, the source and
+  the image are scanned with Trivy and Grype, and every image is signed with cosign and given
+  a SLSA provenance attestation. See [how to verify it](docs/THREAT_MODEL.md#verify-the-image).
 
-### Rate Limiting
-- Login endpoint: 5 requests/minute per IP
-- Password setup: 3 requests/minute per IP
-- General API: No hard limit (homelab use case)
+## Running it safely
 
-### CORS Policy
-- Default: `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888`
-- Configurable via `CORS_ORIGINS` environment variable
-- In production, restrict to your actual domain(s)
-
-### Security Headers
-The application sets these HTTP headers on all responses:
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-
-### Production Recommendations
-- Set a strong `APP_PASSWORD` or configure via Setup wizard
-- Set `SECRET_KEY` to a random 32+ character string
-- Restrict `CORS_ORIGINS` to your domain
-- Run behind a reverse proxy with HTTPS
-- Avoid `DEBUG=true` in production
+- Set an admin password before the port is reachable from anything but the host.
+- Put it behind a reverse proxy with HTTPS, set `HTTPS_ONLY=true` and `FORWARDED_ALLOW_IPS`.
+- Set `SECRET_KEY` to 32 random characters or more, outside the `data/` volume if backups of
+  that volume leave the host.
+- Give every integration the narrowest credential its provider offers, and every API key the
+  lowest scope it needs. The [threat model](docs/THREAT_MODEL.md#credentials-each-provider-needs)
+  lists them per provider.
+- Leave `DEBUG=false` and `CORS_ORIGINS` empty.
+- Mount the Docker socket only if you use container discovery.
