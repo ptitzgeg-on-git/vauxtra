@@ -649,5 +649,60 @@ class ANameIsTheSameNameInAnyCaseTests(_IsolatedDB):
         self.assertEqual(self._services(), ["essai.vxlab.test"])
 
 
+class AnImportedRouteIsCheckedLikeOneTypedInTests(_IsolatedDB):
+    """The body is whatever the caller sent, so the route trusts the stored integration."""
+
+    def _import(self, name: str = "app", **overrides) -> dict:
+        host = {**_host(f"{name}.vxlab.test"), **overrides}
+        return sync_api.import_services(_request(), {"proxy_hosts": [host]})
+
+    def _route(self) -> dict:
+        conn = models.get_db()
+        row = conn.execute(
+            "SELECT expose_mode, proxy_provider_id, tunnel_provider_id, target_ip, "
+            "target_port, forward_scheme FROM services"
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+
+    def test_a_container_name_still_imports(self) -> None:
+        result = self._import(forward_host="nextcloud_app_1")
+        self.assertEqual(result["imported"], 1, result)
+        self.assertEqual(self._route()["target_ip"], "nextcloud_app_1")
+
+    def test_a_scheme_other_than_http_or_https_is_refused(self) -> None:
+        for scheme in ("ssh", "unix", "tcp"):
+            with self.subTest(scheme=scheme):
+                result = self._import(scheme, forward_scheme=scheme)
+                self.assertEqual(result["imported"], 0, result)
+                self.assertTrue(any(scheme in e for e in result["errors"]), result)
+        self.assertEqual(self._services(), [])
+
+    def test_a_target_that_would_rewrite_the_origin_url_is_refused(self) -> None:
+        for index, target in enumerate(("", "internal.example/admin", "user@internal.example", "a b")):
+            with self.subTest(target=target):
+                result = self._import(f"t{index}", forward_host=target)
+                self.assertEqual(result["imported"], 0, result)
+        self.assertEqual(self._services(), [])
+
+    def test_a_port_out_of_range_is_refused(self) -> None:
+        result = self._import(forward_port=70000)
+        self.assertEqual(result["imported"], 0, result)
+        self.assertTrue(any("70000" in e for e in result["errors"]), result)
+
+    def test_the_mode_comes_from_the_stored_integration(self) -> None:
+        result = self._import(_provider_type="cloudflare_tunnel")
+        self.assertEqual(result["imported"], 1, result)
+        route = self._route()
+        self.assertEqual(route["expose_mode"], "proxy_dns")
+        self.assertEqual(route["proxy_provider_id"], 2)
+        self.assertIsNone(route["tunnel_provider_id"])
+
+    def test_an_integration_that_is_not_configured_is_refused(self) -> None:
+        result = self._import(_provider_id=99)
+        self.assertEqual(result["imported"], 0, result)
+        self.assertTrue(any("not configured" in e for e in result["errors"]), result)
+
+
 if __name__ == "__main__":
     unittest.main()
