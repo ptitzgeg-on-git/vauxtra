@@ -42,26 +42,13 @@ def create_template(
     environment_ids: list[int] | None = None,
     icon_url: str = "",
 ) -> dict[str, Any]:
-    """
-    Create a service template.
+    """Create a service template (common settings for a class of services).
 
-    Templates capture the common settings for a class of services
-    (e.g. 'Standard HTTPS app' = HTTPS scheme, port 443, AdGuard DNS, NPM proxy).
-
-    Constrained fields, refused with 422 otherwise: `forward_scheme` is http or https,
-    `expose_mode` is proxy_dns or tunnel, `public_target_mode` is manual or auto,
-    `target_port` is 1-65535. `domain` and `dns_ip` may be left empty -- that is what makes
-    a template a template -- but a value that is present must be a valid one. Every
-    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
-    `environment_ids` entry has to name a row that exists; the route refuses the whole call
-    with 400 and names the id. A key the model does not declare is refused with 422 rather
-    than dropped, so a misspelt field never stores a template quietly missing it.
-
-    The first three are declared as `Literal` and the port as a bounded `int`, so the schema
-    carries what the prose above says and a wrong value is refused here rather than after a
-    round trip. Nothing derives them from `TemplateIn`: FastMCP reads this signature, and a
-    normal install publishes no OpenAPI document. `scripts/check_api_mcp_parity.py` fails the
-    build if they drift from the model.
+    Refused with 422: forward_scheme not http/https, expose_mode not proxy_dns/tunnel,
+    public_target_mode not manual/auto, target_port outside 1-65535, or an unknown key.
+    domain and dns_ip may be empty, but a present value must be valid. Provider ids,
+    tag_ids and environment_ids must exist (400 naming the id). Kept in sync with
+    TemplateIn by scripts/check_api_mcp_parity.py.
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -104,27 +91,12 @@ def update_template(
     environment_ids: list[int] | None = None,
     icon_url: str = "",
 ) -> dict[str, Any]:
-    """Replace a service template's settings.
+    """Replace a service template's settings (full replacement, not a patch).
 
-    This is a full replacement, not a patch: every field takes the value passed here, so read
-    the template with `get_template` first and send back what should not change. Without this
-    tool the only way to edit a template through the bridge was to delete and recreate it,
-    which changes the id anything else refers to.
-
-    Constrained fields, refused with 422 otherwise: `forward_scheme` is http or https,
-    `expose_mode` is proxy_dns or tunnel, `public_target_mode` is manual or auto,
-    `target_port` is 1-65535. `domain` and `dns_ip` may be left empty -- that is what makes
-    a template a template -- but a value that is present must be a valid one. Every
-    `proxy_provider_id`, `dns_provider_id`, `tunnel_provider_id`, `tag_ids` and
-    `environment_ids` entry has to name a row that exists; the route refuses the whole call
-    with 400 and names the id. A key the model does not declare is refused with 422 rather
-    than dropped, so a misspelt field never stores a template quietly missing it.
-
-    The first three are declared as `Literal` and the port as a bounded `int`, so the schema
-    carries what the prose above says and a wrong value is refused here rather than after a
-    round trip. Nothing derives them from `TemplateIn`: FastMCP reads this signature, and a
-    normal install publishes no OpenAPI document. `scripts/check_api_mcp_parity.py` fails the
-    build if they drift from the model.
+    Read it with `get_template` and send back what should not change. Same validation as
+    `create_template`: 422 for an invalid forward_scheme, expose_mode, public_target_mode,
+    target_port or an unknown key; 400 for an unknown provider, tag or environment id.
+    domain and dns_ip may be empty.
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -164,27 +136,12 @@ def apply_template(
     target_port: Annotated[int, Field(ge=1, le=65535)] | None = None,
     domain: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Create a new service from a template.
+    """Create a service from a template; arguments override the template's values.
 
-    Fetches the template defaults, merges them with the provided subdomain / target_ip /
-    target_port / domain (an argument wins over the template), then creates the service.
-    Returns what `POST /api/services` answers: the id, the fqdn and an `errors` list.
-
-    `POST /api/services` requires a domain and a port, and a template is allowed to carry
-    neither -- that is what lets one template serve several domains. So both stay optional
-    here and are merged from the template, and when neither side supplies one the tool
-    refuses and sends nothing. It used to fill the gap with `or 80` and `or ""`: the empty
-    domain came back as a 422 ("a domain is required"), but 80 did not, because 80 is a
-    valid port. Every call that named no port, against a template that sets none, created a
-    service pointing at a port nobody had chosen -- and reported success.
-
-    That `errors` list is the part to read. The route publishes the tunnel route, the proxy
-    host and the DNS record first, collects every refusal into the list, and stores the row
-    either way, answering 207 rather than 201 when the list is not empty. A template carries
-    its own provider ids, so one pointing at a provider that has since been deleted or is
-    unreachable produces exactly that: a service with an id and an fqdn that nothing routes
-    to. Name the step that failed instead of reporting the template applied.
+    Refused without sending anything when neither side provides a domain or a port.
+    Returns what POST /api/services answers: id, fqdn and an `errors` list. Non-empty
+    `errors` (HTTP 207) means the service exists but some provider step failed, e.g. a
+    provider the template names was deleted: report which step.
     """
     r = client.get(f"/templates/{template_id}/apply")
     client.check(r)
