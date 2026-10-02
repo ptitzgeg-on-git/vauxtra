@@ -281,6 +281,7 @@ export function ServiceDrawer({
                   <li key={`${run.status}-${run.from}`} className="flex gap-3">
                     <div className="flex flex-col items-center">
                       <span
+                        aria-hidden="true"
                         className={cn(
                           'mt-1.5 h-2 w-2 shrink-0 rounded-full',
                           run.status === 'ok'
@@ -290,7 +291,7 @@ export function ServiceDrawer({
                               : 'bg-warning',
                         )}
                       />
-                      <span className="w-px flex-1 bg-border" />
+                      <span aria-hidden="true" className="w-px flex-1 bg-border" />
                     </div>
                     <div className="min-w-0 flex-1 pb-4">
                       <div className="flex flex-wrap items-center gap-2">
