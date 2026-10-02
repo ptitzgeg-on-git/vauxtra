@@ -71,9 +71,30 @@ jobs:
       contents: read
       security-events: write
 
+  # A version tag publishes `latest`, a signed image and a release page, and branch
+  # protection does not cover tags: any commit someone can push could be tagged and shipped.
+  # The compare API answers `behind` or `identical` exactly when the commit is on `main`.
+  tag-on-main:
+    name: "Gate: release tag is on main"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a tag that is not on main
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq .status)
+          case "$status" in
+            identical|behind) echo "${GITHUB_SHA} is on main." ;;
+            *) echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main (${status})."; exit 1 ;;
+          esac
+
   build-and-push:
     name: Build & Push Docker Image
-    needs: [tests, security]
+    needs: [tests, security, tag-on-main]
     runs-on: ubuntu-latest
     # A wedged build here does not stall one run, it stalls the branch. This workflow keeps
     # `cancel-in-progress: false` for the reason written above, and it is the only producer
