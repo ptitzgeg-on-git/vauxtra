@@ -10,7 +10,7 @@ from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_ho
 from app.public_target import describe_public_target_failure, resolve_public_target
 from app.security import redact_query_secrets
 from app.text import plural
-from app.validators import NO_PORT, is_valid_port
+from app.validators import NO_PORT, is_valid_hostname, is_valid_port
 
 router = APIRouter()
 
@@ -1505,6 +1505,20 @@ def import_services(request: Request, data: dict = Body(...)):
                 "it carries no name to import under",
             )
             continue
+        try:
+            dns_provider = int(r.get("_provider_id"))
+        except (TypeError, ValueError):
+            dns_provider = None
+        dns_type = provider_types.get(dns_provider)
+        if dns_type is None or not (PROVIDER_TYPES.get(dns_type, {}).get("capabilities") or {}).get("dns"):
+            refuse_import(errors, conn, fqdn, "the integration it was read from is not a configured DNS integration")
+            continue
+        answer = str(r.get("answer") or "").strip()
+        # A CNAME answer may end with the root dot; the rest is held to a service target's rule.
+        if answer and not is_valid_hostname(answer.rstrip(".")):
+            refuse_import(errors, conn, fqdn, f"its record answers {answer!r}, which is not an address or a host name")
+            continue
+        r = {**r, "_provider_id": dns_provider, "answer": answer}
         if fqdn in dns_by_fqdn:
             kept = dns_by_fqdn[fqdn].get("_provider_name") or "the first provider"
             other = r.get("_provider_name") or "another provider"
