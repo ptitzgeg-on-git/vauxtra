@@ -38,6 +38,7 @@ import {
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { AUTH_STATUS_KEY, authStatusQuery } from '@/hooks/useAuthStatus';
 import { SETUP_STORAGE_PREFIX, markWizardStarted, notifyWizardSession } from '@/lib/setupSession';
+import { readJSON, removeKey, writeJSON } from '@/lib/storage';
 import {
   DockerStep,
   DoneStep,
@@ -60,6 +61,10 @@ const THEME_ICONS: Record<Theme, ReactNode> = { light: <Sun />, dark: <Moon />, 
    Helper: persist wizard state in sessionStorage
    ──────────────────────────────────────────────────────────────── */
 
+/** The wizard trusts its own writes, as it did before: any parsed value is taken back. */
+const isStored = <T,>(value: unknown): value is T => value !== undefined;
+const STORED_NOTHING = Symbol('nothing stored');
+
 function useSessionState<T>(
   key: string,
   initial: T,
@@ -69,21 +74,14 @@ function useSessionState<T>(
 ): [T, React.Dispatch<React.SetStateAction<T>>] {
   const storageKey = `${SETUP_STORAGE_PREFIX}${key}`;
   const [value, setValue] = useState<T>(() => {
-    try {
-      const stored = sessionStorage.getItem(storageKey);
-      if (!stored) return initial;
-      const parsed = JSON.parse(stored) as T;
-      // Also on read: a value written by an older build may still carry a password.
-      return sanitize ? sanitize(parsed) : parsed;
-    } catch {
-      return initial;
-    }
+    const stored = readJSON(storageKey, isStored<T>, STORED_NOTHING, 'session');
+    if (stored === STORED_NOTHING) return initial;
+    // Also on read: a value written by an older build may still carry a password.
+    return sanitize ? sanitize(stored) : stored;
   });
 
   useEffect(() => {
-    try {
-      sessionStorage.setItem(storageKey, JSON.stringify(sanitize ? sanitize(value) : value));
-    } catch { /* ignore */ }
+    writeJSON(storageKey, sanitize ? sanitize(value) : value, 'session');
     // The boot gate keeps the wizard on screen while it is under way (`lib/setupSession`).
     notifyWizardSession();
   }, [storageKey, value, sanitize]);
@@ -104,11 +102,7 @@ const withoutProviderSecrets = (form: ProviderFormState): ProviderFormState => (
 
 /** Drops every key the wizard owns — on finish, and after a restore replaces the whole state. */
 function clearWizardSession() {
-  SETUP_SESSION_KEYS.forEach((key) => {
-    try {
-      sessionStorage.removeItem(`${SETUP_STORAGE_PREFIX}${key}`);
-    } catch { /* ignore */ }
-  });
+  SETUP_SESSION_KEYS.forEach((key) => removeKey(`${SETUP_STORAGE_PREFIX}${key}`, 'session'));
   // And tells the boot gate the wizard no longer holds the screen.
   notifyWizardSession();
 }

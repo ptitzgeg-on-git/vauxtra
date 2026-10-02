@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactElement, type SetStateAction } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -25,6 +25,7 @@ import { useFormat } from '@/hooks/useFormat';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
+import { isString, readJSON, writeJSON } from '@/lib/storage';
 import {
   Badge,
   Button,
@@ -77,33 +78,22 @@ import type {
 // Local persistence (keys are part of the page's contract — keep them)
 // ---------------------------------------------------------------------------
 
-function useLocalStorage<T>(key: string, fallback: T): [T, (v: T | ((prev: T) => T)) => void] {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw !== null ? (JSON.parse(raw) as T) : fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  const set = useCallback(
-    (v: T | ((prev: T) => T)) => {
-      setValue((prev) => {
-        const next = typeof v === 'function' ? (v as (prev: T) => T)(prev) : v;
-        try {
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch {
-          // Private mode or quota: the in-memory value still wins.
-        }
-        return next;
-      });
-    },
-    [key],
-  );
-  return [value, set];
+function useLocalStorage<T>(
+  key: string,
+  fallback: T,
+  guard: (value: unknown) => value is T,
+): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => readJSON(key, guard, fallback));
+  // Written after the render, not inside the state updater: an updater must stay pure, and
+  // StrictMode runs it twice.
+  useEffect(() => {
+    writeJSON(key, value);
+  }, [key, value]);
+  return [value, setValue];
 }
 
 type ViewMode = 'list' | 'grid';
+const isViewMode = (value: unknown): value is ViewMode => value === 'list' || value === 'grid';
 
 type RouteModal = {
   key: string;
@@ -131,6 +121,7 @@ const isEditable = (target: EventTarget | null): boolean => {
 };
 
 const isModeFilter = (value: string): value is ModeFilter => (MODE_FILTERS as string[]).includes(value);
+const isStoredModeFilter = (value: unknown): value is ModeFilter => typeof value === 'string' && isModeFilter(value);
 
 export function Services() {
   const t = useT();
@@ -140,13 +131,13 @@ export function Services() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // --- persisted UI state -------------------------------------------------
-  const [search, setSearch] = useLocalStorage('vauxtra.services.search', '');
-  const [savedViewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
+  const [search, setSearch] = useLocalStorage('vauxtra.services.search', '', isString);
+  const [savedViewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list', isViewMode);
   // The table needs a desktop's width; below `md` it only scrolls sideways, so phones get the
   // cards whatever was saved, and the toggle that could not change that is hidden.
   const isNarrow = useMediaQuery('(max-width: 767px)');
   const viewMode: ViewMode = isNarrow ? 'grid' : savedViewMode;
-  const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all');
+  const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all', isStoredModeFilter);
 
   // --- URL-driven filters (shared links from the dashboard) ---------------
   const tagFilter = Number(searchParams.get('tag')) || null;

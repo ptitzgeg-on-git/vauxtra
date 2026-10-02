@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { readJSON, writeJSON } from '@/lib/storage';
 
 /**
  * Whether a setup wizard is under way in this tab.
@@ -24,24 +25,19 @@ import { useSyncExternalStore } from 'react';
 export const SETUP_STORAGE_PREFIX = 'vauxtra.setup.';
 const ACTIVE_KEY = `${SETUP_STORAGE_PREFIX}active`;
 
+const isTrue = (value: unknown): value is true => value === true;
+
 const listeners = new Set<() => void>();
 
 export function readWizardInProgress(): boolean {
-  try {
-    return sessionStorage.getItem(ACTIVE_KEY) === 'true';
-  } catch {
-    // Storage blocked or unreadable: fall back to what the server says, as before.
-    return false;
-  }
+  // Storage blocked or unreadable: fall back to what the server says, as before.
+  return readJSON(ACTIVE_KEY, isTrue, false, 'session');
 }
 
 /** Called when the operator chooses "Fresh install". Cleared with the rest of the wizard state. */
 export function markWizardStarted(): void {
-  try {
-    sessionStorage.setItem(ACTIVE_KEY, 'true');
-  } catch {
-    /* storage blocked: the wizard then lives as long as the server requires setup, as before */
-  }
+  // Storage blocked: the wizard then lives as long as the server requires setup, as before.
+  writeJSON(ACTIVE_KEY, true, 'session');
   notifyWizardSession();
 }
 

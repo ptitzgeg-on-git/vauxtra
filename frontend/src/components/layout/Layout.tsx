@@ -5,6 +5,7 @@ import { useAuthStatus } from '@/hooks/useAuthStatus';
 import { anyDialogOpen } from '@/hooks/useModalDialog';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
+import { isBoolean, readJSON, writeJSON } from '@/lib/storage';
 import { Button, Drawer, IconButton, InlineAlert } from '@/components/ui';
 import { BrandMark } from './BrandMark';
 import { CommandPalette } from './CommandPalette';
@@ -70,20 +71,10 @@ export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [collapsed, setCollapsed] = useState<boolean>(() => readJSON(STORAGE_KEY, isBoolean, false));
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, String(collapsed));
-    } catch {
-      /* ignore */
-    }
+    writeJSON(STORAGE_KEY, collapsed);
   }, [collapsed]);
 
   useEffect(() => {
