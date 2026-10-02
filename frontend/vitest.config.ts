@@ -14,8 +14,8 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: [
-      { find: /^@\/api\/client$/, replacement: path.resolve(__dirname, './src/test/apiStub.ts') },
-      { find: /^@\//, replacement: path.resolve(__dirname, './src') + '/' },
+      { find: /^@\/api\/client$/, replacement: path.resolve(import.meta.dirname, './src/test/apiStub.ts') },
+      { find: /^@\//, replacement: path.resolve(import.meta.dirname, './src') + '/' },
     ],
   },
   test: {
