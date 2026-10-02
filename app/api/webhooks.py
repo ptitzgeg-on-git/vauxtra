@@ -452,8 +452,11 @@ def test_webhook(wid: int, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        # `a.add()` answered above, so anything raised past it comes out of the send.
-        raise HTTPException(502, str(e))
+        # `a.add()` answered above, so anything raised past it comes out of the send. Only
+        # the class is returned: the stored URL is a credential, and the text may quote it.
+        raise HTTPException(
+            502, f"The notification target could not be reached ({type(e).__name__})."
+        )
 
 
 # ── Per-service alerts ─────────────────────────────────────────────────────
