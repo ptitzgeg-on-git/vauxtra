@@ -1,13 +1,7 @@
-"""Traefik provider — read-only proxy monitoring via the Traefik REST API.
+"""Traefik provider: read-only route monitoring through the Traefik REST API.
 
-Traefik exposes a read-only API (no write endpoints).
-This provider supports importing / monitoring existing routes.
-Push and delete operations raise RuntimeError.
-
-Storage convention:
-  url      → Traefik API base (e.g. http://traefik:8080)
-  username → Basic-auth username (optional)
-  password → Basic-auth password (optional)
+The API has no write endpoints, so push and delete raise RuntimeError.
+Columns: url = API base (e.g. http://traefik:8080), username/password = optional basic auth.
 """
 
 import re
@@ -33,7 +27,6 @@ class TraefikProvider(ProxyProvider):
         if username and password:
             self.session.auth = (username, password)
 
-    # ── ProxyProvider interface ───────────────────────────────────────────
 
     def test_connection(self) -> bool:
         try:
@@ -43,13 +36,9 @@ class TraefikProvider(ProxyProvider):
             return False
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
-        """Reachability, then whether the API let us in, then the router list.
+        """Check reachability, then API access, then the router list.
 
-        Traefik needs no credentials of its own, which is exactly why the distinction is
-        worth drawing: its API is routinely put behind a middleware, and a dashboard that
-        answers 401 is a permission to fix, not a network to debug. `test_connection` is a
-        bare `status_code == 200`, so the fallback in `_provider_diagnostics` called that
-        `connection_failed` and pointed the operator somewhere there was nothing to find.
+        A 401 from an auth middleware is reported as a permission problem, not a network one.
         """
         overview = f"{self.url}/api/overview"
         checks = [reachability_check(self.session, overview)]
@@ -78,15 +67,8 @@ class TraefikProvider(ProxyProvider):
     def list_hosts(self) -> list[dict]:
         """Return all enabled HTTP routers as normalised host dicts.
 
-        Each entry includes:
-          - ``middlewares``: list of middleware names active on this router
-          - ``tls_resolver``: ACME cert resolver name if TLS is configured
-
-        Raises rather than answering []. This one swallowed its own check: the `List
-        routers` line in `validate_permissions` counts what this returns, so a Traefik that
-        refused the call came back as an empty list, the counting `except` never fired, and
-        the panel printed "0 routers readable" with a tick beside it. A green check on a
-        read that failed is the one answer worse than no check at all.
+        Each entry includes `middlewares` (names on the router) and `tls_resolver` (ACME
+        resolver, if any). Raises instead of returning [] when the API refuses.
         """
         try:
             r_routers    = self.session.get(f"{self.url}/api/http/routers")
@@ -101,11 +83,6 @@ class TraefikProvider(ProxyProvider):
                 servers = svc.get("loadBalancer", {}).get("servers", [])
                 if servers:
                     svc_map[name] = servers[0].get("url", "")
-
-            # `/api/http/middlewares` used to be fetched here to build a name -> type map
-            # that nothing read: a third round-trip to Traefik on every listing, and its
-            # answer discarded. The `middlewares` each host reports are the names the router
-            # itself carries, which come from the routers call.
 
             hosts = []
             for idx, router in enumerate(r_routers.json()):

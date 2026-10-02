@@ -1,4 +1,4 @@
-"""Technitium DNS Server provider — DNS rewrite management via HTTP API."""
+"""Technitium DNS Server provider: DNS rewrite management via HTTP API."""
 
 import requests
 
@@ -50,13 +50,8 @@ class TechnitiumProvider(DNSProvider):
         return self._login()
 
     def _list_zones(self) -> list[str]:
-        """Every enabled zone on this server.
-
-        Raises when the server did not finish answering. It used to return [] there, and an
-        empty zone list is not nothing: `list_rewrites` reads it as an empty server and
-        `_find_zone` reads it as "no zone covers this name" and lets the caller guess one
-        from the last two labels. That guess is wrong exactly when the true zone is a
-        delegated child, which is the case `_find_zone` exists to catch.
+        """Return every enabled zone. Raises when the server does not answer fully, so
+        `_find_zone` never guesses a zone from an incomplete list.
         """
         try:
             r = self.session.get(
@@ -98,9 +93,7 @@ class TechnitiumProvider(DNSProvider):
         return self._ensure_token()
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
-        # Every check keeps its English `detail` (logs, older clients) and adds the short
-        # `detail_code` the sentence was written from, so the panel can say the same thing in
-        # the reader's language via `providers.diag.detail.<code>`.
+        # Each check has an English `detail` and a `detail_code` (providers.diag.detail.<code>).
         checks: list[dict] = []
 
         # 1. Authentication
@@ -162,14 +155,8 @@ class TechnitiumProvider(DNSProvider):
         return {"ok": overall_ok, "checks": checks, "warnings": warnings}
 
     def list_rewrites(self) -> list[dict]:
-        """Every enabled A record in every zone on this server.
-
-        Raises rather than returning what it managed to collect. Each zone used to be
-        skipped with `continue` on a non-200 or a non-ok status, and the whole sweep sat
-        inside one handler that returned []. Both hand back a list shorter than the truth,
-        and a name missing from that list means one thing to every caller: the record is
-        not there. `push` then creates it, the drift check reports it missing, and the
-        record routes answer 404. That is the one thing a listing that failed does not say.
+        """Return every enabled A record in every zone. Raises instead of returning a partial
+        list, which callers would read as records missing.
         """
         if not self._ensure_token():
             raise ProviderListingRefused("Technitium refused the credentials")

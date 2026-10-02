@@ -1,10 +1,8 @@
-"""Cloudflare Tunnel provider — manages cloudflared ingress + DNS CNAME records.
+"""Cloudflare Tunnel provider: cloudflared ingress rules plus their DNS CNAME records.
 
-Storage convention (DB columns):
-  url      → Cloudflare API base (defaults to https://api.cloudflare.com/client/v4)
-  username → Account ID (required)
-  password → API Token  (requires Account:Cloudflare Tunnel:Edit + Zone:DNS:Edit)
-  extra    → JSON object with {"tunnel_id": "<uuid>"}
+Columns: url = API base (default https://api.cloudflare.com/client/v4), username = account
+ID, password = API token (Account:Cloudflare Tunnel:Edit and Zone:DNS:Edit), extra = JSON
+{"tunnel_id": "<uuid>"}.
 """
 
 from __future__ import annotations
@@ -101,9 +99,7 @@ class CloudflareTunnelProvider(ProxyProvider):
             candidate = ".".join(labels[i:])
             result = self._request("GET", "/zones", params={"name": candidate, "per_page": 1})
             for zone in result if isinstance(result, list) else []:
-                # Same reason as the Cloudflare DNS provider: `name` is a filter, not a
-                # promise. A zone id that is not this domain's would publish the tunnel
-                # CNAME in the wrong zone.
+                # `name` may not filter exactly; a wrong zone id would publish the CNAME elsewhere.
                 if str(zone.get("name", "")).strip(".").lower() != candidate.strip(".").lower():
                     continue
                 zone_id = str(zone.get("id", "")).strip()
@@ -112,13 +108,10 @@ class CloudflareTunnelProvider(ProxyProvider):
         return ""
 
     def _get_configuration(self) -> dict | None:
-        """Return the tunnel config, or None when it could not be read.
+        """Return the tunnel configuration, or None if it could not be read.
 
-        The distinction matters: `_request` swallows every error into None, and an
-        empty dict here is indistinguishable from a genuinely empty tunnel. Callers
-        that rewrite the whole ingress list would then PUT a config containing only
-        their own rule -- a transient 502 or a timeout would silently delete every
-        other route of the tunnel.
+        Never {} on failure: callers rewrite the whole ingress list, and treating an
+        unreadable config as empty would delete every other route.
         """
         tunnel_id = self._resolve_tunnel_id()
         if not tunnel_id:
@@ -155,14 +148,9 @@ class CloudflareTunnelProvider(ProxyProvider):
             return False
         ingress = self._normalize_ingress(config.get("ingress"))
 
-        # The rule for this name is rewritten where it stands, and only its `service` is
-        # Vauxtra's to set. It used to be dropped and appended again as
-        # `{hostname, service, originRequest: {}}`, which cost it two things nothing in
-        # Vauxtra models: its `originRequest` (measured in production on 2026-09-22, two
-        # rules carried `noTLSVerify` and any push to them would have cleared it), and its
-        # place in the list, which decides what a wildcard rule above it catches first.
-        # A `path` is not kept: the route Vauxtra publishes serves the whole name. A second
-        # rule for the same name is dropped, as it always was.
+        # Update the existing rule in place, setting only `service`: its originRequest and its
+        # position (which decides wildcard matching) are kept. Any `path` is dropped, and a
+        # duplicate rule for the same name is removed.
         updated: list[dict] = []
         written = False
         for rule in ingress:
@@ -203,10 +191,7 @@ class CloudflareTunnelProvider(ProxyProvider):
             updated.append(rule)
 
         if not removed:
-            # The config WAS read (see the guard above) and the route is genuinely
-            # absent: nothing to write, and a delete of an already-absent route is a
-            # success. Before the guard, this branch also caught read failures and
-            # reported them as successful deletions.
+            # The config was read and the route is absent: deleting it is a no-op success.
             return True
 
         updated.append({"service": "http_status:404"})
@@ -280,10 +265,7 @@ class CloudflareTunnelProvider(ProxyProvider):
             params={"type": "CNAME", "name": hostname},
         )
         if not isinstance(existing, list):
-            # `_request` answers None for a network error, for a non-2xx, and for a payload
-            # carrying `success: false` alike. Reading that as "the zone holds no such record"
-            # made every listing failure return True, so `delete_host` reported the hostname
-            # withdrawn while its CNAME was still pointing at the tunnel.
+            # `_request` returns None for any failure, which must not read as "no record".
             return False
 
         ok = True
@@ -313,14 +295,8 @@ class CloudflareTunnelProvider(ProxyProvider):
         return isinstance(tunnel, dict)
 
     def list_hosts(self) -> list[dict]:
-        """Every hostname the tunnel's ingress serves.
-
-        Raises rather than answering []. `_get_configuration` already refuses to
-        conflate "unreadable" with "empty" -- its docstring says so, because a config
-        read as empty and written back would delete every other route of the tunnel --
-        and then this method threw that distinction away one line later. A tunnel that
-        would not answer came back as a tunnel serving nothing, which the drift check
-        reads as `route_missing` and offers to republish.
+        """Return every hostname the tunnel ingress serves. Raises instead of returning []
+        when the configuration cannot be read.
         """
         config = self._get_configuration()
         if config is None:
@@ -430,15 +406,9 @@ class CloudflareTunnelProvider(ProxyProvider):
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
         checks: list[dict] = []
 
-        # `code` is the short name of the sentence in `detail`; the UI reads
-        # `providers.diag.detail.<code>` so the line is not English-only.
-        #
-        # `skipped` marks a check that was never run. Two of them are skipped on every
-        # routine test: the write probe (safe mode) and the zone lookup when no hostname
-        # was given. They used to read as two failed non-blocking checks, so a tunnel with
-        # nothing wrong scored 90 with "2 warnings" and there was nothing the operator could
-        # do about either. `ok` stays False, because nothing was verified and a client that
-        # predates the flag must not read one of them as a pass; `warnings` leaves them out.
+        # `code` becomes detail_code (i18n key under providers.diag.detail). `skipped` marks a
+        # check not run (write probe in safe mode, zone lookup without a hostname): ok stays
+        # False so older clients never read it as a pass, but it is left out of warnings.
         def _add(
             name: str, ok: bool, detail: str, blocking: bool = True, code: str = "", skipped: bool = False
         ) -> None:

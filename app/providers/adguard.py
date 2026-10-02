@@ -1,4 +1,4 @@
-"""AdGuard Home provider — DNS rewrite management."""
+"""AdGuard Home provider: DNS rewrite management."""
 
 import requests
 
@@ -28,12 +28,10 @@ class AdGuardProvider(DNSProvider):
             return False
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
-        """Reachability, then credentials, then the one read the provider actually needs.
+        """Check reachability, then credentials, then the rewrite list.
 
-        Without this, `_provider_diagnostics` falls back to `test_connection` alone and
-        reports every failure as `connection_failed`, credentials included. AdGuard answers
-        401 to a wrong password on every route, so the fallback said "the connection test
-        failed" about a host that was answering perfectly.
+        AdGuard answers 401 to a wrong password, which is reported as such rather than as
+        a connection failure.
         """
         status_url = f"{self.url}/control/status"
         checks = [reachability_check(self.session, status_url)]
@@ -60,13 +58,8 @@ class AdGuardProvider(DNSProvider):
         return {"ok": read_ok, "checks": checks, "warnings": []}
 
     def list_rewrites(self) -> list[dict]:
-        """Every rewrite AdGuard holds.
-
-        Raises rather than answering []. AdGuard's whole inventory comes back in one call,
-        so there was never a partial list to hand out here -- but [] is not a neutral
-        answer either. It is how `add_rewrite` decides the name is free, how `/drift` finds
-        a rewrite missing, and how the record routes answer 404. A request that failed says
-        nothing about what AdGuard holds.
+        """Return every rewrite. Raises when the request fails, since [] would read as "no
+        rewrites".
         """
         try:
             r = self.session.get(f"{self.url}/control/rewrite/list")

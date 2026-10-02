@@ -88,28 +88,10 @@ class PiholeProvider(DNSProvider):
 
     @contextmanager
     def _api_session(self):
-        """Authenticate for one operation and always hand the API seat back.
+        """Context manager: log in for one operation and always release the session.
 
-        Pi-hole v6 caps concurrent sessions at `webserver.api.max_sessions` -- 16 by
-        default -- and holds each one for `webserver.session.timeout`, 1800 seconds.
-        Vauxtra builds a fresh provider for every request (`create_provider`), so every
-        operation logs in again and gets its own seat.
-
-        Only `test_connection` used to release one. `list_rewrites` did not, and that is
-        the call the drift check and the scheduler make on every pass: sixteen of them and
-        Pi-hole answers `api_seats_exceeded` to every login for the next half hour -- the
-        operator's own browser included, because it draws on the same pool. Restarting
-        Pi-hole does not clear it; the sessions are persisted, so only the timeout ends it.
-        The failure surfaces as "provider rejected" inside Vauxtra, which points at the
-        wrong thing entirely.
-
-        The counter makes the helper reentrant, so `update_rewrite` can wrap its add and
-        its delete in a single seat instead of spending two.
-
-        Yields False when authentication failed; the caller decides what that means --
-        a write reports failure, a listing raises rather than answer an empty inventory.
-        The seat comes back either way, exception included, because the release is in a
-        `finally`.
+        Pi-hole v6 caps concurrent API sessions (16 by default, 30 min timeout), so leaking
+        one per call locks out every client. Reentrant. Yields False when login failed.
         """
         self._depth += 1
         try:
@@ -121,16 +103,9 @@ class PiholeProvider(DNSProvider):
                 self._logout_v6()
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
-        """Reachability, then credentials, then the read the provider needs.
+        """Check reachability, then credentials, then the read the provider needs.
 
-        Held inside a single `_api_session`: Pi-hole v6 hands out a small, fixed number of
-        sessions and hangs on to each until it is given back, so a diagnostic that opened
-        one per check would spend seats an operator needs for the web interface. `_depth`
-        makes the nested open in `list_rewrites` a no-op.
-
-        Without this, `_provider_diagnostics` falls back to `test_connection` alone, and
-        that one boolean is `False` both for a Pi-hole that is switched off and for one that
-        refused the password -- reported, either way, as `connection_failed`.
+        Runs inside one `_api_session` so a diagnostic spends a single session.
         """
         checks = [reachability_check(self.session, f"{self.url}/api/auth")]
         if not checks[0]["ok"]:
@@ -173,9 +148,7 @@ class PiholeProvider(DNSProvider):
                 )
                 if r.status_code != 200:
                     return False
-                # On Pi-hole v5 this endpoint may legitimately return []
-                # when no local rewrites exist; treat valid JSON response as
-                # a successful authenticated connection.
+                # Pi-hole v5 may return [] with no rewrites; valid JSON means authenticated.
                 _ = r.json()
                 return True
         except requests.RequestException:
@@ -184,12 +157,8 @@ class PiholeProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
-        """Every local DNS record Pi-hole holds.
-
-        Raises when the session could not be opened or the request failed. [] was the
-        answer to both, and [] is what `add_rewrite` reads as "this name is free", what
-        `/drift` reads as "the rewrite is gone" and what the record routes answer 404 on.
-        A login Pi-hole refused says nothing about the records behind it.
+        """Return every local DNS record. Raises when login or the request fails, since []
+        would read as "no records".
         """
         with self._api_session() as authed:
             if not authed:
@@ -275,8 +244,7 @@ class PiholeProvider(DNSProvider):
     def update_rewrite(self, old_domain: str, old_ip: str, new_domain: str, new_ip: str) -> bool:
         if old_domain == new_domain and old_ip == new_ip:
             return True  # nothing to change
-        # One seat for both halves: the helper only logs out when the outermost caller
-        # leaves, so the add and the delete share the session this opens.
+        # One session for both halves; the helper is reentrant.
         with self._api_session() as authed:
             if not authed:
                 return False

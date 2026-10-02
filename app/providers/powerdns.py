@@ -1,14 +1,10 @@
-"""PowerDNS Authoritative Server provider — zone records via the HTTP API.
+"""PowerDNS Authoritative Server provider: zone records via the HTTP API.
 
-Storage convention (DB columns):
-  url      → API base, e.g. http://192.168.1.10:8081
-  username → server id (optional — defaults to "localhost")
-  password → API key, sent as `X-API-Key`
+Columns: url = API base, username = server id (default "localhost"), password = API key
+(sent as X-API-Key).
 
-PowerDNS models a record set, not a record: one `(name, type)` pair holds *all* its
-values at once, and `changetype: REPLACE` deletes every existing value before writing
-the ones it is given. Adding an address to a name that already has one is therefore a
-read-modify-write, never a blind PATCH -- see `_write_rrset`.
+PowerDNS writes whole record sets: REPLACE drops every value it is not given, so adding
+an address is a read-modify-write (see `_write_rrset`).
 """
 
 from __future__ import annotations
@@ -34,7 +30,6 @@ class PowerDNSProvider(DNSProvider):
         self.session.headers["X-API-Key"] = (password or "").strip()
         self.session.headers["Accept"] = "application/json"
 
-    # ── HTTP helpers ──────────────────────────────────────────────────────
 
     def _api(self, path: str) -> str:
         return f"{self.url}/api/v1/servers/{self.server_id}{path}"
@@ -64,20 +59,14 @@ class PowerDNSProvider(DNSProvider):
         cleaned = (value or "").strip()
         if rtype != "CNAME":
             return cleaned
-        # `_fqdn` answers "." for a blank name, and "." is the DNS root -- a perfectly
-        # writable CNAME target. A blank value must stay blank so the callers refuse it
-        # instead of pointing the name at the root.
+        # A blank value stays blank: _fqdn would turn it into "." (the DNS root).
         return cls._fqdn(cleaned) if cleaned else ""
 
-    # ── Zones ─────────────────────────────────────────────────────────────
 
     def _list_zones(self) -> list[dict] | None:
-        """Every zone this API key can see, or None when the API refused to say.
+        """Return every zone the API key can see, or None if the API refused.
 
-        The same three answers `_zone_rrsets` keeps, one level up, and for the same
-        reason: an empty server and a server that would not answer send `_find_zone` in
-        opposite directions. The callers decide what to do with None -- the diagnostics
-        report it, `list_rewrites` and `_find_zone` raise.
+        Callers must tell "no zones" from "unknown": diagnostics report None, the others raise.
         """
         try:
             r = self.session.get(self._api("/zones"))
@@ -91,20 +80,13 @@ class PowerDNSProvider(DNSProvider):
         return [z for z in data if isinstance(z, dict) and z.get("name")]
 
     def _zone_id(self, zone: dict) -> str:
-        """The zone's own id when it has one, its name otherwise.
-
-        `id` is the canonical handle and already carries the root dot, but it is also
-        URL-escaped for zones whose name contains a slash. Falling back to the name keeps
-        the provider working against an API version that omits `id` from the list view.
-        """
+        """Return the zone's `id`, or its name for API versions that omit `id` from the list."""
         return str(zone.get("id") or self._fqdn(zone.get("name", "")))
 
     def _find_zone(self, domain: str) -> str | None:
-        """The id of the longest zone that contains *domain*, or None when none does.
+        """Return the id of the longest zone containing `domain`, or None if none does.
 
-        Raises when the zones could not be listed at all. None has to keep meaning "no
-        zone on this server covers the name", because that is what `add_rewrite` and
-        `delete_rewrite` turn into a refusal to write.
+        Raises when zones cannot be listed, so None always means "no covering zone".
         """
         zones = self._list_zones()
         if zones is None:
@@ -121,12 +103,10 @@ class PowerDNSProvider(DNSProvider):
         return best[1] if best else None
 
     def _zone_rrsets(self, zone_id: str) -> list[dict] | None:
-        """Every record set in the zone, or None when the API refused to say.
+        """Return every record set in the zone, or None if the API refused.
 
-        The difference matters on the write path and only there: PowerDNS writes a record
-        *set*, so "this zone holds no A record for the name" and "I could not read the
-        zone" lead to opposite actions. Flattening both to an empty list is what made a
-        403 look like an empty RRset.
+        The write path needs the difference: an empty set and an unreadable zone lead to
+        opposite actions.
         """
         try:
             r = self.session.get(f"{self._api('/zones')}/{zone_id}")
@@ -141,8 +121,7 @@ class PowerDNSProvider(DNSProvider):
     def _find_rrset(self, zone_id: str, name: str, rtype: str) -> dict | None | bool:
         """The record set, None when it does not exist, False when the API refused.
 
-        Three answers, the same three deSEC returns, because the caller has to tell them
-        apart before it replaces anything.
+        The caller must tell these apart before replacing anything (same as deSEC).
         """
         rrsets = self._zone_rrsets(zone_id)
         if rrsets is None:
@@ -153,7 +132,6 @@ class PowerDNSProvider(DNSProvider):
                 return rrset
         return None
 
-    # ── Writes ────────────────────────────────────────────────────────────
 
     def _patch(self, zone_id: str, rrset: dict) -> bool:
         try:
@@ -168,11 +146,9 @@ class PowerDNSProvider(DNSProvider):
             return False
 
     def _write_rrset(self, zone_id: str, name: str, rtype: str, contents: list[str], ttl: int) -> bool:
-        """Replace the `(name, type)` record set with *contents*, or delete it when empty.
+        """Replace the (name, type) record set with `contents`, or delete it when empty.
 
-        `REPLACE` with an empty `records` list is not a delete -- it is a validation
-        error on some versions and an empty RRset on others -- so the empty case gets
-        its own changetype.
+        REPLACE with no records is not a reliable delete across versions, hence DELETE.
         """
         if not contents:
             return self._patch(zone_id, {
@@ -188,7 +164,6 @@ class PowerDNSProvider(DNSProvider):
             "records": [{"content": c, "disabled": False} for c in contents],
         })
 
-    # ── DNSProvider interface ─────────────────────────────────────────────
 
     def test_connection(self) -> bool:
         if not self.url:
@@ -203,13 +178,9 @@ class PowerDNSProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
-        """Every managed record in every zone this API key can read.
+        """Return every managed record in every zone the key can read.
 
-        A zone this key cannot read used to contribute nothing, on the reasoning that
-        listing is read-only and the distinction was therefore safely ignorable here. It
-        is not: what reads this listing is the push, which creates the record it does not
-        find, and the drift check, which reports the record it does not find as missing.
-        A zone skipped in silence is a zone Vauxtra believes to be empty.
+        An unreadable zone raises: callers would read its records as missing.
         """
         zones = self._list_zones()
         if zones is None:
@@ -248,10 +219,7 @@ class PowerDNSProvider(DNSProvider):
 
         existing = self._find_rrset(zone_id, domain, rtype)
         if existing is False:
-            # The state is unknown, and the write below is a whole-set REPLACE. Sending it
-            # blind would delete every sibling address of this name -- the second A record
-            # of a round-robin, the AAAA nobody remembered -- and report success. Refusing
-            # is the only answer that cannot destroy anything.
+            # Unknown state: a blind REPLACE could delete sibling values, so refuse.
             return False
 
         ttl = int(existing.get("ttl") or DEFAULT_TTL) if existing else DEFAULT_TTL
@@ -293,7 +261,6 @@ class PowerDNSProvider(DNSProvider):
             return True  # this value was not in the set
         return self._write_rrset(zone_id, domain, rtype, remaining, ttl)
 
-    # ── Diagnostics ───────────────────────────────────────────────────────
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
         checks: list[dict] = []
