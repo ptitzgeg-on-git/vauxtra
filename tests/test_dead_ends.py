@@ -324,6 +324,28 @@ class TheGlobalNotificationUrlDeliversTests(_IsolatedDB):
         self.assertFalse(result["results"][1]["ok"])
         self.assertTrue(result["results"][1]["error"])
 
+    def test_the_test_route_never_quotes_a_stored_url(self) -> None:
+        """The stored URL is a credential; a send that raises must not hand it back."""
+        self._exec(
+            "INSERT INTO webhooks (id, name, url, enabled) VALUES (1, 'Good', ?, 1)", (self.URL,)
+        )
+        stored = self.URL
+
+        class _Apprise:
+            def add(self, url):
+                return True
+
+            def notify(self, **_kw):
+                raise OSError(f"refused by {stored}")
+
+        with patch.object(settings_api, "require_auth", lambda _r, scope=None: None), \
+             patch.dict("sys.modules", {"apprise": type("M", (), {"Apprise": _Apprise})}):
+            result = settings_api.test_webhook(_request("POST", "/api/settings/test-webhook"))
+
+        self.assertFalse(result["results"][0]["ok"])
+        self.assertIn("OSError", result["results"][0]["error"])
+        self.assertNotIn(stored, result["results"][0]["error"])
+
 
 class ResetMeansResetTests(_IsolatedDB):
     """Five tables used to survive the button that says it empties the instance."""

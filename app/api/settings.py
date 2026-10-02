@@ -462,7 +462,9 @@ def test_webhook(request: Request):
             else:
                 entry["error"] = "send failed (service unavailable, or the URL is wrong)"
         except Exception as e:  # one bad target must not hide the state of the others
-            entry["error"] = str(e)
+            # The class only: an Apprise URL is its own credential, and an exception raised
+            # while sending to it may quote it back to a key that is not allowed to read it.
+            entry["error"] = f"the send raised {type(e).__name__}"
         results.append(entry)
 
     # 200 either way: a per-target report says more than a single failed status, and the
