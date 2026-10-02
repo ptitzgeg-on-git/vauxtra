@@ -1,0 +1,61 @@
+# Static analysis of the code this repository writes, as opposed to the code it depends on.
+# Every other scanner here reads dependencies or the built image: pip-audit and npm audit read
+# lockfiles, Trivy and Grype read packages. None of them would notice an injection in a route
+# handler or a workflow step that interpolates an untrusted `${{ }}` into a shell line.
+#
+# Three languages, none of them compiled, so `build-mode: none` everywhere: CodeQL extracts the
+# source as it is and never runs a build. `actions` reads `.github/workflows/` itself.
+#
+# Deliberately not a gate of Build & Publish. A new CodeQL query can flag existing code on the
+# day it ships, and that must not hold a release hostage; the findings land in the Security tab
+# and on the pull request, where a human decides.
+name: CodeQL
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    - cron: "17 2 * * 3"  # every Wednesday at 02:17 UTC, away from the Monday scans
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript, actions]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          category: /language:${{ matrix.language }}
