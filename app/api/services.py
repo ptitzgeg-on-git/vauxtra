@@ -2179,6 +2179,7 @@ def check_all(request: Request):
     services = conn.execute(
         "SELECT id, target_ip, target_port, subdomain, domain, expose_mode FROM services WHERE enabled=1"
     ).fetchall()
+    conn.close()
     ok_count = error_count = 0
     # The connection is opened either way, so the latency is already measured: throwing it
     # away is what forced the table to tell operators to check rows one at a time to fill
@@ -2207,19 +2208,27 @@ def check_all(request: Request):
         except OSError:
             status = "error"
             error_count += 1
-        conn.execute(
-            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-            (status, svc["id"]),
-        )
-        # Same row the scheduler writes, so a manual run feeds the 24 h history too.
-        conn.execute(
-            "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-            (svc["id"], status),
-        )
         results.append({"id": svc["id"], "status": status, "latency_ms": latency_ms})
 
-    conn.commit()
-    conn.close()
+    # Written after every probe, not between them: an UPDATE opens the write transaction, and
+    # holding it across three-second probes made every other writer wait, then fail.
+    conn = get_db()
+    try:
+        for result in results:
+            conn.execute(
+                "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
+                (result["status"], result["id"]),
+            )
+            # Same row the scheduler writes, so a manual run feeds the 24 h history too. A
+            # service deleted while the probes ran gets no event.
+            conn.execute(
+                "INSERT INTO uptime_events (service_id, status) "
+                "SELECT ?, ? WHERE EXISTS (SELECT 1 FROM services WHERE id=?)",
+                (result["id"], result["status"], result["id"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
     # One line for the run, not one per service: the per-service check already logs each
     # probe, and a fleet of fifty would otherwise bury everything else in "Recent activity".
     add_log(
