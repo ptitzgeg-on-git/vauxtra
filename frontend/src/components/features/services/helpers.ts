@@ -1,3 +1,4 @@
+import { isCanceledError, isHttpStatus, isNetworkError } from '@/lib/errors';
 import type { DriftResult, Environment, Provider, Service, ServicePayload, Tag } from '@/types/api';
 
 export type ModeFilter = 'all' | 'tunnel' | 'proxy' | 'dns' | 'disabled';
@@ -73,6 +74,59 @@ export function bulkCheckSummary(
       : probed || skipped;
   const tone = failed > 0 ? 'warning' : ok > 0 || untested === 0 ? 'success' : 'neutral';
   return { message, tone };
+}
+
+/** How a bulk check ended: counts so far, and why it stopped early when it did. */
+export interface BulkCheckRun {
+  counts: BulkCheckCounts;
+  /** The page went away (or the caller aborted): nothing is left to report to. */
+  aborted: boolean;
+  /** The error that made every further check pointless: an expired session or no network. */
+  stoppedBy?: unknown;
+}
+
+/**
+ * Checks `targets` one at a time, so the backend is not flooded, and stops early when going
+ * on can only fail the same way: a 401 means the session is gone and a network error means
+ * the server is unreachable, so the remaining services would each be counted down for a
+ * reason that has nothing to do with them. Any other failure is about that one service and
+ * is counted as such. `signal` aborts both the loop and the request in flight.
+ */
+export async function runBulkChecks<T extends { tested?: boolean; status?: string }>(
+  targets: readonly Service[],
+  check: (service: Service, signal: AbortSignal) => Promise<T>,
+  {
+    signal,
+    onStart,
+    onResult,
+    onEnd,
+  }: {
+    signal: AbortSignal;
+    onStart?: (service: Service) => void;
+    onResult?: (service: Service, result: T) => void;
+    onEnd?: (service: Service) => void;
+  },
+): Promise<BulkCheckRun> {
+  const counts: BulkCheckCounts = { ok: 0, failed: 0, untested: 0 };
+  for (const service of targets) {
+    if (signal.aborted) return { counts, aborted: true };
+    onStart?.(service);
+    try {
+      const result = await check(service, signal);
+      if (signal.aborted) return { counts, aborted: true };
+      onResult?.(service, result);
+      if (result.tested === false) counts.untested += 1;
+      else if (result.status === 'ok') counts.ok += 1;
+      else counts.failed += 1;
+    } catch (err) {
+      if (signal.aborted || isCanceledError(err)) return { counts, aborted: true };
+      if (isHttpStatus(err, 401) || isNetworkError(err)) return { counts, aborted: false, stoppedBy: err };
+      counts.failed += 1;
+    } finally {
+      onEnd?.(service);
+    }
+  }
+  return { counts, aborted: false };
 }
 
 /**
