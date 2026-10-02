@@ -97,6 +97,10 @@ def check(response: httpx.Response) -> httpx.Response:
     raise ApiError(response.status_code, detail or "no detail", response.request.method, str(response.request.url))
 
 
+def has_api_key() -> bool:
+    return bool(_API_KEY)
+
+
 def auth_headers() -> dict[str, str]:
     if _API_KEY:
         return {"Authorization": f"Bearer {_API_KEY}"}
