@@ -12,8 +12,7 @@
 
 ## Checklist
 
-- [ ] `make test` passes (`python -m pytest tests/ -v`)
-- [ ] `make lint` passes (`ruff check` + `tsc --noEmit`)
+- [ ] `make check` passes: `ruff check .`, `python -m pytest tests/`, every `scripts/check_*.py`, and in `frontend/` `npm run lint`, `npx tsc -b --force`, `npm run i18n:check`, `npm run i18n:quality`, `npm run test`
 - [ ] Frontend builds without errors (`cd frontend && npm run build`)
 - [ ] No new `any` types introduced in TypeScript
 - [ ] All UI text in English
