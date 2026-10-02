@@ -32,6 +32,11 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Nothing by default. Every job below names the scopes it uses, so a job added later
+# without a `permissions:` block gets a token that can do nothing rather than whatever the
+# repository default happens to be.
+permissions: {}
+
 jobs:
   audit:
     name: Dependency audit
@@ -50,6 +55,7 @@ jobs:
       # now refuses to rule on a shallow clone, so this line is what keeps it able to.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -122,6 +128,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -171,6 +179,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # `exit-code` is declared `required: false` with no `default:` in trivy-action's
       # action.yaml, so leaving it out means the `--exit-code` flag is never passed and
