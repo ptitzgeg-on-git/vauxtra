@@ -8,29 +8,13 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
-    """
-    Validate and parse CORS origins from environment variable.
-    
-    Ensures:
-    - Valid URLs with scheme (http/https)
-    - No localhost wildcards (*) or overly permissive patterns
-    - Proper port numbers (1-65535)
-    - No URL injection attempts
-    - Normalised to the exact string a browser puts in `Origin`: a bare trailing slash
-      is dropped, a default port for the scheme is dropped, an IPv6 literal keeps its
-      brackets
-    
-    Args:
-        origins_str: Comma-separated CORS origins from environment
-        default_origins: Fallback if origins_str is empty
-    
-    Returns:
-        List of validated CORS origins -- empty when nothing was configured, which is
-        the same-origin deployment and not a failure.
+    """Parse and validate CORS origins from the environment.
 
-    Raises:
-        ValueError: If any origin is malformed or dangerous, or if a non-blank setting
-            names no origin at all
+    Each origin needs an http(s) scheme and a valid port, no wildcard, path, query or
+    fragment, and is normalized to what a browser sends in `Origin` (trailing slash and
+    default port dropped, IPv6 brackets kept). Falls back to `default_origins` when
+    `origins_str` is empty. Returns the list, empty for same-origin deployments.
+    Raises ValueError on a malformed origin, or a non-blank setting naming none.
     """
     origins_to_check = origins_str or default_origins
     parsed_origins = []
@@ -43,51 +27,31 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
         try:
             parsed = urlparse(origin)
 
-            # ✅ Must have scheme (http/https)
             if not parsed.scheme or parsed.scheme not in ("http", "https"):
                 raise ValueError(f"Invalid scheme: {parsed.scheme}. Must be http or https.")
 
-            # ✅ Must have hostname
             if not parsed.hostname:
                 raise ValueError(f"Missing hostname in: {origin}")
 
-            # ✅ Reject wildcards and overly permissive patterns
             if "*" in parsed.hostname:
                 raise ValueError(f"Wildcard origins not allowed: {origin}")
 
-            # ✅ Validate port number if present
             if parsed.port is not None and not (1 <= parsed.port <= 65535):
                 raise ValueError(f"Invalid port: {parsed.port}. Must be 1-65535.")
 
-            # ✅ Ensure no path, query, or fragment
-            #
-            # An origin carries no path and a browser never sends one, but a single "/" is
-            # what the address bar shows and therefore what gets pasted. It used to refuse
-            # the setting -- and with it every other origin in the list, since one bad
-            # entry refuses them all -- over a character that means nothing here. It is
-            # accepted and dropped; a path with anything in it is not an origin and still
-            # fails.
+            # A lone trailing "/" (as pasted from the address bar) is accepted and dropped.
             if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
                 raise ValueError(f"Origins must not include path/query/fragment: {origin}")
 
-            # ✅ Rebuild valid origin
-            #
-            # This string is compared to the browser's `Origin` header character for
-            # character, so a rebuild that is merely equivalent is a rejection with no
-            # message anywhere: the request fails in the browser, and the log says the
-            # origin was validated. Two spellings used to come out of here matching
-            # nothing -- an explicit default port, where `Origin` reads `https://host` and
-            # never `https://host:443`, and an IPv6 literal, which `urlparse` returns
-            # stripped of the brackets that make it an authority.
+            # Rebuilt exactly as the browser's Origin header spells it, since it is compared
+            # character for character.
             host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
             if parsed.port is not None and parsed.port != _DEFAULT_PORTS[parsed.scheme]:
                 validated = f"{parsed.scheme}://{host}:{parsed.port}"
             else:
                 validated = f"{parsed.scheme}://{host}"
 
-            # Two spellings of one origin are one origin. Normalising is what makes that
-            # reachable: `https://host/` and `https://host:443` arrive here identical, and
-            # the duplicate would otherwise be counted in the "N allowed" line at startup.
+            # Deduplicate after normalization.
             if validated not in parsed_origins:
                 parsed_origins.append(validated)
 
@@ -96,14 +60,8 @@ def validate_cors_origins(origins_str: str, default_origins: str) -> list[str]:
         except Exception as e:
             raise ValueError(f"Error parsing CORS origin '{origin}': {e}")
 
-    # Nothing configured is an answer, not an accident: the interface is served by this
-    # same application, so the deployment the documentation recommends allows no
-    # cross-origin caller and reaches this line with an empty list. Raising here made that
-    # recommended configuration write an `error` at every single boot -- an alarm nobody
-    # can silence by fixing anything, which is the fastest way to teach an operator to
-    # stop reading the log. A setting that is *not* blank and still names no origin is a
-    # different animal: something was asked for and nothing took effect, so it still
-    # raises.
+    # Empty is the normal same-origin setup, not an error; only a non-blank setting that
+    # yields nothing raises.
     if not parsed_origins and origins_to_check.strip():
         raise ValueError(f"No valid CORS origins in: {origins_to_check!r}")
 
@@ -116,24 +74,10 @@ MIN_PASSWORD_LENGTH = 12
 def validate_password_strength(
     password: str, min_length: int = MIN_PASSWORD_LENGTH
 ) -> tuple[bool, str]:
-    """The admin password rule -- and the only place it is written.
+    """Single source of the admin password rule.
 
-    Until now there were two. This function asked for 12 characters and four character
-    classes and was called by nothing but its own tests, while `setup_password` and
-    `change_password` each carried an inline `len(password) < 8`. The policy that ran was
-    the one nobody had thought about.
-
-    The rule that survives is length, not composition. NIST SP 800-63B stopped recommending
-    character-class requirements because of what they do to real passwords: asked for an
-    uppercase, a digit and a symbol, people produce `Password1!` -- eleven characters a
-    wordlist finds instantly, and which the old rule accepted the moment it reached twelve.
-    A floor of twelve with no class rules leaves a passphrase as the obvious way to pass,
-    and a passphrase is what we actually want.
-
-    The distinct-character check is the one thing kept from the old spirit: it costs nothing
-    and it refuses `aaaaaaaaaaaa` and `abababababab`, which length alone waves through.
-
-    Returns (is_valid, error_message); the message is shown to the user as-is.
+    Length floor plus a minimum of distinct characters; no character-class rules
+    (NIST SP 800-63B). Returns (is_valid, error_message), message shown to the user as is.
     """
     if len(password) < min_length:
         return False, f"Password must be at least {min_length} characters"
@@ -145,18 +89,10 @@ def validate_password_strength(
 
 
 def mask_secret_url(url: str) -> str:
-    """Reduce a credential-bearing URL to what is safe to show and to log.
+    """Mask a credential-bearing URL (e.g. Apprise) for display and logs.
 
-    An Apprise URL *is* the credential: `discord://<id>/<token>`, `tgram://<bot
-    token>/<chat id>`, `slack://<tokens>/<channel>`. There is no separate password
-    field to clear -- masking is the only way to name a webhook without handing over
-    the ability to post to it.
-
-    The authority is kept only when a `@` proves it is a server address and the
-    credential sits in front of it (`ntfy://user:pass@ntfy.home.lan/topic` ->
-    `ntfy://***@ntfy.home.lan`). Without a `@` the authority is opaque and is itself
-    half the secret, so it goes too. The scheme always survives: it is what tells the
-    operator which of their webhooks a line is about.
+    The scheme is kept. The host is kept only after an `@` (`ntfy://***@ntfy.home.lan`);
+    without one the authority may itself be the secret, so it is masked too.
     """
     raw = (url or "").strip()
     if not raw:
@@ -178,26 +114,19 @@ _SECRET_QUERY = re.compile(
 
 
 def redact_query_secrets(text: str) -> str:
-    """*text* with the value of every credential-bearing query parameter replaced by `***`.
+    """Return `text` with the value of every credential-bearing query parameter masked.
 
-    `requests` quotes the URL it was calling, query string included, in the text of the
-    exceptions it raises: `raise_for_status()` ends on "for url: ...&auth=<the key>", and a
-    refused connection names "url: /api/zones/list?token=<the token>". The two integrations
-    that authenticate in the query string, Technitium and Pi-hole v5, wrap that text into
-    their own refusal, which the scan writes to the journal and a failed listing of their
-    records sends back in its 502. A parameter is masked on its name alone; one masked for
-    nothing costs a word of a log line.
+    requests quotes the full URL in its exceptions, and some integrations (Technitium,
+    Pi-hole v5) authenticate in the query string. Matching is on parameter name only.
     """
     return _SECRET_QUERY.sub(r"\1***", text or "")
 
 
 def sanitize_domain(domain: str) -> str:
+    """Keep only letters, digits, '.', '-', '_' and '*', trim hyphens and collapse dots.
+
+    Returns "invalid.domain" when nothing is left.
     """
-    Sanitize domain name to prevent injection attacks.
-    
-    Removes/escapes potentially dangerous characters while preserving valid DNS names.
-    """
-    # Allow only alphanumeric, dots, hyphens
     sanitized = re.sub(r"[^a-zA-Z0-9.\-_*]", "", domain)
 
     # Ensure doesn't start/end with hyphen
