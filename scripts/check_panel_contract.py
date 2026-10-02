@@ -872,6 +872,8 @@ def collect_panel_calls(index: PanelIndex) -> list[PanelCall]:
             args = split_spans(src.code, open_at + 1, close, ",")
             if len(args) < 2:
                 continue  # no body: nothing is sent, so nothing can be dropped
+            if src.code[args[1][0]: args[1][1]].strip() == "undefined":
+                continue  # an explicit `undefined` body, written to reach the config argument
             url_expr = src.raw[args[0][0]: args[0][1]].strip()
             keys = index.resolve_expr(src, args[1][0], args[1][1])
             calls.append(

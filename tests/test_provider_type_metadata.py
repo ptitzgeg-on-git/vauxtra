@@ -29,7 +29,7 @@ def _fallback_descriptions() -> dict:
     with open(_CONSTANTS, encoding="utf-8") as fh:
         src = fh.read()
     bloc = re.search(
-        r"export const descByType: Record<string, string> = \{(.*?)\n\};", src, re.S
+        r"(?:export )?const descByType: Record<string, string> = \{(.*?)\n\};", src, re.S
     )
     assert bloc, "descByType is no longer in providerConstants.ts in the expected shape"
     out = {}
