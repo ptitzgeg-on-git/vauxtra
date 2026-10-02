@@ -3,7 +3,7 @@ import sqlite3
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.sync import (
     _dns_record_kept,
@@ -2248,7 +2248,8 @@ def check_all(request: Request):
 
 
 class _BulkActionBody(BaseModel):
-    ids:    list[int]
+    # Bounded: each id costs up to three provider calls, and SQLite caps bound parameters.
+    ids:    list[int] = Field(max_length=500)
     action: str  # "enable" | "disable" | "delete"
 
 
@@ -2291,6 +2292,9 @@ def bulk_action(body: _BulkActionBody, request: Request):
 
         # Generalized enable/disable: manage each provider
         for svc in services:
+            # The `continue` branches below skip the commit at the end of the body, and the
+            # next service's provider calls must not run with this one's log lines uncommitted.
+            conn.commit()
             sid_b = svc["id"]
             mode = (svc["expose_mode"] or "proxy_dns").strip().lower()
             pub = _service_public_hostname(
@@ -2463,6 +2467,8 @@ def bulk_action(body: _BulkActionBody, request: Request):
             )
             conn.execute("DELETE FROM services WHERE id=?", (sid,))
             affected += 1
+            # Before the next service's provider calls, which must not hold the writer lock.
+            conn.commit()
 
         conn.commit()
         add_log("info", f"Bulk delete: {plural(affected, 'service')}")

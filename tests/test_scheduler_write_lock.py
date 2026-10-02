@@ -347,5 +347,42 @@ class TestManualCheckAllDoesNotHoldTheLock(WriteLockTestCase):
         self.assertEqual(events, 2)
 
 
+class TestBulkDeleteDoesNotHoldTheLock(WriteLockTestCase):
+    """Each service's withdrawal calls providers; the previous deletion must be committed."""
+
+    def _bulk(self, ids, withdraw):
+        from starlette.requests import Request
+
+        from app.api import services as services_api
+
+        request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+        with patch.object(services_api, "require_auth", lambda _r, scope=None: None), \
+             patch.object(services_api, "withdraw_service_routes", withdraw):
+            return services_api.bulk_action(
+                services_api._BulkActionBody(ids=ids, action="delete"), request
+            )
+
+    def test_every_withdrawal_runs_against_a_writable_database(self):
+        self._seed_services(3)
+        seen: list = []
+
+        def withdraw(conn, svc, sid):
+            _witness_can_write(f"withdraw:{sid}", seen)
+            return []
+
+        result = self._bulk([1, 2, 3], withdraw)
+
+        self.assertEqual(result["affected"], 3, result)
+        self.assertEqual(_refused(seen), [], "a withdrawal ran with the write lock held")
+
+    def test_the_id_list_is_bounded(self):
+        from pydantic import ValidationError
+
+        from app.api import services as services_api
+
+        with self.assertRaises(ValidationError):
+            services_api._BulkActionBody(ids=list(range(501)), action="delete")
+
+
 if __name__ == "__main__":
     unittest.main()
