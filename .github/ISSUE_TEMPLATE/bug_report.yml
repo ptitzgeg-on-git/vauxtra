@@ -1,0 +1,98 @@
+name: Bug report
+description: Something is broken
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. A security problem does not belong here:
+        report it privately, as described in SECURITY.md.
+
+  - type: input
+    id: version
+    attributes:
+      label: Vauxtra version
+      description: "The `version` field of `GET /api/health`, or the image tag you run."
+      placeholder: "1.7.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker image from GHCR
+        - Docker Compose, built from source
+        - Source run (uvicorn + vite)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Provider types involved
+      description: Select every provider the problem touches.
+      multiple: true
+      options:
+        - None, not provider-related
+        - Nginx Proxy Manager
+        - Traefik
+        - Zoraxy
+        - Cloudflare DNS
+        - Cloudflare Tunnel
+        - AdGuard Home
+        - Pi-hole
+        - PowerDNS
+        - Technitium
+        - deSEC
+        - Docker endpoint
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the exact error message, and a screenshot if it is a UI problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        `docker logs vauxtra --tail 200`, or the Logs page filtered on errors.
+        **Redact secrets before pasting:** API keys, tokens, passwords, cookies and any
+        address you do not want public. Logs are published as they are pasted.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      description: Only for a UI problem.
+      placeholder: "Firefox 140"
