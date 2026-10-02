@@ -35,6 +35,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   quote the stored URL and the token inside it.
 - `data/.secret_key` is created with mode 600 instead of being narrowed after the write.
 - In the image, only `/app/data` belongs to the user the server runs as, not the code.
+- **Notification URLs are encrypted at rest**, like provider secrets: an Apprise URL is its own
+  credential. Existing rows, and queued retries, are encrypted at the next start.
 - A version tag only publishes when it points at a commit on `main`. Branch protection does
   not cover tags, so any pushed commit could be tagged, signed and shipped as `latest`.
 - The tunnel check of the preflight masks a token quoted in a provider's error.

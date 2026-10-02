@@ -63,6 +63,11 @@ def encrypt_secret(s: str) -> str:
 _FERNET_PREFIX = "gAAAAA"
 
 
+def is_encrypted(s: str) -> bool:
+    """Whether *s* is a Fernet token, whichever key wrote it."""
+    return bool(s) and s.startswith(_FERNET_PREFIX)
+
+
 def decrypt_secret(s: str) -> str:
     """Decrypt a Fernet string, or return it as-is if it was never encrypted (legacy).
 

@@ -22,6 +22,7 @@ from app.api import backup as backup_api
 from app.api import settings as settings_api
 from app.api import webhooks as webhooks_api
 from app.api.backup import RestoreRequest, SecureBackupRequest
+from app.config import decrypt_secret, encrypt_secret, is_encrypted
 from app.limiter import limiter as _app_limiter
 from app.security import mask_secret_url
 
@@ -64,7 +65,7 @@ class _IsolatedDB(unittest.TestCase):
         conn = models.get_db()
         try:
             cur = conn.execute(
-                "INSERT INTO webhooks (name, url, enabled) VALUES (?,?,1)", (name, url)
+                "INSERT INTO webhooks (name, url, enabled) VALUES (?,?,1)", (name, encrypt_secret(url))
             )
             conn.commit()
             return cur.lastrowid
@@ -187,7 +188,8 @@ class WebhookReadPathTests(_IsolatedDB):
         conn = models.get_db()
         row = conn.execute("SELECT url FROM webhooks WHERE id=?", (wid,)).fetchone()
         conn.close()
-        self.assertEqual(row["url"], SECRET_URL)
+        self.assertTrue(is_encrypted(row["url"]), "stored in clear")
+        self.assertEqual(decrypt_secret(row["url"]), SECRET_URL)
 
     def test_a_partial_update_keeps_the_stored_url(self) -> None:
         """Which is what makes the mask safe to show: you never have to send it back."""
@@ -202,7 +204,8 @@ class WebhookReadPathTests(_IsolatedDB):
         conn = models.get_db()
         row = conn.execute("SELECT url, enabled FROM webhooks WHERE id=?", (wid,)).fetchone()
         conn.close()
-        self.assertEqual(row["url"], SECRET_URL)
+        self.assertTrue(is_encrypted(row["url"]), "stored in clear")
+        self.assertEqual(decrypt_secret(row["url"]), SECRET_URL)
         self.assertEqual(row["enabled"], 0)
 
     def test_settings_masks_the_legacy_global_url(self) -> None:
@@ -376,7 +379,8 @@ class BackupSecretTests(_IsolatedDB):
         conn.close()
         # Stored in clear, like it always was: `_try_send_apprise` hands the URL to apprise
         # as-is. What changed is that it no longer crosses the wire or the disk in clear.
-        self.assertEqual(row["url"], SECRET_URL)
+        self.assertTrue(is_encrypted(row["url"]), "stored in clear")
+        self.assertEqual(decrypt_secret(row["url"]), SECRET_URL)
         self.assertEqual(row["enabled"], 1)
 
     def test_wrong_passphrase_fails_before_anything_is_wiped(self) -> None:
@@ -403,7 +407,8 @@ class BackupSecretTests(_IsolatedDB):
         conn = models.get_db()
         row = conn.execute("SELECT url FROM webhooks").fetchone()
         conn.close()
-        self.assertEqual(row["url"], SECRET_URL)
+        self.assertTrue(is_encrypted(row["url"]), "stored in clear")
+        self.assertEqual(decrypt_secret(row["url"]), SECRET_URL)
 
     def test_a_version_7_backup_still_restores(self) -> None:
         """Before version 8 only the provider passwords were encrypted. Such a file has no
@@ -426,8 +431,55 @@ class BackupSecretTests(_IsolatedDB):
         conn = models.get_db()
         row = conn.execute("SELECT url, enabled FROM webhooks").fetchone()
         conn.close()
-        self.assertEqual(row["url"], SECRET_URL)
+        self.assertTrue(is_encrypted(row["url"]), "stored in clear")
+        self.assertEqual(decrypt_secret(row["url"]), SECRET_URL)
         self.assertEqual(row["enabled"], 1)
+
+
+class UrlsAreEncryptedAtRestTests(_IsolatedDB):
+    """An Apprise URL is its own credential, so it is stored the way a password is."""
+
+    def _raw(self, wid: int) -> str:
+        conn = models.get_db()
+        try:
+            return conn.execute("SELECT url FROM webhooks WHERE id=?", (wid,)).fetchone()["url"]
+        finally:
+            conn.close()
+
+    def test_a_url_left_in_clear_is_encrypted_at_the_next_start(self) -> None:
+        conn = models.get_db()
+        wid = conn.execute(
+            "INSERT INTO webhooks (name, url, enabled) VALUES ('old', ?, 1)", (SECRET_URL,)
+        ).lastrowid
+        conn.commit()
+        conn.close()
+
+        models.init_db()
+
+        self.assertTrue(is_encrypted(self._raw(wid)))
+        self.assertEqual(decrypt_secret(self._raw(wid)), SECRET_URL)
+
+    def test_a_token_from_another_key_is_not_encrypted_twice(self) -> None:
+        foreign = "gAAAAABforeign-token-written-under-another-key"
+        conn = models.get_db()
+        wid = conn.execute(
+            "INSERT INTO webhooks (name, url, enabled) VALUES ('foreign', ?, 1)", (foreign,)
+        ).lastrowid
+        conn.commit()
+        conn.close()
+
+        models.init_db()
+
+        self.assertEqual(self._raw(wid), foreign)
+
+    def test_the_api_writes_it_encrypted(self) -> None:
+        with patch.object(webhooks_api, "require_auth", lambda _r, scope=None: None):
+            created = webhooks_api.add_webhook(
+                _request("POST", "/api/webhooks"),
+                webhooks_api.WebhookIn(name="Discord", url=SECRET_URL),
+            )
+        self.assertTrue(is_encrypted(self._raw(created["id"])))
+        self.assertNotIn("TOKEN", json.dumps(created))
 
 
 if __name__ == "__main__":

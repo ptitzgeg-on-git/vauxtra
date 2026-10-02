@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import require_auth
+from app.config import decrypt_secret, encrypt_secret
 from app.models import get_db
 from app.security import mask_secret_url
 
@@ -224,7 +225,7 @@ def _public_webhook(row) -> dict:
     supports partial bodies, so a round-trip that omits `url` keeps the stored one.
     """
     data = dict(row)
-    data["url_masked"] = mask_secret_url(data.pop("url", ""))
+    data["url_masked"] = mask_secret_url(decrypt_secret(data.pop("url", "")))
     return data
 
 
@@ -274,7 +275,7 @@ def add_webhook(request: Request, body: WebhookIn):
                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 name,
-                url,
+                encrypt_secret(url),
                 enabled,
                 scope_type,
                 scope_ref_id,
@@ -314,7 +315,7 @@ def update_webhook(wid: int, request: Request, body: WebhookUpdateIn):
 
         # Support partial updates (e.g. toggle sends only { enabled }).
         name    = supplied.get("name", existing["name"])
-        url     = supplied.get("url", existing["url"])
+        url     = supplied.get("url", decrypt_secret(existing["url"]))
         enabled = int(bool(supplied.get("enabled", existing["enabled"])))
         scope_type, scope_ref_id = _normalize_scope(supplied, dict(existing), conn=conn)
         alert_on_any_down         = int(bool(supplied.get("alert_on_any_down",        existing["alert_on_any_down"])))
@@ -338,7 +339,7 @@ def update_webhook(wid: int, request: Request, body: WebhookUpdateIn):
                WHERE id=?""",
             (
                 name,
-                url,
+                encrypt_secret(url),
                 enabled,
                 scope_type,
                 scope_ref_id,
@@ -440,7 +441,7 @@ def test_webhook(wid: int, request: Request):
     try:
         import apprise
         a = apprise.Apprise()
-        if not a.add(row["url"]):
+        if not a.add(decrypt_secret(row["url"])):
             raise HTTPException(400, "Invalid or unrecognized Apprise URL")
         ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
         if not ok:
@@ -476,7 +477,7 @@ def get_service_alerts(sid: int, request: Request):
         out = []
         for r in rows:
             item = dict(r)
-            item["webhook_url_masked"] = mask_secret_url(item.pop("webhook_url", ""))
+            item["webhook_url_masked"] = mask_secret_url(decrypt_secret(item.pop("webhook_url", "")))
             out.append(item)
         return out
     finally:

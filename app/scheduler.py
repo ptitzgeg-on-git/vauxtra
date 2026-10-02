@@ -6,6 +6,7 @@ import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.config import decrypt_secret, encrypt_secret
 from app.expiry import parse_expiry
 from app.models import add_log, get_db
 from app.providers.factory import certificate_provider_types, create_provider
@@ -708,7 +709,7 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
             sql = """INSERT INTO webhook_delivery_log
                      (webhook_id, url, title, body, status, attempt, next_retry_at, error_msg)
                      VALUES (?,?,?,?,?,?,?,?)"""
-            params = (webhook_id, url, title, body, "pending", 1, next_retry, str(exc))
+            params = (webhook_id, encrypt_secret(url), title, body, "pending", 1, next_retry, str(exc))
             if conn is not None:
                 conn.execute(sql, params)
             else:
@@ -748,6 +749,7 @@ def _run_webhook_retry(conn) -> None:
     for row in rows:
         dlid = int(row["id"])
         attempt = int(row["attempt"] or 0)
+        url = decrypt_secret(row["url"])
 
         if attempt >= MAX_ATTEMPTS:
             conn.execute(
@@ -757,14 +759,14 @@ def _run_webhook_retry(conn) -> None:
             add_log(
                 "error",
                 f"[Webhook] Delivery abandoned after {attempt} attempts: "
-                f"{mask_secret_url(row['url'])}",
+                f"{mask_secret_url(url)}",
                 conn,
             )
             conn.commit()
             continue
 
         a = _apprise.Apprise()
-        if not a.add(row["url"]):
+        if not a.add(url):
             conn.execute(
                 "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
                 (dlid,),
@@ -790,7 +792,7 @@ def _run_webhook_retry(conn) -> None:
                        WHERE id=?""",
                     (new_attempt, str(exc), dlid),
                 )
-                add_log("error", f"[Webhook] Delivery abandoned: {mask_secret_url(row['url'])}", conn)
+                add_log("error", f"[Webhook] Delivery abandoned: {mask_secret_url(url)}", conn)
             else:
                 delay = _WEBHOOK_RETRY_BACKOFF[new_attempt - 1]
                 next_retry = _utc_stamp(delay)
@@ -881,6 +883,7 @@ def _fire_global_webhook() -> None:
         for row in rows:
             if not _service_matches_scope(row, extra_target_map):
                 continue
+            url = decrypt_secret(row["url"])
             key = (int(row["webhook_id"]), int(row["service_id"]))
             valid_keys.add(key)
             fqdn = f"{row['subdomain']}.{row['domain']}"
@@ -906,14 +909,14 @@ def _fire_global_webhook() -> None:
                     message = f"REMINDER: {fqdn} still down ({elapsed_minutes:.1f}m)"
 
                 if should_send:
-                    messages_by_url.setdefault(row["url"], []).append(message)
-                    keys_by_url.setdefault(row["url"], []).append(key)
-                    webhook_id_by_url.setdefault(row["url"], int(row["webhook_id"]))
+                    messages_by_url.setdefault(url, []).append(message)
+                    keys_by_url.setdefault(url, []).append(key)
+                    webhook_id_by_url.setdefault(url, int(row["webhook_id"]))
                     _webhook_service_last_sent[key] = now
             else:
                 had_down = key in _webhook_service_down_since or key in _webhook_service_last_sent
                 if had_down and status == "ok" and bool(row["alert_on_any_up"]):
-                    messages_by_url.setdefault(row["url"], []).append(f"RECOVERED: {fqdn}")
+                    messages_by_url.setdefault(url, []).append(f"RECOVERED: {fqdn}")
                 _webhook_service_down_since.pop(key, None)
                 _webhook_service_last_sent.pop(key, None)
 
@@ -986,6 +989,7 @@ def _fire_service_webhooks() -> None:
         for row in rows:
             key = (int(row["service_id"]), int(row["webhook_id"]))
             valid_keys.add(key)
+            url = decrypt_secret(row["webhook_url"])
 
             status = (row["status"] or "unknown").lower()
             fqdn = f"{row['subdomain']}.{row['domain']}"
@@ -1004,16 +1008,16 @@ def _fire_service_webhooks() -> None:
 
                 elapsed_minutes = (now - since) / 60.0
                 if elapsed_minutes >= min_down and key not in _alert_down_sent:
-                    messages_by_url.setdefault(row["webhook_url"], []).append(
+                    messages_by_url.setdefault(url, []).append(
                         f"DOWN: {fqdn} ({elapsed_minutes:.1f}m)"
                     )
-                    keys_by_url.setdefault(row["webhook_url"], []).append(key)
-                    webhook_id_by_url.setdefault(row["webhook_url"], int(row["webhook_id"]))
+                    keys_by_url.setdefault(url, []).append(key)
+                    webhook_id_by_url.setdefault(url, int(row["webhook_id"]))
                     _alert_down_sent.add(key)
             else:
                 had_down = key in _alert_down_since or key in _alert_down_sent
                 if had_down and status == "ok" and on_up:
-                    messages_by_url.setdefault(row["webhook_url"], []).append(
+                    messages_by_url.setdefault(url, []).append(
                         f"RECOVERED: {fqdn}"
                     )
                 _alert_down_since.pop(key, None)
@@ -1092,7 +1096,7 @@ def _fire_integration_webhook(changed: list[dict]) -> None:
             if not lines:
                 continue
             _try_send_apprise(
-                wh["url"], "Vauxtra - Integration alert", "\n".join(lines),
+                decrypt_secret(wh["url"]), "Vauxtra - Integration alert", "\n".join(lines),
                 webhook_id=wh["id"],
             )
     except Exception:
@@ -1119,7 +1123,7 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
 
         for wh in webhooks:
             _try_send_apprise(
-                wh["url"], "Vauxtra: Auto-Reconcile", body, webhook_id=wh["id"]
+                decrypt_secret(wh["url"]), "Vauxtra: Auto-Reconcile", body, webhook_id=wh["id"]
             )
     except Exception:
         import traceback

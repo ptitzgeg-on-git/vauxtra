@@ -218,6 +218,14 @@ class TheGlobalNotificationUrlDeliversTests(_IsolatedDB):
 
     URL = "discord://token@channel"
 
+    @staticmethod
+    def _rows_for(conn, url: str) -> list:
+        """Webhook rows holding *url*. It is stored encrypted, so SQL cannot match it."""
+        from app.config import decrypt_secret
+
+        return [r for r in conn.execute("SELECT * FROM webhooks").fetchall()
+                if decrypt_secret(r["url"]) == url]
+
     def test_the_legacy_setting_moves_into_the_webhooks_table(self) -> None:
         self._exec("INSERT INTO settings (key, value) VALUES ('webhook_url', ?)", (self.URL,))
         self._exec("INSERT INTO settings (key, value) VALUES ('webhook_enabled', 'true')")
@@ -225,7 +233,7 @@ class TheGlobalNotificationUrlDeliversTests(_IsolatedDB):
         conn = models.get_db()
         models._migrate_legacy_webhook_url(conn)
         conn.commit()
-        row = conn.execute("SELECT * FROM webhooks WHERE url=?", (self.URL,)).fetchone()
+        row = next(iter(self._rows_for(conn, self.URL)), None)
         conn.close()
 
         self.assertIsNotNone(row, "the configured URL must end up where delivery reads")
@@ -244,7 +252,7 @@ class TheGlobalNotificationUrlDeliversTests(_IsolatedDB):
         conn = models.get_db()
         models._migrate_legacy_webhook_url(conn)
         conn.commit()
-        row = conn.execute("SELECT enabled FROM webhooks WHERE url=?", (self.URL,)).fetchone()
+        row = next(iter(self._rows_for(conn, self.URL)), None)
         conn.close()
         self.assertEqual(row["enabled"], 0)
 
@@ -256,9 +264,9 @@ class TheGlobalNotificationUrlDeliversTests(_IsolatedDB):
             conn.commit()
             conn.close()
         conn = models.get_db()
-        count = conn.execute("SELECT COUNT(*) AS n FROM webhooks WHERE url=?", (self.URL,)).fetchone()
+        rows = self._rows_for(conn, self.URL)
         conn.close()
-        self.assertEqual(count["n"], 1)
+        self.assertEqual(len(rows), 1)
 
     def test_the_setting_can_no_longer_be_written(self) -> None:
         with self.assertRaises(HTTPException) as ctx:

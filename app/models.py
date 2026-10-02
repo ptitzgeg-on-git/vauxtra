@@ -279,6 +279,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_legacy_webhook_url(conn)
     _ensure_unique_service_hostnames(conn)
     _rebuild_webhook_delivery_log_fk(conn)
+    _encrypt_webhook_urls(conn)
+
+
+def _encrypt_webhook_urls(conn: sqlite3.Connection) -> None:
+    """Encrypt notification URLs still stored in clear: an Apprise URL is its own credential.
+
+    A value that is already a Fernet token is left alone even if this key cannot read it,
+    so a restored database with the wrong key is not encrypted twice.
+    """
+    from app.config import encrypt_secret, is_encrypted
+    for table in ("webhooks", "webhook_delivery_log"):
+        rows = conn.execute(f"SELECT id, url FROM {table}").fetchall()  # noqa: S608 -- fixed names
+        for row in rows:
+            if row["url"] and not is_encrypted(row["url"]):
+                conn.execute(
+                    f"UPDATE {table} SET url=? WHERE id=?",  # noqa: S608 -- fixed names
+                    (encrypt_secret(row["url"]), row["id"]),
+                )
 
 
 def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
@@ -453,8 +471,12 @@ def _migrate_legacy_webhook_url(conn: sqlite3.Connection) -> None:
     ).fetchone()
     enabled = 1 if (enabled_row and str(enabled_row["value"]).lower() == "true") else 0
 
-    already = conn.execute("SELECT id FROM webhooks WHERE url=?", (url,)).fetchone()
+    from app.config import decrypt_secret, encrypt_secret
+    already = any(
+        decrypt_secret(r["url"]) == url for r in conn.execute("SELECT url FROM webhooks").fetchall()
+    )
     if not already:
+        url = encrypt_secret(url)
         conn.execute(
             """INSERT INTO webhooks
                (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,

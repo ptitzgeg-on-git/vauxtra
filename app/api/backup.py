@@ -144,7 +144,7 @@ def _webhook_without_url(row) -> dict:
     disabled rather than writing `discord://***` back as a real URL.
     """
     data = dict(row)
-    data["url_masked"] = mask_secret_url(data.pop("url", ""))
+    data["url_masked"] = mask_secret_url(decrypt_secret(data.pop("url", "")))
     data["url"] = ""
     return data
 
@@ -247,7 +247,7 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
         webhooks = []
         for r in conn.execute("SELECT * FROM webhooks").fetchall():
             w = dict(r)
-            url = w.get("url", "")
+            url = decrypt_secret(w.get("url", ""))
             w["url"] = encrypt_for_backup(url, body.passphrase, salt) if url else ""
             webhooks.append(w)
 
@@ -431,8 +431,6 @@ def import_backup(request: Request, body: RestoreRequest):
 
         webhooks_needing_url = 0
         for wh in data.get("webhooks", []):
-            # Stored in clear like it always was: `_try_send_apprise` hands the URL to
-            # apprise as-is. The instance key protects the provider passwords, not this.
             webhook_url = _unseal(wh.get("url") or "", "webhooks.url", "webhook URLs")
             # A plain export carries no URL. Restoring the row enabled would leave a
             # webhook that can never fire and logs an error on every alert; restoring it
@@ -450,7 +448,7 @@ def import_backup(request: Request, body: RestoreRequest):
                 (
                     wh.get("id"),
                     wh.get("name"),
-                    webhook_url,
+                    encrypt_secret(webhook_url),
                     webhook_enabled,
                     wh.get("scope_type", "all"),
                     wh.get("scope_ref_id"),

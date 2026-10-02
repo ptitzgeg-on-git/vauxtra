@@ -14,7 +14,7 @@ Everything lives in the `data/` volume unless noted.
 | What | Where | How it is protected |
 |---|---|---|
 | Provider passwords and API tokens | `providers.password` in `vauxtra.db` | Fernet (AES-128-CBC with HMAC-SHA256), key derived from `SECRET_KEY` |
-| Notification (Apprise) URLs, which embed their tokens | `webhooks.url`, and `webhook_delivery_log.url` while a delivery is retried | Stored in clear. Masked in every API response and log line |
+| Notification (Apprise) URLs, which embed their tokens | `webhooks.url`, and `webhook_delivery_log.url` while a delivery is retried | Fernet, like provider secrets. Masked in every API response and log line |
 | Admin password | `settings.app_password_hash`, or `APP_PASSWORD` | PBKDF2-HMAC-SHA256, 600,000 iterations |
 | API keys | `api_keys.key_hash` | SHA-256 of a random 256-bit token, shown once at creation |
 | `SECRET_KEY` | The `SECRET_KEY` variable, otherwise generated into `data/.secret_key` (mode 600) | Signs the session cookie and derives the encryption key |
@@ -56,7 +56,7 @@ in **Settings > API Keys** when the tool goes away.
 When `SECRET_KEY` is not set, its generated value is written to `data/.secret_key`, next to
 the database. A copy of `data/` is then a copy of every provider credential. If backups of
 that directory leave the host, set `SECRET_KEY` in the environment instead, so the key is
-not in the backup. Notification URLs can be read from the database file alone.
+not in the backup.
 
 Changing `SECRET_KEY` makes the stored credentials unreadable. Re-enter them afterwards.
 Vauxtra logs a warning at startup when `SECRET_KEY` is shorter than 32 characters.
@@ -158,7 +158,6 @@ not prove the code is free of bugs.
 
 ## Known limits
 
-- Notification URLs are stored in clear in the database.
 - Sessions cannot be revoked one by one. Changing the password revokes all of them.
 - API keys have no expiry date.
 - `/metrics` answers without a credential. It shows counts only, including the number of
