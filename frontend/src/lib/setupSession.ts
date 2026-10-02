@@ -29,7 +29,7 @@ const isTrue = (value: unknown): value is true => value === true;
 
 const listeners = new Set<() => void>();
 
-export function readWizardInProgress(): boolean {
+function readWizardInProgress(): boolean {
   // Storage blocked or unreadable: fall back to what the server says, as before.
   return readJSON(ACTIVE_KEY, isTrue, false, 'session');
 }
