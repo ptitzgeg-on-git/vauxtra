@@ -5,6 +5,7 @@ import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
+import { isArray, readJSON, writeJSON } from '@/lib/storage';
 import { Button, InlineAlert, PageHeader } from '@/components/ui';
 import { certificateUrgency } from '@/components/features/certificates/certificates';
 import { ExposeModal } from '@/components/features/expose/ExposeModal';
@@ -32,14 +33,7 @@ const PROVIDERS_CACHE_KEY = 'vauxtra.cache.providers';
 const TODAY_LOGS_SAMPLE = 200;
 
 function readArrayCache<T>(key: string): T[] | undefined {
-  try {
-    const raw = sessionStorage.getItem(key);
-    if (!raw) return undefined;
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : undefined;
-  } catch {
-    return undefined;
-  }
+  return readJSON(key, isArray<T>, undefined, 'session');
 }
 
 /** `GET /providers/health` answers a map keyed by id; older builds wrapped it in `{items}`. */
@@ -137,20 +131,12 @@ export function Dashboard() {
   // -- Session cache (survives a reload within the tab) ----------------------
   useEffect(() => {
     if (!Array.isArray(services)) return;
-    try {
-      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(services));
-    } catch {
-      // Ignore storage errors in private mode/quota limits.
-    }
+    writeJSON(SERVICES_CACHE_KEY, services, 'session');
   }, [services]);
 
   useEffect(() => {
     if (!Array.isArray(providers)) return;
-    try {
-      sessionStorage.setItem(PROVIDERS_CACHE_KEY, JSON.stringify(providers));
-    } catch {
-      // Ignore storage errors in private mode/quota limits.
-    }
+    writeJSON(PROVIDERS_CACHE_KEY, providers, 'session');
   }, [providers]);
 
   // -- Derived numbers -------------------------------------------------------
