@@ -14,7 +14,7 @@ set first and merges -- see `_write_records`.
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -26,6 +26,11 @@ DEFAULT_TTL = 3600
 MANAGED_TYPES = ("A", "AAAA", "CNAME")
 # deSEC pages at 500 items; the cap is a runaway guard, not a coverage limit.
 MAX_PAGES = 20
+
+
+def _same_origin(a: str, b: str) -> bool:
+    first, second = urlsplit(a), urlsplit(b)
+    return (first.scheme, first.netloc.lower()) == (second.scheme, second.netloc.lower())
 
 
 class DesecProvider(DNSProvider):
@@ -75,6 +80,9 @@ class DesecProvider(DNSProvider):
             links = getattr(r, "links", None)
             nxt = links.get("next") if isinstance(links, dict) else None
             next_url = nxt.get("url") if isinstance(nxt, dict) else None
+            # The token goes with every page, so a `next` link may not lead to another host.
+            if next_url and not _same_origin(next_url, url):
+                return None
             pages += 1
         return items
 
