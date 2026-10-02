@@ -1,12 +1,13 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from app.api.sync import withdraw_service_routes
-from app.auth import require_auth, require_auth_or_setup
+from app.auth import is_authorized, require_auth, require_auth_or_setup
 from app.config import encrypt_secret
 from app.models import add_log, get_db, get_db_ctx
 from app.providers.factory import PROVIDER_TYPES, create_provider
@@ -35,6 +36,24 @@ def _normalize_provider_url(provider_type: str, url_value: str) -> str:
     if not is_valid_url(val):
         raise ValueError("Invalid URL (must start with http:// or https://)")
     return val.rstrip("/")
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _endpoint(url: str) -> tuple[str, str, int | None] | None:
+    try:
+        parts = urlsplit(url or "")
+        scheme = parts.scheme.lower()
+        return scheme, (parts.hostname or "").lower(), parts.port or _DEFAULT_PORTS.get(scheme)
+    except ValueError:
+        return None
+
+
+def _same_endpoint(a: str, b: str) -> bool:
+    """Whether two URLs reach the same scheme, host and port."""
+    first = _endpoint(a)
+    return first is not None and first == _endpoint(b)
 
 
 def _safe_json_load(raw: str | None) -> dict[str, Any]:
@@ -396,6 +415,22 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
     except ValueError as e:
         conn.close()
         raise HTTPException(400, str(e)) from e
+    # The stored secret goes wherever the URL points, so a `write` key that moves the URL
+    # must bring the secret with it. An admin can already export every secret, so the
+    # move is theirs to make.
+    if (
+        row["password"]
+        and not body.password
+        and not _same_endpoint(row["url"], url_val)
+        and not is_authorized(request, "admin")
+    ):
+        conn.close()
+        raise HTTPException(
+            403,
+            "Moving this integration to another host, port or scheme needs its password or "
+            "token again, or an admin key. The stored one is only sent to the address it was "
+            "entered for.",
+        )
     username = body.username if body.username is not None else row["username"]
     # The stored value is read through `bool` as well, so a row left holding a number
     # that is neither 0 nor 1 by an earlier version is put back in range by the next

@@ -1066,6 +1066,13 @@ this — and a UI session, always `admin`, never meets either rule. A partial up
 does not carry a `url` field is not affected: toggling `enabled` on a webhook an admin
 created stays a `write`.
 
+A third rule protects the secrets Vauxtra already holds. `PUT /api/providers/{pid}` refuses
+a `write` key that moves a provider to another host, port or scheme without sending its
+password or token again, with a `403` that says so. The stored secret is sent to whatever
+the URL names on the next test or health check, so moving the URL alone would hand it to
+the new host. A new path on the same host is not a move, a provider with no stored secret
+moves freely, and an `admin` key or a UI session keeps the stored secret.
+
 A `read` key is deliberately refused on the test and preflight routes. They take a target
 host and port from the request and make the server connect to it, or deliver a real
 notification — side effects, not reads, even though nothing in Vauxtra's own database

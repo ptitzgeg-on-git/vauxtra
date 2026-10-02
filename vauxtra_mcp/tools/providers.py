@@ -84,7 +84,8 @@ def update_provider(
     Args:
         provider_id: ID of the provider to update.
         name: New display name.
-        url: New connection URL.
+        url: New connection URL. Moving it to another host, port or scheme also
+            needs `password`, unless the API key has the admin scope.
         username: New username/email.
         password: New password/token (re-encrypted on save).
         enabled: Enable or disable the provider.
