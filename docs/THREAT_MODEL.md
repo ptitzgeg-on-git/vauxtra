@@ -164,5 +164,7 @@ not prove the code is free of bugs.
   warnings logged in the last 24 hours, refused sign-ins among them. Restrict it at your
   reverse proxy if that matters to you.
 - A `write` key can make the server open connections to any host it names.
+- The drift, dry-run, scan and certificate routes are not rate-limited, and each one asks
+  the providers. A `read` key used in a tight loop can keep them busy.
 - Provider plugins loaded through `VAUXTRA_PROVIDER_PLUGINS` run with the application's
   privileges. Load only code you trust.

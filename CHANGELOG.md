@@ -37,6 +37,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 - In the image, only `/app/data` belongs to the user the server runs as, not the code.
 - **Notification URLs are encrypted at rest**, like provider secrets: an Apprise URL is its own
   credential. Existing rows, and queued retries, are encrypted at the next start.
+- A service target can no longer be an IPv6 address with a scope id, which could carry
+  arbitrary text into the proxy's nginx configuration.
+- Auto-reconcile reads each service again before checking and before pushing, so a service
+  disabled or deleted during the round is not published again.
+- `X-API-Key`, `X-FTL-SID` and `X-FTL-CSRF` are dropped when a redirect leaves the host, as
+  `Authorization` already was, and deSEC pagination stays on the deSEC host.
+- The import checks its DNS records too: a configured DNS integration, and an answer that is
+  an address or a host name.
+- A bulk delete commits service by service and takes at most 500 ids.
 - A version tag only publishes when it points at a commit on `main`. Branch protection does
   not cover tags, so any pushed commit could be tagged, signed and shipped as `latest`.
 - The tunnel check of the preflight masks a token quoted in a provider's error.
