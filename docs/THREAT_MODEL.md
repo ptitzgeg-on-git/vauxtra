@@ -89,6 +89,21 @@ notification schemes (`json://`, `form://`, `xml://`).
 A stored provider secret is only ever sent to the host, port and scheme it was entered for.
 Moving a provider elsewhere takes the secret again, or an `admin` key.
 
+## The MCP bridge
+
+The bridge in `vauxtra_mcp/` runs next to your MCP client and holds an API key, so it can do
+whatever that key's scope allows. Give it the lowest scope the agent needs.
+
+- Over stdio, the default, nothing listens on the network.
+- With `--http`, it binds to `127.0.0.1` and refuses a request whose `Host` or `Origin` is
+  not that address, so a web page cannot reach it through DNS rebinding. It has no
+  authentication of its own: binding it elsewhere needs an authenticating proxy in front.
+- `auth_login` is refused when a key is configured, so a password session cannot widen a
+  narrow key.
+- `create_secure_backup` writes the encrypted backup to a file on the bridge's machine and
+  returns only the path. The passphrase you give the agent is in the conversation; the
+  backup is not.
+
 ## Credentials each provider needs
 
 Give Vauxtra the narrowest credential the provider offers. Where the provider has no scoped
@@ -146,6 +161,9 @@ not prove the code is free of bugs.
 - Notification URLs are stored in clear in the database.
 - Sessions cannot be revoked one by one. Changing the password revokes all of them.
 - API keys have no expiry date.
+- `/metrics` answers without a credential. It shows counts only, including the number of
+  warnings logged in the last 24 hours, refused sign-ins among them. Restrict it at your
+  reverse proxy if that matters to you.
 - A `write` key can make the server open connections to any host it names.
 - Provider plugins loaded through `VAUXTRA_PROVIDER_PLUGINS` run with the application's
   privileges. Load only code you trust.
