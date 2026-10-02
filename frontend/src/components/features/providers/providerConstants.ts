@@ -237,9 +237,13 @@ const projectUrlByType: Record<string, string> = {
   desec: 'https://desec.io',
 };
 
+const HTTP_URL = /^https?:\/\//i;
+
 /** Resolve project URL from API meta first, then local fallback. */
 export function getProjectUrl(type: string, meta?: ProviderTypeMeta): string | undefined {
-  return meta?.project_url || projectUrlByType[type];
+  // The link lands in an `href`: a `javascript:` or `data:` URL coming back from the server
+  // would run on click, so anything but http(s) is dropped in favour of the built-in one.
+  return [meta?.project_url, projectUrlByType[type]].find((url): url is string => !!url && HTTP_URL.test(url));
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
