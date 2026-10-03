@@ -85,8 +85,10 @@ jobs:
       - name: pip-audit (Python dependencies)
         run: |
           python -m pip install pip-audit
-          python -m pip_audit --requirement requirements.txt \
-                              --requirement vauxtra_mcp/requirements.txt
+          # Two runs: the image's lock is hashed, and pip reads one hashed file as an order
+          # to demand hashes from every file in the same install, the bridge's ranges included.
+          python -m pip_audit --require-hashes --requirement requirements.txt
+          python -m pip_audit --requirement vauxtra_mcp/requirements.txt
 
       # Through a runner, because `npm audit` exits 1 both when the registry reports a
       # high-severity advisory and when the registry reports nothing at all. The runner
