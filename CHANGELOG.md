@@ -97,6 +97,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Fixed
 
+- **Dark mode still flashed white on every load.** The script that applies it before the
+  first paint was inline, and the Content-Security-Policy refuses inline scripts, so it never
+  ran. It is now served as a file.
 - **Setting a password in the setup wizard ended the wizard.** The server stops answering
   "setup required" as soon as a password is set, and the application showed the wizard only
   while it did: the recommended path landed on an empty dashboard after the second screen,
