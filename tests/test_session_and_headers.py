@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -546,6 +547,16 @@ class TheSourceNoLongerPromisesWhatItDoesNotDoTests(unittest.TestCase):
         self.assertNotIn("rsms.me", index)
         self.assertNotIn('href="http', index)
         self.assertNotIn('src="http', index)
+
+    def test_the_page_carries_no_inline_script(self) -> None:
+        # The CSP is `script-src 'self'`, so an inline script never runs in production. The
+        # dark-mode bootstrap was inline and did nothing behind that header: every load still
+        # flashed white at a user who chose dark. Every script has a `src`.
+        index = self._read("frontend/index.html")
+        for tag in re.findall(r"<script\b[^>]*>", index):
+            with self.subTest(tag=tag):
+                self.assertIn("src=", tag)
+        self.assertIn("'self'", app_main._CSP.split("script-src", 1)[1].split(";", 1)[0])
 
     def test_the_font_is_bundled_instead(self) -> None:
         self.assertIn("@fontsource-variable/inter", self._read("frontend/src/main.tsx"))
