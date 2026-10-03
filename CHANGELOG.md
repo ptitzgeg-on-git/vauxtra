@@ -75,6 +75,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Changed
 
+- **The interface talks to the API with `fetch`.** axios and the packages it pulled in are
+  gone from the bundle. Calls, errors, the expired-session redirect and backup downloads
+  behave as before.
 - **A new visual identity.** A petrol-teal palette, flat surfaces and a new logo replace the
   neon-on-black look. The README shows the interface with a banner and screenshots taken on
   a fresh demo instance.
