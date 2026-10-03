@@ -153,6 +153,9 @@ The fixes of the 2026-10-09 review, carried over to this branch.
 
 ### Changed
 
+- **The interface talks to the API with `fetch`.** axios and the packages it pulled in are
+  gone from the bundle. Calls, errors, the expired-session redirect and backup downloads
+  behave as before.
 - **A new visual identity.** A petrol-teal palette, flat surfaces and a new logo replace the
   neon-on-black look. The README shows the interface with a banner and screenshots taken on
   a fresh demo instance.

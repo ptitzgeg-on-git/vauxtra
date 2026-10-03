@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { AxiosError, AxiosHeaders, CanceledError, type AxiosResponse } from 'axios';
+import { HttpError } from '@/api/httpError';
 import type { Service } from '@/types/api';
 import { runBulkChecks } from './helpers';
 
@@ -17,12 +17,9 @@ type Result = { tested?: boolean; status?: string };
 const svc = (id: number) => ({ id }) as Service;
 const TARGETS = [svc(1), svc(2), svc(3), svc(4)];
 
-const httpError = (status: number): AxiosError => {
-  const config = { headers: new AxiosHeaders() };
-  const response = { status, data: {}, headers: {}, statusText: '', config } as AxiosResponse;
-  return new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_RESPONSE', config, {}, response);
-};
-const networkError = (): AxiosError => new AxiosError('Network Error', 'ERR_NETWORK', { headers: new AxiosHeaders() }, {});
+const httpError = (status: number): HttpError =>
+  new HttpError(`Request failed with status code ${status}`, '/services/1/check', { status, data: {}, headers: {} });
+const networkError = (): HttpError => new HttpError('Network Error', '/services/1/check');
 
 describe('runBulkChecks', () => {
   it('counts every outcome when nothing goes wrong', async () => {
@@ -74,7 +71,7 @@ describe('runBulkChecks', () => {
   });
 
   it('treats a cancelled request as an abort, not a failure', async () => {
-    const check = vi.fn(() => Promise.reject(new CanceledError()));
+    const check = vi.fn(() => Promise.reject(new DOMException('The operation was aborted.', 'AbortError')));
     const run = await runBulkChecks(TARGETS, check, { signal: new AbortController().signal });
     expect(run).toEqual({ counts: { ok: 0, failed: 0, untested: 0 }, aborted: true });
     expect(check).toHaveBeenCalledTimes(1);

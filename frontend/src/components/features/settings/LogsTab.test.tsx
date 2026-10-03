@@ -90,7 +90,7 @@ describe('LogsTab, the live stream and the one reconnect it is allowed', () => {
 
     expect(opened).toHaveLength(1);
     // The API base, not a hardcoded '/api': a build served behind VITE_API_URL has its API
-    // somewhere else, and `EventSource` cannot go through the axios instance that knows where.
+    // somewhere else, and `EventSource` cannot go through the API client that knows where.
     expect(opened[0].url).toBe('/api/logs/stream');
     // Without this the cookie never leaves the browser and the first tick refuses the stream.
     expect(opened[0].withCredentials).toBe(true);
