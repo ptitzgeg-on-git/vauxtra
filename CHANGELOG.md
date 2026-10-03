@@ -9,6 +9,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ### Security
 
+- **The image installs its Python dependencies from a hashed lock.** `requirements.txt` now
+  pins every package, with the hash of each published file, and the build uses
+  `--require-hashes`: a release replaced on PyPI under a version already reviewed stops the
+  build. The ranges moved to `requirements.in`, and the tests run against the locked
+  versions.
 - **One start with the wrong `SECRET_KEY` made every provider password unreadable for good.**
   The start-up migration took any password it could not decrypt for plaintext and encrypted
   it again, so restoring the right key afterwards no longer helped. A value that is already

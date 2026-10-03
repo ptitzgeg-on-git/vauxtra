@@ -40,7 +40,10 @@ COPY requirements.txt .
 # removal stopped happening while the build stayed green and the image kept shipping the
 # 1.8 MB ensurepip wheel this comment says it deletes. The last line exists for the same
 # reason: if ensurepip ever survives again, the build fails instead of going unnoticed.
-RUN pip install --no-cache-dir -r requirements.txt \
+# `requirements.txt` is a lock: every package pinned with the hashes of its published
+# files. A release swapped on PyPI under a known version stops the build instead of
+# shipping. The ranges live in `requirements.in`; `make lock` regenerates the lock.
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
     && python -m pip uninstall -y pip \
     && rm -rf "$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')/ensurepip" \
     && rm -rf "$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"/pip* \

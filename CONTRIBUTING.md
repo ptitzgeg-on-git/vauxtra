@@ -18,6 +18,11 @@ export DEBUG=true
 uvicorn app.main:app --host 127.0.0.1 --port 8888 --reload
 ```
 
+The image installs `requirements.txt`, a lock with a hash for every file, generated from
+`requirements.in`. To add or bump a backend dependency, edit `requirements.in`, then run
+`make lock` with Python 3.14 and pip-tools installed, and commit both files. CI runs the
+tests against the versions in the lock.
+
 The API is available at `http://localhost:8888`, and the interactive docs at
 `http://localhost:8888/api/docs`. A source run does not read `.env` (there is no dotenv
 loader), so `DEBUG=true` and any other variable must be exported in the shell.

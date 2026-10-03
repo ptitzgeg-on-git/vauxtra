@@ -1,4 +1,7 @@
--r requirements.txt
+# The image's ranges, not its lock: the lock is hashed and Linux-only, and one hashed line
+# would make pip demand a hash for every line below. CI adds `-c requirements.txt` so the
+# tests run the exact versions the image ships.
+-r requirements.in
 # The MCP bridge is not shipped in the Docker image, but tests/test_mcp_*.py import
 # it. Without this the suite cannot even be collected in CI.
 -r vauxtra_mcp/requirements.txt

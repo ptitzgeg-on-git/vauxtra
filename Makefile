@@ -1,4 +1,4 @@
-.PHONY: dev backend frontend test lint lint-fix check build release help
+.PHONY: dev backend frontend test lint lint-fix check lock build release help
 
 PYTHON   ?= python
 NPM      ?= npm
@@ -18,6 +18,7 @@ help:
 	@echo "  make lint-fix     Run ruff --fix in place"
 	@echo "  make check        Everything CI checks: ruff, pytest, the scripts/check_*.py gates,"
 	@echo "                    and the frontend lint, type check, locale checks and unit tests"
+	@echo "  make lock         Regenerate the image's hashed lock from requirements.in"
 	@echo "  make build        Build the image and start it with docker compose (detached)"
 	@echo "  make release V=x.y.z  Create an annotated tag on origin/main and push it"
 	@echo ""
@@ -34,6 +35,18 @@ dev:
 	@echo "Starting backend and frontend in background..."
 	uvicorn app.main:app --host 0.0.0.0 --port 8888 --reload &
 	cd frontend && $(NPM) run dev
+
+## Dependencies
+
+# The image installs from `requirements.txt`, a lock with the hashes of every published file,
+# so a release swapped under a known version on PyPI fails the build instead of shipping. Run
+# with the image's Python minor version: pip-compile resolves for the interpreter it runs on.
+# The MCP bridge and `requirements-dev.txt` stay as ranges, because they are installed on
+# Windows and macOS too, and this lock only holds what Linux needs. Needs pip-tools.
+PIP_COMPILE ?= pip-compile
+
+lock:
+	$(PIP_COMPILE) --quiet --generate-hashes --allow-unsafe --strip-extras -o requirements.txt requirements.in
 
 ## Quality
 
