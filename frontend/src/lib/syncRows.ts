@@ -20,11 +20,11 @@ function isLocalDomain(domain: string): boolean {
 }
 
 /** A name the way the import compares it: `_imported_name` in `app/api/sync.py`. */
-export function importedName(value: unknown): string {
+function importedName(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
 
-export function bareZone(value: unknown): string {
+function bareZone(value: unknown): string {
   return importedName(value).replace(/^\.+|\.+$/g, '');
 }
 
@@ -42,7 +42,7 @@ export function proxyName(host: SyncProxyHost): string {
   return '';
 }
 
-export function dnsName(record: SyncDnsRewrite): string {
+function dnsName(record: SyncDnsRewrite): string {
   return importedName(record.domain);
 }
 

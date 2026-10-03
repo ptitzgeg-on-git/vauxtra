@@ -261,5 +261,26 @@ class HttpBindTests(unittest.TestCase):
         self.assertEqual(self._bind({"VAUXTRA_MCP_HOST": "  "})[0], "127.0.0.1")
 
 
+class HttpHostOriginTests(unittest.TestCase):
+    """A loopback port is reachable from the operator's browser through DNS rebinding."""
+
+    def test_the_http_transport_asks_for_the_check(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VAUXTRA_MCP_HOST", None)
+            self.assertEqual(mcp_server._http_run_kwargs()["host_origin_protection"], "auto")
+
+    def test_a_rebound_host_and_a_foreign_origin_are_refused(self):
+        from starlette.testclient import TestClient
+
+        app = mcp_server.mcp.http_app(host_origin_protection="auto")
+        with TestClient(app, base_url="http://127.0.0.1:9000") as client:
+            rebound = client.post("/mcp", headers={"Host": "attacker.example:9000"}, json={})
+            foreign = client.post("/mcp", headers={"Origin": "http://attacker.example"}, json={})
+            local = client.post("/mcp", json={})
+        self.assertEqual(rebound.status_code, 421, rebound.text)
+        self.assertEqual(foreign.status_code, 403, foreign.text)
+        self.assertNotIn(local.status_code, (403, 421), local.text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,15 +1,21 @@
 # Not needed in Docker image
 data/
-.env
+# Any env file at any depth: `.env` alone matched only the root one, so a
+# `frontend/.env.local` reached the build context. `.env.example` is excluded too; the image
+# never reads it.
+**/.env*
 .git/
 .github/
 tests/
 docs/
 vauxtra_mcp/
-__pycache__/
+**/__pycache__/
+.venv/
+venv/
+.sbom-venv/
 frontend/node_modules/
 frontend/dist/
 *.md
-*.pyc
+**/*.pyc
 *.tsbuildinfo
 .DS_Store

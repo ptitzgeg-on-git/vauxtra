@@ -2,14 +2,12 @@ import os
 import sqlite3
 from contextlib import contextmanager
 
-from app.config import DATA_DIR, DB_PATH  # noqa: F401 — re-exported for test patching
+from app.config import DATA_DIR, DB_PATH  # noqa: F401 (re-exported for test patching)
 from app.db import get_connection
 from app.security import redact_query_secrets
 
-# Bump this whenever a statement is added to `_MIGRATIONS`. The value is recorded in the
-# settings table, and it is the only thing that tells two schemas apart after the fact:
-# leave it behind and a 1.4.0 database and a 1.5.0 one both answer 11, which is what
-# happened to 1.5.0. `tests/test_regressions_v2.py` pins the pair so it cannot happen twice.
+# Bump whenever a statement is added to `_MIGRATIONS`; it is the only record of which
+# schema a database has. tests/test_regressions_v2.py pins the pair.
 SCHEMA_VERSION = 12
 
 
@@ -29,6 +27,7 @@ def get_db_ctx():
 
 
 def init_db() -> None:
+    """Create the schema and run pending migrations. Idempotent; runs at every startup."""
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = get_db()
     conn.executescript("""
@@ -203,12 +202,9 @@ def init_db() -> None:
 
 
 def ensure_default_docker_endpoint(conn: sqlite3.Connection) -> None:
-    """Guarantee exactly one default Docker endpoint. Does not commit; the caller owns that.
+    """Guarantee exactly one default Docker endpoint. Does not commit.
 
-    Called from `init_db` at startup and from `POST /api/reset`, which now empties
-    `docker_endpoints` -- an endpoint an operator added carries a host and its TLS material,
-    and a reset that keeps those is not the reset the button offers. Without this the
-    instance would come back from a reset with no Docker host at all until the next restart.
+    Called at startup and after a reset, which empties docker_endpoints.
     """
     default_host = (
         os.getenv("DOCKER_HOST") or "unix:///var/run/docker.sock"
@@ -233,10 +229,7 @@ _MIGRATIONS = [
     "ALTER TABLE providers ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'",
     "ALTER TABLE services ADD COLUMN status       TEXT NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE services ADD COLUMN last_checked TEXT",
-    # `services.environment` was the single free-text environment, replaced by the
-    # `service_environments` join before 1.1. Nothing has read it since -- not the API,
-    # not the frontend, not the backup restore, which lists its columns explicitly --
-    # so it is dropped below rather than kept as a column every row carries empty.
+    # services.environment (pre-1.1 free text) is dropped later; nothing reads it.
     "ALTER TABLE services ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE services ADD COLUMN tunnel_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL",
     "ALTER TABLE services ADD COLUMN expose_mode TEXT NOT NULL DEFAULT 'proxy_dns'",
@@ -251,10 +244,7 @@ _MIGRATIONS = [
     "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
     "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
     "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
-    # A template carried only half of the label control the form shows. The other
-    # half is added here rather than in a rebuild because the column has a default:
-    # every template written before this reads back as naming no environment, which
-    # is exactly what it named.
+    # The default reads older templates as naming no environment, which is what they held.
     "ALTER TABLE service_templates ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]'",
 ]
 
@@ -279,37 +269,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_legacy_webhook_url(conn)
     _ensure_unique_service_hostnames(conn)
     _rebuild_webhook_delivery_log_fk(conn)
+    _encrypt_webhook_urls(conn)
+
+
+def _encrypt_webhook_urls(conn: sqlite3.Connection) -> None:
+    """Encrypt notification URLs still stored in clear: an Apprise URL is its own credential.
+
+    A value that is already a Fernet token is left alone even if this key cannot read it,
+    so a restored database with the wrong key is not encrypted twice.
+    """
+    from app.config import encrypt_secret, is_encrypted
+    for table in ("webhooks", "webhook_delivery_log"):
+        rows = conn.execute(f"SELECT id, url FROM {table}").fetchall()  # noqa: S608 -- fixed names
+        for row in rows:
+            if row["url"] and not is_encrypted(row["url"]):
+                conn.execute(
+                    f"UPDATE {table} SET url=? WHERE id=?",  # noqa: S608 -- fixed names
+                    (encrypt_secret(row["url"]), row["id"]),
+                )
 
 
 def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
-    """Deleting a webhook left its queued sends behind, and the retry job kept firing them.
+    """Add ON DELETE CASCADE from webhook_delivery_log.webhook_id to webhooks.
 
-    `webhook_delivery_log.webhook_id` named a webhook without referencing one, so
-    `DELETE FROM webhooks WHERE id=?` -- the one statement in `delete_webhook` that removes
-    anything, next to a lookup that answers 404 and a commit -- took the row and left the
-    queue standing. The retry job reads the destination off the log row rather than off
-    `webhooks`, so Vauxtra went on POSTing to a URL the operator had just revoked, for the
-    full length of the backoff: up to twenty-four hours after the delete.
-
-    Two things are needed and neither replaces the other. The cascade stops it happening
-    again; the copy below drops the rows it has already happened to, which no cascade can
-    reach retroactively. Rows with a NULL `webhook_id` are kept -- an ad-hoc send has no
-    parent webhook and is not an orphan.
-
-    SQLite cannot add a foreign key to an existing column, so the table is rebuilt. Three
-    details make that safe:
-
-      - `PRAGMA foreign_keys` is a no-op inside a transaction, so it is set before BEGIN and
-        restored after COMMIT. It has to be off: `ALTER TABLE ... RENAME` would otherwise
-        rewrite references pointing at the table being replaced.
-      - The statements are issued one `execute()` at a time. `executescript()` COMMITs before
-        it runs, which would turn the rollback below into a no-op -- the lesson the restore
-        path already carries at `app/api/backup.py`.
-      - `foreign_key_check` runs before the COMMIT, not after, so a database that somehow
-        still violates the new constraint keeps its old table instead of a half-built one.
-
-    Idempotent: it reads the pragma rather than the schema version, so an install whose
-    version row was written by a failed earlier attempt is still repaired.
+    SQLite cannot add a foreign key in place, so the table is rebuilt. Orphaned rows are
+    dropped; rows with NULL webhook_id (ad-hoc sends) are kept. foreign_keys is toggled
+    outside the transaction, statements run one by one so rollback works, and
+    foreign_key_check runs before COMMIT. Idempotent: checks the pragma, not the version.
     """
     try:
         existing = conn.execute("PRAGMA foreign_key_list(webhook_delivery_log)").fetchall()
@@ -382,15 +368,9 @@ def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_unique_service_hostnames(conn: sqlite3.Connection) -> None:
-    """Two services on one hostname is not a configuration, it is a race.
+    """Add the unique index on service hostnames when the data allows it.
 
-    Both rows resolve to the same proxy host and the same DNS record, so whichever is pushed
-    last wins and the drift check then reports the other as permanently wrong. Nothing
-    prevented it: the table carried no constraint and neither write endpoint looked.
-
-    The index is only created when the database allows it. An install that already holds
-    duplicates keeps booting -- it is told which rows to merge instead of being wedged shut,
-    which is the same reasoning as the defensive `check_interval` read at startup.
+    With existing duplicates the instance still boots and logs which rows to merge.
     """
     dupes = conn.execute(
         """SELECT subdomain, domain, COUNT(*) AS n
@@ -416,9 +396,7 @@ def _ensure_unique_service_hostnames(conn: sqlite3.Connection) -> None:
 def _drop_legacy_service_environment(conn: sqlite3.Connection) -> None:
     """Remove `services.environment`, superseded by the `service_environments` join.
 
-    Guarded rather than assumed: `DROP COLUMN` needs SQLite 3.35, and an installation on an
-    older build keeps the empty column instead of failing to start. Nothing reads it either
-    way, so there is nothing to fall back to.
+    Skipped on SQLite older than 3.35 (no DROP COLUMN); nothing reads the column anyway.
     """
     try:
         conn.execute("ALTER TABLE services DROP COLUMN environment")
@@ -427,19 +405,10 @@ def _drop_legacy_service_environment(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_legacy_webhook_url(conn: sqlite3.Connection) -> None:
-    """Move `settings.webhook_url` into the `webhooks` table, where delivery reads.
+    """Move the pre-1.1 `settings.webhook_url` into the webhooks table, where delivery reads.
 
-    That setting is the pre-1.1 global notification URL. It kept its whole surface -- it was
-    writable, it was masked on the way out, and `POST /api/settings/test-webhook` sent a real
-    notification through it that arrived. What it no longer had was a delivery path:
-    `_fire_service_webhooks` and `_fire_global_webhooks` both read `webhooks.url`, and no
-    migration ever copied the setting across. So an operator could configure alerting, test
-    it successfully, and never be told about a single outage.
-
-    A silent no-op that passes its own test is worse than an obvious gap, so the value is
-    moved rather than dropped: one webhook, enabled if `webhook_enabled` said so, scoped to
-    everything and subscribed to any service going down and coming back -- which is what a
-    single global URL meant. The two settings keys are then deleted, so this runs once.
+    Creates one global webhook (enabled per `webhook_enabled`, notifying on down and up),
+    then deletes both settings keys so this runs once.
     """
     row = conn.execute("SELECT value FROM settings WHERE key='webhook_url'").fetchone()
     url = ((row["value"] if row else "") or "").strip()
@@ -453,8 +422,12 @@ def _migrate_legacy_webhook_url(conn: sqlite3.Connection) -> None:
     ).fetchone()
     enabled = 1 if (enabled_row and str(enabled_row["value"]).lower() == "true") else 0
 
-    already = conn.execute("SELECT id FROM webhooks WHERE url=?", (url,)).fetchone()
+    from app.config import decrypt_secret, encrypt_secret
+    already = any(
+        decrypt_secret(r["url"]) == url for r in conn.execute("SELECT url FROM webhooks").fetchall()
+    )
     if not already:
+        url = encrypt_secret(url)
         conn.execute(
             """INSERT INTO webhooks
                (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
@@ -469,15 +442,9 @@ def _migrate_legacy_webhook_url(conn: sqlite3.Connection) -> None:
 
 
 def _purge_logged_webhook_urls(conn: sqlite3.Connection) -> None:
-    """Delete log lines that captured a full Apprise URL before those were masked.
+    """Delete log lines that captured a full Apprise URL before URLs were masked.
 
-    Masking the four `[Webhook]` log calls stops new leaks; it does nothing about the
-    rows already in the table, and those stay readable by any API key -- a `read` key
-    included -- for as long as the retention window keeps them. A single transient
-    Discord outage was enough to write one.
-
-    Runs once, marked in `settings`. Only `[Webhook]` lines carrying a `://` are
-    touched, so the operator's ordinary history survives.
+    Runs once (marked in settings) and only touches `[Webhook]` lines containing `://`.
     """
     done = conn.execute(
         "SELECT 1 FROM settings WHERE key='webhook_log_purge_done'"
@@ -497,11 +464,9 @@ def _purge_logged_webhook_urls(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_auth_mode(conn: sqlite3.Connection) -> None:
-    """Stamp `auth_mode=password` on instances that already had a hash before this marker.
+    """Stamp `auth_mode=password` on instances that already have a password hash.
 
-    Without it, every existing protected install would look -- to the new check -- like one
-    that was never given a password, and the downgrade would stay invisible on exactly the
-    instances that have something to lose.
+    Otherwise existing protected installs would look like they never had a password.
     """
     has_hash = conn.execute(
         "SELECT 1 FROM settings WHERE key='app_password_hash' AND value != ''"
@@ -529,19 +494,20 @@ def _update_schema_version(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_encrypt_passwords(conn: sqlite3.Connection) -> None:
-    """Encrypt any plaintext provider passwords still in the database (one-time migration)."""
-    from app.config import encrypt_secret, fernet
+    """Encrypt any plaintext provider passwords still in the database.
+
+    This runs at every start. It used to treat any value this key could not decrypt as
+    plaintext, so one start with the wrong SECRET_KEY wrapped every password a second time,
+    and putting the right key back did not undo it. A Fernet token is now left alone
+    whichever key wrote it, as `_encrypt_webhook_urls` already does.
+    """
+    from app.config import encrypt_secret, is_encrypted
     rows = conn.execute("SELECT id, password FROM providers WHERE password != ''").fetchall()
     for row in rows:
-        pwd = row["password"]
-        try:
-            fernet.decrypt(pwd.encode())
-            # Already encrypted, nothing to do
-        except Exception:
-            # Plaintext → encrypt
+        if not is_encrypted(row["password"]):
             conn.execute(
                 "UPDATE providers SET password=? WHERE id=?",
-                (encrypt_secret(pwd), row["id"]),
+                (encrypt_secret(row["password"]), row["id"]),
             )
 
 
@@ -552,29 +518,15 @@ def is_setup_done() -> bool:
     return count > 0
 
 
-#: The level column is free text and was written both ways: 10 call sites say "warn",
-#: 2 say "warning". One spelling reaches the database, the other is folded into it, so a
-#: filter on "warning" is not silently missing rows.
+# "warn" is folded into "warning" on insert so filters find every row.
 _LEVEL_ALIASES = {"warn": "warning"}
 
-#: The spellings a reader may assume exist even when the last 24 hours produced none of
-#: them, in the order a human reads them. `/metrics` zero-fills these so a quiet instance
-#: reports `0` rather than dropping the series: an absent series and a count of zero are
-#: the same picture to a person and opposite answers to `absent()`. This is the stored
-#: vocabulary, after the fold above -- `warn` is not a member, it is an alias of one.
+# Stored log levels in reading order. /metrics zero-fills them so absent() alerts do not
+# fire on a quiet instance; "warn" is an alias, not a member.
 LOG_LEVELS = ("info", "ok", "warning", "error")
 
-#: The `status` a row of `webhook_delivery_log` can hold. `scheduler.py` writes exactly
-#: these three: the column defaults to `pending`, a send that succeeds becomes `delivered`,
-#: and one that runs out of attempts becomes `failed`.
-#:
-#: Here for the same reason as `LOG_LEVELS` above, and with the same consequence. `/metrics`
-#: zero-fills these, so an instance that has never sent a webhook publishes the family at
-#: zero instead of not publishing it. It used to be emitted only when the table had rows,
-#: and `docs/HOWTO.md` declared the closed vocabulary `pending, delivered, failed` next to
-#: it -- a promise kept only on an instance that happened to hold all three at once. An
-#: alarm on failed deliveries read no-data on the instance that had never failed, which is
-#: the one answer it must never give.
+# Statuses of webhook_delivery_log rows, as written by the scheduler. /metrics zero-fills
+# them for the same reason as LOG_LEVELS.
 WEBHOOK_DELIVERY_STATUSES = ("pending", "delivered", "failed")
 
 
@@ -585,9 +537,10 @@ def normalise_log_level(level: str) -> str:
 
 
 def add_log(level: str, message: str, conn: sqlite3.Connection | None = None) -> None:
-    # Masked here, once, because most error lines quote an exception, and an exception
-    # raised by `requests` quotes the URL it called -- query string, and so credential,
-    # included. See `redact_query_secrets`.
+    """Insert a log row. Commits only when it opens its own connection (`conn` is None).
+
+    Messages are passed through redact_query_secrets, since exceptions often quote URLs.
+    """
     own = conn is None
     if own:
         conn = get_db()
@@ -603,26 +556,10 @@ def add_log(level: str, message: str, conn: sqlite3.Connection | None = None) ->
 def labels_by_service(
     conn: sqlite3.Connection, service_ids: list[int]
 ) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
-    """The tags, then the environments, of each service, keyed by service id.
+    """Return (tags, environments) per service id, ordered by name.
 
-    Read as rows, one per link. The service queries used to ask SQLite for
-    `GROUP_CONCAT(DISTINCT t.name || ':' || t.color || ':' || t.id)` and take the answer
-    back apart on "," and then on ":", keeping the chunks that came out in three pieces.
-    Nothing refuses either character in a name: `TagIn` (`app/api/tags.py`) and
-    `EnvironmentIn` (`app/api/environments.py`) strip the name, refuse it empty and stop it
-    at 32 characters, and that is the whole rule.
-
-    Measured on this build, with four tags on one service named `prod`, `a,b`, `web:prod`
-    and `zeta`, `GET /api/services` answered with three of them: `prod`, `b` and `zeta`.
-    `a,b` split into `a` and `b:blue:2`; the first was dropped for having one part and the
-    second was kept, so a tag the base has never held appeared on the service under the
-    right id and a name nobody typed. `web:prod` came out in four parts and vanished
-    without trace. A name ending in a comma is the third face of it: `a,` yields `a` and
-    `:blue:1`, a label whose name is the empty string.
-
-    Rows carry their own boundaries, so none of that has anywhere to happen. The order is
-    the one `GET /api/tags` and `GET /api/environments` already answer in, by name, which
-    `GROUP_CONCAT DISTINCT` never promised.
+    Read as one row per link rather than GROUP_CONCAT, because label names may contain
+    the "," and ":" separators.
     """
     tags: dict[int, list[dict]] = {}
     envs: dict[int, list[dict]] = {}
@@ -652,12 +589,7 @@ def labels_by_service(
 def row_to_service(
     row, tags: list[dict] | None = None, environments: list[dict] | None = None
 ) -> dict:
-    """Convert a services DB row to a serializable dict, carrying the labels handed to it.
-
-    The labels come from `labels_by_service`, not from the row: a service query no longer
-    joins the two label tables at all, so it no longer fans out and no longer needs a
-    `GROUP BY` to fold itself back up.
-    """
+    """Convert a services row to a dict, adding the labels from `labels_by_service`."""
     d = dict(row)
     d["tags"]         = tags or []
     d["environments"] = environments or []

@@ -1,12 +1,7 @@
 """Docker container label analysis with confidence scoring.
 
-Parses container labels from multiple label conventions to produce
-a routing suggestion with a confidence level (high / medium / low).
-
-Priority order:
-  1. vauxtra.* labels  — explicit user intent           → high confidence
-  2. Traefik v2/v3 labels — widely used, reliable       → high confidence
-  3. Port heuristics alone (443 → https, 80 → http)     → low confidence
+Resolution order: vauxtra.* labels (high confidence), Traefik v2/v3 router labels (high),
+then port heuristics such as 443 -> https (low).
 """
 
 from __future__ import annotations
@@ -26,8 +21,6 @@ class ContainerSuggestion(TypedDict):
     tls_resolver: str | None # ACME resolver name if detected
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 _SUBDOMAIN_RE = re.compile(r"[^a-z0-9-]+")
 
 def _sanitize(raw: str) -> str:
@@ -42,8 +35,6 @@ def _scheme_from_port(port: int | None) -> str:
         return "https"
     return "http"
 
-
-# ── Traefik label parsing ─────────────────────────────────────────────────────
 
 # Matches: traefik.http.routers.<name>.rule
 _TRAEFIK_RULE_RE = re.compile(
@@ -67,11 +58,7 @@ _HOST_RULE_RE = re.compile(r"Host\([`'\"]([^`'\"]+)[`'\"]\)", re.IGNORECASE)
 
 
 def _parse_traefik_labels(labels: dict[str, str]) -> dict | None:
-    """
-    Extract routing information from Traefik v2/v3 router labels.
-
-    Returns a partial suggestion dict or None if no Traefik labels found.
-    """
+    """Extract routing info from Traefik v2/v3 router labels, or None if there are none."""
     # Collect per-router data
     routers: dict[str, dict] = {}
 
@@ -143,17 +130,11 @@ def _parse_traefik_labels(labels: dict[str, str]) -> dict | None:
     return None
 
 
-# ── vauxtra.* label parsing ───────────────────────────────────────────────────
-
 def _parse_vauxtra_labels(labels: dict[str, str], container_name: str) -> dict | None:
-    """
-    Parse explicit vauxtra.* labels.
+    """Parse explicit vauxtra.* labels, or None if there are none.
 
-    Recognized keys:
-      vauxtra.subdomain   — override subdomain (defaults to container name)
-      vauxtra.port        — target port
-      vauxtra.scheme      — "http" or "https"
-      vauxtra.websocket   — "true" / "1" / "yes"
+    Keys: vauxtra.subdomain (default: container name), vauxtra.port, vauxtra.scheme
+    ("http"/"https"), vauxtra.websocket ("true"/"1"/"yes").
     """
     # Only activate if at least one vauxtra.* label is present
     vauxtra_keys = {k for k in labels if k.startswith("vauxtra.")}
@@ -187,8 +168,6 @@ def _parse_vauxtra_labels(labels: dict[str, str], container_name: str) -> dict |
     }
 
 
-# ── Port heuristic ────────────────────────────────────────────────────────────
-
 def _heuristic_from_port(port: int | None) -> dict:
     """Fallback suggestion based solely on exposed port numbers."""
     scheme = _scheme_from_port(port)
@@ -204,20 +183,13 @@ def _heuristic_from_port(port: int | None) -> dict:
     }
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
 def analyze_container(
     labels: dict[str, str],
     container_name: str,
     detected_port: int | None,
 ) -> ContainerSuggestion:
-    """
-    Produce a routing suggestion for a running container.
-
-    Resolution order (first match wins):
-      1. vauxtra.* labels
-      2. Traefik v2/v3 router labels
-      3. Port-based heuristic (always succeeds, confidence=low)
+    """Produce a routing suggestion for a container: vauxtra labels, then Traefik labels,
+    then the port heuristic (always succeeds, low confidence).
     """
     # 1. Explicit vauxtra labels
     result = _parse_vauxtra_labels(labels, container_name)

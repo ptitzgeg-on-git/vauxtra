@@ -16,14 +16,12 @@
 12. [Service Templates](#12-service-templates)
 13. [Prometheus Metrics](#13-prometheus-metrics)
 14. [API Reference](#14-api-reference)
-15. [Troubleshooting](#15-troubleshooting)
+
+For failures and recovery steps, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 
-## Notes
-
-- The in-app "How-To & API" panel has been removed to avoid duplicated/dated guidance.
-- This file is now the single source of truth for end-user operations.
+This file is the reference for end-user operations.
 
 ---
 
@@ -32,7 +30,7 @@
 On first launch, Vauxtra displays a guided setup wizard to help you configure:
 
 1. **Password** — Protect access to your panel (optional — you can skip for open access)
-2. **Providers** — Connect reverse proxies (NPM, Traefik, Zoraxy) and DNS providers (Cloudflare, Pi-hole, AdGuard)
+2. **Providers** — Connect reverse proxies (NPM, Traefik, Zoraxy) and DNS providers (Cloudflare, Pi-hole, AdGuard Home, Technitium, PowerDNS, deSEC)
 3. **Notifications** — Add webhooks for alerts (Discord, Slack, Telegram, etc.)
 4. **Docker endpoints** — Connect Docker hosts for container discovery
 
@@ -114,7 +112,7 @@ sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key='auth_mode';"
 ### What reaches the activity log
 
 Four authentication events are written to the journal you read in *Recent activity* and in
-**Settings → Logs**:
+**Settings → Action Logs**:
 
 | Event | Level |
 | --- | --- |
@@ -129,9 +127,7 @@ to set `X-Forwarded-For` — so an address in those lines would be a false lead 
 investigation they exist for.
 
 Only the attempts that reach the route are recorded. Past five a minute the rate limiter
-answers 429 before anything is written, which is what stops an unauthenticated caller from
-filling the table at its own rate: a burst of guesses reads as five lines a minute, not as one
-line per request.
+answers 429 before anything is written, so a burst of guesses shows as five lines a minute.
 
 ---
 
@@ -156,6 +152,9 @@ If you change SECRET_KEY after adding providers, **all stored credentials become
 
 Let Vauxtra auto-generate the key (default behavior). Just make sure to **back up your `data/` folder**, which includes the `.secret_key` file and the database.
 
+To change the key anyway, follow [Rotating SECRET_KEY](DEPLOYMENT.md#rotating-secret_key): it
+goes through a secure backup, so the credentials are re-encrypted with the new key.
+
 ---
 
 ## 4) Docker: Single or Multiple Hosts
@@ -164,20 +163,24 @@ Vauxtra supports multiple Docker endpoints:
 
 - **Local socket**: `unix:///var/run/docker.sock` (default)
 - **TCP**: `tcp://192.168.1.100:2375`
-- **SSH**: `ssh://user@hostname`
+
+The form also accepts `ssh://user@hostname`, but the Docker image does not ship `paramiko` or
+an SSH client, so an SSH endpoint fails in the image. Use `tcp://` (ideally through a
+read-only socket proxy) instead.
 
 ### Adding endpoints
 
-1. Go to **Providers → Add Connection** and select **Docker Host** under "Container Discovery"
+1. Go to **Integrations → Add integration** and pick **Docker**
 2. Enter a name and the Docker host URL (e.g. `unix:///var/run/docker.sock`)
-3. Click "Add Docker Endpoint"
+3. Click **Add Docker host**
 
-You can also add endpoints during the initial Setup wizard.
+You can also add endpoints during the initial Setup wizard, or in **Settings → Data → Docker
+discovery**.
 
 ### Container discovery
 
-1. Select an endpoint from the dropdown
-2. Click "Discover containers"
+1. Open **Settings → Data → Docker discovery** and select an endpoint
+2. Click **Discover containers**
 3. Review discovered containers with confidence scores
 4. Import selected containers as services
 
@@ -187,13 +190,14 @@ Vauxtra reads Traefik labels and suggests hostnames, ports, and routing rules au
 
 ## 5) Provider Setup
 
-Use **Providers → Add Connection** to add a new integration. Providers are organized by category:
-- **External DNS** — Cloudflare DNS
-- **Zero Trust** — Cloudflare Tunnel
-- **Local DNS** — Pi-hole, AdGuard Home
-- **Reverse Proxy** — Nginx Proxy Manager, Traefik, Zoraxy
+Use **Integrations → Add integration** to add a new integration. Types are grouped by kind:
+- **Reverse proxies** — Nginx Proxy Manager, Traefik, Zoraxy
+- **Tunnels** — Cloudflare Tunnel
+- **DNS providers** — Cloudflare, Pi-hole, AdGuard Home, Technitium DNS, PowerDNS, deSEC
+- **Docker** — Docker hosts for container discovery
 
-Choose **Guided setup** for step-by-step instructions, or **Expert mode** if you already have all credentials ready.
+Choose **Guided** for step-by-step instructions, or **Quick form** if you already have all credentials ready.
+Setup notes for Technitium, PowerDNS and deSEC are in the [README](../README.md#provider-setup).
 
 ### Nginx Proxy Manager (NPM)
 
@@ -207,7 +211,7 @@ Traefik is read-only in Vauxtra — it reads existing routes but does not modify
 
 1. Expose the Traefik API (e.g., `--api.insecure=true` or dashboard router on port 8080)
 2. In Vauxtra: Add provider → Traefik → enter API URL
-3. Use **Sync → Import** to import existing routes
+3. Use **Import from providers** (Services or Integrations page) to import existing routes
 
 ### Zoraxy
 
@@ -217,7 +221,7 @@ requires on every write.
 
 1. Note the management URL (`http://zoraxy:8000`) and the admin credentials
 2. In Vauxtra: Add provider → Zoraxy → enter URL, username and password
-3. Test connection, then **Sync → Import** to pick up existing host rules
+3. Test connection, then **Import from providers** to pick up existing host rules
 
 **No dedicated account:** Zoraxy has exactly one admin account and no API keys, so Vauxtra
 holds the same credentials as your browser session. Keep port 8000 on the LAN or behind the
@@ -329,10 +333,8 @@ would then resolve to whichever the resolver picked.
 }
 ```
 
-Four, because two could not tell you anything. `imported` is a new service. `linked` is an
-existing service that gained the DNS half it was missing: a real write, and one the older
-two-field answer counted nowhere, so re-scanning after adding a rewrite reported zero.
-`skipped` is a row passed over **on purpose** — it is already tracked, or it is the second
+`imported` is a new service. `linked` is an existing service that gained the DNS half it was
+missing: a real write. `skipped` is a row passed over **on purpose** — it is already tracked, or it is the second
 name on a proxy host that carries several, and a service holds a single name. It is not a
 failure and the panel does not paint it as one. `errors` is a row that is *wrong*: no domain
 name, no address, no dot to split a subdomain off, or an import that raised. Each one names
@@ -388,14 +390,10 @@ scope, to anyone:
 - `GET /api/webhooks` and `GET /api/services/{sid}/alerts` return `url_masked` /
   `webhook_url_masked` (`discord://***`) and no `url` field at all. The create and update
   responses answer the same way.
-- The legacy global `webhook_url` no longer exists as a setting. It could be written, it
-  was masked on the way out, and it delivered nothing — alerting reads the `webhooks`
-  table. Any value already stored is moved into that table on the next start, as a target
-  named *Global notifications (migrated)*; writing the key now returns 400 and points at
-  `POST /api/webhooks`.
-- The `[Webhook]` log lines are masked too. Before this, one failed delivery wrote the token
-  into the `logs` table, which every `read` key can read; the migration deletes those rows
-  once, on the next start.
+- There is no global `webhook_url` setting. A value stored by an older version is moved into
+  the `webhooks` table on start, as a target named *Global notifications (migrated)*. Writing
+  the key returns 400 and points at `POST /api/webhooks`.
+- The `[Webhook]` log lines are masked too.
 - `GET /api/backup` — the export whose own flag says `secrets_included: false` — leaves the
   URL out entirely. `POST /api/backup/secure` encrypts it with your passphrase, alongside the
   provider passwords.
@@ -527,12 +525,13 @@ Vauxtra includes an MCP (Model Context Protocol) server for MCP-compatible clien
 
 ### Setup
 
-1. Create an API key: **Settings → API Keys → New Key**
+1. Create an API key: **Settings → API Keys → Create Key**
 2. Note the key (shown once)
 
 ### Claude Desktop config
 
-Add to `~/.config/claude/claude_desktop_config.json`:
+Add to `claude_desktop_config.json`. It lives in `~/Library/Application Support/Claude/` on
+macOS and in `%APPDATA%\Claude\` on Windows.
 
 ```json
 {
@@ -662,11 +661,13 @@ rewritten, so putting the label back restores it.
 
 ### Using templates from the UI
 
-1. Go to **Templates → New Template**
+1. Go to **Templates → New template**
 2. Fill in the defaults you want
 3. Save the template
-4. When creating a service, click **Apply Template** and choose a template — the form pre-fills with the stored defaults
+4. On the template card, click **Use template**: the service form opens pre-filled with the stored defaults
 5. Adjust any fields as needed and save
+
+You can also save a filled-in service form as a template with **Save as template**.
 
 ### Using templates via API
 
@@ -694,7 +695,11 @@ GET /api/templates/{id}/apply
 #          icon_url, _template_id, _template_name
 ```
 
-Apply returns the template fields merged as service-creation defaults. You can POST those directly to `/api/services` (add `name`, `subdomain`, and `internal_target` to complete the service).
+Apply returns the template fields as service-creation defaults. To create the service from
+them, drop `_template_id` and `_template_name` (`POST /api/services` refuses unknown keys with
+422), then add `subdomain` and `target_ip`, plus `domain` and `target_port` if the template left
+them empty, and post the result to `/api/services`. The MCP `apply_template` tool does all of
+this in one call.
 
 ### Using templates via MCP
 
@@ -790,7 +795,7 @@ vauxtra_webhook_delivery_total{status="pending"} 1
 vauxtra_templates_total 0
 # HELP vauxtra_schema_version Current DB schema version
 # TYPE vauxtra_schema_version gauge
-vauxtra_schema_version 11
+vauxtra_schema_version 12
 ```
 
 ### Prometheus scrape config
@@ -834,11 +839,8 @@ groups:
           summary: "{{ $value }} webhook delivery(ies) failed"
 ```
 
-`VauxtraErrorsLogged` is named after what it measures. An earlier version of this file called
-the same rule `VauxtraCertExpiringSoon` and annotated it "certificate may be expiring", which
-it could not know: the expression counts every error line in the journal, so a failed NPM call
-or an unreachable tunnel fired an alert about certificates. There is no certificate series to
-point it at — see the note under the table.
+`VauxtraErrorsLogged` counts every error line in the journal, whatever its cause. It says
+nothing about certificates: there is no certificate series (see the note under the table).
 
 ---
 
@@ -931,7 +933,7 @@ no such capability, and 502 when the provider itself refuses.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/certificates` | List certificates (from NPM) |
+| `GET` | `/api/certificates` | List certificates (from NPM and Zoraxy) |
 | `GET` | `/api/certificates/expiry` | Certificates with expiry info |
 
 ### Settings & Admin
@@ -995,7 +997,7 @@ service created from that template afterwards starts without it. Both halves rea
 way — a template stores an environment list beside its tag list, so an environment is dropped
 from a template exactly as a tag is. Call `GET /api/services` and `GET /api/templates` first
 if you need to know what that is before doing it; afterwards the id is gone, and the line the
-deletion writes to **Settings → Logs** is the only place the two counts are kept.
+deletion writes to **Settings → Action Logs** is the only place the two counts are kept.
 
 **Note on label names:** a name is stripped of its surrounding spaces, refused empty and
 stopped at 32 characters, and that is the whole rule. Commas, colons and any other
@@ -1066,6 +1068,13 @@ this — and a UI session, always `admin`, never meets either rule. A partial up
 does not carry a `url` field is not affected: toggling `enabled` on a webhook an admin
 created stays a `write`.
 
+A third rule protects the secrets Vauxtra already holds. `PUT /api/providers/{pid}` refuses
+a `write` key that moves a provider to another host, port or scheme without sending its
+password or token again, with a `403` that says so. The stored secret is sent to whatever
+the URL names on the next test or health check, so moving the URL alone would hand it to
+the new host. A new path on the same host is not a move, a provider with no stored secret
+moves freely, and an `admin` key or a UI session keeps the stored secret.
+
 A `read` key is deliberately refused on the test and preflight routes. They take a target
 host and port from the request and make the server connect to it, or deliver a real
 notification — side effects, not reads, even though nothing in Vauxtra's own database
@@ -1076,47 +1085,6 @@ been completed they answer without any authentication at all, because there is n
 authenticate yet. As soon as `setup-complete` has been stored they fall back to the scope
 listed above.
 
-One route outlives the request that opened it, and is checked accordingly. `GET /api/logs/stream`
-holds the socket and pushes every line as it is written — a refused sign-in, a key created
-and the scopes it carries, a service changed — so it asks whether the credential still holds
-on every tick rather than settling it once at connect time. The tick asks the door's own
-question, `admin`, and not a weaker "is this caller someone": a stream that settled for less
-would outlive any narrowing of the credential that opened it, which is the defect this loop
-exists to prevent, one rung lower down. Changing the admin password ends every stream opened
-with the cookie it replaces; revoking a key ends the stream that key opened, and so does
-dropping that key to `read` or `write`. A password change deliberately does **not** end a
-key's stream, for the same reason it does not revoke the key: revocation is what ends a key.
-The check runs before the read, so no line written after the credential died is sent. The
-browser that made the change reconnects once on its own and the live view comes back; any
-other browser is refused, falls back to polling, and the poll answers 401, which is what puts
-the login screen up.
-
----
-
-## 15) Troubleshooting
-
-### "Invalid password" but password is correct
-
-If you set `APP_PASSWORD` in `.env` after setting a password via the wizard, the env var takes priority. Check your `.env` file.
-
-### Provider credentials not working after restore
-
-You likely restored a backup with a different `SECRET_KEY`. Credentials are encrypted with the key — you need to re-enter them or restore the original `.secret_key` file.
-
-### Cloudflare Tunnel routes not updating
-
-1. Check the API token has `Account → Cloudflare Tunnel → Edit` permission
-2. Verify the Account ID is correct (32-char hex, not zone ID)
-3. Use the "Validate" button to diagnose
-
-### NPM connection fails
-
-1. Verify NPM is reachable from the Vauxtra container
-2. Check the port (usually 81, not 80)
-3. Try with admin credentials first, then create a dedicated user
-
-### Docker discovery returns empty
-
-1. Check the Docker socket is mounted (`/var/run/docker.sock`)
-2. For remote hosts, verify TCP/SSH connectivity
-3. Ensure containers are running (not exited)
+`GET /api/logs/stream` re-checks the `admin` scope on every tick, so the stream ends as soon
+as the password changes, or as soon as the key that opened it is revoked or narrowed. A password
+change does not end a stream opened with a key: only revoking or narrowing the key does.

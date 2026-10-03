@@ -35,6 +35,20 @@ from app.api.webhooks import router as webhooks_router
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
+# The generated key is 64 hex characters; only a hand-set SECRET_KEY can fall short of this.
+_MIN_KEY_LENGTH = 32
+
+
+def _warn_if_secret_key_is_short() -> None:
+    if len(SECRET_KEY) < _MIN_KEY_LENGTH:
+        _logger.warning(
+            "SECURITY: SECRET_KEY is shorter than %d characters. It signs the session cookie "
+            "and encrypts the stored credentials, so use a longer random value. Changing it "
+            "makes the stored credentials unreadable: re-enter them afterwards.",
+            _MIN_KEY_LENGTH,
+        )
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
@@ -42,9 +56,7 @@ async def _lifespan(_app: FastAPI):
     from app.models import get_db
     from app.scheduler import start
 
-    # Both of these are states an operator reaches without ever being told. The wizard has a
-    # *Skip* button on the password step, and a database restored from the wrong file can
-    # lose the hash. One line in the logs at every boot is the cheapest possible warning.
+    # Warn at every boot about an open or downgraded instance.
     if auth_is_downgraded():
         _logger.error(
             "SECURITY: this instance was configured with an admin password and the hash is "
@@ -57,14 +69,12 @@ async def _lifespan(_app: FastAPI):
             "is granted the admin scope, with no credential. Set one in Settings > Security, "
             "or through APP_PASSWORD, before exposing port 8888 to anything but localhost."
         )
+    _warn_if_secret_key_is_short()
 
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key='check_interval'").fetchone()
     conn.close()
-    # This used to be a bare `int()`, on a value any `write`-scoped caller could set: one bad
-    # row and the application never came up again, on every restart. The write side validates
-    # it now; this stays defensive because a database that already holds a bad value has to
-    # boot before anyone can correct it.
+    # Defensive int(): a bad stored value must not stop the app from booting.
     try:
         interval = max(0, int(str(row["value"]).strip())) if row else 0
     except (TypeError, ValueError):
@@ -82,9 +92,7 @@ app = FastAPI(
     title="Vauxtra",
     description="Vauxtra RESTful API",
     docs_url="/api/docs" if DEBUG else None,
-    # The schema follows the documentation. It was served unauthenticated on every install
-    # while `/api/docs` was closed -- which hides the reading room and leaves the book on
-    # the doorstep. Nothing in this repository reads it; the file is generated on demand.
+    # The schema is exposed only when the docs are.
     openapi_url="/openapi.json" if DEBUG else None,
     redoc_url=None,
     lifespan=_lifespan,
@@ -93,11 +101,7 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# The interface is served by this same application, so the working default is no
-# cross-origin caller at all. It used to be three localhost origins -- the Vite dev server
-# among them -- allowed *with credentials* on every deployment, while `.env.example`
-# promised "leave empty for same-origin only". Those origins are what `npm run dev` needs,
-# so they are what `DEBUG=true` grants, and nothing else does.
+# Same-origin by default. DEBUG adds the Vite dev server origins.
 _default_cors = (
     "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888" if DEBUG else ""
 )
@@ -134,11 +138,8 @@ app.add_middleware(
 )
 
 
-# Everything the interface loads now comes from this origin: the Vite build under
-# `/assets`, and since this change the Inter font too, which was fetched from rsms.me on
-# every page load of a tool that holds provider credentials. Inline styles survive because
-# React writes `style={{...}}` attributes and CSP counts those as inline; `img-src` allows
-# remote https because a service carries an `icon_url` the operator chooses.
+# All assets are self-hosted. Inline styles are allowed because React writes style
+# attributes; img-src allows https for operator-chosen service icons.
 _CSP = "; ".join([
     "default-src 'self'",
     "script-src 'self'",
@@ -161,15 +162,17 @@ _warned_about_forwarded_headers = False
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    """Add security headers (nosniff, frame deny, referrer policy, CSP, HSTS when HTTPS_ONLY).
+
+    Also warns once when X-Forwarded-For arrives without FORWARDED_ALLOW_IPS.
+    """
     global _warned_about_forwarded_headers
     if (
         not _warned_about_forwarded_headers
         and "x-forwarded-for" in request.headers
         and not os.environ.get("FORWARDED_ALLOW_IPS", "").strip()
     ):
-        # Said at the first forwarded request rather than at startup, because at startup
-        # there is nothing to look at. The consequence is not cosmetic: every visitor shares
-        # one rate-limit counter, so five failed logins from anywhere lock the operator out.
+        # Without it every visitor shares one rate-limit counter.
         _warned_about_forwarded_headers = True
         _logger.warning(
             "A request arrived with X-Forwarded-For but FORWARDED_ALLOW_IPS is not set: "
@@ -205,20 +208,15 @@ app.include_router(api_keys_router)
 app.include_router(auth_router)
 
 frontend_dist = os.path.join(_DIR, "..", "frontend", "dist")
-# Racine canonique du build. Tout chemin servi doit y etre confine : le motif
-# `/{full_path:path}` ne retire pas les segments `..`, et uvicorn ne normalise
-# pas le chemin, il se contente de le decoder.
+# Every served path must stay inside the build root: the catch-all route does not
+# strip `..` segments and uvicorn does not normalize the path.
 _FRONTEND_ROOT = os.path.realpath(frontend_dist)
 if os.path.exists(frontend_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
 
 
-# Every file this route serves keeps its name from one build to the next, index.html first,
-# and index.html names the hashed bundles of its own build. Sent with a Last-Modified and no
-# Cache-Control, a browser reused it without asking (heuristic freshness): measured on
-# 2026-09-23, a page loaded after an upgrade came out of the browser's cache with the
-# previous build's bundle, while /api/health answered the new version. `no-cache` keeps the
-# copy and asks before each use. The hashed bundles under /assets are not served here.
+# Served files keep their names across builds, so ask the browser to revalidate. The
+# hashed bundles under /assets are not served here.
 _REVALIDATE = {"Cache-Control": "no-cache"}
 
 

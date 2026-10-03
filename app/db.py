@@ -1,10 +1,4 @@
-"""Database connection — SQLite (WAL mode).
-
-Provides ``get_connection()`` which returns a ``sqlite3.Connection``
-configured with WAL journal, busy timeout, and foreign keys.
-
-Data is stored in ``data/vauxtra.db`` by default.
-"""
+"""SQLite connections (WAL journal, busy timeout, foreign keys on), stored in data/vauxtra.db."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Zoraxy provider — proxy rule and certificate management over the webmin API."""
+"""Zoraxy provider: proxy rule and certificate management over the webmin API."""
 
 import datetime
 import json
@@ -29,13 +29,9 @@ _PROXY_TYPE_HOST = 1
 
 
 def _rule_key(host_id) -> str | None:
-    """The identifier as Zoraxy keys rules, or None if this is not one.
+    """Return the rule key (Zoraxy keys rules by hostname), or None if `host_id` is not a non-empty string.
 
-    Zoraxy has no numeric ids: a rule is addressed by its hostname, which is also what
-    `create_host` hands back as `id`. Anything that is not a non-empty string cannot name
-    a rule, and refusing it here keeps the `DELETE /api/providers/{pid}/proxy-hosts/{host_id}`
-    route from posting `ep=None` to a server that would answer "proxy rule not found" with
-    HTTP 200, which the caller would then have to tell apart from a real failure.
+    Zoraxy answers HTTP 200 to a delete of an unknown rule, so a bad key is refused here.
     """
     if not isinstance(host_id, str):
         return None
@@ -61,11 +57,9 @@ def _join_origin(host: str, port: int) -> str:
 
 
 def _split_origin(origin: str, scheme: str) -> tuple[str, int]:
-    """Host and port of a Zoraxy upstream string, defaulting the port by scheme.
+    """Split a Zoraxy upstream (`host:port`, no scheme) into host and port.
 
-    Zoraxy stores the upstream as `host:port` with no scheme (the scheme lives in the
-    origin's RequireTLS flag), and a bare `host` means the scheme's default port. IPv6
-    literals come bracketed, `[::1]:8080`; the brackets are not part of the host.
+    A bare host gets the scheme's default port; IPv6 brackets are removed.
     """
     origin = (origin or "").strip()
     default = 443 if scheme == "https" else 80
@@ -86,15 +80,9 @@ def _split_origin(origin: str, scheme: str) -> tuple[str, int]:
 
 
 def _iso_expiry(raw) -> str:
-    """Zoraxy's `2006-01-02 15:04:05` expiry as the ISO form Vauxtra parses, or "".
+    """Convert Zoraxy's `2006-01-02 15:04:05` UTC expiry to ISO 8601 with `Z`, or "".
 
-    `app.expiry.parse_expiry` reads the whole ISO 8601 range, so neither the `T` nor the
-    trailing `Z` is what makes this parseable any more: Zoraxy's own space-separated form
-    would be read correctly. They stay because the `Z` is honest -- Go formats `NotAfter`
-    in UTC -- and a stamp that says which zone it is in cannot be misread as local time by
-    anything downstream less forgiving than we are. Zoraxy writes "Unknown" when the
-    certificate did not parse; that and anything unexpected become "" so the callers skip
-    the entry rather than choke on it.
+    "Unknown" or anything unparseable gives "", so callers skip the entry.
     """
     text = str(raw or "").strip()
     try:
@@ -105,12 +93,10 @@ def _iso_expiry(raw) -> str:
 
 
 def _parse_reply(r) -> tuple[bool, str]:
-    """(ok, error) as Zoraxy means it: HTTP 200 carries both "OK" and {"error": ...}.
+    """Return (ok, error) for a Zoraxy mutation reply.
 
-    Mutations answer `"OK"` on success and `{"error": "message"}` on failure, both with
-    HTTP 200, so the status code says nothing and the body is the only verdict. A redirect
-    is the login page for an expired session and a non-JSON body is not an API answer at
-    all; both are failures with a reason the caller can log.
+    Success and failure both use HTTP 200 (`"OK"` vs `{"error": ...}`), so the body decides.
+    A redirect (expired session) or a non-JSON body is a failure.
     """
     if r.status_code in _REDIRECTS:
         return False, "not authenticated"
@@ -138,14 +124,10 @@ class ZoraxyProvider(ProxyProvider):
         self._csrf_token: str | None = None
 
     def _fetch_csrf(self) -> str | None:
-        """A fresh CSRF token, or None when the page could not be read.
+        """Return a fresh CSRF token, or None if the page could not be read.
 
-        gorilla/csrf protects every non-safe request on the management mux, `-noauth`
-        included, and pairs the token printed in the page with the `zoraxy_csrf` cookie set
-        on the same response: the cookie jar keeps the cookie, this keeps the token. The
-        token is read from `/login.html` rather than `/` because the index answers an
-        unauthenticated client with a 307 to the login page, and the login page is served
-        to everyone with the same `zoraxy.csrf.Token` meta tag.
+        gorilla/csrf pairs the page's meta token with the `zoraxy_csrf` cookie, even with
+        `-noauth`. Read from /login.html, which is served to unauthenticated clients.
         """
         try:
             r = self.session.get(
@@ -213,11 +195,9 @@ class ZoraxyProvider(ProxyProvider):
         return False, "CSRF token rejected"
 
     def _login(self) -> bool:
-        """Open a session with the configured credentials.
+        """Log in with the configured credentials.
 
-        Zoraxy answers HTTP 200 whether the password was right or not; only the body
-        tells, `"OK"` against `{"error": "Invalid username or password"}`. The session
-        cookie set on success lives in the cookie jar; `rmbme` asks for the long-lived one.
+        Zoraxy answers HTTP 200 either way; only the body says whether it worked.
         """
         ok, _err = self._send(
             "/api/auth/login",
@@ -228,12 +208,8 @@ class ZoraxyProvider(ProxyProvider):
     def _ensure_auth(self) -> bool:
         """Ensure the session is usable, logging in when it is not.
 
-        One GET on `checkLogin` per call, the same cheap probe NPM does with its token:
-        the route sits on the unprotected mux, so it answers `true`/`false` instead of
-        redirecting, and it answers `true` unconditionally on a `-noauth` instance. That
-        is what lets a provider with empty credentials work against such an instance:
-        nothing to log in with, but nothing to log in for either. With credentials, a
-        `false` triggers a login; without, it is the answer.
+        `checkLogin` is unprotected and answers `true` on a `-noauth` instance, which lets a
+        provider with empty credentials work there.
         """
         if self._get("/api/auth/checkLogin") is True:
             return True
@@ -252,13 +228,9 @@ class ZoraxyProvider(ProxyProvider):
         return isinstance(self._get("/api/proxy/list", {"type": "host"}), list)
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
-        """Reachability, then credentials, then the rule list.
+        """Check reachability, then credentials, then the rule list, as separate results.
 
-        Worth separating here more than anywhere else: Zoraxy answers HTTP 200 to a login
-        with the wrong password and says so only in the body, so `_ensure_auth` is the only
-        thing that knows, and `test_connection` folds its answer together with a host that
-        never replied. The fallback in `_provider_diagnostics` called both
-        `connection_failed`.
+        Separated because a wrong password still gets HTTP 200 from Zoraxy.
         """
         checks = [reachability_check(self.session, f"{self.base_url}/login.html")]
         if not checks[0]["ok"]:
@@ -282,18 +254,11 @@ class ZoraxyProvider(ProxyProvider):
 
     @staticmethod
     def _normalize_rule(rule: dict) -> dict:
-        """Vauxtra's host shape for one Zoraxy rule.
+        """Convert a Zoraxy rule to Vauxtra's host shape.
 
-        The hostname is the id: Zoraxy has no other identifier for a rule. It is kept in
-        the spelling Zoraxy stores, capitals included, because the config file on disk is
-        named after that spelling and `del` removes the file by the name it is given; the
-        `domains` are lower-cased, since that is how the rest of Vauxtra spells a hostname
-        and how it looks a rule up. `ssl` is always True because TLS is a listener-wide
-        setting in Zoraxy rather than a per-rule one; `BypassGlobalTLS` only adds plain
-        HTTP alongside, and is kept as information. A rule whose origins are all inactive
-        is still a rule, so it is normalised from the first inactive origin rather than
-        dropped; a rule with no origin at all keeps an empty target so the sync code sees
-        it without inventing a port.
+        The id is the hostname as Zoraxy stores it (the config file is named after it);
+        `domains` are lowercased. `ssl` is always True since TLS is listener-wide. A rule
+        with only inactive origins is still normalized; one with no origin has an empty target.
         """
         domain = str(rule.get("RootOrMatchingDomain") or "")
         aliases = [str(a).lower() for a in (rule.get("MatchingDomainAlias") or []) if a]
@@ -321,15 +286,8 @@ class ZoraxyProvider(ProxyProvider):
         }
 
     def list_hosts(self) -> list[dict]:
-        """Every host rule Zoraxy holds.
-
-        Raises rather than answering []. `_get` returns None for a refused session, a
-        non-200 and a body that is not JSON alike, and turning that None into an empty
-        list hands the drift check the one sentence it reads as `route_missing` with a
-        Reconcile button beside it. `validate_permissions` above gets this right -- it
-        asks `_get` itself and tests `isinstance(rules, list)` -- so the panel could say
-        "rules unreadable" while the drift check, on the same failure, said "the route
-        is gone". Only one of those two was ever true.
+        """Return every host rule. Raises instead of returning [] when the list is unreadable,
+        so the drift check does not report routes as missing.
         """
         if not self._ensure_auth():
             raise ProviderListingRefused("Zoraxy refused the credentials")
@@ -346,11 +304,8 @@ class ZoraxyProvider(ProxyProvider):
                                    current: dict | None = None) -> tuple[bool, str]:
         """Record `cert_id` as the rule's preferred certificate.
 
-        `setTlsConfig` replaces the whole `TlsOptions` block with the posted JSON, so the
-        three behaviour flags are copied from the current rule when there is one rather
-        than reset. The preferred map is rebuilt around the current hostname on purpose:
-        `setHostname` clones the rule without touching the map, so after a rename the old
-        entry is keyed on a name Zoraxy will never look up again.
+        setTlsConfig replaces the whole TlsOptions block, so current flags are copied. The
+        preferred map is rebuilt around the current hostname, since a rename leaves it stale.
         """
         options = dict(current or {})
         tls_config = {
@@ -367,23 +322,10 @@ class ZoraxyProvider(ProxyProvider):
     def create_host(self, domain: str, ip: str, port: int,
                     scheme: str = "http", websocket: bool = False,
                     cert_id: str | None = None) -> dict | None:
-        """Add a host rule and, when a certificate was chosen, record it as preferred.
+        """Create a host rule; record the chosen certificate as preferred.
 
-        The rule is looked up before it is added because `/api/proxy/add` does not: it
-        stores the new rule over whatever sits under that hostname and overwrites the
-        config file, answering "OK", so an add on an existing hostname would silently
-        replace a hand-made rule -- aliases, credentials, headers, virtual directories --
-        with a bare one. NPM refuses a duplicate domain, and the service routes rely on
-        that refusal, so an existing rule is a refusal here too. A lookup that did not
-        answer is treated the same way: the only proof that nothing is there is Zoraxy
-        saying "proxy rule not found".
-
-        `tlsval` skips upstream certificate validation whenever the upstream is HTTPS: the
-        upstream is a LAN service with a self-signed or internal certificate far more often
-        than not, and NPM's provider does not validate either. `access=default` is the one
-        access rule every Zoraxy instance has. A failed `setTlsConfig` does not undo the
-        rule: the rule works without the preference (Zoraxy still matches by SNI), so the
-        honest outcome is a created host with a logged warning.
+        Refuses an existing hostname (Zoraxy's add silently overwrites). Upstream TLS is not
+        validated (LAN self-signed certs). A failed setTlsConfig is logged, not rolled back.
         """
         domain = (domain or "").strip()
         if not domain or not self._ensure_auth():
@@ -433,20 +375,11 @@ class ZoraxyProvider(ProxyProvider):
 
     @staticmethod
     def _edit_form(current: dict, *, disable_websocket: bool) -> dict:
-        """The complete `/api/proxy/edit` form for a rule, with one flag changed.
+        """Build the complete /api/proxy/edit form for a rule with one flag changed.
 
-        The edit handler does not merge: it reads every parameter it knows and writes the
-        result over a copy of the rule, so a parameter left out is a setting silently
-        reset to its zero value. Sending only `disableWebSocket` would switch off rate
-        limiting, uptime monitoring, exploit blocking, the auth provider and the captcha,
-        and wipe the tags. Every field below is one the handler reads; what it does not
-        read (credentials, aliases, upstreams, TLS options, headers) survives the copy.
-        `tls` is read but never applied, so it is not sent.
-
-        AuthMethod goes through verbatim because the handler maps 1-4 (basic, forward,
-        oauth2, zorxauth) and anything else to none. The captcha parameters are only read
-        when `captcha` is true, and its ExceptionRules are not read at all: the official
-        UI drops them on every edit for the same reason, and so does this.
+        The edit handler resets every parameter it reads but is not sent, so all of them are
+        echoed from the current rule. `tls` is read but never applied, so it is omitted;
+        captcha ExceptionRules are not read, as in the official UI.
         """
         auth = current.get("AuthenticationProvider") or {}
         captcha = current.get("CaptchaConfig") or {}
@@ -493,20 +426,11 @@ class ZoraxyProvider(ProxyProvider):
     def update_host(self, host_id: str, domain: str, ip: str, port: int,
                     scheme: str = "http", websocket: bool = False,
                     cert_id: str | None = None) -> bool:
-        """Bring a rule to the requested state, one dedicated endpoint per changed aspect.
+        """Bring a rule to the requested state, calling only the endpoints whose aspect changed.
 
-        Zoraxy has no single "replace the rule" call that is safe to use: hostname,
-        upstream, options and TLS each have their own endpoint, and the options one
-        resets whatever it is not told. So the current rule is read first and only the
-        aspects that differ are touched, in the order that keeps later steps addressing
-        the right rule (a rename first, since every other endpoint is keyed on the name).
-        The result is True only when every step that was needed answered "OK".
-
-        The rename is decided case-insensitively. Zoraxy keeps the hostname as typed but
-        keys and looks rules up lower-cased, so `setHostname` from "App.Example.com" to
-        "app.example.com" finds the very rule being renamed under the new name and answers
-        "already exists"; the rule is then reachable only under its stored spelling, and
-        that spelling is what every later step is keyed on.
+        The rename runs first since every other endpoint is keyed on the name, and is
+        decided case-insensitively (Zoraxy looks rules up lowercased). True only if every
+        needed step answered "OK".
         """
         key = _rule_key(host_id)
         if key is None or not self._ensure_auth():
@@ -598,14 +522,10 @@ class ZoraxyProvider(ProxyProvider):
         return ok
 
     def get_certificates(self) -> list[dict]:
-        """Every certificate in Zoraxy's store, keyed on its filename.
+        """Return every certificate in Zoraxy's store, id = filename without extension.
 
-        The filename (without extension) is the certificate id: it is what `PreferredCertificate`
-        stores and the only identifier the list exposes. ACME writes wildcard certificates
-        as `_.example.com`, so that spelling is translated back to `*.example.com` in the
-        domains, and a filename that is itself a hostname is a domain too, because Zoraxy's
-        legacy matching serves `<host>.pem` for `<host>` whatever the certificate says.
-        SANs are not exposed by the API; only the CN is.
+        ACME's `_.example.com` is reported as `*.example.com`, and a filename that is a
+        hostname counts as a domain (legacy matching). Only the CN is exposed, not SANs.
         """
         if not self._ensure_auth():
             raise RuntimeError("Zoraxy authentication failed (check username and password)")
@@ -644,11 +564,8 @@ class ZoraxyProvider(ProxyProvider):
                 "nice_name":      filename,
                 "domains":        domains,
                 "expires_on":     expires_on,
-                # The countdown only travels with the date it was counted from. Zoraxy
-                # states `RemainingDays: -1` for a certificate whose `ExpireDate` it could
-                # not read, and states the same -1 for one that expired yesterday: the
-                # number alone cannot tell those apart, and the panel believed the second.
-                # No date, no count -- the row then reads as unknown, which it is.
+                # Zoraxy reports -1 both for expired and for unreadable dates, so the count
+                # is only kept when a date was parsed.
                 "remaining_days": remaining if expires_on and isinstance(remaining, int) else None,
                 "use_dns":        bool(c.get("UseDNS")),
                 "is_fallback":    bool(c.get("IsFallback")),
@@ -656,13 +573,9 @@ class ZoraxyProvider(ProxyProvider):
         return result
 
     def find_best_certificate(self, host: str) -> str | None:
-        """Return a certificate that actually covers `host`, the full name, or None.
+        """Return a certificate covering `host` (exact name or parent wildcard), or None.
 
-        Same rule as the NPM provider, for the same reason: an exact name or the wildcard
-        of the parent zone, and nothing else -- not `*.example.com` for `example.com`. Zoraxy would serve the host anyway (it
-        matches by SNI on its own), but recording an unrelated certificate as preferred
-        is what a later `DisableSNI` would then serve, so no certificate is the honest
-        answer when nothing covers the host.
+        Same rule as NPM: a non-covering preferred cert would be served if SNI were disabled.
         """
         host = (host or "").strip().lower().rstrip(".")
         if not host:

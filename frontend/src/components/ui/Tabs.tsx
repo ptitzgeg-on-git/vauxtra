@@ -1,4 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
 import {
   createContext,
   useCallback,
@@ -31,8 +30,8 @@ function useTabs(component: string): TabsContextValue {
   return ctx;
 }
 
-export const tabId = (baseId: string, value: string) => `${baseId}-tab-${slugId(value)}`;
-export const tabPanelId = (baseId: string, value: string) => `${baseId}-panel-${slugId(value)}`;
+const tabId = (baseId: string, value: string) => `${baseId}-tab-${slugId(value)}`;
+const tabPanelId = (baseId: string, value: string) => `${baseId}-panel-${slugId(value)}`;
 
 export interface TabsProps extends Omit<HTMLAttributes<HTMLDivElement>, 'onChange' | 'defaultValue'> {
   /** Controlled value. */

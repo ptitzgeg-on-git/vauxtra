@@ -282,10 +282,8 @@ PROVIDER_TYPES = {
         "capabilities": {
             "proxy": False,
             "dns": True,
-            # PowerDNS Authoritative *can* serve a public zone, but only if the zone is
-            # delegated to it at a registrar — something Vauxtra cannot see from the API.
-            # Declaring it public would relabel the address field "public WAN IP" for every
-            # operator running it on a LAN, so the honest default is local.
+            # Could serve a public zone if delegated, which the API cannot tell; default to
+            # local so the UI does not label the address a public WAN IP.
             "public_dns": False,
             "supports_auto_public_target": False,
             "supports_tunnel": False,
@@ -533,6 +531,11 @@ def _rewrite_loopback_url(url: str) -> str:
 
 
 def create_provider(provider_row):
+    """Build the provider client for a stored provider row.
+
+    Decrypts the stored secret and parses `extra` JSON for types that need it.
+    Raises ValueError for an unregistered type.
+    """
     ptype = provider_row["type"]
     url   = _rewrite_loopback_url(provider_row["url"])
     user  = provider_row["username"]
@@ -555,12 +558,9 @@ def create_provider(provider_row):
 
 
 def certificate_provider_types() -> list[str]:
-    """Provider types whose certificate store Vauxtra can read, in PROVIDER_TYPES order.
+    """Provider types with a readable certificate store, in PROVIDER_TYPES order.
 
-    The certificate routes and the expiry scanner used to hard-code `type='npm'`, so a
-    second proxy exposing its store stayed invisible to both. The capability flag is where
-    a provider declares it, plugin-registered types included, so it is also where the SQL
-    should read it from.
+    Read from the capability flag, so plugin-registered types are included.
     """
     return [
         ptype for ptype, meta in PROVIDER_TYPES.items()
@@ -569,12 +569,10 @@ def certificate_provider_types() -> list[str]:
 
 
 def host_id_is_hostname(proxy, provider_type: str | None = None) -> bool:
-    """Whether `proxy` hands hosts back under their hostname rather than a stable id.
+    """Whether `proxy` keys hosts by hostname rather than a stable id.
 
-    The provider instance is asked first, so a class that declares
-    `HOST_ID_IS_HOSTNAME` answers for itself. An object that does not declare it -- a
-    test double standing in for a real provider -- is judged by the class registered for
-    its row's type, which is what would have been built for that row.
+    Asks the instance first; an object without the attribute (a test double) is judged by
+    the class registered for `provider_type`.
     """
     declared = getattr(proxy, "HOST_ID_IS_HOSTNAME", None)
     if declared is not None:

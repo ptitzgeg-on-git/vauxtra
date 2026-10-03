@@ -32,6 +32,11 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Nothing by default. Every job below names the scopes it uses, so a job added later
+# without a `permissions:` block gets a token that can do nothing rather than whatever the
+# repository default happens to be.
+permissions: {}
+
 jobs:
   audit:
     name: Dependency audit
@@ -50,11 +55,18 @@ jobs:
       # now refuses to rule on a shallow clone, so this line is what keeps it able to.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+          # Keyed on every requirement file, the bridge's included: a change to any of them
+          # is a different install, and a stale cache would hide it.
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            vauxtra_mcp/requirements.txt
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -73,8 +85,10 @@ jobs:
       - name: pip-audit (Python dependencies)
         run: |
           python -m pip install pip-audit
-          python -m pip_audit --requirement requirements.txt \
-                              --requirement vauxtra_mcp/requirements.txt
+          # Two runs: the image's lock is hashed, and pip reads one hashed file as an order
+          # to demand hashes from every file in the same install, the bridge's ranges included.
+          python -m pip_audit --require-hashes --requirement requirements.txt
+          python -m pip_audit --requirement vauxtra_mcp/requirements.txt
 
       # Through a runner, because `npm audit` exits 1 both when the registry reports a
       # high-severity advisory and when the registry reports nothing at all. The runner
@@ -116,6 +130,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -165,6 +181,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # `exit-code` is declared `required: false` with no `default:` in trivy-action's
       # action.yaml, so leaving it out means the `--exit-code` flag is never passed and
@@ -192,6 +210,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+          # Keyed on every requirement file, the bridge's included: a change to any of them
+          # is a different install, and a stale cache would hide it.
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            vauxtra_mcp/requirements.txt
 
       # Syft's requirements.txt parser drops every line whose constraint is not an exact
       # pin, and its default config sets GuessUnpinnedRequirements to false. All thirteen

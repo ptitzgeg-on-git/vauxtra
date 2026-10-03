@@ -1,4 +1,4 @@
-"""Service templates — pre-configured defaults that accelerate service creation."""
+"""Service templates: pre-configured defaults for new services."""
 
 import json
 
@@ -13,17 +13,7 @@ router = APIRouter()
 
 
 class TemplateIn(BaseModel):
-    """The body both template write routes accept.
-
-    Unknown keys are rejected rather than ignored, for the reason `ServiceIn`
-    (`app/api/services.py`) already gives and this model used to be the counter-example to.
-    `environment_ids` below is the field that silence cost. The form behind "save this
-    exposure as a template" offers both halves of the label control; the body it built
-    listed the tags and not the environments, and had it listed them there was no field
-    here to receive them and the key would have been ignored on the way past. Either way
-    the route answered 201 and the template came back naming no environment, which is
-    indistinguishable from a template where none was chosen.
-    """
+    """Body of both template write routes. Unknown keys are a 422, as on ServiceIn."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -74,11 +64,8 @@ class TemplateIn(BaseModel):
             raise ValueError("target_port must be between 1 and 65535")
         return v
 
-    # The three below mirror `ServiceIn`, with one difference that is the whole point of a
-    # template: a field may be left empty, because the operator fills it in at apply time.
-    # A value that is *present* is a value `POST /api/services` will be handed verbatim, so
-    # refusing it here refuses it once, at the moment it was typed, rather than every time
-    # the template is used.
+    # Mirrors ServiceIn, except a field may be empty (filled in at apply time). A value
+    # that is present is validated now rather than on every apply.
 
     @field_validator("domain")
     @classmethod
@@ -117,13 +104,9 @@ _LABEL_COLUMNS = (
 
 
 def _row_to_dict(row) -> dict:
-    """Read a template row, with both label lists guaranteed to be lists of ints.
+    """Read a template row; both label columns always come back as lists of ints.
 
-    `tag_ids_json` and `environment_ids_json` are TEXT columns, so what comes back is
-    whatever is in them. Valid JSON is not the question -- `{"a": 1}` parses and used to
-    reach the panel as `tag_ids`, which is the wrong shape for every caller. An unreadable
-    or wrongly-shaped column reads as no labels rather than raising, because one bad row
-    must not take `GET /api/templates` down with it.
+    A malformed or wrongly shaped JSON column reads as no labels instead of raising.
     """
     d = dict(row)
     for key, column, _table, _label in _LABEL_COLUMNS:
@@ -141,23 +124,10 @@ def _row_to_dict(row) -> dict:
 
 
 def _drop_dead_labels(conn, templates: list[dict]) -> None:
-    """Remove, in place, every label id naming a tag or environment that no longer exists.
+    """Remove, in place, tag/environment ids that no longer exist.
 
-    The two kinds of reference a template holds rot differently on their own. A deleted
-    provider leaves the column NULL, because `service_templates` declares `ON DELETE SET
-    NULL` on all three. A deleted tag or environment leaves nothing behind at all: both
-    label columns are TEXT, so no cascade reaches them and the template goes on naming a
-    label nobody can see.
-
-    That id is unusable in both directions. Sent onward it earns a refusal from
-    `POST /api/services` for a label the operator never chose; shown in the editor it is a
-    chip the label list cannot draw, so it cannot be clicked off -- and the save that
-    carries it back is now refused by `_unknown_references`, leaving a template that can be
-    opened and never stored. Dropping it here, on every read, makes a label rot the way a
-    provider already does: quietly, before anyone is asked to do something about it.
-
-    One query per half for however many templates were read, because `GET /api/templates`
-    returns them all and a per-row lookup would scale with the list.
+    Label columns are JSON text with no foreign key, so deletions do not cascade.
+    One query per label kind for the whole list.
     """
     for key, _column, table, _label in _LABEL_COLUMNS:
         wanted = {i for t in templates for i in t[key]}
@@ -173,18 +143,10 @@ def _drop_dead_labels(conn, templates: list[dict]) -> None:
 
 
 def templates_naming_label(conn, key: str, label_id: int) -> list[str]:
-    """The names of the templates holding `label_id` in one half of the label control.
+    """Names of templates whose `key` ("tag_ids" or "environment_ids") contains `label_id`.
 
-    `key` is `"tag_ids"` or `"environment_ids"`; the column behind each is in
-    `_LABEL_COLUMNS` above, and it is TEXT holding a JSON array, which no foreign key
-    reaches. That is what makes this a scan and not a join, and what makes it worth reading
-    before a delete: the id survives the delete and is dropped on the next read by
-    `_drop_dead_labels`, so afterwards nothing in the database remembers the template ever
-    named it.
-
-    Lives here, next to the column, rather than in `app/api/tags.py` and again in
-    `app/api/environments.py`. Both deletion routes call it, and the two used to differ:
-    only the tag half existed, because only the tag half could be stored.
+    A scan, since the column is JSON text. Called before a label is deleted, because the
+    dead id is dropped on the next read and leaves no trace.
     """
     column = next(c for k, c, _t, _l in _LABEL_COLUMNS if k == key)
     names = []
@@ -192,9 +154,7 @@ def templates_naming_label(conn, key: str, label_id: int) -> list[str]:
         try:
             ids = json.loads(r[column] or "[]")
         except (TypeError, ValueError):
-            # `_row_to_dict` answers the same column with the same shrug. It is TEXT, so it
-            # holds whatever was written, and a template nobody can parse is a template this
-            # label is not provably in -- not a 500 on the way out of a delete.
+            # Unparseable column: treat as not containing the label.
             continue
         if isinstance(ids, list) and label_id in ids:
             names.append(r["name"])
@@ -204,17 +164,8 @@ def templates_naming_label(conn, key: str, label_id: int) -> list[str]:
 def _unknown_references(conn, body: TemplateIn) -> list[str]:
     """Name every id in the template that points at nothing.
 
-    The same check `app/api/services.py` runs before it writes a service, for the same
-    reason and against the same tables. Without it the two kinds of id in a template failed
-    in two different ways, neither of them useful:
-
-      - a provider id reached SQLite, where `ON DELETE SET NULL` on `service_templates`
-        means the column is a real foreign key and an unknown value raises
-        `IntegrityError`. The operator got a 500 on a form they had just filled in.
-      - a label id is stored in `tag_ids_json` or `environment_ids_json`, which no
-        constraint reaches, so it was saved happily and `GET /api/templates/{id}/apply`
-        handed it back weeks later. The refusal arrived from `POST /api/services`, naming a
-        label id nobody had typed.
+    Provider ids are foreign keys (would be a 500); label ids are JSON text (would be
+    stored and refused later at apply time). Same check as for services.
     """
     unknown: list[str] = []
 
@@ -368,9 +319,9 @@ def delete_template(tid: int, request: Request):
 
 @router.get("/api/templates/{tid}/apply")
 def apply_template(tid: int, request: Request):
-    """
-    Return a pre-filled service payload based on the template.
-    The client merges this with user-supplied subdomain / target_ip / target_port.
+    """Return a pre-filled service payload from the template.
+
+    The client merges it with the subdomain, target_ip and target_port it supplies.
     """
     require_auth(request)
     conn = get_db()

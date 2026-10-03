@@ -74,7 +74,7 @@ export function LogsTab() {
 
     const open = () => {
       // Not '/api/...': a build served behind VITE_API_URL has its API somewhere else, and
-      // EventSource cannot go through the axios instance that knows where.
+      // EventSource cannot go through the API client that knows where.
       const source = new EventSource(`${API_BASE_URL}/logs/stream`, { withCredentials: true });
       current = source;
       source.onopen = () => setLiveState('open');

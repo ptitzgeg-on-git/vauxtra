@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import threading
+import time
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -62,16 +64,9 @@ def _parse_sources(raw: str) -> list[str]:
 
 
 def _parse_priority(raw: str) -> list[str]:
-    """The sources allowed to answer, in the operator's order. Omitting one excludes it.
+    """Return the allowed sources in the operator's order; an omitted source is excluded.
 
-    Every value the operator left out used to be appended back at the end, so the field
-    could reorder the three sources but never drop one. What it names is the address
-    written into public DNS for every service left in `auto` mode: an operator who takes
-    `server_public_ip` out is saying this machine's WAN address must not be published, and
-    saw it published anyway, under a form that had answered "Saved".
-
-    An empty or unrecognisable setting is still the full default policy -- that is a field
-    nobody has filled in, not a request for no sources at all.
+    An empty or unrecognised setting means the full default policy.
     """
     parts = [p.strip() for p in (raw or "").replace(";", ",").split(",") if p.strip()]
     ordered = [p for p in parts if p in PUBLIC_TARGET_PRIORITY_CHOICES]
@@ -85,6 +80,11 @@ def _parse_priority(raw: str) -> list[str]:
 
 
 def load_public_target_policy(conn) -> dict:
+    """Read the public target policy from settings.
+
+    Returns {"sources": [...], "timeout_seconds": clamped to 0.5-10, "priority": [...]},
+    with defaults for anything unset or invalid.
+    """
     rows = conn.execute(
         "SELECT key, value FROM settings WHERE key IN ('public_target_sources', 'public_target_timeout', 'public_target_priority')"
     ).fetchall()
@@ -124,11 +124,35 @@ def _is_publicly_routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
     )
 
 
+# Answers kept for callers that pass `max_age`. The lock also makes concurrent callers wait
+# for one lookup instead of each sending their own.
+_detected: dict[tuple[tuple[str, ...], float], tuple[float, str]] = {}
+_detect_lock = threading.Lock()
+
+
 def detect_server_public_ip(
     sources: list[str] | None = None,
     timeout_seconds: float = 2.0,
+    max_age: float = 0.0,
 ) -> str:
-    """Return the first detected WAN IP from configured resolvers, else empty string."""
+    """Return the first detected WAN IP from configured resolvers, else empty string.
+
+    With `max_age`, an answer younger than that many seconds is reused rather than fetched
+    again: a route any `read` key can call should not send outbound requests on every hit.
+    """
+    if max_age <= 0:
+        return _detect_uncached(sources, timeout_seconds)
+    key = (tuple(sources or DEFAULT_PUBLIC_IP_SOURCES), float(timeout_seconds))
+    with _detect_lock:
+        hit = _detected.get(key)
+        if hit is not None and time.monotonic() - hit[0] < max_age:
+            return hit[1]
+        ip = _detect_uncached(sources, timeout_seconds)
+        _detected[key] = (time.monotonic(), ip)
+        return ip
+
+
+def _detect_uncached(sources: list[str] | None, timeout_seconds: float) -> str:
     for source in (sources or DEFAULT_PUBLIC_IP_SOURCES):
         try:
             req = Request(source, headers={"User-Agent": "Vauxtra/1.0"})
@@ -139,12 +163,8 @@ def detect_server_public_ip(
         except Exception:
             continue
         if not _is_publicly_routable(ip):
-            # Whatever comes back here is written into public DNS for every service left in
-            # `public_target_mode='auto'`. `127.0.0.1` used to be accepted verbatim -- from
-            # a captive portal answering for the resolver, from a source chosen badly, from
-            # a source that was compromised -- and every name on this instance would then
-            # resolve to the visitor's own machine. Named out loud rather than skipped in
-            # silence: a resolver that answers with a LAN address is broken, not empty.
+            # The answer goes into public DNS for every auto-mode service, so a private or
+            # loopback address is refused and logged, never published.
             logger.warning(
                 "Ignoring %s from WAN resolver %s: not a publicly routable address",
                 ip,
@@ -160,6 +180,7 @@ def suggest_public_targets(
     proxy_provider_id: int | None = None,
     current_value: str = "",
     server_public_ip: str | None = None,
+    wan_ip_max_age: float = 0.0,
 ) -> dict:
     """Return candidate targets and the recommended value."""
     policy = load_public_target_policy(conn)
@@ -189,6 +210,7 @@ def suggest_public_targets(
             detect_server_public_ip(
                 sources=policy["sources"],
                 timeout_seconds=policy["timeout_seconds"],
+                max_age=wan_ip_max_age,
             )
         )
     if wan_ip:
@@ -246,14 +268,10 @@ def resolve_public_target(
 
 
 def describe_public_target_failure(source: str, provider_name: str = "") -> tuple[str, str]:
-    """Why no public target is available, as `(detail_key, sentence)`.
+    """Explain why no public target is available, as `(detail_key, sentence)`.
 
-    `resolve_public_target` already separates the two ways of coming back empty, and every
-    caller used to throw that apart and print one sentence for both: "Unable to resolve DNS
-    public target". Only one of the two resolves anything. In manual mode the function
-    returns on its first branch without a single lookup, so an operator who simply left the
-    field blank was told a resolution had failed, and went reading firewall logs over an
-    empty text box. The two cases have different remedies, so they get different sentences.
+    Manual mode with an empty field and a failed auto detection need different fixes,
+    so they get different keys.
     """
     who = f' for "{provider_name}"' if provider_name else ""
     if _normalize_target(source) == "auto_unavailable":

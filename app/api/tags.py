@@ -61,10 +61,7 @@ def create_tag(request: Request, body: TagIn):
             )
             conn.commit()
         except sqlite3.IntegrityError:
-            # The lookup above and this INSERT are two statements: another writer can store
-            # the name in between, and then the UNIQUE index is the only thing that still
-            # knows. Same refusal, same sentence. Narrow on purpose -- an `OperationalError`
-            # for a locked base or a full disk is ours, and keeps its 500.
+            # Race between lookup and INSERT. Other sqlite errors keep their 500.
             raise HTTPException(409, "A tag with this name already exists")
         tid = cur.lastrowid
         return {"id": tid, "name": body.name, "color": body.color}
@@ -88,11 +85,7 @@ def update_tag(tid: int, request: Request, body: TagIn):
             conn.execute("UPDATE tags SET name=?, color=? WHERE id=?", (body.name, body.color, tid))
             conn.commit()
         except sqlite3.IntegrityError:
-            # The window `create_tag` documents, on the rename rather than the creation. The
-            # conflict lookup above and this UPDATE are the same two statements, and the same
-            # writer can take the name in between -- with the same UNIQUE index left as the
-            # only thing that knows. It answered 500 here while the creation, three lines of
-            # code away, answered 409 for the collision the operator had actually caused.
+            # Same race as in create_tag.
             raise HTTPException(409, "A tag with this name already exists")
         return {"ok": True}
     finally:
@@ -100,14 +93,10 @@ def update_tag(tid: int, request: Request, body: TagIn):
 
 
 def holders_of_tag(conn, tid: int) -> tuple[list[str], list[str]]:
-    """The services carrying the tag and the templates naming it, both already sorted.
+    """Return (services, templates) carrying the tag, both sorted.
 
-    The two hold it in tables that behave nothing alike. `service_tags` declares
-    `ON DELETE CASCADE` (`app/models.py`), so a deleted tag unlinks its services and the
-    rows themselves are untouched. `service_templates.tag_ids_json` is TEXT holding a JSON
-    array, which no constraint reaches: the id survives the delete and is dropped on the
-    next read by `_drop_dead_labels` (`app/api/templates.py`). Same disappearance, arrived
-    at two different ways, and neither leaves anything to read afterwards.
+    Services are unlinked by cascade; template ids live in JSON text and are dropped on
+    the next read. Read before deleting, since neither leaves a trace afterwards.
     """
     services = [
         # `.strip(".")` the way every other fqdn in the API is built: an apex route stores
@@ -125,23 +114,11 @@ def holders_of_tag(conn, tid: int) -> tuple[list[str], list[str]]:
 
 
 def _log_tag_removal(conn, name: str, services: list[str], templates: list[str]) -> None:
-    """The only trace a tag deletion leaves, so it carries what was holding the tag.
-
-    There was none at all before this. Every other destructive route in the API writes to the
-    journal -- services, providers, domains, Docker endpoints, API keys -- and the two label
-    routes wrote nothing, which is the wrong way round: a tag is the one thing here whose
-    deletion changes rows the operator was not looking at. The services keep working and lose
-    a label they were filtered by; the templates come back one tag shorter and the next
-    service built from one starts without it. Neither says anything at the time, and after
-    the delete the tag id is not in the database to ask about.
-    """
+    """Log a tag deletion with the services and templates that carried it."""
     if not services and not templates:
         add_log("info", f"Tag deleted: {name}", conn)
         return
-    # A sentence each, rather than one count over both. They are not the same event: the
-    # services lose a label and go on routing, the templates change what they will build
-    # next. Joined into one list the rarer half is also the one "and 3 more" hides, and it
-    # is the half nothing else in the product reports.
+    # Separate sentences, so "and N more" never hides the template half.
     said = []
     if services:
         said.append(

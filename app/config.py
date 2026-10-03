@@ -26,7 +26,9 @@ def _get_or_generate_secret() -> str:
         if stored:
             return stored
     generated = secrets.token_hex(32)
-    with open(key_file, "w") as f:
+    # Created 0600 rather than narrowed after the write, which left it readable in between.
+    fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(generated)
     try:
         os.chmod(key_file, 0o600)
@@ -55,24 +57,21 @@ def encrypt_secret(s: str) -> str:
     return fernet.encrypt(s.encode()).decode()
 
 
-# A Fernet token starts with a 0x80 version byte, which always yields this prefix once
-# base64url-encoded. It is what separates "this field was never encrypted" from "this field
-# is encrypted under a different key".
+# Every Fernet token starts with this (0x80 version byte), which tells "never encrypted"
+# from "encrypted under another key".
 _FERNET_PREFIX = "gAAAAA"
 
 
+def is_encrypted(s: str) -> bool:
+    """Whether *s* is a Fernet token, whichever key wrote it."""
+    return bool(s) and s.startswith(_FERNET_PREFIX)
+
+
 def decrypt_secret(s: str) -> str:
-    """Decrypt a Fernet string, or return it as-is if it was never encrypted (legacy).
+    """Decrypt a Fernet string; return legacy plaintext unchanged.
 
-    Both possible failures used to leave here the same way: as the value itself. For a
-    password stored in clear before encryption existed, that is the right answer. For a
-    token encrypted under a `SECRET_KEY` that is no longer there -- variable lost, file not
-    mounted, a fresh key generated at boot -- it handed the *ciphertext* to the provider as
-    the password. What the operator saw was every provider failing authentication at once,
-    with nothing anywhere naming the cause, and the ciphertext going out over the network
-    to a third party.
-
-    That case now yields an empty string and says why in the log.
+    A token encrypted under a different SECRET_KEY yields "" and a log line, so ciphertext
+    is never sent to a provider as a password.
     """
     if not s:
         return s
@@ -87,8 +86,6 @@ def decrypt_secret(s: str) -> str:
             return ""
         return s
 
-
-# ── Backup encryption with user-provided passphrase ──────────────────────────
 
 def derive_fernet_from_passphrase(passphrase: str, salt: bytes) -> Fernet:
     """Derive a Fernet key from a passphrase using PBKDF2-HMAC-SHA256."""

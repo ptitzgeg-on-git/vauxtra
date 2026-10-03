@@ -11,16 +11,21 @@ This guide covers local setup, code conventions, and how to extend the project.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-
-# MCP server (optional, for MCP-compatible client integration)
-pip install -r vauxtra_mcp/requirements.txt
+pip install -r requirements-dev.txt   # app, MCP bridge, pytest and ruff
 
 # Start the backend (auto-reloads on file changes)
-uvicorn app.main:app --host 0.0.0.0 --port 8888 --reload
+export DEBUG=true
+uvicorn app.main:app --host 127.0.0.1 --port 8888 --reload
 ```
 
-The API is available at `http://localhost:8888`. Interactive docs at `http://localhost:8888/api/docs` (requires `DEBUG=true` in `.env`).
+The image installs `requirements.txt`, a lock with a hash for every file, generated from
+`requirements.in`. To add or bump a backend dependency, edit `requirements.in`, then run
+`make lock` with Python 3.14 and pip-tools installed, and commit both files. CI runs the
+tests against the versions in the lock.
+
+The API is available at `http://localhost:8888`, and the interactive docs at
+`http://localhost:8888/api/docs`. A source run does not read `.env` (there is no dotenv
+loader), so `DEBUG=true` and any other variable must be exported in the shell.
 
 ### Frontend (React + Vite)
 
@@ -52,23 +57,33 @@ Access: `http://localhost:8888`
 ## Running Tests
 
 CI runs automatically on every push and pull request:
-- `.github/workflows/tests.yml` — Python tests + ruff + frontend typecheck/build
-- `.github/workflows/docker-publish.yml` — Docker build, sign and push (push to `main` or version tag)
-- `.github/workflows/release.yml` — GitHub release page, written only after the pushed image is verified pullable (version tag)
-- `.github/workflows/ghcr-cleanup.yml` — weekly GHCR housekeeping; fails if a published tag stops resolving
+- `.github/workflows/tests.yml`: Python tests, ruff, the `scripts/check_*.py` gates, and the frontend lint, typecheck, build, locale checks and unit tests
+- `.github/workflows/security.yml`: dependency audit (pip-audit, npm audit), image and filesystem scans (Trivy, Grype), SBOM; also weekly
+- `.github/workflows/codeql.yml`: CodeQL analysis of Python, TypeScript and the workflows; also weekly
+- `.github/workflows/docker-publish.yml`: Docker build, sign and push. A push to `dev` publishes the `dev` image; a push to `main` or a version tag publishes `latest` and the version tags
+- `.github/workflows/release.yml`: GitHub release page, written only after the pushed image is verified pullable (version tag)
+- `.github/workflows/ghcr-cleanup.yml`: weekly GHCR housekeeping; fails if a published tag stops resolving
 
-Locally:
+The local equivalent of `tests.yml`, from the repository root, after
+`pip install -r requirements-dev.txt`:
 
 ```bash
-# Backend tests
-PYTHONPATH=. python -m pytest tests/ -v
+# Backend
+ruff check .
+PYTHONPATH=. python -m pytest tests/ -q
+for gate in scripts/check_*.py; do python "$gate" || break; done
 
-# Frontend type check
-cd frontend && npm run build
-
-# Frontend lint
-cd frontend && npm run lint
+# Frontend
+cd frontend
+npm run lint
+npm run build          # TypeScript check + production build
+npm run i18n:check     # locale keys, usage and plural forms
+npm test               # vitest
 ```
+
+`make check` runs this whole list, plus `npm run i18n:quality`, in one go.
+`scripts/check_repo_hygiene.py` needs the full Git history; in a shallow clone it fails on
+that alone.
 
 ---
 
@@ -132,7 +147,7 @@ feat(providers): add HAProxy provider
 fix(scheduler): prevent duplicate tunnel health jobs
 refactor(services): extract preflight into dedicated module
 docs: update MCP integration guide
-chore: upgrade fastmcp to 2.1
+chore: upgrade fastmcp to 4.1
 ```
 
 Scopes: `providers`, `services`, `scheduler`, `auth`, `docker`, `mcp`, `frontend`, `ui`, `settings`, `docs`
@@ -231,7 +246,7 @@ PROVIDER_TYPES = {
 
 ### 3. (Optional) Add a logo
 
-Add an SVG to `frontend/public/logos/myprovider.svg` and register it in `frontend/src/components/ui/ProviderLogos.tsx`. If no logo is provided, the frontend uses a generic Lucide icon.
+Logos are inline React components, not image files. Add one to `frontend/src/components/ui/ProviderLogos.tsx` (24px grid, 2px stroke, `currentColor`, like the existing marks) and map your type to it in `providerIcons`. If no logo is provided, the frontend uses a generic Lucide icon.
 
 ### 4. (Optional) Add a fallback icon
 
@@ -250,7 +265,7 @@ export const fallbackIconByType = {
 
 The provider will automatically appear in:
 - The **Setup wizard** (first-run)
-- The **Add Integration** modal (Providers page)
+- The **Add integration** modal (Integrations page)
 - Provider cards, sync, drift detection, etc.
 
 The guided wizard steps are served by the API and rendered dynamically. No frontend rebuild is needed for the provider to be functional.
@@ -284,15 +299,25 @@ Then register in `_PROVIDER_REGISTRY` and `PROVIDER_TYPES` exactly as described 
 1. Add the tool function in the relevant file under `vauxtra_mcp/tools/`:
 
 ```python
-from vauxtra_mcp.client import get, post
+from typing import Any
+
+from vauxtra_mcp import client
+from vauxtra_mcp.app import mcp
+
 
 @mcp.tool()
-def my_tool(param: str) -> dict:
+def my_tool(param: str) -> dict[str, Any]:
     """Short description shown to the MCP client."""
-    return get(f"/my-endpoint?param={param}")
+    r = client.get("/my-endpoint", params={"param": param})
+    client.check(r)  # raises with the API's `detail` on an error status
+    return r.json()
 ```
 
-2. Import and register the tool in `vauxtra_mcp/server.py`.
+   `client` prefixes `/api` and adds the API key. The decorator registers the tool when the
+   module is imported; a new module also needs an `import` line in `vauxtra_mcp/server.py`.
+2. List the tool in `vauxtra_mcp/README.md`, and any new route in the API Reference of
+   `docs/HOWTO.md`. `scripts/check_api_mcp_parity.py` fails when either is missing, and when
+   the tool's parameters drift from the route's model.
 
 ---
 
@@ -306,11 +331,11 @@ def my_tool(param: str) -> dict:
 
 ## Pull Request Checklist
 
-- [ ] Tests pass (`PYTHONPATH=. python -m pytest tests/ -v`)
-- [ ] Frontend builds without errors (`npm run build`)
+- [ ] Tests and gates pass (see [Running Tests](#running-tests))
+- [ ] Frontend builds, lints and passes `npm run i18n:check` and `npm test`
 - [ ] No new `any` types introduced
 - [ ] All UI text in English — no hardcoded strings in other languages
 - [ ] No secrets committed (`.env` is gitignored)
-- [ ] Public wording stays product-focused (no authoring-process or tool-attribution text)
+- [ ] Public wording stays product-focused (no authoring-process or tool-attribution text outside the README's "How it's built" section)
 - [ ] Commit messages follow Conventional Commits
 - [ ] Bug reports include reproduction steps; feature proposals start as an issue

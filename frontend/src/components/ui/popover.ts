@@ -9,7 +9,7 @@ const MARGIN = 8;
  * ancestor's `overflow` can clip it -- a list opened near the bottom of a scrolling modal
  * body stays whole instead of being cut at the body's edge.
  */
-export function anchoredStyle(anchor: HTMLElement, maxHeight = 288): CSSProperties {
+function anchoredStyle(anchor: HTMLElement, maxHeight = 288): CSSProperties {
   const r = anchor.getBoundingClientRect();
   const vh = window.innerHeight;
   const vw = window.innerWidth;

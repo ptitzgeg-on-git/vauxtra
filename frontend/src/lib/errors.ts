@@ -9,7 +9,7 @@
  * validation error rendered as `[object Object]`. This is the one reader.
  */
 
-import axios, { type AxiosError } from 'axios';
+import { HttpError } from '@/api/httpError';
 
 /** One entry of a pydantic 422 body. */
 export interface ApiValidationErrorItem {
@@ -33,11 +33,11 @@ export interface ApiErrorBody {
   error?: string;
 }
 
-/** An axios rejection whose body follows the FastAPI convention. */
-export type ApiError = AxiosError<ApiErrorBody>;
+/** A failed API call, from `@/api/client`. Its body follows the FastAPI convention. */
+export type ApiError = HttpError;
 
-export function isApiError(err: unknown): err is ApiError {
-  return axios.isAxiosError(err);
+function isApiError(err: unknown): err is ApiError {
+  return err instanceof HttpError;
 }
 
 /** The HTTP status of a failed request, `undefined` for network errors and plain throws. */
@@ -54,12 +54,12 @@ export function isHttpStatus(err: unknown, code: number | readonly number[]): bo
 
 /** True when the request never reached the server (DNS, refused, timeout, offline). */
 export function isNetworkError(err: unknown): boolean {
-  return isApiError(err) && !err.response && !axios.isCancel(err);
+  return isApiError(err) && !err.response;
 }
 
-/** True when the caller aborted the request (an `AbortSignal` or a cancel token). */
+/** True when the caller aborted the request through its `AbortSignal`. */
 export function isCanceledError(err: unknown): boolean {
-  return axios.isCancel(err) || (err instanceof DOMException && err.name === 'AbortError');
+  return err instanceof DOMException && err.name === 'AbortError';
 }
 
 /** The raw `detail` of a failed request, whatever its shape. */
@@ -83,7 +83,7 @@ function validationItemToText(item: ApiValidationErrorItem): string {
 }
 
 /** A single sentence from a `detail` of any shape, or `undefined` when it holds none. */
-export function detailToMessage(detail: ApiErrorDetail | undefined): string | undefined {
+function detailToMessage(detail: ApiErrorDetail | undefined): string | undefined {
   if (detail === undefined || detail === null) return undefined;
   if (typeof detail === 'string') {
     const text = detail.trim();
@@ -106,7 +106,7 @@ export function detailToMessage(detail: ApiErrorDetail | undefined): string | un
 }
 
 /**
- * `responseType: 'blob'` makes axios parse the *error* body as a Blob as well, so
+ * `responseType: 'blob'` makes the client read the *error* body as a Blob as well, so
  * `err.response.data` is a Blob and every reader below finds nothing in it. Await this
  * before reading such an error: it rewrites the body into the parsed JSON (or the plain
  * text) and hands the error back for chaining. A body it cannot decode is left as it was.
@@ -119,21 +119,22 @@ export async function decodeBlobErrorBody(err: unknown): Promise<unknown> {
     const text = (await body.text()).trim();
     if (!text) return err;
     const parsed: unknown = text.startsWith('{') || text.startsWith('[') ? JSON.parse(text) : text;
-    err.response.data = parsed as ApiErrorBody;
+    // `response` is readonly on the error, its fields are not: the body is rewritten in place.
+    err.response.data = parsed;
   } catch {
     // Not JSON, or the Blob could not be read: keep the body as it came.
   }
   return err;
 }
 
-const AXIOS_GENERIC = /^Request failed with status code \d+$/;
+const GENERIC_STATUS = /^Request failed with status code \d+$/;
 
 /**
  * The backend's own words for a failed call, `fallback` when it said nothing usable.
  *
  * Order: `response.data.detail` (string, pydantic list joined as `field: msg`, or an object's
  * `message`), then `response.data.message` / `.error`, then the error's own `message`, then
- * `fallback`. axios's own "Request failed with status code N" is skipped in favour of the
+ * `fallback`. The client's own "Request failed with status code N" is skipped in favour of the
  * fallback -- the caller's fallback is translated, that string is not.
  *
  * Every FastAPI route writes `detail` in English (`app/api/services.py`, `app/security.py`),
@@ -142,7 +143,7 @@ const AXIOS_GENERIC = /^Request failed with status code \d+$/;
  */
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (isApiError(err)) {
-    // Widened: the axios generic says ApiErrorBody, but a proxy may answer with plain text.
+    // FastAPI writes an object; a proxy in front of the API may answer with plain text.
     const body: unknown = err.response?.data;
     if (body && typeof body === 'object') {
       const fromDetail = detailToMessage((body as ApiErrorBody).detail);
@@ -155,7 +156,7 @@ export function getErrorMessage(err: unknown, fallback: string): string {
       // A proxy in front of the API (nginx, Cloudflare) answers with text, not JSON.
       return body.trim();
     }
-    if (err.message && !AXIOS_GENERIC.test(err.message)) return err.message;
+    if (err.message && !GENERIC_STATUS.test(err.message)) return err.message;
     return fallback;
   }
   if (err instanceof Error && err.message) return err.message;
@@ -166,7 +167,7 @@ export function getErrorMessage(err: unknown, fallback: string): string {
 /** `t` as the i18n provider hands it out; typed here so `lib/` does not import the provider. */
 export type Translate = (key: string, params?: Record<string, string | number>) => string;
 
-/** True when FastAPI wrote the body: axios parses its JSON, a proxy's error page stays text. */
+/** True when FastAPI wrote the body: the client parses its JSON, a proxy's error page stays text. */
 function hasApiBody(err: unknown): boolean {
   const data = isApiError(err) ? err.response?.data : undefined;
   return typeof data === 'object' && data !== null;
@@ -220,11 +221,8 @@ export function translateApiError(err: unknown, t: Translate, fallback: string):
 const RETRY_TEXT = /(?:retry|try again)(?:\s+again)?\s+(?:in|after)\s+(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b/i;
 
 function readHeader(err: ApiError, name: string): string | undefined {
-  const headers = err.response?.headers as Record<string, unknown> | undefined;
-  if (!headers) return undefined;
-  const raw = headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
-  if (raw === undefined || raw === null) return undefined;
-  return Array.isArray(raw) ? String(raw[0]) : String(raw);
+  // `Headers.entries()` yields lower-case names.
+  return err.response?.headers[name.toLowerCase()];
 }
 
 /**

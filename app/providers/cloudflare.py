@@ -1,12 +1,8 @@
-"""Cloudflare DNS provider — manages A/CNAME records via the official Cloudflare API.
+"""Cloudflare DNS provider: A, AAAA and CNAME records through the official API.
 
-Storage convention (DB columns):
-  username → Zone ID   (optional — auto-detected per domain if blank)
-  password → API Token (required — needs at least Zone:DNS:Edit permission)
-  url      → ignored   (always https://api.cloudflare.com)
-  extra    → JSON {"proxied": true/false} (optional, default false): the orange cloud of
-             a new A or AAAA record. A record already there keeps its own, and a CNAME to
-             a tunnel is always proxied (see `add_rewrite`).
+Columns: username = zone ID (optional, auto-detected per domain), password = API token
+(needs Zone:DNS:Edit), url ignored, extra = JSON {"proxied": bool}, the default orange
+cloud for new address records.
 """
 
 from __future__ import annotations
@@ -37,10 +33,7 @@ class CloudflareProvider(DNSProvider):
         self._configured_zone_id = zone_id.strip() if zone_id else ""
         self._zone_cache: dict[str, str] = {}  # domain → zone_id (per-domain cache)
         self._api_token = (api_token or "").strip()
-        # The SDK's own default is a 60-second read timeout, retried twice: three minutes
-        # before one silent Cloudflare call gives up, where every other request this class
-        # makes (`_api_request`) stops at `PROVIDER_TIMEOUT`. Nothing upstream bounds it
-        # either, so a stalled zone listing held a scan or a health round for that long.
+        # The SDK defaults to a 60 s read timeout with two retries; bound it like other calls.
         self._client = _cf.Cloudflare(api_token=api_token, timeout=PROVIDER_TIMEOUT)
         self._api_url = "https://api.cloudflare.com/client/v4"
         self._proxied = bool((extra or {}).get("proxied", False))
@@ -82,15 +75,12 @@ class CloudflareProvider(DNSProvider):
                 "errors": [{"message": str(e)}],
             }
 
-    # ── Zone helpers ──────────────────────────────────────────────────────
 
     def _find_zone(self, domain: str, *, strict: bool = False) -> str | None:
-        """Return the zone ID for *domain*, using the configured ID or auto-detecting.
+        """Return the zone ID for `domain`, from configuration or by lookup, or None.
 
-        `None` means no zone was found, and by default a lookup that failed reads the same
-        way: a write then answers False, which is what its callers expect. `strict` raises
-        instead, for `records_for`, where "no zone" is an answer about the records: read that
-        way, a failed lookup would say nobody holds a name nobody was asked about.
+        A failed lookup also returns None (writes then return False); `strict` raises
+        instead, so `records_for` does not report "no records" for an unanswered question.
         """
         if self._configured_zone_id:
             return self._configured_zone_id
@@ -106,10 +96,7 @@ class CloudflareProvider(DNSProvider):
                 return self._zone_cache[domain]
             try:
                 for zone in self._client.zones.list(name=candidate, per_page=1):
-                    # `name` is a server-side filter whose operator is a documented *prefix*
-                    # of the value (`equal` by default, but `contains` and `ends_with` exist).
-                    # Caching a zone id that does not belong to this domain would send every
-                    # later record into someone else's zone, so the answer is checked.
+                    # The `name` filter may match by prefix; verify it before caching the id.
                     if not self._same_name(zone.name, candidate):
                         continue
                     self._zone_cache[domain] = zone.id
@@ -144,7 +131,6 @@ class CloudflareProvider(DNSProvider):
         except ValueError:
             return "CNAME"
 
-    # ── DNSProvider interface ─────────────────────────────────────────────
 
     def test_connection(self) -> bool:
         try:
@@ -156,29 +142,10 @@ class CloudflareProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
-        """Every A, AAAA and CNAME record in every zone this token can reach.
+        """Return every A, AAAA and CNAME record in every zone the token can reach.
 
-        No handler, deliberately. The sweep used to sit inside one broad `except` that
-        passed, with `return results` after it, so an API error partway through handed back
-        the records collected so far and the caller had no way to tell a short answer from
-        a complete one. What a short answer means at each caller is "that record is not
-        there", which is the one thing a failed listing does not establish.
-
-        Every caller had already written the honest branch. The two record routes answer
-        502, the drift check raises a `dns_check_failed` issue, the scan logs the provider
-        that failed, and the removal path falls back to the address Vauxtra stored. The
-        handler is what made all five unreachable.
-
-        The one tolerant reading, a zone this token can list but not read, is what PowerDNS
-        keeps on purpose and explains over `_zone_rrsets`. It keeps it because it can tell
-        that case apart from a listing that failed; one handler wrapped around the whole
-        sweep cannot, so it read every failure as the harmless one.
-
-        Each record names the zone it was read from (`zone`). A token scoped to every zone of
-        an account reaches every zone on that account: measured in production on
-        2026-09-22, one scan listed 59 routes in twelve zones nobody had declared, beside the
-        32 in the one that was. The scan sorts them by that name, and the import splits a
-        record's name at it rather than at its first dot.
+        Each record carries the `zone` it was read from. API errors propagate: a partial
+        list would be read by callers as "record absent".
         """
         zones: list[tuple[str, str]] = []
         if self._configured_zone_id:
@@ -203,13 +170,9 @@ class CloudflareProvider(DNSProvider):
         return results
 
     def records_for(self, domain: str) -> list[dict]:
-        """The A, AAAA and CNAME records named exactly `domain`, from the zone that holds it.
+        """Return the A, AAAA and CNAME records named exactly `domain`.
 
-        The inherited answer filters `list_rewrites`, which lists the zones the token reaches
-        and reads each one three record types at a time: three calls a zone and one more, for
-        one name, each time a drift drawer opens. The production token of 2026-09-22 read
-        records from thirteen zones, so forty calls at least. This is the zone lookup and one
-        listing that Cloudflare filters by name.
+        One zone lookup and one name-filtered listing, instead of reading every zone.
         """
         wanted = (domain or "").strip().strip(".").lower()
         if not wanted:
@@ -229,11 +192,9 @@ class CloudflareProvider(DNSProvider):
         return name.strip(".").lower() if isinstance(name, str) else ""
 
     def _zone_name(self, zone_id: str) -> str:
-        """The name of the configured zone, or "" when the token may not read it.
+        """Return the configured zone's name, or "" if the token cannot read it.
 
-        The one handler of the listing, and it guards a label, not a record: the scan falls
-        back to splitting the record's name without it, as it always did. Failing the whole
-        listing over it would hide every record of the zone to protect a heading.
+        Only a label: the scan can do without it, so a failure is not raised.
         """
         try:
             zone = self._client.zones.get(zone_id=zone_id)
@@ -243,13 +204,7 @@ class CloudflareProvider(DNSProvider):
 
     @staticmethod
     def _is_tunnel_target(value: str) -> bool:
-        """True for `<tunnel id>.cfargotunnel.com`, the name a Cloudflare Tunnel answers on.
-
-        That name only resolves inside Cloudflare's proxy. A record pointing at it that is
-        not proxied answers a CNAME and no address: measured in production on 2026-09-23,
-        through two public resolvers, on a test name this class had just created, while the
-        proxied record beside it, same target, answered two addresses.
-        """
+        """True for `<tunnel id>.cfargotunnel.com`, which only resolves when proxied."""
         return (value or "").strip().strip(".").lower().endswith(".cfargotunnel.com")
 
     @staticmethod
@@ -257,20 +212,12 @@ class CloudflareProvider(DNSProvider):
         return (domain or "").strip().strip(".").lower()
 
     def add_rewrite(self, domain: str, ip: str, *, proxied: bool | None = None) -> bool:
-        """Point `domain` at `ip`, creating the record or changing the one already there.
+        """Point `domain` at `ip`, creating the record or updating the existing one.
 
-        The orange cloud is the operator's setting, and a change of address does not change
-        it. It used to be rewritten from the integration's default, which is off, so moving
-        a proxied name to a new address turned it grey and put the origin's address in
-        public DNS. A record already there keeps its own flag. A new one takes, in this
-        order: the `proxied` its caller passes (`update_rewrite`, for the record it moves);
-        the flag of the record this instance just removed under the same name, when both
-        are addresses or both are CNAMEs (the push path corrects a drift by removing, then
-        adding); the integration's default.
-
-        One flag is not a choice: a CNAME to a tunnel only answers when proxied, so it is
-        created proxied, and one found grey is turned orange. The rule for every other
-        CNAME created it grey, and a grey one cuts its name off.
+        An existing record keeps its proxied flag. A new one takes `proxied` if given, else
+        the flag of a record of the same kind just removed under that name (push corrects
+        drift by delete then add), else the integration default. A CNAME to a tunnel is
+        always proxied, since it does not resolve otherwise.
         """
         zone_id = self._find_zone(domain)
         if not zone_id:
@@ -283,10 +230,8 @@ class CloudflareProvider(DNSProvider):
                 zone_id=zone_id, name={"exact": domain}, type=rtype
             ):
                 if not self._same_name(record.name, domain):
-                    # `name` is filtered server-side, and whether it means "equals" or
-                    # "contains" belongs to the API version the installed SDK talks to.
-                    # `cloudflare` is pinned below 5 for that reason; this check is what
-                    # makes the wrong answer harmless rather than destructive.
+                    # The `name` filter may not be exact depending on the API version
+                    # (cloudflare is pinned below 5); this check keeps it harmless.
                     continue
                 if record.content == ip and (bool(record.proxied) or not tunnel):
                     return True  # already exists with same content
@@ -339,13 +284,9 @@ class CloudflareProvider(DNSProvider):
         return None
 
     def update_rewrite(self, old_domain: str, old_ip: str, new_domain: str, new_ip: str) -> bool:
-        """The inherited move, carrying the old record's orange cloud to its new name.
+        """Move a record, carrying its proxied flag to the new name.
 
-        A new address under the same name is an update in place, which keeps the flag by
-        itself. A new name is a new record, which the inherited move created from the
-        integration's default: a proxied name came back grey after a rename. The flag only
-        crosses between two addresses or two CNAMEs, as in `add_rewrite`: an address's
-        orange cloud says nothing about a CNAME's target, which a proxy may not reach.
+        The flag only carries between records of the same kind (address or CNAME).
         """
         if self._same_name(old_domain, new_domain):
             return super().update_rewrite(old_domain, old_ip, new_domain, new_ip)
@@ -367,10 +308,7 @@ class CloudflareProvider(DNSProvider):
                 zone_id=zone_id, name={"exact": domain}, type=rtype
             ):
                 if not self._same_name(record.name, domain):
-                    # `name` is filtered server-side, and whether it means "equals" or
-                    # "contains" belongs to the API version the installed SDK talks to.
-                    # `cloudflare` is pinned below 5 for that reason; this check is what
-                    # makes the wrong answer harmless rather than destructive.
+                    # Same non-exact `name` filter as in add_rewrite.
                     continue
                 if record.content == ip:
                     self._client.dns.records.delete(
@@ -382,19 +320,14 @@ class CloudflareProvider(DNSProvider):
         except Exception:
             return False
 
-    # ── Diagnostics helpers ───────────────────────────────────────────────
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
         del write_probe
 
         checks: list[dict] = []
 
-        # `code` is the short name of the sentence in `detail`; the UI reads
-        # `providers.diag.detail.<code>` so the line is not English-only.
-        #
-        # `skipped` marks a check that was never run: the write probe, which this
-        # provider does not attempt at all. See the tunnel provider's `_add` for why it is
-        # not a warning, and why `ok` stays False all the same.
+        # `code` becomes detail_code (i18n key under providers.diag.detail). `skipped` marks
+        # the write probe this provider never runs: not a warning, but ok stays False.
         def _add(
             name: str,
             ok: bool,

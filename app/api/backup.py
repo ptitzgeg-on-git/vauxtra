@@ -27,32 +27,10 @@ def _table_exists(conn, table_name: str) -> bool:
     return result is not None
 
 
-# Emptied by a restore, in this order. The same list `POST /api/reset` uses, minus
-# `api_keys`: only the prefix of a key is ever exported, never its hash, so wiping that
-# table would lock the operator's own automation out of the instance it just restored, and
-# a restore could not put a usable key back either. Everything else has to go, because the
-# restore re-inserts explicit ids -- a surviving row does not dangle, it silently re-points
-# at whatever record now holds its id.
-#
-# Children before parents: nothing above may be resurrected by a cascade fired from a row
-# deleted below it.
-#
-# `_restore_wipe_covers_the_schema` holds this list to the schema, so a table added later
-# fails a test instead of quietly outliving every restore -- which is how the four below
-# came to be missing in the first place:
-#   - `webhook_delivery_log` gained its cascade from `webhooks` in schema 11 and is listed
-#     anyway, for the same reason as `uptime_events` below: the wipe must not depend on a
-#     pragma being on. The retry job reads the destination off the log row rather than off
-#     `webhooks`, so a queued send left behind kept firing at a webhook the restored set
-#     does not contain.
-#   - `scheduler_state` keys its alert bookkeeping by (service_id, webhook_id).
-#   - `service_templates` is exported now; back then it was in neither export, so it
-#     survived a restore with its provider columns blanked by the cascade and
-#     `tag_ids_json` naming other people's tags. It stays in the wipe either way: the
-#     restore re-inserts templates by explicit id like everything else, and a survivor
-#     does not dangle, it silently re-points at whatever template now holds its id.
-#   - `uptime_events` was already emptied by its ON DELETE CASCADE on services; it is listed
-#     anyway so the wipe does not depend on a pragma being on.
+# Tables emptied by a restore, children before parents. Same as POST /api/reset minus
+# api_keys (only key prefixes are exported). Restore re-inserts explicit ids, so any
+# survivor would re-point at the wrong row. Tables with a cascade are listed anyway so the
+# wipe does not depend on the foreign_keys pragma. A test pins this list to the schema.
 _RESTORE_WIPE_TABLES = (
     "service_alerts",
     "service_tags",
@@ -72,23 +50,13 @@ _RESTORE_WIPE_TABLES = (
     "logs",
 )
 
-# Kept out of the wipe on purpose, and asserted by that same test so the exemption stays a
-# decision rather than an oversight. `settings` is wiped separately, down to the protected
-# keys; `api_keys` is never touched.
+# Deliberately not wiped (asserted by the same test). settings is wiped separately down
+# to the protected keys; api_keys is never touched.
 _RESTORE_KEEPS = frozenset({"settings", "api_keys"})
 
-# Wiped by a restore and carried by no export, on purpose. Four tables are the history and
-# the bookkeeping of the instance that produced them, not of the file: the journal, the
-# uptime stream, the webhook send queue and the scheduler's alert cursor. Restoring those
-# onto another instance would date its journal with someone else's outages and re-arm
-# notifications for services it never watched.
-#
-# `service_templates` used to be a fifth, by accident rather than by decision. It is the
-# only table the operator fills in by hand that no export carried, so a backup taken to
-# survive a reinstall gave back every service and not one template to build the next one
-# with -- and the restore answered `ok: true`. `_every_wiped_table_is_exported` now holds
-# the wipe list and the export together, so a table added to one has to be added to the
-# other or named here.
+# Wiped by a restore but never exported: history and bookkeeping of the instance itself,
+# which must not be replayed onto another one. A test keeps this, the wipe list and the
+# export in agreement.
 _NOT_EXPORTED_ON_PURPOSE = frozenset({
     "logs",
     "scheduler_state",
@@ -96,30 +64,16 @@ _NOT_EXPORTED_ON_PURPOSE = frozenset({
     "webhook_delivery_log",
 })
 
-# Settings a backup file carries and a restore does NOT take, on purpose, so that they are
-# never reported as lost.
-#
-# `_PROTECTED_SETTINGS` is the set the wipe above leaves standing: the admin password hash,
-# the setup marker, the schema version, the auth mode, the session epoch. Those belong to the
-# instance in front of you and not to the file -- restoring a five-month-old `schema_version`
-# would tell the migrations that work already done is still pending, and restoring an old
-# `session_epoch` would revive sessions the operator revoked.
-#
-# `webhook_log_purge_done` is a one-shot marker for a security migration that deletes webhook
-# URLs out of old log lines. Losing it costs one idempotent re-run at the next boot, which is
-# the safe direction.
-#
-# Anything else in the file that `_VALID_SETTINGS` does not accept is a setting the operator
-# configured and is not getting back, and that is what gets named.
+# Settings a backup carries but a restore deliberately ignores, so they are not reported as
+# lost: the protected keys belong to the running instance (an old session_epoch would
+# revive revoked sessions), and webhook_log_purge_done only costs an idempotent re-run.
 _RESTORE_DROPS_ON_PURPOSE = frozenset(_PROTECTED_SETTINGS) | {"webhook_log_purge_done"}
 
 
 _BACKUP_VERSION = "8"  # Version 8 encrypts the webhook URLs too, and says which fields
 
-# What a secure export encrypts with the passphrase, written into the file so a restore
-# never has to guess. A version 7 file carries no such list: it encrypted the provider
-# passwords and nothing else, which is exactly what the fallback below assumes, so old
-# backups keep restoring.
+# Fields a secure export encrypts, written into the file. Version 7 files have no list and
+# only encrypted provider passwords, which is what the legacy fallback assumes.
 _ENCRYPTED_FIELDS = ("providers.password", "webhooks.url", "settings.webhook_url")
 _LEGACY_ENCRYPTED_FIELDS = ("providers.password",)
 
@@ -134,17 +88,12 @@ class RestoreRequest(BaseModel):
 
 
 def _webhook_without_url(row) -> dict:
-    """A webhook row for the *plain* export, with its URL removed.
+    """A webhook row for the plain export, URL masked.
 
-    An Apprise URL is not a field of a webhook, it is the webhook: `discord://<id>/
-    <token>` is enough to post as the operator. The file says `secrets_included: false`
-    and the docs say "credentials cleared" -- which is precisely what makes it the file
-    an operator forwards to a colleague or attaches to a ticket. The masked form is kept
-    so the entry is still identifiable, and `import_backup` restores such a webhook
-    disabled rather than writing `discord://***` back as a real URL.
+    An Apprise URL is a credential. import_backup restores such a webhook disabled.
     """
     data = dict(row)
-    data["url_masked"] = mask_secret_url(data.pop("url", ""))
+    data["url_masked"] = mask_secret_url(decrypt_secret(data.pop("url", "")))
     data["url"] = ""
     return data
 
@@ -214,14 +163,8 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
     """
     require_auth(request, scope="admin")
 
-    # The admin password rule, applied here for a stronger reason than it is applied there:
-    # this passphrase guards a file that leaves the instance. Whoever holds the export
-    # attacks it offline, as fast as their hardware allows, and 600 000 PBKDF2 iterations
-    # buy time against a guess, not against a wordlist that already contains it. Eight
-    # characters sat below the floor the same operator's own login had to clear.
-    #
-    # Only the export is gated. `import_backup` never checked a length and still does not,
-    # so a file made under the old rule keeps restoring.
+    # Same strength rule as the admin password: the file leaves the instance and can be
+    # attacked offline. Import does not check length, so older files still restore.
     passphrase_ok, passphrase_reason = validate_password_strength(body.passphrase)
     if not passphrase_ok:
         # The shared validator words its messages for a login password.
@@ -242,12 +185,11 @@ def export_backup_secure(request: Request, body: SecureBackupRequest):
             p["password"] = encrypt_for_backup(plaintext_pwd, body.passphrase, salt) if plaintext_pwd else ""
             providers.append(p)
 
-        # An Apprise URL is the credential, exactly like a provider password -- and it
-        # was leaving in clear in the file whose whole purpose is "encrypted credentials".
+        # An Apprise URL is a credential, encrypted like a provider password.
         webhooks = []
         for r in conn.execute("SELECT * FROM webhooks").fetchall():
             w = dict(r)
-            url = w.get("url", "")
+            url = decrypt_secret(w.get("url", ""))
             w["url"] = encrypt_for_backup(url, body.passphrase, salt) if url else ""
             webhooks.append(w)
 
@@ -323,9 +265,7 @@ def import_backup(request: Request, body: RestoreRequest):
 
     salt = base64.urlsafe_b64decode(salt_b64) if salt_b64 else b""
 
-    # A file written before version 8 has no list; back then only the provider passwords
-    # were encrypted, so its webhook URLs must be taken as-is rather than run through a
-    # decryption that would fail on plain text.
+    # Files before version 8 have no list; their webhook URLs are plain text.
     encrypted_fields = set(data.get("encrypted_fields") or _LEGACY_ENCRYPTED_FIELDS)
 
     def _unseal(value: str, field: str, label: str) -> str:
@@ -337,9 +277,7 @@ def import_backup(request: Request, body: RestoreRequest):
         try:
             return decrypt_from_backup(value, body.passphrase, salt)
         except Exception as e:
-            # `InvalidToken`, the expected failure here, carries no message at all: `str(e)`
-            # is empty and the brackets meant to hold the reason printed as a bare "()".
-            # Anything else that comes through says something worth keeping.
+            # InvalidToken has an empty message; fall back to the class name.
             reason = str(e).strip() or type(e).__name__
             raise HTTPException(
                 400,
@@ -347,10 +285,7 @@ def import_backup(request: Request, body: RestoreRequest):
                 f"this backup was written with ({reason}).",
             )
 
-    # Dry run BEFORE destroying anything: a wrong passphrase must fail with the database
-    # untouched. Decryption is the only expensive validation, so it runs first -- and it
-    # covers the webhook URLs too, otherwise a file whose provider list is empty would be
-    # wiped in before anything proved the passphrase right.
+    # Decrypt everything before wiping, so a wrong passphrase leaves the database untouched.
     if secrets_included and body.passphrase:
         for p in data.get("providers", []):
             _unseal(p.get("password", ""), "providers.password", "provider secrets")
@@ -363,17 +298,14 @@ def import_backup(request: Request, body: RestoreRequest):
     conn = get_db()
     try:
         conn.execute("BEGIN EXCLUSIVE")
-        # Counted before the wipe empties it: a file written by a version whose export did
-        # not carry templates has none to put back, and that is a loss the operator has to
-        # be told about rather than discover on the Templates page.
+        # Counted before the wipe, to report templates an older file could not restore.
         templates_before = conn.execute("SELECT COUNT(*) FROM service_templates").fetchone()[0]
         # One execute() per table, NOT executescript(): executescript() issues an implicit
         # COMMIT before running, which would close the transaction opened above and make the
         # rollback handlers below no-ops on an already-destroyed database.
         for table in _RESTORE_WIPE_TABLES:
             conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed literal table names
-        # Never wipe the credentials: a restore must not be able to drop the instance
-        # back to anonymous-admin.
+        # Never wipe the credentials.
         conn.execute(
             f"DELETE FROM settings WHERE key NOT IN ({_PROTECTED_PLACEHOLDERS})",  # noqa: S608
             _PROTECTED_SETTINGS,
@@ -415,10 +347,7 @@ def import_backup(request: Request, body: RestoreRequest):
             name = dom.get("name") if isinstance(dom, dict) else dom
             created_at = dom.get("created_at") if isinstance(dom, dict) else None
             if not name:
-                # Counted rather than passed over. A domain row with no name cannot be
-                # written, and every service that referenced it comes back pointing at a
-                # domain the list no longer offers -- which the operator discovers on the
-                # next edit, not here, unless the count says so.
+                # Counted and reported: services may still reference this domain.
                 domains_without_name += 1
                 continue
             if created_at:
@@ -431,13 +360,8 @@ def import_backup(request: Request, body: RestoreRequest):
 
         webhooks_needing_url = 0
         for wh in data.get("webhooks", []):
-            # Stored in clear like it always was: `_try_send_apprise` hands the URL to
-            # apprise as-is. The instance key protects the provider passwords, not this.
             webhook_url = _unseal(wh.get("url") or "", "webhooks.url", "webhook URLs")
-            # A plain export carries no URL. Restoring the row enabled would leave a
-            # webhook that can never fire and logs an error on every alert; restoring it
-            # disabled keeps the name, the scope and the rules the operator configured,
-            # and says plainly that one field has to be typed back in.
+            # A plain export has no URL: restore the webhook disabled, keeping its rules.
             webhook_enabled = wh.get("enabled", 1) if webhook_url else 0
             if not webhook_url:
                 webhooks_needing_url += 1
@@ -450,7 +374,7 @@ def import_backup(request: Request, body: RestoreRequest):
                 (
                     wh.get("id"),
                     wh.get("name"),
-                    webhook_url,
+                    encrypt_secret(webhook_url),
                     webhook_enabled,
                     wh.get("scope_type", "all"),
                     wh.get("scope_ref_id"),
@@ -540,11 +464,8 @@ def import_backup(request: Request, body: RestoreRequest):
                  sa.get("on_up", 1), sa.get("on_down", 1), sa.get("min_down_minutes", 0)),
             )
 
-        # After the providers and the tags it points at: `proxy_provider_id`,
-        # `dns_provider_id` and `tunnel_provider_id` are real foreign keys, and the
-        # connection runs with `foreign_keys=ON`. Explicit ids everywhere else in this
-        # function mean the columns land on the same rows they named in the export, and
-        # the two label columns need no remapping for the same reason.
+        # After providers and tags: the provider columns are real foreign keys. Explicit ids
+        # mean no remapping is needed.
         for tpl in data.get("service_templates", []):
             conn.execute(
                 """INSERT OR REPLACE INTO service_templates
@@ -568,9 +489,7 @@ def import_backup(request: Request, body: RestoreRequest):
                     tpl.get("domain", ""),
                     tpl.get("dns_ip", ""),
                     tpl.get("tag_ids_json", "[]"),
-                    # An export taken before templates carried environments has no such key.
-                    # Defaulting it to the empty list restores exactly what that template
-                    # held: no environment, because none could be chosen.
+                    # Absent from exports made before templates had environments.
                     tpl.get("environment_ids_json", "[]"),
                     tpl.get("icon_url", ""),
                     tpl.get("created_at"),
@@ -578,26 +497,13 @@ def import_backup(request: Request, body: RestoreRequest):
             )
 
         for setting in data.get("settings", []):
-            # Whitelist: `_VALID_SETTINGS` is the same list `POST /api/settings` writes
-            # through, so an imported file reaches no key an operator could not set by
-            # hand -- `app_password_hash` above all, which would let a backup file choose
-            # the admin password.
-            #
-            # It is not a filter on content, and this comment used to claim it was: it said
-            # `public_target_sources` was blocked, and that key comes straight through. It
-            # is left through on purpose. A restore has to give back the configuration it
-            # saved, and a backup file is already trusted with provider URLs and Docker
-            # endpoints -- singling out one setting would cost a real restore and stop
-            # nothing. What bounds it is elsewhere: both routes now require `admin`, and
-            # `detect_server_public_ip` refuses an answer that is not publicly routable.
+            # Same whitelist as POST /api/settings, so a file cannot set the password hash.
+            # public_target_sources is allowed on purpose: restore is admin-only and the
+            # detected IP must be publicly routable.
             key = setting.get("key")
             if key not in _VALID_SETTINGS:
-                # Named, unless the drop is one the restore makes on purpose. A key that is
-                # neither accepted nor deliberately dropped is configuration the operator
-                # saved and is not getting back: a setting this version has retired, or a
-                # file written by a newer Vauxtra. The restore still succeeds -- refusing the
-                # whole file over one unknown key would be worse -- but it stops being the
-                # kind of success that hides a loss.
+                # Report keys dropped unintentionally (retired or from a newer version); the
+                # restore still succeeds.
                 if key and key not in _RESTORE_DROPS_ON_PURPOSE:
                     settings_not_restored.append(str(key))
                 continue
@@ -637,9 +543,7 @@ def import_backup(request: Request, body: RestoreRequest):
 
     conn.close()
     add_log("info", f"Backup restored (version {data.get('version')})")
-    # One line each, and only when there is something to say. A restore writes a single
-    # "Backup restored" line by design, and two more that appeared on every run would make
-    # the three of them read as ceremony.
+    # Extra log lines only when something was lost.
     if settings_not_restored:
         n = len(settings_not_restored)
         add_log(
@@ -663,9 +567,7 @@ def import_backup(request: Request, body: RestoreRequest):
         )
     tpl_count = len(data.get("service_templates", []))
     if templates_before and not tpl_count:
-        # Not a failure, and not silence either. Every file written before the export
-        # carried templates lands here, and the operator who restores one has to hear that
-        # the Templates page is empty because of the file, not because of a bug.
+        # Not a failure, but the operator must know why the Templates page is empty.
         add_log(
             "warning",
             "Backup restored: "
@@ -677,9 +579,7 @@ def import_backup(request: Request, body: RestoreRequest):
         )
     svc_count = len(data.get("services", []))
     prv_count = len(data.get("providers", []))
-    # Reported, not buried: without this the operator has no way of knowing that some
-    # notification targets came back switched off, that a setting did not survive the file,
-    # or that a domain row in it had no name to be recreated under.
+    # Report disabled webhooks, dropped settings and nameless domains.
     return {
         "ok": True,
         "services": svc_count,

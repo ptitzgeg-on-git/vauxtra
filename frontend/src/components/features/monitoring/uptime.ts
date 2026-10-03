@@ -114,9 +114,9 @@ export function isTunnelService(service: Service): boolean {
 // The 24 h window
 // ---------------------------------------------------------------------------
 
-export const UPTIME_WINDOW_MS = 24 * 60 * 60 * 1000;
+const UPTIME_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** 48 half-hour cells: readable at a table's width, dense enough for a 5 min interval. */
-export const UPTIME_BUCKETS = 48;
+const UPTIME_BUCKETS = 48;
 
 export interface UptimeCounts {
   ok: number;
@@ -161,7 +161,7 @@ function tally(counts: UptimeCounts, status: ServiceStatus): void {
 }
 
 /** How many events of each status the window holds, without building the buckets. */
-export function countUptime(
+function countUptime(
   points: ServiceHistoryPoint[] | undefined,
   now: number = Date.now(),
 ): UptimeCounts {

@@ -9,14 +9,10 @@ from app.security import redact_query_secrets
 
 
 class TimeoutSession(requests.Session):
-    """A `requests.Session` that carries a default timeout on every call.
+    """A `requests.Session` that applies a default timeout to every call.
 
-    `requests` reads the timeout from the call arguments, never from the session:
-    assigning `session.timeout` sets an attribute nobody looks at, and the request
-    goes out with no read timeout at all. A provider that accepts the connection
-    then stops answering therefore blocks its caller forever -- and the scheduler
-    runs checks in a single thread, so one frozen provider silently stops all
-    monitoring. Passing `timeout=` explicitly still wins over this default.
+    requests ignores a `timeout` attribute on the session, and one hung provider would
+    block the single-threaded scheduler. An explicit `timeout=` still wins.
     """
 
     def __init__(self, timeout: float = PROVIDER_TIMEOUT):
@@ -28,20 +24,23 @@ class TimeoutSession(requests.Session):
             kwargs["timeout"] = self.timeout
         return super().request(method, url, **kwargs)
 
+    # `requests` drops `Authorization` when a redirect leaves the host, and nothing else.
+    # These carry the same credential for PowerDNS and Pi-hole v6.
+    _CREDENTIAL_HEADERS = ("X-API-Key", "X-FTL-SID", "X-FTL-CSRF")
+
+    def rebuild_auth(self, prepared_request, response):
+        super().rebuild_auth(prepared_request, response)
+        if self.should_strip_auth(response.request.url, prepared_request.url):
+            for name in self._CREDENTIAL_HEADERS:
+                prepared_request.headers.pop(name, None)
+
 
 def reachability_check(session, url: str) -> dict:
-    """One diagnostic check saying whether anything at all answered at `url`.
+    """Diagnostic check: did anything answer at `url`?
 
-    `test_connection` cannot answer this, and that is the whole point of asking separately:
-    it folds "nothing listened on that port" and "the host answered and refused the
-    credentials" into one `False`, which the providers panel then labels `connection_failed`.
-    An operator who reads that goes looking for a firewall, and the integrations with no
-    richer diagnostic of their own sent them there every time a password was simply wrong.
-
-    Any HTTP answer proves the host is reachable, a refusal included, so the status code is
-    deliberately not read here: whether the credentials are accepted is the next check's
-    business. Only a transport error -- refused connection, DNS failure, timeout -- says the
-    host was never reached.
+    Any HTTP status counts as reachable; only a transport error (refused, DNS, timeout)
+    fails. Kept separate from the credentials check so a wrong password is not reported
+    as a connection failure.
     """
     try:
         session.get(url, timeout=PROVIDER_TIMEOUT, allow_redirects=False)
@@ -75,27 +74,27 @@ def login_check(ok: bool) -> dict:
 
 
 class ProviderListingRefused(RuntimeError):
-    """The provider did not finish saying what it holds.
+    """Raised by list_rewrites when the provider could not return a complete listing.
 
-    An empty list and a refused listing are different answers, and every caller that acts on
-    a listing acts on the difference: `push` creates a record when it finds none, the drift
-    check reports one missing, the record routes answer 404. `desec._get_all` puts it in its
-    own words one layer down -- "one means the account has no records, the other means we do
-    not know" -- and `powerdns._zone_rrsets` keeps the same three answers for the same
-    reason. This is how that third answer leaves `list_rewrites`, which has only two to give.
-
-    Providers whose own client raises, Cloudflare's for one, let that exception out instead.
-    Every caller wraps the call, so what matters is that something arrives.
-
-    The message is masked on the way in (`redact_query_secrets`): most refusals quote the
-    `requests` exception they caught, and Technitium and Pi-hole v5 put their credential in
-    the URL that exception quotes. What arrives is shown in the scan and the journal.
+    Distinct from an empty list, which callers treat as "nothing there". The message
+    is passed through redact_query_secrets.
     """
 
     def __init__(self, message: object = "") -> None:
         super().__init__(redact_query_secrets(str(message)))
 
 
+# Optional method, not declared here because the diagnostics route checks for it with
+# hasattr and falls back to test_connection():
+#
+#   validate_permissions(hostname_hint="", write_probe=False) -> dict
+#
+# Returns {"ok": bool, "checks": [...], "warnings": [str, ...]}. Each check is a dict with
+# "name", "ok", "blocking", "detail" (English) and usually "detail_code" (i18n key under
+# providers.diag.detail), plus optional "detail_params" and "skipped" (a check not run:
+# ok is False but it is not a warning). "ok" is False when a blocking check failed, and
+# "warnings" holds English notes on non-blocking problems (often empty). write_probe asks
+# for a real write test where the provider supports one.
 class DNSProvider(ABC):
     """Common interface for all DNS providers (AdGuard, Pi-hole, etc.)."""
 
@@ -105,20 +104,17 @@ class DNSProvider(ABC):
 
     @abstractmethod
     def list_rewrites(self) -> list[dict]:
-        """Every rewrite the provider holds, as [{'domain': ..., 'answer': ...}].
+        """Return every rewrite as [{'domain': ..., 'answer': ...}].
 
-        An empty list means the provider said it holds nothing. A provider that could not
-        finish answering raises -- `ProviderListingRefused`, or whatever its own client
-        threw -- rather than handing back the part it managed to collect.
+        An empty list means the provider holds nothing. An incomplete listing raises
+        (ProviderListingRefused or the client's own error), never returns a partial list.
         """
 
     def records_for(self, domain: str) -> list[dict]:
-        """The records held for exactly `domain`, in the shape `list_rewrites` gives them.
+        """Return the records named exactly `domain`, shaped like list_rewrites.
 
-        The drift check asks this of every DNS integration a service is not pushed to, to
-        find a name that also resolves somewhere else. Filtering the whole listing is the
-        answer any provider can give; one whose API can ask for a single name overrides this,
-        as Cloudflare does. Raises when the listing does.
+        Filters the full listing; providers that can query one name override this.
+        Raises when the listing does.
         """
         wanted = (domain or "").strip().strip(".").lower()
         return [
@@ -149,11 +145,8 @@ class DNSProvider(ABC):
 class ProxyProvider(ABC):
     """Common interface for all reverse proxy providers (NPM, Traefik, etc.)."""
 
-    # True when the `id` a host is handed back under is its hostname, so that renaming
-    # the host renames the identifier. NPM numbers its hosts and the number survives a
-    # rename; Zoraxy and Cloudflare Tunnel key their rules on the name, and a caller that
-    # keeps the old name after a rename addresses a rule that no longer exists. The
-    # service and sync routes read this to know what to store and what to trust.
+    # True when a host's `id` is its hostname (Zoraxy, Cloudflare Tunnel), so a rename
+    # changes the id. NPM ids are numbers that survive a rename.
     HOST_ID_IS_HOSTNAME = False
 
     @abstractmethod
@@ -162,14 +155,8 @@ class ProxyProvider(ABC):
 
     @abstractmethod
     def list_hosts(self) -> list[dict]:
-        """Every proxy host the provider holds.
-
-        Same contract as `DNSProvider.list_rewrites`, and for the same reason: an empty
-        list means the provider said it holds nothing, while a provider that could not
-        finish answering raises rather than handing back the part it collected. It was
-        only ever written down on the DNS side, so the one proxy client that answered []
-        to a failed request drifted for as long as nothing here said otherwise -- and the
-        drift check reads a missing host as a route to republish.
+        """Return every proxy host. Same contract as DNSProvider.list_rewrites: [] means
+        none, an incomplete listing raises.
         """
 
     @abstractmethod
@@ -192,11 +179,8 @@ class ProxyProvider(ABC):
 
     @abstractmethod
     def delete_host(self, host_id: int | str) -> bool:
-        """Delete a proxy host by the identifier *this* provider uses for it.
-
-        NPM numbers its hosts, Cloudflare Tunnel addresses its ingress rules by hostname,
-        Traefik by router name. The caller passes through whatever it stored or listed; an
-        implementation that needs a particular shape checks it and returns False.
+        """Delete a proxy host by this provider's own identifier (number, hostname or
+        router name). Return False for an identifier of the wrong shape.
         """
 
     @abstractmethod
@@ -209,18 +193,10 @@ class ProxyProvider(ABC):
 
 
 def supports_suspension(proxy) -> bool:
-    """Whether this proxy can switch a host off instead of deleting it.
+    """Whether this proxy can suspend a host instead of deleting it.
 
-    `ProxyProvider.toggle_host` returns False, so a provider that never overrode it can only
-    fail the call: there is no suspension to apply, none to lift, and none to plan. Two
-    override it, NPM and Zoraxy. Comparing the class's method to the base's is what tells those
-    apart from a provider that merely refused one particular host -- which is the same
-    `False` on the wire and a completely different thing to tell the operator.
-
-    Read through `getattr`, because a provider is whatever `create_provider` returns and not
-    necessarily a subclass: one that does not carry the method at all has no suspension to
-    speak of either, and that is the answer to give rather than an `AttributeError` from the
-    middle of a push.
+    True when the class overrides ProxyProvider.toggle_host (NPM, Zoraxy). This tells an
+    unsupported toggle from a refused one, which both return False.
     """
     override = getattr(type(proxy), "toggle_host", None)
     return override is not None and override is not ProxyProvider.toggle_host

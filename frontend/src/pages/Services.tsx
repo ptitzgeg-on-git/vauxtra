@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactElement, type SetStateAction } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -25,6 +25,7 @@ import { useFormat } from '@/hooks/useFormat';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
 import { translateApiError } from '@/lib/errors';
+import { isString, readJSON, writeJSON } from '@/lib/storage';
 import {
   Badge,
   Button,
@@ -53,6 +54,7 @@ import {
   MODE_FILTERS,
   buildServicePayload,
   bulkCheckSummary,
+  runBulkChecks,
   isStatusFilter,
   matchesMode,
   matchesSearch,
@@ -76,33 +78,22 @@ import type {
 // Local persistence (keys are part of the page's contract — keep them)
 // ---------------------------------------------------------------------------
 
-function useLocalStorage<T>(key: string, fallback: T): [T, (v: T | ((prev: T) => T)) => void] {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw !== null ? (JSON.parse(raw) as T) : fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  const set = useCallback(
-    (v: T | ((prev: T) => T)) => {
-      setValue((prev) => {
-        const next = typeof v === 'function' ? (v as (prev: T) => T)(prev) : v;
-        try {
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch {
-          // Private mode or quota: the in-memory value still wins.
-        }
-        return next;
-      });
-    },
-    [key],
-  );
-  return [value, set];
+function useLocalStorage<T>(
+  key: string,
+  fallback: T,
+  guard: (value: unknown) => value is T,
+): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => readJSON(key, guard, fallback));
+  // Written after the render, not inside the state updater: an updater must stay pure, and
+  // StrictMode runs it twice.
+  useEffect(() => {
+    writeJSON(key, value);
+  }, [key, value]);
+  return [value, setValue];
 }
 
 type ViewMode = 'list' | 'grid';
+const isViewMode = (value: unknown): value is ViewMode => value === 'list' || value === 'grid';
 
 type RouteModal = {
   key: string;
@@ -130,6 +121,7 @@ const isEditable = (target: EventTarget | null): boolean => {
 };
 
 const isModeFilter = (value: string): value is ModeFilter => (MODE_FILTERS as string[]).includes(value);
+const isStoredModeFilter = (value: unknown): value is ModeFilter => typeof value === 'string' && isModeFilter(value);
 
 export function Services() {
   const t = useT();
@@ -139,13 +131,13 @@ export function Services() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // --- persisted UI state -------------------------------------------------
-  const [search, setSearch] = useLocalStorage('vauxtra.services.search', '');
-  const [savedViewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list');
+  const [search, setSearch] = useLocalStorage('vauxtra.services.search', '', isString);
+  const [savedViewMode, setViewMode] = useLocalStorage<ViewMode>('vauxtra.services.viewMode', 'list', isViewMode);
   // The table needs a desktop's width; below `md` it only scrolls sideways, so phones get the
   // cards whatever was saved, and the toggle that could not change that is hidden.
   const isNarrow = useMediaQuery('(max-width: 767px)');
   const viewMode: ViewMode = isNarrow ? 'grid' : savedViewMode;
-  const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all');
+  const [modeFilter, setModeFilter] = useLocalStorage<ModeFilter>('vauxtra.services.mode', 'all', isStoredModeFilter);
 
   // --- URL-driven filters (shared links from the dashboard) ---------------
   const tagFilter = Number(searchParams.get('tag')) || null;
@@ -599,32 +591,39 @@ export function Services() {
 
   // Bulk "check" has no server endpoint — checks run one by one so the backend is not flooded.
   const [bulkChecking, setBulkChecking] = useState(false);
+  // Leaving the page aborts the run: no request is left queued behind it, no toast pops up
+  // on another page.
+  const bulkCheckAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => bulkCheckAbort.current?.abort(), []);
   const runBulkCheck = useCallback(
     async (targets: Service[]) => {
+      bulkCheckAbort.current?.abort();
+      const controller = new AbortController();
+      bulkCheckAbort.current = controller;
       setBulkChecking(true);
-      let ok = 0;
-      let failed = 0;
       // A service without a port comes back untested: `bulkCheckSummary` says why it is
       // counted apart.
-      let untested = 0;
-      for (const service of targets) {
-        startAction(service.id);
-        try {
-          const result = await api.post<ServiceCheckResult>(`/services/${service.id}/check`);
-          setCheckById((prev) => ({ ...prev, [service.id]: result }));
-          if (result.tested === false) untested += 1;
-          else if (result.status === 'ok') ok += 1;
-          else failed += 1;
-        } catch {
-          failed += 1;
-        } finally {
-          endAction(service.id);
-        }
-      }
+      const { counts, aborted, stoppedBy } = await runBulkChecks(
+        targets,
+        (service, signal) => api.post<ServiceCheckResult>(`/services/${service.id}/check`, undefined, { signal }),
+        {
+          signal: controller.signal,
+          onStart: (service) => startAction(service.id),
+          onResult: (service, result) => setCheckById((prev) => ({ ...prev, [service.id]: result })),
+          onEnd: (service) => endAction(service.id),
+        },
+      );
+      if (aborted) return;
+      if (bulkCheckAbort.current === controller) bulkCheckAbort.current = null;
       setBulkChecking(false);
       invalidateServices();
+      if (stoppedBy !== undefined) {
+        // The selection is kept so the same run can be started again once the cause is gone.
+        toast.error(translateApiError(stoppedBy, t, t('services.bulk.failed')));
+        return;
+      }
       clearSelection();
-      const { message, tone } = bulkCheckSummary({ ok, failed, untested }, t);
+      const { message, tone } = bulkCheckSummary(counts, t);
       if (tone === 'warning') toast(message, { icon: '⚠️', duration: 6000 });
       else if (tone === 'success') toast.success(message);
       else toast(message, { duration: 6000 });

@@ -1,20 +1,16 @@
-"""deSEC provider — public DNS records via the deSEC REST API.
+"""deSEC provider: public DNS records via the deSEC REST API.
 
-Storage convention (DB columns):
-  url      → API base (optional — defaults to https://desec.io/api/v1)
-  username → domain name (optional — auto-detected from the account's domains)
-  password → API token, sent as `Authorization: Token …`
+Columns: url = API base (default https://desec.io/api/v1), username = domain (optional,
+auto-detected), password = API token (sent as `Authorization: Token ...`).
 
-deSEC exposes a record *set* per `(subname, type)`, and `records` is the whole set:
-sending `["10.0.0.1"]` to a name that already answers two addresses drops the other
-one, and sending `[]` deletes the set outright. Every write here therefore reads the
-set first and merges -- see `_write_records`.
+deSEC replaces the whole record set per (subname, type), so every write reads the set
+and merges (see `_write_records`).
 """
 
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -26,6 +22,11 @@ DEFAULT_TTL = 3600
 MANAGED_TYPES = ("A", "AAAA", "CNAME")
 # deSEC pages at 500 items; the cap is a runaway guard, not a coverage limit.
 MAX_PAGES = 20
+
+
+def _same_origin(a: str, b: str) -> bool:
+    first, second = urlsplit(a), urlsplit(b)
+    return (first.scheme, first.netloc.lower()) == (second.scheme, second.netloc.lower())
 
 
 class DesecProvider(DNSProvider):
@@ -46,14 +47,11 @@ class DesecProvider(DNSProvider):
             return DEFAULT_API
         return base if base.endswith("/api/v1") else f"{base}/api/v1"
 
-    # ── HTTP helpers ──────────────────────────────────────────────────────
 
     def _get_all(self, url: str) -> list[dict] | None:
-        """Every item of a paginated collection, or None when the API refused.
+        """Return every item of a paginated collection, or None if the API refused.
 
-        The empty list and the failure are different answers: one means the account has
-        no records, the other means we do not know. A caller that conflates them reports
-        a record as missing when the API merely rate-limited us.
+        None is not an empty list: it means unknown (for example rate limited).
         """
         items: list[dict] = []
         pages = 0
@@ -75,10 +73,12 @@ class DesecProvider(DNSProvider):
             links = getattr(r, "links", None)
             nxt = links.get("next") if isinstance(links, dict) else None
             next_url = nxt.get("url") if isinstance(nxt, dict) else None
+            # The token goes with every page, so a `next` link may not lead to another host.
+            if next_url and not _same_origin(next_url, url):
+                return None
             pages += 1
         return items
 
-    # ── Domains ───────────────────────────────────────────────────────────
 
     def _list_domains(self, refresh: bool = False) -> list[dict] | None:
         if self._domains is not None and not refresh:
@@ -95,12 +95,9 @@ class DesecProvider(DNSProvider):
         return domains
 
     def _find_domain(self, fqdn: str) -> dict | None:
-        """The longest account domain that contains *fqdn*, or None when none does.
+        """Return the longest account domain containing `fqdn`, or None if none does.
 
-        Raises when the account's domains could not be listed. None has to keep meaning
-        "the account holds no domain covering this name", because that is what the write
-        paths turn into a refusal to write; a refused listing answering None would make
-        them report the account as not holding a domain it may well hold.
+        Raises when domains cannot be listed, so None always means "not in this account".
         """
         domains = self._list_domains()
         if domains is None:
@@ -118,7 +115,7 @@ class DesecProvider(DNSProvider):
 
     @staticmethod
     def _subname(fqdn: str, domain_name: str) -> str:
-        """The part of *fqdn* below the domain — empty at the apex."""
+        """The part of *fqdn* below the domain (empty at the apex)."""
         target = (fqdn or "").strip().rstrip(".").lower()
         name = (domain_name or "").strip().rstrip(".").lower()
         if target == name:
@@ -154,7 +151,6 @@ class DesecProvider(DNSProvider):
         segment = quote(subname, safe="") if subname else "@"
         return f"{self.url}/domains/{quote(domain_name, safe='')}/rrsets/{segment}/{rtype}/"
 
-    # ── Reads ─────────────────────────────────────────────────────────────
 
     def _get_rrset(self, domain_name: str, subname: str, rtype: str) -> dict | None | bool:
         """The record set, None when it does not exist, False when the API refused."""
@@ -172,11 +168,10 @@ class DesecProvider(DNSProvider):
             return False
         return data if isinstance(data, dict) else False
 
-    # ── Writes ────────────────────────────────────────────────────────────
 
     def _write_records(self, domain_name: str, subname: str, rtype: str,
                        records: list[str], ttl: int, exists: bool) -> bool:
-        """Set the record set to *records* — creating, replacing or deleting it."""
+        """Set the record set to *records*: create, replace or delete it."""
         url = self._rrset_url(domain_name, subname, rtype)
         try:
             if not exists:
@@ -196,7 +191,6 @@ class DesecProvider(DNSProvider):
         except requests.RequestException:
             return False
 
-    # ── DNSProvider interface ─────────────────────────────────────────────
 
     def test_connection(self) -> bool:
         try:
@@ -206,14 +200,9 @@ class DesecProvider(DNSProvider):
             return False
 
     def list_rewrites(self) -> list[dict]:
-        """Every managed record set on every domain in the account.
+        """Return every managed record set on every domain of the account.
 
-        `_list_domains` and `_get_all` both answer None when the API refused, and say in
-        their own words why that is not the same as an empty list. This used to spell both
-        `or []`, which threw the third answer away right where it mattered most: a name
-        absent from what this returns is read by `push` as a record to create, by the drift
-        check as a record gone missing, and by the record routes as a 404. So the two
-        helpers kept the distinction and the one caller that acts on it dropped it.
+        Raises when the API refuses, since callers read absent records as missing.
         """
         domains = self._list_domains(refresh=True)
         if domains is None:
@@ -288,7 +277,6 @@ class DesecProvider(DNSProvider):
         ttl = int(current.get("ttl") or 0) or self._ttl(target)
         return self._write_records(name, subname, rtype, remaining, ttl, True)
 
-    # ── Diagnostics ───────────────────────────────────────────────────────
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
         checks: list[dict] = []

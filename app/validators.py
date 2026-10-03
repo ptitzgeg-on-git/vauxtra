@@ -1,33 +1,17 @@
-"""What Vauxtra accepts as a name, and which rule a refused name broke.
+"""Hostname validation, with a stable code naming the rule a refused name broke.
 
-`is_valid_subdomain` and `is_valid_domain` answer yes or no; `subdomain_problem` and
-`domain_problem` answer *which* rule was broken, as a short stable code. The two share one
-implementation -- the boolean is `..._problem(...) is None` -- because a rule written twice
-is a rule neither copy can be trusted to hold.
-
-`fqdn_problem` answers the question neither of the other two can: each half may sit inside
-its own limit while the name they make sits outside it, and only the pair knows that.
-
-Those codes are a contract with the panel, which turns each into a sentence of its own
-(`expose.validation.subdomain.<code>`). `frontend/src/lib/hostname.ts` carries the same
-rules so the field can refuse before a round trip, and `tests/test_hostname_rules.py` runs
-the same table through both.
+`*_problem` functions return the code (the panel translates it); the `is_valid_*`
+booleans are built on them so each rule exists once. `fqdn_problem` checks the joined
+name, which neither half can. frontend/src/lib/hostname.ts mirrors these rules and
+tests/test_hostname_rules.py runs both against one table.
 """
 
 import ipaddress
 import re
 
-# One DNS label: what may sit between two dots. Case is folded before this is applied.
-#
-# The underscore is left out on purpose, and that is stricter than DNS itself. Measured on
-# 2026-09-12 against a real Cloudflare zone: a label carrying an underscore was accepted by
-# the API, served by the zone's own nameservers, and resolved by 1.1.1.1 and 8.8.8.8 alike
-# in under five seconds. The name works. The certificate does not: Let's Encrypt refuses
-# the order with `Domain name contains an invalid character`,
-# where the same request for a hyphenated name succeeds. Vauxtra publishes services over
-# HTTPS, so allowing the underscore would trade a refusal now for a route that resolves,
-# answers, and can never hold a certificate. Widen this pattern only for a character that
-# passes both halves of that test.
+# One DNS label, after case folding. Underscores are refused on purpose, stricter than
+# DNS: Let's Encrypt will not issue a certificate for such a name, and services are
+# published over HTTPS.
 _LABEL_RE = re.compile(r"^[a-z0-9-]+$")
 _HOSTNAME_RE  = re.compile(r'^[a-z0-9][a-z0-9\-\.]{0,253}[a-z0-9]$')
 _COLOR_VALID  = {
@@ -67,9 +51,7 @@ DOMAIN_PROBLEMS = (
 FQDN_PROBLEMS = ("too_long",)
 
 
-# The sentence each code becomes for a client that carries none of its own. The API answers
-# in English on every route, and curl and `vauxtra_mcp` are clients too; the panel never
-# reads these, it translates the code, so a word changed here changes nothing it shows.
+# English sentence per code for API clients; the panel translates the code instead.
 SUBDOMAIN_REASONS = {
     "empty": "a subdomain is required",
     "too_long": "a subdomain is 253 characters at most",
@@ -114,12 +96,9 @@ def _label_problem(label: str) -> str | None:
 
 
 def subdomain_problem(value: str, *, allow_wildcard: bool = False) -> str | None:
-    """The rule *value* breaks as a subdomain, or None when it breaks none.
+    """Return the rule `value` breaks as a subdomain, or None.
 
-    Dots are allowed: `grafana.metrics` under `example.com` publishes
-    `grafana.metrics.example.com`, which every provider here already resolves by walking
-    labels from the right to find the zone. A wildcard has to be a whole label and the
-    leftmost one, which is the only position DNS gives it any meaning.
+    Dots are allowed (multi-label subdomains). A wildcard must be the whole leftmost label.
     """
     val = (value or "").strip().lower()
     if not val:
@@ -142,7 +121,9 @@ def is_valid_subdomain(value: str, *, allow_wildcard: bool = False) -> bool:
 
 
 def is_valid_hostname(value: str) -> bool:
-    if not value:
+    # `ip_address` accepts an IPv6 scope id made of almost any text, quotes and newlines
+    # included, and the target ends up inside the proxy's nginx configuration.
+    if not value or "%" in value:
         return False
     try:
         ipaddress.ip_address(value)
@@ -191,12 +172,9 @@ def normalize_subdomain(value: str) -> str:
 
 
 def fqdn_problem(subdomain: str, domain: str) -> str | None:
-    """The rule the name the two halves make breaks, or None when it breaks none.
+    """Return the rule the joined name breaks (e.g. total length), or None.
 
-    Neither field can see the other, and each can sit inside its own 253-character limit
-    while the name they make sits outside it. Nothing downstream caught that: the route was
-    saved, and every provider then refused the record on its own, one push at a time, with
-    the failure arriving as a provider error rather than as a name that was never publishable.
+    Each half can be within its own limit while the joined name is not.
     """
     joined = f"{normalize_subdomain(subdomain)}.{normalize_domain(domain)}".strip(".")
     return "too_long" if len(joined) > 253 else None
@@ -213,21 +191,16 @@ def is_valid_port(value) -> bool:
         return False
 
 
-# The port of a service that is only a name in DNS: an A record for a machine, a VPN
-# endpoint. Nothing forwards to it and there is nothing to connect to, so nothing probes it
-# either. Stored as 0 because the column is NOT NULL and every reader takes the port as an
-# integer; the import used to write 80 instead, and the monitor then reported port 80 of a
-# VPN gateway as down, every cycle, forever.
+# Port of a DNS-only service: nothing forwards to it and nothing probes it. 0 because the
+# column is NOT NULL and readers expect an integer.
 NO_PORT = 0
 
 
 def is_valid_service_port(value) -> bool:
-    """A service's port: 1 to 65535, or `NO_PORT` for a service published in DNS alone.
+    """A service port: 1 to 65535, or `NO_PORT` for a DNS-only service.
 
-    The range is written out rather than built on `is_valid_port` because the API/MCP parity
-    gate reads a validator's bounds from the comparison it returns. Whether 0 is allowed for
-    a given service depends on its other fields -- a proxy host or a tunnel rule pointed at
-    port 0 is a route to nowhere -- so `ServiceIn` checks that pair itself.
+    The range is written out because the API/MCP parity gate reads the bounds from this
+    comparison. Whether 0 is allowed depends on other fields, so ServiceIn checks that.
     """
     try:
         return 0 <= int(value) <= 65535

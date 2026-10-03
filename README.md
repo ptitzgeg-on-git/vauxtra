@@ -3,23 +3,20 @@
 <a href="https://github.com/ptitzgeg-on-git/vauxtra">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
-    <img alt="Vauxtra — The missing link in your network stack" src="docs/assets/banner-light.png" width="720">
+    <img alt="Vauxtra" src="docs/assets/banner-light.png" width="720">
   </picture>
 </a>
 
-**Self-hosted DNS & reverse proxy management panel — built for homelab.**<br>
-Orchestrate Nginx Proxy Manager, Traefik, Zoraxy, Cloudflare, Pi-hole, AdGuard Home, and more from one unified interface.
+**Self-hosted DNS and reverse proxy management for homelabs.**<br>
+Describe a service once. Vauxtra publishes it to Nginx Proxy Manager, Traefik, Zoraxy,
+Cloudflare, Pi-hole, AdGuard Home and the other tools you already run, then keeps them in sync.
 
 [![Tests](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml/badge.svg)](https://github.com/ptitzgeg-on-git/vauxtra/actions/workflows/tests.yml)
 [![Latest Release](https://img.shields.io/github/v/release/ptitzgeg-on-git/vauxtra?label=release)](https://github.com/ptitzgeg-on-git/vauxtra/releases)
 [![Docker Image](https://ghcr-badge.egpl.dev/ptitzgeg-on-git/vauxtra/latest_tag?trim=major&label=ghcr)](https://github.com/ptitzgeg-on-git/vauxtra/pkgs/container/vauxtra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.13-blue)](https://www.python.org/)
-[![React](https://img.shields.io/badge/React-19-61dafb)](https://react.dev/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.135-green)](https://fastapi.tiangolo.com/)
-[![MCP Ready](https://img.shields.io/badge/MCP-Ready-purple)](https://modelcontextprotocol.io/)
 
-[**Quick Start**](#quick-start-docker) · [**Features**](#features) · [**Screenshots**](#screenshots) · [**Providers**](docs/PROVIDERS.md) · [**Docs**](#documentation-map) · [**MCP**](#mcp-integration)
+[**Quick start**](#quick-start) · [**Features**](#features) · [**Security**](#security) · [**Providers**](#provider-setup) · [**Docs**](#documentation) · [**MCP**](#mcp-server)
 
 <br>
 
@@ -32,52 +29,50 @@ Orchestrate Nginx Proxy Manager, Traefik, Zoraxy, Cloudflare, Pi-hole, AdGuard H
 
 ---
 
-## Why Vauxtra?
+## Why
 
-Publishing a new self-hosted app usually means touching three tools: a DNS record in Cloudflare or Pi-hole, a proxy host in Nginx Proxy Manager or Traefik, maybe a Cloudflare Tunnel route — and then remembering to keep them in sync. Vauxtra turns that into **one service record**: pick a hostname, a target and the providers that should publish it, and Vauxtra pushes, monitors and reconciles every piece for you.
+Publishing a self-hosted app usually means a DNS record in Pi-hole or Cloudflare, a proxy
+host in Nginx Proxy Manager or Traefik, sometimes a Cloudflare Tunnel route, and keeping the
+three in sync afterwards. In Vauxtra a service is one record: a hostname, a target and the
+providers that publish it. Vauxtra pushes it, checks it and tells you when a provider no
+longer matches.
 
-- **One form, every provider** — DNS, reverse proxy and tunnel configured together, with preflight checks and dry-run.
-- **Keeps itself honest** — health checks, drift detection, auto-reconcile and certificate expiry alerts.
-- **Bring your own stack** — Vauxtra drives the tools you already run; it never replaces them.
-
----
+Vauxtra drives the tools you already run. It does not run a DNS server or a proxy itself,
+and it does not replace them.
 
 ## Features
 
-| Category | What you get |
-|---|---|
-| **Multi-provider routing** | Manage proxy hosts (NPM, Traefik, Zoraxy) and DNS records (Cloudflare, deSEC, Pi-hole, AdGuard, Technitium, PowerDNS) from a single service record |
-| **Exposure modes** | Choose DNS-only, DNS + Reverse Proxy, or Tunnel with capability-aware guidance |
-| **Cloudflare Tunnel** | Expose services without port-forwarding via Cloudflare Tunnel integration |
-| **Docker discovery** | Auto-detect running containers with Traefik label parsing and confidence scoring |
-| **Preflight & dry-run** | Validate routing config before pushing; preview changes without committing |
-| **Drift detection** | Detect when live provider state diverges from expected and reconcile automatically |
-| **Auto-reconcile scheduler** | Periodic background reconciliation with webhook notifications |
-| **Service Templates** | Pre-configured blueprints that pre-fill the service form — one click to deploy a standard HTTPS app, internal tool, or tunnel service |
-| **Certificate monitoring** | Track NPM and Zoraxy certificates; alerts at < 30 days (warn) and < 7 days (error) |
-| **Webhook retry** | Failed Apprise notifications are retried with exponential backoff (1 min → 24 h); delivery log visible in metrics |
-| **Prometheus metrics** | `/metrics` endpoint in Prometheus text format — scrape service health, provider counts, logs, webhooks, templates |
-| **API Keys** | Bearer token auth for CI/CD pipelines and MCP server access |
-| **MCP Server** | Expose core operations as tools for MCP-compatible clients and automation |
-| **Webhook alerts** | Apprise-compatible webhooks for service down/recovery, provider state changes, and reconcile events |
-| **Environments & Tags** | Organise services with colour-coded labels |
-| **Multilingual UI** | English, French, German, Spanish, Portuguese, Dutch, Japanese, Chinese — 8 locales |
-
----
+- **Providers.** Reverse proxies: Nginx Proxy Manager, Zoraxy, Traefik (read-only) and
+  Cloudflare Tunnel. DNS: Cloudflare, deSEC, Pi-hole, AdGuard Home, Technitium and PowerDNS.
+  [What is supported and what is not](docs/PROVIDERS.md).
+- **Three ways to publish.** DNS only, DNS plus a reverse proxy, or a Cloudflare Tunnel, with
+  guidance on what each provider can do.
+- **Preflight and dry-run.** See what a push will change before it changes anything.
+- **Drift detection.** Vauxtra compares each provider with what it expects and can
+  reconcile on a schedule.
+- **Monitoring.** Health checks per service, certificate expiry for NPM and Zoraxy, and
+  alerts through [Apprise](https://github.com/caronc/apprise) (Discord, Telegram, ntfy and
+  others), retried with backoff.
+- **Docker discovery.** Lists running containers and reads their Traefik labels to suggest
+  a service.
+- **Templates** for the kinds of service you create often.
+- **Automation.** API keys scoped `read`, `write` or `admin`, an MCP server and a
+  Prometheus `/metrics` endpoint.
+- **Interface** in English, French, German, Spanish, Portuguese, Dutch, Japanese and Chinese.
 
 ## Screenshots
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <b>Services</b> — every published service with its public address, target, providers, tags and health.<br><br>
+      <b>Services</b>: every published service with its address, target, providers and health.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/services-dark.webp">
   <img alt="Services list" src="docs/assets/screenshots/services-light.webp">
 </picture>
     </td>
     <td width="50%" valign="top">
-      <b>Add a service</b> — DNS only, DNS + reverse proxy, or Tunnel, in one guided form.<br><br>
+      <b>Add a service</b>: DNS only, DNS and reverse proxy, or tunnel, in one form.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/wizard-dark.webp">
   <img alt="Add a service form" src="docs/assets/screenshots/wizard-light.webp">
@@ -86,14 +81,14 @@ Publishing a new self-hosted app usually means touching three tools: a DNS recor
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <b>Integrations</b> — reverse proxies, tunnels and DNS providers with live health.<br><br>
+      <b>Integrations</b>: proxies, tunnels and DNS providers with their health.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/providers-dark.webp">
   <img alt="Integrations page" src="docs/assets/screenshots/providers-light.webp">
 </picture>
     </td>
     <td width="50%" valign="top">
-      <b>Monitoring</b> — 24 h availability per service and Cloudflare Tunnel connectors.<br><br>
+      <b>Monitoring</b>: 24-hour availability per service and tunnel connectors.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/monitoring-dark.webp">
   <img alt="Monitoring page" src="docs/assets/screenshots/monitoring-light.webp">
@@ -102,14 +97,14 @@ Publishing a new self-hosted app usually means touching three tools: a DNS recor
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <b>Certificates</b> — expiry tracking across NPM and Zoraxy, flagged 30 days ahead.<br><br>
+      <b>Certificates</b>: expiry across NPM and Zoraxy, flagged 30 days ahead.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/certificates-dark.webp">
   <img alt="Certificates page" src="docs/assets/screenshots/certificates-light.webp">
 </picture>
     </td>
     <td width="50%" valign="top">
-      <b>Templates</b> — reusable presets that pre-fill the service form in one click.<br><br>
+      <b>Templates</b>: presets that fill the service form in one click.<br><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/templates-dark.webp">
   <img alt="Templates page" src="docs/assets/screenshots/templates-light.webp">
@@ -118,60 +113,11 @@ Publishing a new self-hosted app usually means touching three tools: a DNS recor
   </tr>
 </table>
 
-> Screenshots follow your GitHub theme: switch between light and dark mode to see both UI themes.
+Screenshots follow your GitHub theme.
 
----
+## Quick start
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Vauxtra                             │
-│                                                         │
-│   React 19 + TypeScript + Vite (SPA)                    │
-│          │                                              │
-│   FastAPI + SQLite (WAL)                                │
-│          │                                              │
-│   ┌──────┴────────────────────────┐                     │
-│   │         Providers             │                     │
-│   │  NPM  Zoraxy  Traefik         │                     │
-│   │  Cloudflare DNS  CF Tunnel    │                     │
-│   │  Pi-hole  AdGuard  Technitium │                     │
-│   │  PowerDNS  deSEC              │                     │
-│   └───────────────────────────────┘                     │
-└─────────────────────────────────────────────────────────┘
-          │
-  MCP Server (FastMCP) — client and automation integration
-```
-
-Vauxtra is an **orchestrator**: it does not run a reverse proxy or DNS server itself — it configures the ones you already have running.
-
----
-
-## Quick Start (Docker)
-
-Pull the pre-built image from GitHub Container Registry:
-
-```bash
-docker run -d \
-  --name vauxtra \
-  -p 127.0.0.1:8888:8888 \
-  -v vauxtra_data:/app/data \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  ghcr.io/ptitzgeg-on-git/vauxtra:latest
-```
-
-> The port is published on the loopback: the panel holds provider credentials and has
-> none of its own until you complete the setup wizard. Once you have, `-p 8888:8888` reaches
-> it from the LAN — behind a reverse proxy, preferably.
-
-> The Docker socket is only needed for container discovery, and mounting it is a real
-> grant: `:ro` applies to the socket file, not to the Docker API, so whoever reaches it can
-> start a privileged container and is root on the host. Drop the `-v /var/run/docker.sock`
-> line if you do not use the Docker features — the rest of Vauxtra is unaffected and the
-> Docker screens answer "daemon unavailable" — or front it with a read-only socket proxy.
-
-Or use Docker Compose:
+With Docker Compose:
 
 ```yaml
 # docker-compose.yml
@@ -193,144 +139,146 @@ services:
 docker compose up -d
 ```
 
-Then open http://localhost:8888 in your browser.
+Or with `docker run`:
 
-The `data/` directory stores the SQLite database and the auto-generated secret key.
+```bash
+docker run -d \
+  --name vauxtra \
+  -p 127.0.0.1:8888:8888 \
+  -v vauxtra_data:/app/data \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  ghcr.io/ptitzgeg-on-git/vauxtra:latest
+```
 
-> **Build from source?** Clone the repo and run `docker compose up --build -d`.
+Open http://localhost:8888 and follow the setup wizard. `data/` holds the SQLite database
+and, unless you set `SECRET_KEY`, the generated key that encrypts provider credentials.
 
----
+Two things to know before you open the port to your network:
+
+- **The port is published on the loopback on purpose.** The panel holds provider
+  credentials and has no password of its own until you finish the wizard. Once you have
+  set one, `-p 8888:8888` makes it reachable from the LAN, preferably behind a reverse proxy.
+- **The Docker socket is optional and is root on the host.** Vauxtra only uses it to list
+  containers, but `:ro` applies to the socket file, not to the Docker API: whoever controls
+  Vauxtra can start a privileged container. Drop the `docker.sock` line if you do not use
+  discovery (the Docker screens then say the daemon is unavailable), or point Vauxtra at a
+  read-only socket proxy.
+
+To build from source instead: clone the repository, run `cp .env.example .env` (the compose
+file reads `.env` and will not start without it), then `docker compose up --build -d`.
 
 ## Configuration
 
-All configuration is via environment variables. Copy `.env.example` to `.env` and fill in your values.
+All settings are environment variables. Copy `.env.example` to `.env` to start. The table
+lists the main ones; [`.env.example`](.env.example) is the full list, with a comment on each.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SECRET_KEY` | auto-generated | **Do not change after setup.** Used to sign session cookies and encrypt provider credentials. Auto-generated to `data/.secret_key` if left empty. |
-| `APP_PASSWORD` | *(none)* | Password to protect the web interface. Leave empty to configure via Setup wizard. |
-| `TZ` | `UTC` | Timezone for scheduler and log timestamps. |
-| `HTTPS_ONLY` | `false` | Set to `true` whenever the interface is reached over `https://`, **including behind a reverse proxy that terminates TLS** — which is the usual deployment. Marks the session cookie `Secure` and sends HSTS. |
-| `DEBUG` | `false` | Enable `/api/docs` and `/openapi.json`, add the Vite dev server to `CORS_ORIGINS`, and log verbosely. |
-| `VAUXTRA_URL` | `http://localhost:8888` | Base URL of this instance (used by the MCP server). |
-| `VAUXTRA_API_KEY` | *(none)* | API key for MCP server auth. Create one in **Settings → API Keys**. |
-| `DOCKER_HOST` | *(env default)* | Docker socket path. Override if using a non-standard location. |
-| `VAUXTRA_REWRITE_LOCALHOST` | `true` | Rewrite provider URLs using localhost/127.0.0.1 to a host alias when running inside Docker. |
-| `VAUXTRA_LOCALHOST_ALIAS` | `host.docker.internal` | Hostname used when localhost rewrite is active. |
-| `CORS_ORIGINS` | *(empty)* | Cross-origin callers allowed to reach the API, comma-separated. Empty is right for a normal install: the interface is served by this same application, so it is already same-origin. Fill it in only for a frontend hosted elsewhere — every origin listed may send the session cookie. |
-| `FORWARDED_ALLOW_IPS` | *(empty)* | Address of the reverse proxy in front of this instance. Unset, every rate limit keys on the socket peer — behind a proxy that is one address for every visitor, so five failed logins from anywhere lock you out. Do not set it without a proxy actually in front. |
+| `SECRET_KEY` | generated | Signs the session cookie and encrypts provider credentials. Generated into `data/.secret_key` when empty. **Do not change it after adding providers**: the stored credentials become unreadable. |
+| `APP_PASSWORD` | *(none)* | Admin password, as a PBKDF2 hash. Leave empty to set it in the setup wizard. |
+| `ALLOW_PLAINTEXT_APP_PASSWORD` | `false` | Accept a plaintext `APP_PASSWORD`. Leave off outside a lab. |
+| `TZ` | `UTC` | Timezone for the scheduler and log timestamps. |
+| `HTTPS_ONLY` | `false` | Set to `true` whenever the panel is reached over `https://`, including behind a reverse proxy that terminates TLS. Marks the cookie `Secure` and sends HSTS. |
+| `FORWARDED_ALLOW_IPS` | *(empty)* | Address of the reverse proxy in front of Vauxtra. Without it, every visitor shares one rate-limit counter, so five failed sign-ins from anywhere lock you out. Do not set it without a proxy in front. |
+| `CORS_ORIGINS` | *(empty)* | Cross-origin callers allowed to use the API. Leave empty: the interface is served by the same application. Every origin listed may send the session cookie. |
+| `DEBUG` | `false` | Serves `/api/docs` and `/openapi.json`, allows the Vite dev server and logs verbosely. |
+| `DOCKER_HOST` | `unix:///var/run/docker.sock` | Seeds the first Docker endpoint on an empty database, nothing more. Change endpoints later in **Settings > Data**. |
+| `VAUXTRA_BIND` | `127.0.0.1` | Host interface the compose file publishes port 8888 on. Read by Docker Compose, not by Vauxtra. |
+| `VAUXTRA_REWRITE_LOCALHOST` | `true` | Rewrites `localhost` in provider URLs to a host alias when running in Docker. |
+| `VAUXTRA_LOCALHOST_ALIAS` | `host.docker.internal` | The alias used by that rewrite. |
+| `VAUXTRA_PROVIDER_PLUGINS` | *(empty)* | Extra provider types, as importable Python modules. Their code runs with Vauxtra's privileges. See [PROVIDERS](docs/PROVIDERS.md#adding-a-provider-without-forking). |
+| `VAUXTRA_URL` | `http://localhost:8888` | Base URL of this instance, for the MCP server. |
+| `VAUXTRA_API_KEY` | *(none)* | API key for the MCP server. Create one in **Settings > API Keys**. |
 
-> **⚠️ Important**: Do not change `SECRET_KEY` after adding providers. All stored credentials are encrypted with this key.
+**Forgot the password?** If it comes from `.env`, edit the file. If you set it in the wizard
+and you are still signed in, change it in **Settings > Security**. If you are locked out,
+clear both rows and restart:
 
-> **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Security → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
->
-> ```bash
-> sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"
-> ```
->
-> `auth_mode` is what tells a deliberately passwordless install apart from one whose hash went missing. Deleting the hash on its own leaves the second state, and Vauxtra then refuses every request rather than falling back to anonymous admin — which is the point of it, and why it has to go too.
+```bash
+sqlite3 data/vauxtra.db "DELETE FROM settings WHERE key IN ('app_password_hash','auth_mode');"
+```
 
----
+Deleting only the hash is not enough on purpose. `auth_mode` is what tells an instance that
+was deliberately left without a password apart from one whose hash went missing, and
+Vauxtra refuses every request in the second case rather than opening up.
 
-## Documentation Map
+## Security
 
-- End-user quick start and feature overview: [README.md](README.md)
-- End-user operations and API usage: [docs/HOWTO.md](docs/HOWTO.md)
-- Production deployment checklist and recipes: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-- Troubleshooting and known failure patterns: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- Supported providers, evaluated candidates, writing your own: [docs/PROVIDERS.md](docs/PROVIDERS.md)
-- Integration lab against real provider containers: [lab/README.md](lab/README.md)
-- Security policy and reporting: [SECURITY.md](SECURITY.md)
-- MCP server setup for compatible clients: [vauxtra_mcp/README.md](vauxtra_mcp/README.md)
+Vauxtra holds working credentials for your DNS and proxies, so it is built to be run on
+your LAN or behind your VPN, not on the internet.
 
----
+- Provider passwords and tokens are encrypted at rest. API keys are stored as hashes and
+  scoped `read`, `write` or `admin`; a `write` key cannot read a stored secret or send it to
+  another host.
+- Sign-in is rate-limited, the session cookie is `HttpOnly` and `SameSite=Strict`, and the
+  interface ships a strict Content-Security-Policy.
+- Each provider's least-privilege credential, what each API scope can reach and the known
+  limits are in the **[threat model](docs/THREAT_MODEL.md)**.
+- Every image is signed with cosign and carries a SLSA provenance attestation. To check
+  one (cosign 3.0 or later):
 
-## Provider Setup
+  ```bash
+  cosign verify ghcr.io/ptitzgeg-on-git/vauxtra:1.7.0 \
+    --certificate-identity 'https://github.com/ptitzgeg-on-git/vauxtra/.github/workflows/docker-publish.yml@refs/tags/v1.7.0' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  ```
 
-### Nginx Proxy Manager
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
-1. In NPM, go to **Users** and create a dedicated API user (or use admin credentials).
-2. In Vauxtra, add a provider: type = `npm`, URL = `http://your-npm:81`.
-3. Test connection.
+## Provider setup
 
-### Traefik
+The setup wizard walks you through each provider. In short, and with the narrowest
+credential each one accepts:
 
-Traefik is **read-only** in Vauxtra (it configures itself via Docker labels or config files).
+**Nginx Proxy Manager.** In NPM, create a dedicated user with *Proxy Hosts: Manage* and
+*Certificates: View*. In Vauxtra, add an `npm` provider with `http://your-npm:81` and that
+user's email and password.
 
-1. Expose the Traefik dashboard API at e.g. `http://traefik:8080`.
-2. In Vauxtra, add a provider: type = `traefik`, URL = `http://traefik:8080`.
-3. Use **Sync → Import** to import existing routes.
+**Traefik.** Read-only: Traefik configures itself from labels and files. Expose its API
+(for example `http://traefik:8080`), add a `traefik` provider, then use **Import from
+providers** on the Services or Integrations page to bring in existing routes (also in
+**Settings > Data > Synchronization & Import**).
 
-### Zoraxy
+**Zoraxy.** Zoraxy has a single admin account and no API keys, so Vauxtra signs in with the
+same credentials as the browser. Keep the management port on your LAN or VPN. Add a
+`zoraxy` provider with `http://zoraxy:8000` (leave the credentials empty for an instance
+started with `-noauth`), then **Import from providers**. Vauxtra manages host rules with one upstream
+each; virtual directories, stream proxies and extra upstreams are left alone.
 
-Zoraxy has a single admin account and no API keys: Vauxtra logs in with the same
-credentials you use in the browser. Keep the management port reachable from the LAN or
-VPN only.
+**Cloudflare DNS.** Create an API token with *Zone > DNS > Edit*, limited to your zones, and
+add a `cloudflare` provider with it.
 
-1. Note the management URL, e.g. `http://zoraxy:8000`, and the admin username/password
-   (leave both empty for an instance started with `-noauth`).
-2. In Vauxtra, add a provider: type = `zoraxy`, URL = `http://zoraxy:8000`.
-3. Test connection, then **Sync → Import** to pick up existing host rules.
+**Cloudflare Tunnel.** Create a tunnel in the Cloudflare dashboard and note its ID. Create a
+token with *Account > Cloudflare Tunnel > Edit* and *Zone > DNS > Edit*. Add a
+`cloudflare_tunnel` provider with your account ID, the token and the tunnel ID, then pick
+**Tunnel** as the exposure mode when you create a service.
 
-Vauxtra manages **host** rules only (no virtual directories, no TCP/UDP stream proxies) and
-one upstream per rule; extra load-balanced upstreams are left untouched. Zoraxy terminates
-TLS globally, so there is no per-host "force SSL" switch.
+**Pi-hole and AdGuard Home.** Add the provider with its base URL (for Pi-hole,
+`http://pihole`, not `/admin`) and its credentials: the API token or an app password for
+Pi-hole, the admin login for AdGuard Home.
 
-### Cloudflare DNS
+**PowerDNS Authoritative.** Enable the API in `pdns.conf` (`api=yes`, `api-key=...`,
+`webserver=yes`, and a `webserver-allow-from` that includes Vauxtra). Add a `powerdns`
+provider with `http://your-pdns:8081`, server ID `localhost` and the key. Records go into
+zones PowerDNS already hosts; Vauxtra picks the longest zone that contains the name.
 
-1. Create a Cloudflare API token with **Zone → DNS → Edit** permission for your zones.
-2. In Vauxtra, add a provider: type = `cloudflare`, API token = `<your-token>`.
+**deSEC.** Create a token in *Token management* without "Can manage tokens" and add a
+`desec` provider with it. Leave the URL empty unless you run your own deSEC, and the domain
+empty to let Vauxtra find the matching one.
 
-### Cloudflare Tunnel
+## MCP server
 
-1. Create a tunnel in the Cloudflare dashboard and copy the Tunnel ID (UUID).
-2. Create an API token with:
-  - `Account -> Cloudflare Tunnel -> Edit`
-  - `Zone -> DNS -> Edit`
-3. Copy your Cloudflare Account ID.
-4. In Vauxtra, add a provider: type = `cloudflare_tunnel`, with Account ID, API token, and Tunnel ID.
-5. When creating a service, set expose mode to **Tunnel**.
+Vauxtra ships an [MCP](https://modelcontextprotocol.io/) server that exposes its operations
+as tools: services, templates, preflight and push, drift and reconcile, providers, Docker
+discovery and monitoring. The [full list](vauxtra_mcp/README.md#available-tools) is in the
+MCP server's README.
 
-### Pi-hole / AdGuard Home
+It runs next to your MCP client, not inside the image:
 
-1. Retrieve the API password from your Pi-hole or AdGuard Home admin panel.
-2. In Vauxtra, add a provider of the appropriate type with URL and credentials.
-3. For Pi-hole, use the base URL (e.g. `http://pihole` or `http://localhost:18081`), not `/admin`.
-
-### PowerDNS Authoritative
-
-1. Enable the API in `pdns.conf`: `api=yes`, `api-key=<key>`, `webserver=yes`, and a
-   `webserver-allow-from` that includes Vauxtra. The API listens on `:8081` by default.
-2. In Vauxtra, add a provider: type = `powerdns`, URL = `http://your-pdns:8081`,
-   server id = `localhost` (the stock value), API key = `<key>`.
-3. The record has to fall inside a zone the server hosts — create the zone in PowerDNS
-   first. Vauxtra picks the longest zone that contains the name.
-
-### deSEC
-
-1. Create a free account at [desec.io](https://desec.io/) and generate a token in
-   **Token management**. A token limited to your domain is enough.
-2. In Vauxtra, add a provider: type = `desec`, token = `<token>`. Leave the URL empty
-   unless you run your own deSEC instance.
-3. The domain field is optional: leave it blank to let Vauxtra pick the matching domain
-   out of your account, or set it to pin every record to one domain.
-
----
-
-## MCP Integration
-
-Vauxtra ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server package that exposes core operations as tools. Connect it to any MCP-compatible client.
-
-### Setup
-
-1. Create an API key in Vauxtra: **Settings → API Keys → New Key**.
-2. Note the generated key (shown once at creation).
-
-> The MCP server runs on the host (next to your MCP client), not inside the Vauxtra Docker image. Clone this repo and `pip install -r vauxtra_mcp/requirements.txt` on the machine that will launch the client. The server reaches Vauxtra over HTTP using `VAUXTRA_URL` + `VAUXTRA_API_KEY`.
-
-### Example MCP client config
-
-Add an equivalent server block to your MCP client configuration:
+1. Create an API key in **Settings > API Keys**, with the lowest scope the client needs.
+2. On the machine that runs the client, clone this repository and
+   `pip install -r vauxtra_mcp/requirements.txt`.
+3. Add it to your client configuration:
 
 ```json
 {
@@ -348,107 +296,85 @@ Add an equivalent server block to your MCP client configuration:
 }
 ```
 
-### Available MCP tools
+See [vauxtra_mcp/README.md](vauxtra_mcp/README.md) for the HTTP transport and the options.
 
-See [docs/HOWTO.md](docs/HOWTO.md#11-mcp-integration) for the full list. Summary:
+## API
 
-**Services** — `list_services`, `get_service`, `create_service`, `update_service`, `set_service_labels`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
+Every endpoint accepts `Authorization: Bearer <api_key>` as well as the session cookie. With
+`DEBUG=true`, the interactive documentation is served at `http://localhost:8888/api/docs`.
+The routes and the scope each one needs are listed in [HOWTO](docs/HOWTO.md).
 
-**Templates** — `list_templates`, `get_template`, `create_template`, `delete_template`, `apply_template`
+## Documentation
 
-**Operations** — `run_preflight`, `dry_run_push`, `push_service`, `check_drift`, `reconcile_service`
-
-**Providers** — `list_providers`, `get_provider_types`, `create_provider`, `update_provider`, `delete_provider`, `test_provider`, `get_provider_health`, `get_all_providers_health`, `get_tunnel_health`
-
-**Docker** — `list_docker_endpoints`, `discover_docker_containers`, `import_docker_containers`
-
-**Monitoring** — `get_health`, `get_logs`, `get_stats`, `get_certificates`, `get_certificate_expiry`, `check_all_services`
-
----
-
-## API Reference
-
-When `DEBUG=true` is set, the full interactive API documentation is available at:
-
-```
-http://localhost:8888/api/docs
-```
-
-All endpoints accept `Authorization: Bearer <api_key>` in addition to session cookies.
-
----
-
-## Development Setup
-
-### Backend
-
-```bash
-# Requires Python 3.13+
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Run with auto-reload
-uvicorn app.main:app --reload --port 8888
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev        # Dev server on :5173 with API proxy to :8888
-npm run build      # Production build to frontend/dist/
-npm run lint       # ESLint
-```
-
-### Running both together
-
-The frontend dev server (`npm run dev`) proxies `/api/*` to the FastAPI backend at `:8888`. Run both in separate terminals.
-
-### Docker build
-
-```bash
-docker compose up --build
-```
-
-The Dockerfile uses a multi-stage build: Node 26 for the frontend, Python 3.14-slim for the final image.
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Local dev setup
-- Conventional Commits guide
-- How to add a DNS or proxy provider
-- How to add an MCP tool
-- PR checklist
-
-### Translating Vauxtra
-
-The UI is fully internationalized. To add or improve a translation:
-
-1. Duplicate [`frontend/src/locales/en.json`](frontend/src/locales/en.json)
-2. Name it with the [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) (e.g. `ko.json`)
-3. Add the language to `SUPPORTED_LANGUAGES` in [`frontend/src/i18n/index.tsx`](frontend/src/i18n/index.tsx)
-4. Open a PR — no backend change needed
-
----
+- [HOWTO](docs/HOWTO.md): day-to-day use and the API
+- [DEPLOYMENT](docs/DEPLOYMENT.md): production checklist and recipes
+- [TROUBLESHOOTING](docs/TROUBLESHOOTING.md): known failures and what they mean
+- [PROVIDERS](docs/PROVIDERS.md): what is supported, what was evaluated, writing your own
+- [THREAT_MODEL](docs/THREAT_MODEL.md): what is stored, what each credential allows, verifying the image
+- [lab/](lab/README.md): NPM, Pi-hole, AdGuard Home, Zoraxy, Technitium and PowerDNS in
+  throwaway containers on the loopback, for the integration tests or to try Vauxtra without
+  touching your network
+- [SECURITY](SECURITY.md): reporting a vulnerability
 
 ## Upgrading
 
-Vauxtra follows a **rolling release** model on the `latest` Docker tag:
+`latest` follows `main`, and `main` only receives releases:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-The database is automatically migrated on startup. No manual steps required.
+The database migrates itself at startup. Migrations only move forward, so back up `data/`
+before upgrading if you may want to go back. To stay on one release line, pin a tag such as
+`:1.7` ([pinning a version](docs/DEPLOYMENT.md#pinning-a-version)).
 
----
+## Development
+
+Requires Python 3.13+ for the backend and Node.js 22, 24 or 26+ for the frontend
+([exact ranges](CONTRIBUTING.md#local-development-setup)).
+
+```bash
+# Backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8888
+
+# Frontend, in another terminal
+cd frontend
+npm install
+npm run dev        # http://localhost:5173, proxies /api to :8888
+```
+
+`npm run build` writes the production build to `frontend/dist/`, and `npm run lint` runs
+ESLint. The Dockerfile is a multi-stage build: Node 26 for the frontend, Python 3.14-slim for
+the final image.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch model, the commit convention and how to
+add a provider or an MCP tool.
+
+To add a translation:
+
+1. Copy [`frontend/src/locales/en.json`](frontend/src/locales/en.json) to the
+   [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) of the language.
+2. In [`frontend/src/i18n/index.tsx`](frontend/src/i18n/index.tsx), add the code to the `Lang`
+   union, to `SUPPORTED_LANGUAGES` and to `LOCALE_TAGS` (the BCP-47 tag used for dates and
+   numbers).
+3. Run `npm run i18n:check` in `frontend/`. It lists missing keys and the plural forms
+   (`_one`, `_other`, `_few`, `_many`) the language needs.
+4. Open a pull request. No backend change is needed.
+
+## How it's built
+
+Vauxtra is written by one person, with heavy help from AI coding assistants (Claude Code).
+Every change goes through the same gates whoever wrote it: about 2,000 backend tests, an
+integration lab against real provider containers, lint, dependency and image scans, and a
+reviewed pull request before it reaches `main`. If something looks wrong, open an issue, or
+a [private advisory](SECURITY.md) for anything security-related.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

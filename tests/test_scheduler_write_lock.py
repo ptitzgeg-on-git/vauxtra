@@ -308,5 +308,81 @@ class TestNpmSyncDoesNotHoldTheLock(WriteLockTestCase):
         self.assertEqual(enabled, [0, 0, 0])
 
 
+class TestManualCheckAllDoesNotHoldTheLock(WriteLockTestCase):
+    """`POST /api/services/check-all` probed between UPDATEs of one transaction too."""
+
+    def _check_all(self, probe):
+        from starlette.requests import Request
+
+        from app.api import services as services_api
+
+        request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+        with patch.object(services_api, "require_auth", lambda _r, scope=None: None), \
+             patch.object(services_api.socket, "create_connection", side_effect=probe):
+            return services_api.check_all(request)
+
+    def test_every_probe_runs_against_a_writable_database(self):
+        self._seed_services(3)
+        seen: list = []
+
+        def probe(address, timeout=None):
+            _witness_can_write(f"probe:{address[1]}", seen)
+            raise OSError("refused")
+
+        result = self._check_all(probe)
+
+        self.assertEqual(result["error"], 3, result)
+        self.assertEqual(len(seen), 3, seen)
+        self.assertEqual(_refused(seen), [], "a probe ran with the write lock held")
+
+    def test_the_results_are_still_written(self):
+        self._seed_services(2)
+        self._check_all(lambda address, timeout=None: (_ for _ in ()).throw(OSError("refused")))
+
+        conn = models.get_db()
+        statuses = [r["status"] for r in conn.execute("SELECT status FROM services ORDER BY id")]
+        events = conn.execute("SELECT COUNT(*) AS n FROM uptime_events").fetchone()["n"]
+        conn.close()
+        self.assertEqual(statuses, ["error", "error"])
+        self.assertEqual(events, 2)
+
+
+class TestBulkDeleteDoesNotHoldTheLock(WriteLockTestCase):
+    """Each service's withdrawal calls providers; the previous deletion must be committed."""
+
+    def _bulk(self, ids, withdraw):
+        from starlette.requests import Request
+
+        from app.api import services as services_api
+
+        request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+        with patch.object(services_api, "require_auth", lambda _r, scope=None: None), \
+             patch.object(services_api, "withdraw_service_routes", withdraw):
+            return services_api.bulk_action(
+                services_api._BulkActionBody(ids=ids, action="delete"), request
+            )
+
+    def test_every_withdrawal_runs_against_a_writable_database(self):
+        self._seed_services(3)
+        seen: list = []
+
+        def withdraw(conn, svc, sid):
+            _witness_can_write(f"withdraw:{sid}", seen)
+            return []
+
+        result = self._bulk([1, 2, 3], withdraw)
+
+        self.assertEqual(result["affected"], 3, result)
+        self.assertEqual(_refused(seen), [], "a withdrawal ran with the write lock held")
+
+    def test_the_id_list_is_bounded(self):
+        from pydantic import ValidationError
+
+        from app.api import services as services_api
+
+        with self.assertRaises(ValidationError):
+            services_api._BulkActionBody(ids=list(range(501)), action="delete")
+
+
 if __name__ == "__main__":
     unittest.main()

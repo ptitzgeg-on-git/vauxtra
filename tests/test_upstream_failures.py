@@ -132,6 +132,14 @@ class NotificationTargetRefusalTests(_IsolatedDB):
         with patch("apprise.Apprise.notify", side_effect=OSError("connection refused")):
             self.assertEqual(self._status_of(self._test_stored), 502)
 
+    def test_a_stored_target_is_never_quoted_back(self) -> None:
+        """The stored URL is a credential, and the caller may be a key not allowed to read it."""
+        with patch("apprise.Apprise.notify", side_effect=OSError(f"refused by {self.URL}")):
+            with self.assertRaises(HTTPException) as caught:
+                self._test_stored()
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assertNotIn(self.URL, str(caught.exception.detail))
+
     def test_the_refusal_tells_the_operator_where_to_look(self) -> None:
         """The number reattributes the fault; the sentence has to point somewhere too."""
         with patch("apprise.Apprise.notify", return_value=False):

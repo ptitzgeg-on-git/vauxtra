@@ -58,6 +58,11 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Nothing by default. Every job below names the scopes it uses, so a job added later
+# without a `permissions:` block gets a token that can do nothing rather than whatever the
+# repository default happens to be.
+permissions: {}
+
 jobs:
   cleanup:
     name: Delete orphaned container versions

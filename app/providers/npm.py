@@ -1,4 +1,4 @@
-"""Nginx Proxy Manager provider — proxy host and certificate management."""
+"""Nginx Proxy Manager provider: proxy host and certificate management."""
 
 import requests
 
@@ -14,16 +14,10 @@ from app.text import plural
 
 
 def _numeric_host_id(host_id) -> int | None:
-    """The identifier as NPM numbers it, or None if this is not one.
+    """Return `host_id` as NPM's integer id, or None if it is not one.
 
-    Two reasons to check it here rather than at the call site. The first is that the caller
-    does not know: `DELETE /api/providers/{pid}/proxy-hosts/{host_id}` serves all three
-    providers and only this one insists on an integer. The second is that the value is
-    interpolated into a URL -- a `host_id` of `1/../../users` would compose a path NPM
-    would happily serve.
-
-    Returns None rather than raising: the `ProxyProvider` contract is that a failure gives
-    back a falsy value, and every caller already handles that.
+    Checked here because the shared delete route passes any identifier, and the value is
+    interpolated into a URL path. None rather than raising, per the ProxyProvider contract.
     """
     try:
         return int(str(host_id).strip())
@@ -103,18 +97,10 @@ class NPMProvider(ProxyProvider):
         return self._ensure_auth()
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
-        """Reachability first, credentials second.
+        """Check reachability, then login, then whether the account can read proxy hosts.
 
-        `test_connection` here is `_ensure_auth`, which is `False` for an NPM that is down
-        and `False` for one that refused the email and password. Reported through the
-        fallback in `_provider_diagnostics` both came out as `connection_failed`, which
-        points the operator at the network when the account is what needs looking at.
-
-        The third check is the one NPM was missing while every other provider had it. A
-        token that authenticates is not a token that can read: NPM gives a user per-object
-        permissions, and one whose `proxy_hosts` visibility is off signs in perfectly and
-        is then refused the list Vauxtra manages. Stopping at "Login OK" made that account
-        look ready, and the refusal surfaced later as a push that saved nothing.
+        Separate checks so a wrong password is not reported as a network failure, and an
+        account without proxy_hosts visibility is not reported as ready.
         """
         checks = [reachability_check(self.session, f"{self.api_url}/tokens")]
         if not checks[0]["ok"]:
@@ -139,14 +125,8 @@ class NPMProvider(ProxyProvider):
         return {"ok": read_ok, "checks": checks, "warnings": []}
 
     def list_hosts(self) -> list[dict]:
-        """Every proxy host NPM holds.
-
-        Raises rather than answering []. A request that failed says nothing about what NPM
-        holds, and every caller acts on the difference: the drift check reads no matching
-        host as `route_missing` and offers a Reconcile button, `_service_proxy_state` reads
-        it as a service that was never published. NPM refusing the list for a moment is not
-        the same answer as NPM holding nothing, and each caller already wraps this call,
-        so the honest answer arrives as `proxy_check_failed` instead of a route to republish.
+        """Return every proxy host. Raises instead of returning [] when the request fails,
+        so callers do not read an outage as hosts missing.
         """
         if not self._ensure_auth():
             raise ProviderListingRefused("NPM refused the credentials")
@@ -222,20 +202,11 @@ class NPMProvider(ProxyProvider):
     def update_host(self, host_id: int, domain: str, ip: str, port: int,
                     scheme: str = "http", websocket: bool = False,
                     cert_id: int | None = None) -> bool:
-        """Point an existing proxy host at the service, and leave the rest of it as it is.
+        """Point an existing host at the service, keeping everything Vauxtra does not own.
 
-        This used to PUT the host whole, built the way `create_host` builds a new one: one
-        domain name, no custom location, HSTS off, exploit blocking on, and the certificate
-        the lookup had found, or none. NPM applies the fields a PUT names and keeps the
-        others, so every push and every edit reset what the operator had set in NPM itself:
-        the other names of the host, its custom locations, HSTS, and the certificate of any
-        host the lookup did not recognise -- which then served without HTTPS.
-
-        The host is read first, and the PUT names what Vauxtra owns: the forward target,
-        websockets, the service's name, and the certificate when the lookup found one that
-        covers the name. `advanced_config`, the access list, caching, exploit blocking and
-        the other names stay the operator's. A host that cannot be read is not written:
-        writing it blind is what reset it.
+        The host is read first and the PUT only sets the forward target, websockets, the
+        name and a covering certificate; other names, locations, HSTS and advanced config
+        stay the operator's. A host that cannot be read is not written.
         """
         host_id = _numeric_host_id(host_id)
         if host_id is None or not self._ensure_auth():
@@ -263,9 +234,7 @@ class NPMProvider(ProxyProvider):
             if cert_id != held:
                 payload.update(certificate_id=cert_id, ssl_forced=True, http2_support=True)
         elif renamed and held and self._certificate_covers(held, domain) is False:
-            # The certificate was issued for the old name. Kept, it would answer HTTPS for
-            # the new one with a name the browser refuses -- the error wall that
-            # `find_best_certificate` exists to avoid.
+            # The certificate was issued for the old name and would fail TLS for the new one.
             payload.update(certificate_id=0, ssl_forced=False, http2_support=False, hsts_enabled=False)
 
         try:
@@ -314,14 +283,10 @@ class NPMProvider(ProxyProvider):
         return None if host is None else bool(host.get("enabled"))
 
     def toggle_host(self, host_id: int | str, enabled: bool) -> bool:
-        """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints.
+        """Enable or disable a host through NPM's dedicated endpoints.
 
-        NPM answers 400 "Host is already enabled" when the host is in the state being asked
-        for, so the status code alone cannot tell a refusal apart from a no-op. Every push
-        resumes the host it just updated, and almost every host it updates is already
-        running, so reading the code alone reported the ordinary case as a refused push.
-        Read the host back instead and answer on the state it is actually in, which is what
-        the caller asked about; only a host still in the wrong state is a real refusal.
+        NPM answers 400 when the host is already in the requested state, so the result is
+        read back from the host itself: only a host still in the wrong state is a failure.
         """
         host_id = _numeric_host_id(host_id)
         if host_id is None or not self._ensure_auth():
@@ -369,23 +334,10 @@ class NPMProvider(ProxyProvider):
         return result
 
     def find_best_certificate(self, host: str) -> int | None:
-        """Return a certificate that actually covers `host`, or None.
+        """Return the id of a certificate covering `host` (exact name or parent wildcard), or None.
 
-        `host` is the full name the proxy host answers on, `vault.example.com`, never the
-        zone. A certificate qualifies only when one of its names covers it: the exact name,
-        or the wildcard of its parent zone (`_coverage`). An exact certificate wins.
-
-        The callers used to pass the zone, and a `*.{zone}` rule here made that work for the
-        one case it could, a wildcard. A certificate issued for the host itself -- what NPM
-        requests by default, one per host -- was never found, and `update_host` then wrote
-        the host without it: every push took HTTPS away from such a host. The rule is gone
-        with the callers' mistake; it also handed `*.example.com` to `example.com`, which
-        that certificate does not cover.
-
-        There is deliberately no last-resort fallback. `create_host` sets
-        `"ssl_forced": cert_id is not None`: handing back an unrelated certificate
-        forces HTTPS on a host it does not cover, and every visitor is met with
-        ERR_CERT_COMMON_NAME_INVALID. No certificate is the honest answer.
+        `host` is the full name, not the zone. Exact match wins. No fallback: create_host
+        forces SSL when a cert is given, so a non-covering cert would break HTTPS.
         """
         host = _name(host)
         if not host:

@@ -50,14 +50,26 @@ jobs:
       # now refuses to rule on a shallow clone, so this line is what keeps it able to.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+          # Keyed on every requirement file, the bridge's included: a change to any of them
+          # is a different install, and a stale cache would hide it.
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            vauxtra_mcp/requirements.txt
 
+      # The tests run the versions the image ships. `requirements.txt` is the image's hashed
+      # lock, and a hashed constraint would make pip demand hashes for the dev tools too, so
+      # the pins are taken from it without the hashes.
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: |
+          grep -E '^[A-Za-z0-9._-]+==' requirements.txt | sed 's/ *\\$//' > "$RUNNER_TEMP/image-pins.txt"
+          pip install -r requirements-dev.txt -c "$RUNNER_TEMP/image-pins.txt"
 
       - name: Compile check
         run: python -m py_compile app/*.py app/api/*.py app/providers/*.py app/services/*.py vauxtra_mcp/*.py vauxtra_mcp/tools/*.py
@@ -139,6 +151,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a new provider, feature or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New provider
+        - Existing provider
+        - Services and exposure
+        - Panel UI
+        - API or MCP bridge
+        - Deployment and operations
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links to the provider's API documentation help a lot for a new provider.
