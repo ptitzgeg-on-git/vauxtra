@@ -51,11 +51,11 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "26"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -63,6 +63,9 @@ jobs:
         run: |
           python -m pip install pip-audit
           python -m pip_audit --requirement requirements.txt
+          # The MCP bridge ships its own dependency list; it runs next to operator
+          # credentials just as the panel does, so it is audited the same way.
+          python -m pip_audit --requirement vauxtra_mcp/requirements.txt
 
       # Through a runner, because `npm audit` exits 1 both when the registry reports a
       # high-severity advisory and when the registry reports nothing at all. The runner
@@ -85,7 +88,7 @@ jobs:
   # already public in git and no image to go with it. And every scanner here reads the
   # *source tree* -- Trivy over the working copy, Grype over an SBOM of the working copy --
   # so the thing operators actually run was the one thing nobody looked at. `python:
-  # 3.13-slim` is a Debian userland: a critical openssl or zlib advisory lands in the
+  # 3.14-slim` is a Debian userland: a critical openssl or zlib advisory lands in the
   # shipped image without touching a single line of this repository, and none of the steps
   # below the source scan would have said a word about it.
   #
@@ -173,7 +176,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       # Syft's requirements.txt parser drops every line whose constraint is not an exact
       # pin, and its default config sets GuessUnpinnedRequirements to false. All thirteen
@@ -186,7 +189,7 @@ jobs:
         run: |
           python -m venv .sbom-venv
           ./.sbom-venv/bin/python -m pip install --quiet --upgrade pip
-          ./.sbom-venv/bin/python -m pip install --quiet -r requirements.txt
+          ./.sbom-venv/bin/python -m pip install --quiet -r requirements.txt -r vauxtra_mcp/requirements.txt
 
       # `upload-release-assets` defaults to true, and on a tag ref the action then tries to
       # attach the SBOM to the GitHub release. It cannot work here whatever the permissions:

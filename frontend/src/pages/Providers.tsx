@@ -455,16 +455,17 @@ export function Providers() {
           variant: 'warning',
         });
         if (force) {
-          deleteProvider.mutate(
-            { id, name, force: true, withdraw: choiceRef.current },
-            {
-              onSettled: () => deleting.end(id),
-              onError: (err: unknown) => toast.error(translateApiError(err, t, t('providers.toast.delete_failed'))),
-              onSuccess: () => {
-                if (inspectId === id) setInspectId(null);
-              },
-            },
-          );
+          // Awaited rather than handed per-call callbacks: `mutate(vars, { onSettled })` only
+          // fires them for the latest call, so a second delete started meanwhile left this
+          // row spinning for good.
+          try {
+            await deleteProvider.mutateAsync({ id, name, force: true, withdraw: choiceRef.current });
+            if (inspectId === id) setInspectId(null);
+          } catch (err: unknown) {
+            toast.error(translateApiError(err, t, t('providers.toast.delete_failed')));
+          } finally {
+            deleting.end(id);
+          }
         } else {
           deleting.end(id);
         }

@@ -14,17 +14,23 @@ set first and merges -- see `_write_records`.
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import quote
+import math
+import time
+from urllib.parse import quote, urlsplit
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, TimeoutSession, record_value_key
 
 DEFAULT_API = "https://desec.io/api/v1"
 DEFAULT_TTL = 3600
 MANAGED_TYPES = ("A", "AAAA", "CNAME")
 # deSEC pages at 500 items; the cap is a runaway guard, not a coverage limit.
 MAX_PAGES = 20
+# deSEC throttles per account and names the wait in `Retry-After`. A few short waits are
+# honoured; a longer one is reported as unknown rather than holding the caller.
+MAX_THROTTLE_RETRIES = 2
+MAX_RETRY_AFTER = 5.0
 
 
 class DesecProvider(DNSProvider):
@@ -47,6 +53,25 @@ class DesecProvider(DNSProvider):
 
     # ── HTTP helpers ──────────────────────────────────────────────────────
 
+    def _get(self, url: str):
+        """GET with a bounded wait on 429, honouring `Retry-After`."""
+        r = self.session.get(url)
+        for _ in range(MAX_THROTTLE_RETRIES):
+            if getattr(r, "status_code", None) != 429:
+                break
+            headers = getattr(r, "headers", None)
+            raw = headers.get("Retry-After") if hasattr(headers, "get") else None
+            try:
+                delay = float(raw) if isinstance(raw, (str, int, float)) else 1.0
+            except ValueError:
+                delay = 1.0
+            # `float("nan")` compares false with everything and slipped past the cap below.
+            if not math.isfinite(delay) or delay > MAX_RETRY_AFTER:
+                break
+            time.sleep(max(delay, 0.0))
+            r = self.session.get(url)
+        return r
+
     def _get_all(self, url: str) -> list[dict] | None:
         """Every item of a paginated collection, or None when the API refused.
 
@@ -59,7 +84,7 @@ class DesecProvider(DNSProvider):
         next_url: str | None = url
         while next_url and pages < MAX_PAGES:
             try:
-                r = self.session.get(next_url)
+                r = self._get(next_url)
             except requests.RequestException:
                 return None
             if r.status_code != 200:
@@ -74,8 +99,28 @@ class DesecProvider(DNSProvider):
             links = getattr(r, "links", None)
             nxt = links.get("next") if isinstance(links, dict) else None
             next_url = nxt.get("url") if isinstance(nxt, dict) else None
+            # The session carries the API token on every request: a `next` link naming
+            # another origin would hand it over. A partial list is not an answer either.
+            if next_url and not self._same_origin(next_url):
+                return None
             pages += 1
+        if next_url:
+            # The page cap was reached with pages left: a truncated list is not an answer.
+            return None
         return items
+
+    def _same_origin(self, other: str) -> bool:
+        defaults = {"http": 80, "https": 443}
+
+        def origin(url: str) -> tuple[str, str, int | None]:
+            parts = urlsplit(url)
+            scheme = parts.scheme.lower()
+            return scheme, (parts.hostname or "").lower(), parts.port or defaults.get(scheme)
+
+        try:
+            return origin(self.url) == origin(other)
+        except ValueError:
+            return False
 
     # ── Domains ───────────────────────────────────────────────────────────
 
@@ -149,7 +194,7 @@ class DesecProvider(DNSProvider):
     def _get_rrset(self, domain_name: str, subname: str, rtype: str) -> dict | None | bool:
         """The record set, None when it does not exist, False when the API refused."""
         try:
-            r = self.session.get(self._rrset_url(domain_name, subname, rtype))
+            r = self._get(self._rrset_url(domain_name, subname, rtype))
         except requests.RequestException:
             return False
         if r.status_code == 404:
@@ -195,14 +240,26 @@ class DesecProvider(DNSProvider):
         except requests.RequestException:
             return False
 
-    def list_rewrites(self) -> list[dict]:
+    def list_rewrites(self) -> list[dict] | None:
+        """Every managed record, or None when the domains or any record set list is unknown.
+
+        A throttled domain used to contribute nothing, and the push then wrote
+        `[old, new]` for a name whose current record it had not seen.
+        """
+        domains = self._list_domains(refresh=True)
+        if domains is None:
+            return None
         records: list[dict] = []
-        for domain in self._list_domains(refresh=True) or []:
+        for domain in domains:
             name = str(domain.get("name", "")).strip().rstrip(".").lower()
             if not name:
                 continue
-            rrsets = self._get_all(f"{self.url}/domains/{quote(name, safe='')}/rrsets/")
-            for rrset in rrsets or []:
+            # `cursor=` asks for the first page explicitly: deSEC refuses an uncursored read
+            # of a collection larger than one page.
+            rrsets = self._get_all(f"{self.url}/domains/{quote(name, safe='')}/rrsets/?cursor=")
+            if rrsets is None:
+                return None
+            for rrset in rrsets:
                 rtype = rrset.get("type")
                 if rtype not in MANAGED_TYPES:
                     continue
@@ -214,6 +271,34 @@ class DesecProvider(DNSProvider):
                         answer = answer.rstrip(".").lower()
                     if answer:
                         records.append({"domain": fqdn.lower(), "answer": answer, "type": rtype})
+        return records
+
+    def lookup_rewrites(self, name: str) -> list[dict] | None:
+        """The records of *name*, read from its own record sets only.
+
+        The full list reads every domain of the account: one throttled domain, unrelated to
+        the name being pushed, used to block the push.
+        """
+        domains = self._list_domains(refresh=True)
+        if domains is None:
+            return None
+        target = self._find_domain(name)
+        if not target:
+            return []  # no domain of the account holds the name
+        zone = str(target.get("name", "")).strip().rstrip(".").lower()
+        subname = self._subname(name, zone)
+        fqdn = f"{subname}.{zone}" if subname else zone
+        records: list[dict] = []
+        for rtype in MANAGED_TYPES:
+            current = self._get_rrset(zone, subname, rtype)
+            if current is False:
+                return None
+            for value in (current or {}).get("records") or []:
+                answer = str(value or "").strip()
+                if rtype == "CNAME":
+                    answer = answer.rstrip(".").lower()
+                if answer:
+                    records.append({"domain": fqdn, "answer": answer, "type": rtype})
         return records
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
@@ -233,7 +318,7 @@ class DesecProvider(DNSProvider):
 
         existing = [str(v).strip() for v in (current or {}).get("records") or []] if current else []
         existing = [v for v in existing if v]
-        if content in existing:
+        if any(record_value_key(v) == record_value_key(content) for v in existing):
             return True
         # A name carries at most one CNAME, and it excludes every other type, so that
         # set is replaced rather than extended.
@@ -258,7 +343,7 @@ class DesecProvider(DNSProvider):
 
         existing = [str(v).strip() for v in current.get("records") or []]
         existing = [v for v in existing if v]
-        remaining = [v for v in existing if v != content]
+        remaining = [v for v in existing if record_value_key(v) != record_value_key(content)]
         if len(remaining) == len(existing):
             return True  # this value was not in the set
         ttl = int(current.get("ttl") or 0) or self._ttl(target)

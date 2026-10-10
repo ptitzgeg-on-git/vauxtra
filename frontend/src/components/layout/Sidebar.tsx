@@ -30,6 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '@/api/client';
+import { authStatusQuery, clearSessionAfterLogout } from '@/api/authStatus';
 import { SUPPORTED_LANGUAGES, useI18n, type Lang } from '@/i18n';
 import { useTheme, type Theme } from '@/theme';
 import { cn } from '@/lib/cn';
@@ -38,13 +39,6 @@ import { Badge, IconButton, Kbd, Select, Separator, Tooltip, buttonVariants, ton
 import { isMacPlatform } from '@/components/ui/_internal';
 import type { HealthResponse, Provider, Service } from '@/types/api';
 import { BrandMark } from './BrandMark';
-
-interface AuthStatus {
-  authenticated: boolean;
-  auth_required: boolean;
-  auth_mode?: 'password' | 'open';
-  setup_required?: boolean;
-}
 
 interface CertExpiryResponse {
   expiring_soon_count: number;
@@ -116,11 +110,7 @@ export function Sidebar({
 
   const isCollapsed = !isMobile && collapsed;
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 120_000,
-  });
+  const { data: authStatus } = useQuery(authStatusQuery);
 
   const { data: services } = useQuery<Service[]>({
     queryKey: ['services'],
@@ -230,7 +220,10 @@ export function Sidebar({
   // machine had every reason to believe they had signed out.
   const signOut = useMutation({
     mutationFn: () => api.post('/auth/logout'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['auth-status'] }),
+    // Everything the previous session fetched goes, not only the auth answer: the query
+    // cache and the session copies of the services and integrations lists used to stay in
+    // memory for whoever signed in next on this tab.
+    onSuccess: () => clearSessionAfterLogout(qc),
     onError: (err) => toast.error(translateApiError(err, t, t('nav.signout_failed'))),
   });
 

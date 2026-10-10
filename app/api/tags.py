@@ -1,3 +1,5 @@
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
@@ -20,6 +22,10 @@ class TagIn(BaseModel):
             raise ValueError("Tag name is required")
         if len(v) > 32:
             raise ValueError("Name too long (max 32 characters)")
+        # Service rows carry their tags as "name:color:id" joined by commas; a name holding
+        # either separator was split apart there and the tag vanished from the service.
+        if ":" in v or "," in v:
+            raise ValueError("Tag name cannot contain ':' or ','")
         return v
 
     @field_validator("color")
@@ -51,8 +57,14 @@ def create_tag(request: Request, body: TagIn):
         existing = conn.execute("SELECT id FROM tags WHERE name=?", (body.name,)).fetchone()
         if existing:
             raise HTTPException(409, "A tag with this name already exists")
-        cur = conn.execute("INSERT INTO tags (name, color) VALUES (?,?)", (body.name, body.color))
-        conn.commit()
+        try:
+            cur = conn.execute("INSERT INTO tags (name, color) VALUES (?,?)", (body.name, body.color))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # The check above and the insert are two statements: a concurrent request with
+            # the same name lands between them, and the UNIQUE constraint answered 500.
+            conn.rollback()
+            raise HTTPException(409, "A tag with this name already exists")
         tid = cur.lastrowid
         return {"id": tid, "name": body.name, "color": body.color}
     finally:
@@ -71,8 +83,12 @@ def update_tag(tid: int, request: Request, body: TagIn):
         conflict = conn.execute("SELECT id FROM tags WHERE name=? AND id!=?", (body.name, tid)).fetchone()
         if conflict:
             raise HTTPException(409, "A tag with this name already exists")
-        conn.execute("UPDATE tags SET name=?, color=? WHERE id=?", (body.name, body.color, tid))
-        conn.commit()
+        try:
+            conn.execute("UPDATE tags SET name=?, color=? WHERE id=?", (body.name, body.color, tid))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise HTTPException(409, "A tag with this name already exists")
         return {"ok": True}
     finally:
         conn.close()

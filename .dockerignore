@@ -1,6 +1,13 @@
 # Not needed in Docker image
 data/
 .env
+.env.*
+# Any .env at any depth: a `frontend/.env.production` would otherwise be read by the Vite
+# build and its values baked into the public bundle.
+**/.env
+**/.env.*
+.local/
+lab/
 .git/
 .github/
 tests/

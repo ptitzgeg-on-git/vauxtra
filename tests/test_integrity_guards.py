@@ -390,6 +390,7 @@ class OneHostnameOneServiceTests(_IsolatedDB):
         """The index is a goal, not a gate: a wedged startup cannot be fixed from the UI."""
         conn = models.get_db()
         conn.execute("DROP INDEX IF EXISTS idx_services_hostname")
+        conn.execute("DROP INDEX IF EXISTS idx_services_public_hostname")
         conn.execute(
             """INSERT INTO services (subdomain, domain, target_ip, target_port)
                VALUES ('dup', 'example.com', '10.0.0.1', 80)"""

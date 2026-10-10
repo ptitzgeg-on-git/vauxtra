@@ -1,14 +1,17 @@
 """MCP tools — auth, settings, domains, tags, envs, webhooks, api keys, backups."""
 import json
+import threading
+import time
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 
 from vauxtra_mcp import client
-from vauxtra_mcp.app import mcp
+from vauxtra_mcp.app import DESTRUCTIVE, READ_ONLY, mcp
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_auth_status() -> dict[str, Any]:
     """Return current authentication/setup state for this API client."""
     r = client.get("/auth/me")
@@ -65,7 +68,7 @@ def mark_setup_complete() -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_settings() -> dict[str, Any]:
     """Get all global Vauxtra settings."""
     r = client.get("/settings")
@@ -88,7 +91,7 @@ def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_domains() -> list[str]:
     """List configured root domains."""
     r = client.get("/domains")
@@ -107,12 +110,19 @@ def add_domain(name: str) -> dict[str, Any]:
 @mcp.tool()
 def delete_domain(name: str) -> dict[str, Any]:
     """Delete a root domain by exact name."""
-    r = client.delete(f"/domains/{name}")
+    # Quoted whole: a `?` or `#` in the name would otherwise start a query string or a
+    # fragment and the server would delete some other name, or nothing.
+    # `.` and `..` survive quoting and are dot segments: the URL would resolve to another
+    # route (`/api/domains/..` is `/api`), a DELETE on something that is not this domain.
+    if name.strip() in ("", ".", ".."):
+        raise ValueError("A domain name is required")
+    encoded = quote(name, safe="")
+    r = client.delete(f"/domains/{encoded}")
     client.check(r)
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_tags() -> list[dict[str, Any]]:
     """List all tags."""
     r = client.get("/tags")
@@ -144,7 +154,7 @@ def delete_tag(tag_id: int) -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_environments() -> list[dict[str, Any]]:
     """List all environments."""
     r = client.get("/environments")
@@ -176,7 +186,7 @@ def delete_environment(environment_id: int) -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_webhooks() -> list[dict[str, Any]]:
     """List all webhooks. URLs come back masked (`discord://***`) and cannot be read back."""
     r = client.get("/webhooks")
@@ -241,7 +251,7 @@ def test_webhook(webhook_id: int) -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_service_alerts(service_id: int) -> list[dict[str, Any]]:
     """List per-service webhook alert rules."""
     r = client.get(f"/services/{service_id}/alerts")
@@ -257,7 +267,7 @@ def set_service_alerts(service_id: int, alerts: list[dict[str, Any]]) -> dict[st
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_api_keys() -> list[dict[str, Any]]:
     """List API keys (secret value is never returned)."""
     r = client.get("/settings/api-keys")
@@ -319,23 +329,35 @@ def create_secure_backup(passphrase: str) -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
-def restore_backup(backup: dict[str, Any], passphrase: str = "") -> dict[str, Any]:
-    """Restore from a backup payload. WARNING: this replaces current data."""
+@mcp.tool(annotations=DESTRUCTIVE)
+def restore_backup(backup: dict[str, Any], passphrase: str = "", confirm: bool = False) -> dict[str, Any]:
+    """Restore from a backup payload. WARNING: this replaces current data.
+
+    Refused unless `confirm` is true: ask the user first, then call again with it.
+    """
+    if confirm is not True:
+        raise ValueError("restore_backup replaces every service, provider and setting: "
+                         "confirm with the user, then call again with confirm=true")
     r = client.post("/restore", json={"backup": backup, "passphrase": passphrase})
     client.check(r)
     return r.json()
 
 
-@mcp.tool()
-def reset_all_data() -> dict[str, Any]:
-    """WARNING: delete all app data (services/providers/settings/logs)."""
+@mcp.tool(annotations=DESTRUCTIVE)
+def reset_all_data(confirm: bool = False) -> dict[str, Any]:
+    """WARNING: delete all app data (services/providers/settings/logs).
+
+    Refused unless `confirm` is true: ask the user first, then call again with it.
+    """
+    if confirm is not True:
+        raise ValueError("reset_all_data deletes every service, provider, setting and log: "
+                         "confirm with the user, then call again with confirm=true")
     r = client.post("/reset")
     client.check(r)
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def stream_logs_snapshot(max_events: int = 10, timeout_seconds: float = 5.0) -> dict[str, Any]:
     """Read a bounded snapshot from the SSE logs stream endpoint.
 
@@ -351,37 +373,70 @@ def stream_logs_snapshot(max_events: int = 10, timeout_seconds: float = 5.0) -> 
     timeout_seconds = max(1.0, min(timeout_seconds, 30.0))
 
     events: list[dict[str, Any]] = []
-    timed_out = False
-    with httpx.Client(base_url=client.VAUXTRA_URL, timeout=timeout_seconds,
-                      cookies=client.session_jar()) as c:
-        with c.stream("GET", "/api/logs/stream", headers=client.auth_headers()) as r:
-            if r.is_error:
-                # The body has not been read yet on a streamed response, and `check` needs it
-                # to find the API's `detail`.
-                r.read()
-                client.check(r)
-            try:
-                for line in r.iter_lines():
-                    if not line:
-                        continue
-                    if isinstance(line, bytes):
-                        line = line.decode("utf-8", errors="replace")
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if not payload:
-                        continue
-                    try:
-                        events.append(json.loads(payload))
-                    except json.JSONDecodeError:
-                        events.append({"raw": payload})
-                    if len(events) >= max_events:
-                        break
-            except httpx.ReadTimeout:
-                timed_out = True
+    lock = threading.Lock()
+    stop = threading.Event()
+    state: dict[str, Any] = {"timed_out": False, "error": None}
+    # The httpx timeout only bounds the wait between two reads: a stream that trickles a
+    # keepalive line every few seconds never trips it, and the call could hang for good.
+    # One deadline for the whole snapshot is what `timeout_seconds` promises.
+    deadline = time.monotonic() + timeout_seconds
 
+    def _read() -> None:
+        try:
+            with httpx.Client(base_url=client.VAUXTRA_URL, timeout=timeout_seconds,
+                              cookies=client.session_jar()) as c:
+                with c.stream("GET", "/api/logs/stream", headers=client.auth_headers()) as r:
+                    if r.is_error:
+                        # The body has not been read yet on a streamed response, and `check`
+                        # needs it to find the API's `detail`.
+                        r.read()
+                        client.check(r)
+                    for line in r.iter_lines():
+                        if stop.is_set() or time.monotonic() >= deadline:
+                            state["timed_out"] = True
+                            break
+                        if not line:
+                            continue
+                        if isinstance(line, bytes):
+                            line = line.decode("utf-8", errors="replace")
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload:
+                            continue
+                        try:
+                            event = json.loads(payload)
+                        except json.JSONDecodeError:
+                            event = {"raw": payload}
+                        with lock:
+                            events.append(event)
+                            if len(events) >= max_events:
+                                break
+        except httpx.ReadTimeout:
+            state["timed_out"] = True
+        except BaseException as exc:  # handed back to the caller below
+            state["error"] = exc
+
+    # The deadline above is only checked between two lines, and one read may block for the
+    # whole httpx timeout after a line that arrived just before it: the call could last
+    # twice what it promised. The read runs in a worker, and the caller waits on it for
+    # `timeout_seconds` at most; a worker still blocked then is told to stop and abandoned
+    # (its own httpx timeout ends it shortly after).
+    worker = threading.Thread(target=_read, name="vauxtra-logs-snapshot", daemon=True)
+    worker.start()
+    worker.join(timeout_seconds)
+    if worker.is_alive():
+        stop.set()
+        timed_out = True
+    else:
+        if state["error"] is not None:
+            raise state["error"]
+        timed_out = state["timed_out"]
+
+    with lock:
+        collected = list(events)
     return {
-        "count": len(events),
-        "events": events,
+        "count": len(collected),
+        "events": collected,
         "timed_out": timed_out,
     }

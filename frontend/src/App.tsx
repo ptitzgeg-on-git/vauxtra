@@ -8,9 +8,10 @@ import { ThemeProvider } from './theme';
 import { RouteErrorBoundary } from './components/ui/ErrorBoundary';
 import { Button } from './components/ui/Button';
 import { api } from './api/client';
+import { AUTH_STATUS_KEY, authStatusQuery, handleAuthExpired } from './api/authStatus';
 import { translateApiError } from './lib/errors';
+import { useAuthRefreshNotice } from './hooks/useAuthRefreshNotice';
 import { useT } from './i18n';
-import type { AuthStatus } from './types/api';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const Services = lazy(() => import('./pages/Services').then((m) => ({ default: m.Services })));
@@ -88,20 +89,16 @@ function AuthGate() {
   const {
     data: auth,
     isLoading,
-    isError,
     isFetching,
     error,
+    errorUpdatedAt,
     refetch,
-  } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 60_000,
-    retry: false,
-  });
+  } = useQuery(authStatusQuery);
+  useAuthRefreshNotice(Boolean(auth), error, errorUpdatedAt);
 
   // Listen for 401 events from Axios interceptor
   useEffect(() => {
-    const handler = () => qc.invalidateQueries({ queryKey: ['auth-status'] });
+    const handler = () => void handleAuthExpired(qc);
     window.addEventListener('vauxtra:auth-expired', handler);
     return () => window.removeEventListener('vauxtra:auth-expired', handler);
   }, [qc]);
@@ -112,14 +109,26 @@ function AuthGate() {
 
   // No answer is not the same as "no password set". `retry: false` means one failed request
   // ends the query, and every guard below reads `auth` with `?.`, so an undefined answer
-  // used to fall through all of them and render the app.
-  if (isError || !auth) {
+  // used to fall through all of them and render the app. A failed *refetch* (an invalidation
+  // after a 401 or a logout) keeps the last answer instead: `isError` there used to swap the
+  // whole app for the boot error screen over one dropped request. That kept answer is no
+  // longer silent: `useAuthRefreshNotice` above says the session could not be re-checked.
+  if (!auth) {
     return <BootError error={error} busy={isFetching} onRetry={() => void refetch()} />;
   }
 
   // Show login if password is required and not authenticated
   if (auth.auth_required && !auth.authenticated) {
-    return <Login onSuccess={() => qc.invalidateQueries({ queryKey: ['auth-status'] })} />;
+    // B24: an anonymous /api/health answer carries no version or disk usage; one cached
+    // before the sign-in must not stand in for the detailed answer after it.
+    return (
+      <Login
+        onSuccess={() => {
+          qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
+          qc.invalidateQueries({ queryKey: ['health'] });
+        }}
+      />
+    );
   }
 
   // Show setup wizard if server says setup is required
@@ -130,7 +139,7 @@ function AuthGate() {
           // Mark setup as complete on server
           await api.post('/auth/setup-complete');
           // Invalidate all queries that may have been created during setup
-          qc.invalidateQueries({ queryKey: ['auth-status'] });
+          qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
           qc.invalidateQueries({ queryKey: ['providers'] });
           qc.invalidateQueries({ queryKey: ['services'] });
           qc.invalidateQueries({ queryKey: ['tags'] });

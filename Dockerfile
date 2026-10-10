@@ -28,13 +28,20 @@ COPY requirements.txt .
 # container at the same time. Nothing here imports pip, pkg_resources or setuptools, and
 # the entrypoint does not call them; the ensurepip wheel goes too, since it is a complete
 # copy of what we just deleted.
+#
+# The paths come from `sysconfig`: written out with a fixed version (`python3.X`) they
+# silently match nothing once the base image moves on, and the ensurepip wheel stays.
 RUN pip install --no-cache-dir -r requirements.txt \
     && python -m pip uninstall -y pip \
-    && rm -rf /usr/local/lib/python3.13/ensurepip \
-    && rm -rf /usr/local/lib/python3.13/site-packages/pip*
+    && PY_STDLIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')" \
+    && PY_PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+    && test -d "$PY_STDLIB" && test -d "$PY_PURELIB" \
+    && rm -rf "$PY_STDLIB/ensurepip" "$PY_PURELIB"/pip*
 COPY app/ ./app/
 COPY --from=frontend-builder /build/dist ./frontend/dist/
-RUN mkdir -p /app/data && chown -R appuser:appuser /app
+# Only the data directory belongs to appuser: the code and the built frontend stay root's,
+# so a process running as appuser cannot rewrite what it executes or serves.
+RUN mkdir -p /app/data && chown -R appuser:appuser /app/data
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8888

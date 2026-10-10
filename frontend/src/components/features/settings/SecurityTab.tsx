@@ -4,20 +4,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { Key, Lock, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { api } from '@/api/client';
+import { AUTH_STATUS_KEY, authStatusQuery } from '@/api/authStatus';
 import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
 import { MIN_PASSWORD_DISTINCT_CHARS, MIN_PASSWORD_LENGTH, isPasswordStrongEnough } from '@/constants';
 import { Button, Checkbox, Field, InlineAlert, Input, SkeletonCard, buttonVariants } from '@/components/ui';
-import type { AuthStatus } from '@/types/api';
 import { SettingsSection } from './SettingsSection';
 
 /** The admin password: set one when the instance runs open, change it otherwise. */
 export function SecurityTab() {
   const t = useT();
-  const authQuery = useQuery<AuthStatus>({
-    queryKey: ['auth-me'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-  });
+  const authQuery = useQuery(authStatusQuery);
 
   /**
    * Which card is shown is decided by the data, and only by the data.
@@ -102,8 +99,7 @@ function SetPasswordCard() {
   const setPasswordMutation = useMutation({
     mutationFn: (value: string) => api.post('/auth/setup-password', { password: value }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
-      queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
       setPassword('');
       setConfirmPassword('');
       setTouched(false);

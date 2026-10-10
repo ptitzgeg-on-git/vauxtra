@@ -117,7 +117,7 @@ class _WithServer(_IsolatedDB):
         )
         self._start_patch.start()
         self._configure_patch.start()
-        self._client_cm = TestClient(app_main.app)
+        self._client_cm = TestClient(app_main.app, base_url="http://localhost")
         self.client = self._client_cm.__enter__()
 
     def tearDown(self) -> None:
@@ -128,7 +128,7 @@ class _WithServer(_IsolatedDB):
 
     def _browser(self) -> TestClient:
         """A second, independent cookie jar against the same application."""
-        return TestClient(app_main.app)
+        return TestClient(app_main.app, base_url="http://localhost")
 
     def _configure_password(self) -> None:
         resp = self.client.post("/api/auth/setup-password", json={"password": PASSWORD})

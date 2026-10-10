@@ -467,7 +467,7 @@ export interface PreflightResult {
   summary: PreflightSummary;
 }
 
-/** `GET /api/services/{sid}/check` — one on-demand health check. */
+/** `POST /api/services/{sid}/check` — one on-demand health check. */
 export interface ServiceCheckResult {
   id: number;
   status: ServiceStatus;
@@ -594,13 +594,16 @@ export interface PushResult {
 // Health & Stats
 // ---------------------------------------------------------------------------
 
-/** `GET /api/health`. `disk_usage` is a percentage. */
+/**
+ * `GET /api/health`. `disk_usage` is a percentage. An anonymous caller only gets `ok` and
+ * `db`: the details are for a signed-in session (or the setup wizard).
+ */
 export interface HealthResponse {
   ok: boolean;
   db: boolean;
-  latency_ms: number;
-  disk_usage: number;
-  version: string;
+  latency_ms?: number;
+  disk_usage?: number;
+  version?: string;
 }
 
 export interface StatsResponse {

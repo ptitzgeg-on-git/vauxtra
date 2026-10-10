@@ -218,11 +218,17 @@ class TestWebhookRetryDoesNotHoldTheLock(WriteLockTestCase):
     def _queue(self, count: int) -> None:
         conn = models.get_db()
         for i in range(1, count + 1):
+            # The retry only resends for a webhook that still exists and is enabled (C13.4),
+            # as every queued delivery carries its webhook id.
+            conn.execute(
+                "INSERT INTO webhooks (id, name, url, enabled) VALUES (?, ?, ?, 1)",
+                (i, f"ops{i}", f"mailto://ops{i}@example.com"),
+            )
             conn.execute(
                 """INSERT INTO webhook_delivery_log
                    (id, webhook_id, url, title, body, status, attempt, next_retry_at)
-                   VALUES (?, NULL, ?, 't', 'b', 'pending', 1, '2000-01-01 00:00:00')""",
-                (i, f"mailto://ops{i}@example.com"),
+                   VALUES (?, ?, ?, 't', 'b', 'pending', 1, '2000-01-01 00:00:00')""",
+                (i, i, f"mailto://ops{i}@example.com"),
             )
         conn.commit()
         conn.close()

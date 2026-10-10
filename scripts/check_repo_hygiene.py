@@ -78,8 +78,12 @@ REQUIRED_TRACKED_FILES = (
 
 # `uses: owner/repo[/sub]@ref`. A local `./.github/workflows/x.yml` has no `@` and is not
 # matched at all.
-_USES = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+/[^@\s]+)@(\S+)")
+# The value may be quoted (`uses: "owner/repo@v1"`): unquoted only, the pattern let a
+# quoted tag through unchecked.
+_USES = re.compile(r"""^\s*-?\s*uses:\s*["']?([A-Za-z0-9_.-]+/[^@\s"']+)@([^\s"'#]+)""")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_DOCKER_USES = re.compile(r"""^\s*-?\s*uses:\s*["']?docker://([^\s"'#]+)""")
+_DOCKER_DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 # `Co-authored-by: Name <address>`, the trailer GitHub reads to add a contributor.
 _COAUTHOR = re.compile(r"^\s*co-authored-by:\s*(.*?)\s*<([^>]+)>\s*$", re.IGNORECASE)
@@ -175,7 +179,7 @@ def _find_missing_required_files(files: list[str]) -> list[str]:
     return sorted(f for f in REQUIRED_TRACKED_FILES if f not in files)
 
 
-def _find_unpinned_actions() -> list[str]:
+def _find_unpinned_actions(root: Path | str = ".") -> list[str]:
     """Third-party actions referenced by a tag instead of a commit SHA.
 
     A Git tag is movable by whoever owns the repository behind it, and that is not a
@@ -187,11 +191,29 @@ def _find_unpinned_actions() -> list[str]:
     pin nothing enforces comes undone the first time someone adds a step.
     """
     bad: list[str] = []
-    for path in sorted(Path(".github/workflows").glob("*.yml")):
+    # `.yaml` too: GitHub runs both, and a workflow saved under the longer extension was
+    # never read here. Local composite actions (`action.yml` under `.github/`, or at the
+    # root) run their own `uses:` steps with the caller's permissions, so they are read too.
+    root = Path(root)
+    files = sorted(
+        {
+            *(root / ".github/workflows").glob("*.y*ml"),
+            *(root / ".github").rglob("action.y*ml"),
+            *root.glob("action.y*ml"),
+        }
+    )
+    for path in files:
+        shown = path.relative_to(root).as_posix()
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             match = _USES.match(line)
             if match and not _SHA.match(match.group(2)):
-                bad.append(f"{path.as_posix()}:{number}: {match.group(1)}@{match.group(2)}")
+                bad.append(f"{shown}:{number}: {match.group(1)}@{match.group(2)}")
+                continue
+            # `uses: docker://image:tag` runs a container image: a tag moves exactly like a
+            # Git tag does, and only a digest pins it.
+            docker = _DOCKER_USES.match(line)
+            if docker and not _DOCKER_DIGEST.search(docker.group(1)):
+                bad.append(f"{shown}:{number}: docker://{docker.group(1)}")
     return bad
 
 

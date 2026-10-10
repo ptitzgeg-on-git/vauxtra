@@ -95,13 +95,14 @@ class TestNPMListHosts(unittest.TestCase):
         self.assertTrue(hosts[0]["websocket"])
         self.assertTrue(hosts[0]["enabled"])
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    # A failed read returns None, not [] (C11): see _find_host_id.
+    def test_list_hosts_returns_none_on_network_error(self):
         self.npm.session.get = MagicMock(side_effect=requests.RequestException("err"))
-        self.assertEqual(self.npm.list_hosts(), [])
+        self.assertIsNone(self.npm.list_hosts())
 
-    def test_list_hosts_returns_empty_on_auth_fail(self):
+    def test_list_hosts_returns_none_on_auth_fail(self):
         self.npm._ensure_auth = MagicMock(return_value=False)
-        self.assertEqual(self.npm.list_hosts(), [])
+        self.assertIsNone(self.npm.list_hosts())
 
 
 class TestNPMCreateHost(unittest.TestCase):
@@ -177,10 +178,26 @@ class TestNPMUpdateHost(unittest.TestCase):
         self.npm = NPMProvider("http://npm:81", "admin@example.com", "secret")
         self.npm._token = "tok"
         self.npm._ensure_auth = MagicMock(return_value=True)
+        # The update reads the current host first.
+        self.npm.session.get = MagicMock(return_value=_response(200, {
+            "id": 1, "domain_names": ["app.example.com"], "locations": [],
+        }))
 
     def test_update_host_success(self):
         self.npm.session.put = MagicMock(return_value=_response(200, {"id": 1}))
         self.assertTrue(self.npm.update_host(1, "app.example.com", "10.0.0.5", 3000))
+
+    def test_an_unreadable_host_is_not_overwritten(self):
+        """N11: a PUT sent without the current host wiped what the operator had set."""
+        self.npm.session.get = MagicMock(return_value=_response(500))
+        self.npm.session.put = MagicMock(return_value=_response(200, {"id": 1}))
+        self.assertFalse(self.npm.update_host(1, "app.example.com", "10.0.0.5", 3000))
+        self.npm.session.put.assert_not_called()
+
+    def test_a_host_already_gone_counts_as_removed(self):
+        """C3: a 404 on delete kept the service bound to a host that no longer exists."""
+        self.npm.session.delete = MagicMock(return_value=_response(404))
+        self.assertTrue(self.npm.delete_host(1))
 
     def test_update_host_fail(self):
         self.npm.session.put = MagicMock(return_value=_response(404))

@@ -107,7 +107,12 @@ class _FakeProvider:
         if not self.ok:
             return False
         before = len(self.rewrites)
-        self.rewrites = [r for r in self.rewrites if r["domain"] != domain]
+        # Name *and* value, as the real DNS providers delete: removing every record of the
+        # name hid any caller that adds the new record before deleting the old one.
+        self.rewrites = [
+            r for r in self.rewrites
+            if not (r["domain"] == domain and (not ip or r.get("answer") == ip))
+        ]
         return len(self.rewrites) < before
 
     def update_rewrite(self, old_domain, old_ip, domain, ip):

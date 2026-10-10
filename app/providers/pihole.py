@@ -3,7 +3,7 @@ from urllib.parse import quote
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, TimeoutSession, record_value_key
 
 
 class PiholeProvider(DNSProvider):
@@ -18,14 +18,23 @@ class PiholeProvider(DNSProvider):
         self._version = None
         self._depth   = 0
 
-    def _detect_version(self) -> int:
+    def _detect_version(self) -> int | None:
+        """6 or 5 from what `/api/auth` answered, or None when nothing conclusive came back.
+
+        Only a v5 answer (`/api/auth` does not exist there: 404) makes this a v5. A timeout,
+        a refused connection or a 5xx used to fall back to v5 as well, and v5 sends the
+        password in the query string (`auth=`): a Pi-hole v6 slow to answer once got its
+        password written into URLs and access logs, and the guess was cached for good.
+        """
         try:
             r = self.session.get(f"{self.url}/api/auth", timeout=5)
-            if r.status_code in (200, 401):
-                return 6
         except requests.RequestException:
-            pass
-        return 5
+            return None
+        if r.status_code in (200, 401):
+            return 6
+        if r.status_code == 404:
+            return 5
+        return None
 
     def _login_v6(self) -> bool:
         try:
@@ -62,7 +71,11 @@ class PiholeProvider(DNSProvider):
 
     def _ensure_auth(self) -> bool:
         if self._version is None:
+            # Not cached when inconclusive: the provider is reported down for this call and
+            # the next one asks again.
             self._version = self._detect_version()
+            if self._version is None:
+                return False
         if self._version == 6:
             if self._v6_sid:
                 # Verify the session is still valid
@@ -139,13 +152,18 @@ class PiholeProvider(DNSProvider):
         except ValueError:
             return False
 
-    def list_rewrites(self) -> list[dict]:
+    def list_rewrites(self) -> list[dict] | None:
+        """The local records, or None when they could not be read.
+
+        A failed read used to answer [], and the push read that as "no record yet" and
+        added one beside the record it could not see.
+        """
         with self._api_session() as authed:
             if not authed:
-                return []
+                return None
             return self._list_rewrites_inner()
 
-    def _list_rewrites_inner(self) -> list[dict]:
+    def _list_rewrites_inner(self) -> list[dict] | None:
         try:
             if self._version == 6:
                 r = self.session.get(f"{self.url}/api/config/dns/hosts")
@@ -167,8 +185,10 @@ class PiholeProvider(DNSProvider):
                     {"domain": row[0], "answer": row[1]}
                     for row in r.json().get("data", [])
                 ]
-        except requests.RequestException:
-            return []
+        # N14: a body of the wrong shape (a list, a number, a row that is not a pair)
+        # raised AttributeError or TypeError out of the provider; it is an unreadable list.
+        except (requests.RequestException, ValueError, AttributeError, TypeError, IndexError, KeyError):
+            return None
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         with self._api_session() as authed:
@@ -223,7 +243,8 @@ class PiholeProvider(DNSProvider):
             return False
 
     def update_rewrite(self, old_domain: str, old_ip: str, new_domain: str, new_ip: str) -> bool:
-        if old_domain == new_domain and old_ip == new_ip:
+        if record_value_key(old_domain) == record_value_key(new_domain) \
+                and record_value_key(old_ip) == record_value_key(new_ip):
             return True  # nothing to change
         # One seat for both halves: the helper only logs out when the outermost caller
         # leaves, so the add and the delete share the session this opens.
@@ -233,5 +254,9 @@ class PiholeProvider(DNSProvider):
             if not self.add_rewrite(new_domain, new_ip):
                 return False
             if not self.delete_rewrite(old_domain, old_ip):
-                return True  # new record created; old delete failed (logged by caller)
+                # Pi-hole answers both records of a name in turn, so a True here left two
+                # live answers reported as one move. The new record is withdrawn and the
+                # caller told, so the name keeps exactly the record it had.
+                self.delete_rewrite(new_domain, new_ip)
+                return False
             return True

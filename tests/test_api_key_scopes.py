@@ -39,7 +39,7 @@ class ApiKeyScopeTests(unittest.TestCase):
         for p in self._patchers:
             p.start()
 
-        self._client_cm = TestClient(app_main.app)
+        self._client_cm = TestClient(app_main.app, base_url="http://localhost")
         self.client = self._client_cm.__enter__()
 
         conn = models.get_db()

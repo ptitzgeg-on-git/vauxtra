@@ -20,7 +20,7 @@ labels: bug
 
 ## Environment
 
-- Vauxtra version: <!-- GET /api/health → version -->
+- Vauxtra version: <!-- shown in the sidebar once signed in, or GET /api/health with a session or API key → version -->
 - Deployment: [ ] Docker  [ ] bare metal
 - Browser (if UI issue):
 - Provider(s) involved:

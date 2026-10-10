@@ -69,7 +69,7 @@ class _ApiHarness(unittest.TestCase):
 
         import app.main as app_main
 
-        self._client_cm = TestClient(app_main.app)
+        self._client_cm = TestClient(app_main.app, base_url="http://localhost")
         self.client = self._client_cm.__enter__()
 
         conn = models.get_db()
@@ -206,6 +206,9 @@ class TheOneProviderThatNeedsANumberChecksForOneTests(unittest.TestCase):
         self.npm.session.post.assert_not_called()
 
     def test_update_host_is_held_to_the_same_rule(self) -> None:
+        # N11: the update reads the current host first and refuses to overwrite one it
+        # could not read, so the GET has to answer with a host here.
+        self.npm.session.get = MagicMock(return_value=_response(200, {"id": 9, "domain_names": ["a.example.com"]}))
         ok = self.npm.update_host("9", "a.example.com", "10.0.0.5", 80)
         self.assertTrue(ok)
         self.assertIn("/nginx/proxy-hosts/9", self.npm.session.put.call_args[0][0])

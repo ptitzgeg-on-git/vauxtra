@@ -28,49 +28,73 @@ class TechnitiumProvider(DNSProvider):
                     token = data.get("token") or data.get("response", {}).get("token")
                     if token:
                         self._token = token
-                        self.session.headers["Authorization"] = f"Bearer {token}"
                         return True
-        except (requests.RequestException, KeyError, ValueError):
+        except (requests.RequestException, KeyError, ValueError, TypeError, AttributeError):
             pass
         return False
+
+    def _api(self, path: str, params: dict | None = None):
+        """One authenticated API call: a POST whose form body carries the token.
+
+        Technitium documents two ways to pass the token: the `token` query parameter and
+        the same field in a form-encoded POST body. The query string ends up in proxy and
+        access logs, and an `Authorization: Bearer` header is not read by every server
+        version: when it was ignored, the login still succeeded, every read came back
+        refused and every write failed. The form body is read by all versions.
+        """
+        return self.session.post(
+            f"{self.url}{path}",
+            data={**(params or {}), "token": self._token or ""},
+            timeout=PROVIDER_TIMEOUT,
+        )
 
     def _ensure_token(self) -> bool:
         if self._token:
             try:
-                r = self.session.get(
-                    f"{self.url}/api/user/session/get",
-                    params={"token": self._token},
-                    timeout=PROVIDER_TIMEOUT,
-                )
+                r = self._api("/api/user/session/get")
                 if r.status_code == 200 and r.json().get("status") == "ok":
                     return True
-            except (requests.RequestException, ValueError):
+            except (requests.RequestException, ValueError, AttributeError):
                 pass
         return self._login()
 
-    def _list_zones(self) -> list[str]:
+    def _list_zones(self) -> list[str] | None:
+        """The enabled zones, or None when the server could not be asked.
+
+        "No zone" and "could not read" lead to opposite actions on the write path, so they
+        are two different answers.
+        """
         try:
-            r = self.session.get(
-                f"{self.url}/api/zones/list",
-                params={"token": self._token},
-                timeout=PROVIDER_TIMEOUT,
-            )
+            r = self._api("/api/zones/list")
             if r.status_code == 200:
                 data = r.json()
                 if data.get("status") == "ok":
                     return [z["name"] for z in data["response"].get("zones", []) if not z.get("disabled")]
-        except (requests.RequestException, KeyError, ValueError):
+        except (requests.RequestException, KeyError, ValueError, TypeError, AttributeError):
             pass
-        return []
+        return None
 
-    def _find_zone(self, domain: str) -> str | None:
+    def _find_zone(self, domain: str, zones: list[str] | None = None) -> str | None:
         """Return the longest matching zone for a domain."""
-        zones = self._list_zones()
+        if zones is None:
+            zones = self._list_zones() or []
         domain_lower = domain.lower().rstrip(".")
         for zone in sorted(zones, key=len, reverse=True):
             if domain_lower == zone.lower() or domain_lower.endswith("." + zone.lower()):
                 return zone
         return None
+
+    def _write_zone(self, domain: str) -> str | None:
+        """The zone a write goes to, or None when the zone list could not be read.
+
+        The two-label guess is only made when the server answered and no zone matched:
+        after a failed read it sent the record into the parent zone, where a child zone
+        hides it.
+        """
+        zones = self._list_zones()
+        if zones is None:
+            return None
+        return self._find_zone(domain, zones) or self._zone_fallback(domain)
 
     def _zone_fallback(self, domain: str) -> str:
         """Derive a zone from the last two labels when no zone is found."""
@@ -78,7 +102,12 @@ class TechnitiumProvider(DNSProvider):
         return ".".join(parts[-2:]) if len(parts) >= 2 else domain
 
     def test_connection(self) -> bool:
-        return self._ensure_token()
+        """True only when an authenticated call is answered, not when the login alone is.
+
+        A token the server does not accept still logs in: the connection used to show green
+        while every zone read was refused.
+        """
+        return self._ensure_token() and self._list_zones() is not None
 
     def validate_permissions(self, hostname_hint: str = "", write_probe: bool = False) -> dict:
         # Every check keeps its English `detail` (logs, older clients) and adds the short
@@ -102,7 +131,10 @@ class TechnitiumProvider(DNSProvider):
         zones: list[str] = []
         zones_params: dict = {}
         try:
-            zones = self._list_zones()
+            listed = self._list_zones()
+            if listed is None:
+                raise RuntimeError("Could not read the zone list")
+            zones = listed
             zones_ok = True
             zones_detail = f"{len(zones)} zone(s) accessible" if zones else "No zones found"
             zones_code = "zones_found" if zones else "zones_none"
@@ -144,46 +176,80 @@ class TechnitiumProvider(DNSProvider):
         overall_ok = all(c["ok"] for c in checks if c.get("blocking"))
         return {"ok": overall_ok, "checks": checks, "warnings": warnings}
 
-    def list_rewrites(self) -> list[dict]:
+    def _a_records(self, zone: str, domain: str, whole_zone: bool) -> list[dict] | None:
+        """The enabled A records of *domain* in *zone* (or of the whole zone), or None."""
+        r = self._api(
+            "/api/zones/records/get",
+            {"domain": domain, "zone": zone, "listZone": "true" if whole_zone else "false"},
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if data.get("status") != "ok":
+            return None
+        records: list[dict] = []
+        for rec in data["response"].get("records", []):
+            if rec.get("type") == "A" and not rec.get("isDisabled"):
+                ip = rec.get("rData", {}).get("ipAddress", "")
+                if ip:
+                    records.append({"domain": rec["name"], "answer": ip})
+        return records
+
+    def list_rewrites(self) -> list[dict] | None:
+        """Every A record, or None when any part of the list could not be read.
+
+        A partial list is not an inventory. The push does not read this list: it asks
+        `lookup_rewrites` about the one name it writes.
+        """
         if not self._ensure_token():
-            return []
+            return None
         try:
             zones = self._list_zones()
+            if zones is None:
+                return None
             records: list[dict] = []
             for zone in zones:
-                r = self.session.get(
-                    f"{self.url}/api/zones/records/get",
-                    params={
-                        "token": self._token,
-                        "domain": zone,
-                        "zone": zone,
-                        "listZone": "true",
-                    },
-                    timeout=PROVIDER_TIMEOUT,
-                )
-                if r.status_code != 200:
-                    continue
-                data = r.json()
-                if data.get("status") != "ok":
-                    continue
-                for rec in data["response"].get("records", []):
-                    if rec.get("type") == "A" and not rec.get("isDisabled"):
-                        ip = rec.get("rData", {}).get("ipAddress", "")
-                        if ip:
-                            records.append({"domain": rec["name"], "answer": ip})
+                found = self._a_records(zone, zone, whole_zone=True)
+                if found is None:
+                    return None
+                records.extend(found)
             return records
-        except (requests.RequestException, KeyError, ValueError):
-            return []
+        except (requests.RequestException, KeyError, ValueError, TypeError, AttributeError):
+            return None
+
+    def lookup_rewrites(self, name: str) -> list[dict] | None:
+        """The A records of *name*, read from its own zone only.
+
+        A zone this account may not read, or a forwarder zone that answers an error, has
+        nothing to do with the name being pushed and no longer blocks it.
+        """
+        if not self._ensure_token():
+            return None
+        try:
+            zones = self._list_zones()
+            if zones is None:
+                return None
+            zone = self._find_zone(name, zones)
+            if zone is None:
+                return []  # no zone holds the name: there is no record to see
+            wanted = (name or "").lower().rstrip(".")
+            found = self._a_records(zone, wanted, whole_zone=False)
+            if found is None:
+                return None
+            return [r for r in found if str(r["domain"]).lower().rstrip(".") == wanted]
+        except (requests.RequestException, KeyError, ValueError, TypeError, AttributeError):
+            return None
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         if not self._ensure_token():
             return False
         try:
-            zone = self._find_zone(domain) or self._zone_fallback(domain)
-            r = self.session.get(
-                f"{self.url}/api/zones/records/add",
-                params={
-                    "token": self._token,
+            zone = self._write_zone(domain)
+            if zone is None:
+                return False
+            r = self._api(
+                "/api/zones/records/add",
+                {
                     "zone": zone,
                     "domain": domain,
                     "type": "A",
@@ -191,11 +257,10 @@ class TechnitiumProvider(DNSProvider):
                     "ttl": "3600",
                     "overwrite": "false",
                 },
-                timeout=PROVIDER_TIMEOUT,
             )
             if r.status_code == 200:
                 return r.json().get("status") == "ok"
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError, AttributeError):
             pass
         return False
 
@@ -203,29 +268,20 @@ class TechnitiumProvider(DNSProvider):
         if not self._ensure_token():
             return False
         try:
-            zone = self._find_zone(domain) or self._zone_fallback(domain)
-            r = self.session.get(
-                f"{self.url}/api/zones/records/delete",
-                params={
-                    "token": self._token,
+            zone = self._write_zone(domain)
+            if zone is None:
+                return False
+            r = self._api(
+                "/api/zones/records/delete",
+                {
                     "zone": zone,
                     "domain": domain,
                     "type": "A",
                     "ipAddress": ip,
                 },
-                timeout=PROVIDER_TIMEOUT,
             )
             if r.status_code == 200:
                 return r.json().get("status") == "ok"
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError, AttributeError):
             pass
         return False
-
-    def update_rewrite(self, old_domain: str, old_ip: str, new_domain: str, new_ip: str) -> bool:
-        if old_domain == new_domain and old_ip == new_ip:
-            return True
-        if not self.add_rewrite(new_domain, new_ip):
-            return False
-        if not self.delete_rewrite(old_domain, old_ip):
-            return True  # new record created; old delete failed (logged by caller)
-        return True

@@ -6,7 +6,7 @@ This guide covers local setup, code conventions, and how to extend the project.
 
 ### Backend (FastAPI)
 
-> Requires **Python 3.13+**
+> Requires **Python 3.14**, the version the Docker image and CI run
 
 ```bash
 python -m venv .venv

@@ -21,12 +21,21 @@ class TestMetricsEndpoint(unittest.TestCase):
         from app.models import init_db
         init_db()
 
+        # These tests read the exposition format; who may read it is covered by
+        # `test_metrics_needs_a_key_once_a_password_exists` below.
+        from unittest.mock import patch
+
+        from app.api import metrics as metrics_api
+        cls._auth_patch = patch.object(metrics_api, "require_auth", lambda _req, scope=None: None)
+        cls._auth_patch.start()
+
         from app.main import app
-        cls.client = TestClient(app, raise_server_exceptions=True)
+        cls.client = TestClient(app, raise_server_exceptions=True, base_url="http://localhost")
 
     @classmethod
     def tearDownClass(cls):
         import shutil
+        cls._auth_patch.stop()
         shutil.rmtree(cls._tmpdir, ignore_errors=True)
         os.environ.pop("DISABLE_AUTH", None)
 
@@ -88,15 +97,20 @@ class TestMetricsEndpoint(unittest.TestCase):
         r = self.client.get("/metrics")
         self.assertIn("vauxtra_webhooks_total", r.text)
 
-    def test_metrics_no_auth_required(self):
-        """Prometheus scrape path must be accessible without auth."""
-        from fastapi.testclient import TestClient
+    def test_metrics_asks_for_authentication(self):
+        """S9.6: the route checks auth like every other read; it used to be open to anyone."""
+        from unittest.mock import patch
 
-        from app.main import app
-        # Remove auth header entirely
-        with TestClient(app) as plain_client:
-            r = plain_client.get("/metrics")
-        self.assertEqual(r.status_code, 200)
+        from fastapi import HTTPException
+
+        from app.api import metrics as metrics_api
+
+        def refuse(_req, scope=None):
+            raise HTTPException(401, "Unauthorized")
+
+        with patch.object(metrics_api, "require_auth", refuse):
+            r = self.client.get("/metrics")
+        self.assertEqual(r.status_code, 401)
 
 
 if __name__ == "__main__":

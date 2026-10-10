@@ -228,6 +228,9 @@ class TestDNSAutoUpdate(unittest.TestCase):
             "public_target_mode": "auto",
             "auto_update_dns": 1,
             "enabled": 1,
+            # The mocked connection answers every query with this row, the provider-type
+            # lookup of the C6 public-DNS filter included.
+            "type": "adguard",
         }
         row.__getitem__ = lambda s, k: data[k]
         row.get = lambda k, d=None: data.get(k, d)

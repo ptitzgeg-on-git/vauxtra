@@ -14,7 +14,7 @@ import ipaddress
 import requests
 
 from app.config import PROVIDER_TIMEOUT
-from app.providers.base import DNSProvider
+from app.providers.base import DNSProvider, record_value_key
 
 try:
     import cloudflare as _cf
@@ -34,9 +34,35 @@ class CloudflareProvider(DNSProvider):
         self._configured_zone_id = zone_id.strip() if zone_id else ""
         self._zone_cache: dict[str, str] = {}  # domain → zone_id (per-domain cache)
         self._api_token = (api_token or "").strip()
-        self._client = _cf.Cloudflare(api_token=api_token)
+        # The SDK defaults to a 60 s timeout and two retries: about three minutes for one
+        # call, while the caller may hold the database write lock.
+        self._client = _cf.Cloudflare(
+            api_token=api_token, timeout=PROVIDER_TIMEOUT, max_retries=1
+        )
         self._api_url = "https://api.cloudflare.com/client/v4"
         self._proxied = bool((extra or {}).get("proxied", False))
+
+    def close(self) -> None:
+        """Release the SDK client's connection pool.
+
+        A provider is built for every request and scheduler pass; each one opened an
+        httpx client that nothing closed, and their sockets piled up until collected.
+        """
+        client = getattr(self, "_client", None)
+        self._client = None
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                # Best effort: a client that cannot close has nothing left to release.
+                pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _api_request(self, method: str, path: str, **kwargs) -> dict:
         headers = kwargs.pop("headers", {}) or {}
@@ -76,18 +102,28 @@ class CloudflareProvider(DNSProvider):
 
     def _find_zone(self, domain: str) -> str | None:
         """Return the zone ID for *domain*, using the configured ID or auto-detecting."""
+        return self._locate_zone(domain)[0]
+
+    def _locate_zone(self, domain: str) -> tuple[str | None, bool]:
+        """The zone ID for *domain*, and whether the answer can be trusted.
+
+        `(None, True)` means the account holds no zone for the name; `(None, False)` that
+        the lookup failed and nothing is known. `_find_zone` folds both into None, which
+        made `lookup_rewrites` call a name outside every zone "unreadable" (a 502) instead
+        of "no record" (a 404).
+        """
         if self._configured_zone_id:
-            return self._configured_zone_id
+            return self._configured_zone_id, True
         # Check per-domain cache
         if domain in self._zone_cache:
-            return self._zone_cache[domain]
+            return self._zone_cache[domain], True
         # Walk up the label hierarchy: sub.example.com → example.com
         parts = domain.rstrip(".").split(".")
         for i in range(len(parts) - 1):
             candidate = ".".join(parts[i:])
             if candidate in self._zone_cache:
                 self._zone_cache[domain] = self._zone_cache[candidate]
-                return self._zone_cache[domain]
+                return self._zone_cache[domain], True
             try:
                 for zone in self._client.zones.list(name=candidate, per_page=1):
                     # `name` is a server-side filter whose operator is a documented *prefix*
@@ -98,11 +134,14 @@ class CloudflareProvider(DNSProvider):
                         continue
                     self._zone_cache[domain] = zone.id
                     self._zone_cache[candidate] = zone.id
-                    return zone.id
+                    return zone.id, True
             except Exception:
-                # Zone lookup failed for this candidate; try next subdomain level
-                pass
-        return None
+                # Only an empty answer means "not this zone, try the parent". A failed
+                # lookup of `sub.example.com` says nothing about it: walking up would find
+                # `example.com`, cache it for the subdomain and write into the parent zone
+                # when `sub.example.com` is a zone of its own.
+                return None, False
+        return None, True
 
     @staticmethod
     def _same_name(record_name: str, domain: str) -> bool:
@@ -137,7 +176,7 @@ class CloudflareProvider(DNSProvider):
         except Exception:
             return False
 
-    def list_rewrites(self) -> list[dict]:
+    def list_rewrites(self) -> list[dict] | None:
         results: list[dict] = []
         try:
             zone_ids: list[str] = []
@@ -152,42 +191,79 @@ class CloudflareProvider(DNSProvider):
                     for r in self._client.dns.records.list(zone_id=zid, type=rtype):
                         results.append({"domain": r.name, "answer": r.content, "type": rtype, "proxied": r.proxied})
         except Exception:
-            # API error during listing; return partial results collected so far
-            pass
+            # C7: a partial list is not an answer. Read as complete, a record the failed
+            # page held was taken for absent: the push added a duplicate next to it and the
+            # drift reported it missing.
+            return None
         return results
+
+    def lookup_rewrites(self, name: str) -> list[dict] | None:
+        """The records of *name*, read with an exact-name filter from its own zone only.
+
+        M16: the default walked `list_rewrites`, which reads every zone the token sees when
+        no zone is configured: each push listed them all, and one zone the token cannot
+        read blocked the push of every service. None when the zone or its records cannot be
+        read; an empty list when no zone of the account holds the name, since then the name
+        has no record here (a 404 on delete, not a 502).
+        """
+        zone_id, known = self._locate_zone(name)
+        if not zone_id:
+            return [] if known else None
+        records: list[dict] = []
+        try:
+            for rtype in ("A", "AAAA", "CNAME"):
+                for r in self._client.dns.records.list(zone_id=zone_id, name={"exact": name}, type=rtype):
+                    if self._same_name(r.name, name):
+                        records.append({"domain": r.name, "answer": r.content, "type": rtype, "proxied": r.proxied})
+        except Exception:
+            return None
+        return records
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)
         if not zone_id:
             return False
         rtype = self._record_type(ip)
-        # CNAME records must not be proxied (Cloudflare error 1014 risk)
-        proxied = self._proxied if rtype != "CNAME" else False
+        # The configured value, CNAMEs included: a proxied CNAME is valid in Cloudflare
+        # (error 1014 only concerns a CNAME into another account's zone), and forcing it
+        # off exposed the origin of every service published by name.
+        proxied = self._proxied
         try:
-            # Upsert: check if a matching record already exists
-            for record in self._client.dns.records.list(
-                zone_id=zone_id, name={"exact": domain}, type=rtype
-            ):
-                if not self._same_name(record.name, domain):
-                    # `name` is filtered server-side, and whether it means "equals" or
-                    # "contains" belongs to the API version the installed SDK talks to.
-                    # `cloudflare` is pinned below 5 for that reason; this check is what
-                    # makes the wrong answer harmless rather than destructive.
-                    continue
-                if record.content == ip:
-                    return True  # already exists with same content
-                # Exists with different content → update it
-                self._client.dns.records.update(
+            # Upsert: check if a matching record already exists. `name` is filtered
+            # server-side, and whether it means "equals" or "contains" belongs to the API
+            # version the installed SDK talks to. `cloudflare` is held to the 5.x line
+            # (`>=5.7,<6`) for that reason; `_same_name` is what makes a wrong answer
+            # harmless, not destructive.
+            matching = [
+                record
+                for record in self._client.dns.records.list(
+                    zone_id=zone_id, name={"exact": domain}, type=rtype
+                )
+                if self._same_name(record.name, domain)
+            ]
+            # M12: with a round-robin set (several records for the name), the first record
+            # whose address differed was rewritten -- a legitimate member of the set lost --
+            # even when another one already held the wanted address.
+            if any(record_value_key(record.content) == record_value_key(ip) for record in matching):
+                return True  # already exists with same content
+            if len(matching) == 1:
+                record = matching[0]
+                # Exists with different content → change the address only. `update` is a PUT
+                # that replaces the whole record: it reset the TTL and the proxy flag and
+                # wiped the operator's comment and tags. `edit` is a PATCH; the SDK requires
+                # `name`, `type` and `ttl`, which are sent back unchanged, and `proxied`,
+                # `comment` and `tags` are left out so Cloudflare keeps them.
+                existing_ttl = getattr(record, "ttl", None)
+                self._client.dns.records.edit(
                     dns_record_id=record.id,
                     zone_id=zone_id,
                     name=domain,
                     type=rtype,
                     content=ip,
-                    ttl=1,
-                    proxied=proxied,
+                    ttl=existing_ttl if isinstance(existing_ttl, int) and existing_ttl > 0 else 1,
                 )
                 return True
-            # No existing record → create
+            # No existing record, or a round-robin set left as it is → create
             self._client.dns.records.create(
                 zone_id=zone_id,
                 name=domain,
@@ -210,16 +286,16 @@ class CloudflareProvider(DNSProvider):
                 zone_id=zone_id, name={"exact": domain}, type=rtype
             ):
                 if not self._same_name(record.name, domain):
-                    # `name` is filtered server-side, and whether it means "equals" or
-                    # "contains" belongs to the API version the installed SDK talks to.
-                    # `cloudflare` is pinned below 5 for that reason; this check is what
-                    # makes the wrong answer harmless rather than destructive.
+                    # Same server-side filter as in `add_rewrite`, same guard.
                     continue
-                if record.content == ip:
+                if record_value_key(record.content) == record_value_key(ip):
                     self._client.dns.records.delete(
                         dns_record_id=record.id, zone_id=zone_id
                     )
                     return True
+            # Nothing holds that value. False, as before: the push reads the records again
+            # before treating that as a failed move (`_move_dns_record` in app/api/sync.py),
+            # since `add_rewrite` above may have just edited the record in place.
             return False
         except Exception:
             return False

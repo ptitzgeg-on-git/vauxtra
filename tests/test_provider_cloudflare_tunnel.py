@@ -274,13 +274,36 @@ class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
         methods = [c.args[0] for c in self.p.session.request.call_args_list]
         self.assertNotIn("PUT", methods)
 
-    def test_list_hosts_is_empty_but_does_not_pretend_on_read_failure(self):
+    def test_list_hosts_is_unknown_on_read_failure(self):
+        """C7: `[]` made the push create a second route and the drift say "missing"."""
         self.p._get_configuration = MagicMock(return_value=None)
-        self.assertEqual(self.p.list_hosts(), [])
+        self.assertIsNone(self.p.list_hosts())
 
     def test_delete_dns_record_fails_when_zone_cannot_be_resolved(self):
         self.p._find_zone = MagicMock(return_value="")
         self.assertFalse(self.p._delete_dns_record("app.example.com"))
+
+
+class TestCFTunnelLocallyManagedIsLeftAlone(unittest.TestCase):
+    """C8: a `source: local` tunnel serves the routes of its `config.yml`."""
+
+    def setUp(self):
+        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p._request = MagicMock(return_value={"tunnel_id": "tid", "source": "local", "config": None})
+
+    def test_its_configuration_is_not_read_as_empty(self):
+        with self.assertLogs("app.providers.cloudflare_tunnel", level="WARNING"):
+            self.assertIsNone(self.p._get_configuration())
+
+    def test_no_put_is_sent(self):
+        self.assertFalse(self.p._upsert_ingress_rule("app.example.com", "http://10.0.0.5:80"))
+        self.assertFalse(self.p._delete_ingress_rule("app.example.com"))
+        methods = [c.args[0] for c in self.p._request.call_args_list]
+        self.assertNotIn("PUT", methods)
+
+    def test_a_remote_tunnel_with_no_config_yet_is_still_empty(self):
+        self.p._request = MagicMock(return_value={"tunnel_id": "tid", "source": "cloudflare", "config": None})
+        self.assertEqual(self.p._get_configuration(), {})
 
 
 if __name__ == "__main__":

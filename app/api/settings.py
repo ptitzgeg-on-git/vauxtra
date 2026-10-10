@@ -1,13 +1,20 @@
 import asyncio
 import json
+import logging
 import re
+import secrets
+import threading
+import weakref
 
 from fastapi import APIRouter, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
-from app.auth import require_auth
+from app.auth import _get_auth_context, get_session, require_auth
+from app.limiter import limiter
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
 from app.validators import is_valid_domain, normalize_domain
+from app.webhook_targets import refuse_local_connections, targets_the_local_network
 
 try:
     from sse_starlette.sse import EventSourceResponse as _SSEResponse
@@ -17,6 +24,7 @@ except ImportError:
     _HAS_SSE = False
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _VALID_SETTINGS = {
     "theme",
@@ -79,12 +87,16 @@ _MASKED_SETTINGS = {"webhook_url"}
 # ever goes up, and deleting it sends it back to 0 -- which is the epoch every cookie
 # minted before the last password change is still carrying. A reset would have handed
 # those sessions back their access.
+# `app_password_env_fingerprint` follows from it: wiped, the next boot finds no stored
+# fingerprint, records the current one as the "first" and revokes nothing, so a change of
+# `APP_PASSWORD` made around a reset or a restore left every older session alive.
 _PROTECTED_SETTINGS = (
     "app_password_hash",
     "setup_completed",
     "schema_version",
     "auth_mode",
     "session_epoch",
+    "app_password_env_fingerprint",
 )
 
 # The placeholders are built from the tuple, never written out by hand: the two DELETE
@@ -106,7 +118,9 @@ def _is_valid_public_target_sources(value: str) -> bool:
     entries = [line.strip() for line in str(value).replace(",", "\n").splitlines() if line.strip()]
     if not entries:
         return False
-    return all(entry.startswith(("http://", "https://")) for entry in entries)
+    # B14: https only. The answer is written into public DNS; over plain http anyone on the
+    # path could choose it.
+    return all(entry.lower().startswith("https://") for entry in entries)
 
 
 def _is_valid_public_target_priority(value: str) -> bool:
@@ -171,7 +185,7 @@ def _validate_setting(key: str, value) -> tuple[str | None, str]:
 
     if key == "public_target_sources":
         if not _is_valid_public_target_sources(text):
-            return None, "expected one http:// or https:// URL per line"
+            return None, "expected one https:// URL per line"
         return text, ""
 
     if key == "public_target_priority":
@@ -333,7 +347,9 @@ def get_logs(request: Request, page: int = 1, per_page: int = 50, level: str = "
 
 @router.post("/api/logs/clear")
 def clear_logs(request: Request):
-    require_auth(request, scope="write")
+    # The journal is the audit trail: a `write` key that could empty it could also erase
+    # the record of what it had just done.
+    require_auth(request, scope="admin")
     conn = get_db()
     conn.execute("DELETE FROM logs")
     conn.commit()
@@ -343,6 +359,7 @@ def clear_logs(request: Request):
 
 
 @router.post("/api/settings/test-webhook")
+@limiter.limit("10/minute")
 def test_webhook(request: Request):
     """Send a test notification to every enabled webhook.
 
@@ -357,7 +374,7 @@ def test_webhook(request: Request):
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT id, name, url FROM webhooks WHERE enabled=1 ORDER BY id"
+            "SELECT id, name, url, local_target_allowed FROM webhooks WHERE enabled=1 ORDER BY id"
         ).fetchall()
     finally:
         conn.close()
@@ -377,15 +394,28 @@ def test_webhook(request: Request):
             a = apprise.Apprise()
             if not a.add(row["url"]):
                 entry["error"] = "invalid or unrecognized Apprise URL"
-            elif a.notify(
-                title="Vauxtra — Test",
-                body="✓ Test notification — configuration is working correctly.",
-            ):
-                entry["ok"] = True
+            elif not int(row["local_target_allowed"]) and targets_the_local_network(row["url"], a):
+                # M11: same refusal as the scheduler's senders.
+                entry["error"] = "points inside the local network; an admin must save it again"
             else:
-                entry["error"] = "send failed (service unavailable, or the URL is wrong)"
+                # H1: redirects, discovery lookups and changed DNS answers, checked on
+                # the connection itself.
+                with refuse_local_connections(not int(row["local_target_allowed"]), a) as guard:
+                    sent = a.notify(
+                        title="Vauxtra — Test",
+                        body="✓ Test notification — configuration is working correctly.",
+                    )
+                if guard.refused:
+                    entry["error"] = "points inside the local network; an admin must save it again"
+                elif sent:
+                    entry["ok"] = True
+                else:
+                    entry["error"] = "send failed (service unavailable, or the URL is wrong)"
         except Exception as e:  # one bad target must not hide the state of the others
-            entry["error"] = str(e)
+            # The exception text can carry the target URL and its token, or say whether
+            # some internal host answered: it goes to the server log, not to the caller.
+            logger.warning("Test notification to webhook %s failed: %s", row["id"], type(e).__name__)
+            entry["error"] = "send failed; see the server log"
         results.append(entry)
 
     # 200 either way: a per-target report says more than a single failed status, and the
@@ -413,6 +443,7 @@ def reset_all(request: Request):
         DELETE FROM webhook_delivery_log;
         DELETE FROM webhooks;
         DELETE FROM service_templates;
+        DELETE FROM pending_proxy_removals;
         DELETE FROM docker_endpoints;
         DELETE FROM providers;
         DELETE FROM tags;
@@ -468,32 +499,136 @@ def delete_domain(name: str, request: Request):
     return {"ok": True}
 
 
-@router.get("/api/logs/stream")
-async def stream_logs(request: Request):
-    """Server-Sent Events stream: pushes new log rows every 2 s."""
-    require_auth(request)
-    if not _HAS_SSE:
-        raise HTTPException(500, "Package 'sse-starlette' not installed — rebuild the Docker image.")
+# Open log streams, capped. Each one polls SQLite every two seconds for as long as its
+# client stays connected, so the number of them is the number of pollers.
+_MAX_LOG_STREAMS = 10
+_open_log_streams = 0
+# Per caller as well: with only the global cap, one `read` key holding ten streams kept the
+# administrator from opening the log view. Admin callers may go past the global cap (never
+# past their own), so no lower-scoped key can lock them out.
+_MAX_LOG_STREAMS_PER_IDENTITY = 5
+_log_streams_by_identity: dict[str, int] = {}
+_log_streams_lock = threading.Lock()
 
-    async def generator():
-        conn = get_db()
-        row  = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()
+
+def _stream_identity(request: Request) -> tuple[str, bool]:
+    """(who is asking, whether they hold admin) for the stream caps."""
+    try:
+        ctx = _get_auth_context(request)
+    except Exception:  # an identity we cannot read shares one anonymous budget
+        ctx = None
+    if not ctx:
+        return "unknown", False
+    is_admin = "admin" in (ctx.get("scopes") or [])
+    if ctx.get("kind") == "api_key":
+        return f"key:{ctx.get('key_id')}", is_admin
+    if ctx.get("kind") == "session":
+        # B10: every signed-in browser used to share the one identity "session", so five
+        # tabs anywhere (or the streams a dropped connection had not released yet) made the
+        # next EventSource get a 429, after which it does not retry. Each login gets its own
+        # budget, kept in the signed session cookie.
+        session = get_session(request)
+        stream_id = session.get("stream_id")
+        if not isinstance(stream_id, str) or not stream_id:
+            stream_id = secrets.token_hex(8)
+            session["stream_id"] = stream_id
+        return f"session:{stream_id}", is_admin
+    return str(ctx.get("kind") or "ui"), is_admin
+
+
+def _reserve_log_stream(identity: str, is_admin: bool) -> bool:
+    """Count the stream in before the response exists, so a burst cannot overshoot."""
+    global _open_log_streams
+    with _log_streams_lock:
+        if _log_streams_by_identity.get(identity, 0) >= _MAX_LOG_STREAMS_PER_IDENTITY:
+            return False
+        if _open_log_streams >= _MAX_LOG_STREAMS and not is_admin:
+            return False
+        _open_log_streams += 1
+        _log_streams_by_identity[identity] = _log_streams_by_identity.get(identity, 0) + 1
+        return True
+
+
+def _release_log_stream(identity: str) -> None:
+    global _open_log_streams
+    with _log_streams_lock:
+        _open_log_streams = max(0, _open_log_streams - 1)
+        left = _log_streams_by_identity.get(identity, 0) - 1
+        if left > 0:
+            _log_streams_by_identity[identity] = left
+        else:
+            _log_streams_by_identity.pop(identity, None)
+
+
+def _max_log_id() -> int:
+    conn = get_db()
+    try:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()[0]
+    finally:
         conn.close()
-        last_id: int = row[0]
 
-        while True:
-            if await request.is_disconnected():
-                break
-            conn = get_db()
-            rows = conn.execute(
+
+def _logs_after(last_id: int) -> list[dict]:
+    conn = get_db()
+    try:
+        return [
+            dict(r)
+            for r in conn.execute(
                 "SELECT id, level, message, created_at FROM logs "
                 "WHERE id > ? ORDER BY id ASC LIMIT 50",
                 (last_id,),
             ).fetchall()
-            conn.close()
-            for r in rows:
-                last_id = r["id"]
-                yield {"data": json.dumps(dict(r))}
-            await asyncio.sleep(2)
+        ]
+    finally:
+        conn.close()
 
-    return _SSEResponse(generator())
+
+@router.get("/api/logs/stream")
+async def stream_logs(request: Request):
+    """Server-Sent Events stream: pushes new log rows every 2 s."""
+    # Every SQLite access below goes through the threadpool. They ran on the event loop, so
+    # one busy database (a restore holds an exclusive lock) froze every request of the
+    # instance for up to `busy_timeout`, not only this stream.
+    await run_in_threadpool(require_auth, request)
+    if not _HAS_SSE:
+        raise HTTPException(500, "Package 'sse-starlette' not installed — rebuild the Docker image.")
+    identity, is_admin = await run_in_threadpool(_stream_identity, request)
+    if not _reserve_log_stream(identity, is_admin):
+        raise HTTPException(429, "Too many open log streams")
+
+    released = threading.Event()
+
+    def _release_once() -> None:
+        if not released.is_set():
+            released.set()
+            _release_log_stream(identity)
+
+    async def generator():
+        try:
+            last_id: int = await run_in_threadpool(_max_log_id)
+            while True:
+                if await request.is_disconnected():
+                    break
+                # Checked again on every pass, not only when the stream opened: a revoked key
+                # or a session ended by a password change used to keep reading new log lines
+                # for as long as the connection lived.
+                try:
+                    await run_in_threadpool(require_auth, request)
+                except HTTPException:
+                    break
+                for r in await run_in_threadpool(_logs_after, last_id):
+                    last_id = r["id"]
+                    yield {"data": json.dumps(r)}
+                await asyncio.sleep(2)
+        finally:
+            _release_once()
+
+    gen = generator()
+    # A generator that is never iterated (the client left before the first chunk) never
+    # reaches its `finally`; the finalizer gives the slot back when it is collected.
+    weakref.finalize(gen, _release_once)
+    try:
+        return _SSEResponse(gen)
+    except BaseException:
+        _release_once()
+        raise

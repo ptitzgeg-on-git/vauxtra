@@ -55,7 +55,7 @@ import type {
  *  - `GET  /api/logs`                    the recent lines, matched to a host in the drawer
  *  - `GET  /api/providers/tunnels/health` the Cloudflare connectors
  *  - `POST /api/services/check-all`      probe everything now
- *  - `GET  /api/services/{sid}/check`    probe one service and measure its latency
+ *  - `POST /api/services/{sid}/check`    probe one service and measure its latency
  */
 
 const SERVICES_CACHE_KEY = 'vauxtra.cache.services';

@@ -173,6 +173,8 @@ Use **Providers → Add Connection** to add a new integration. Providers are org
 
 Choose **Guided setup** for step-by-step instructions, or **Expert mode** if you already have all credentials ready.
 
+**Upstream TLS.** Vauxtra verifies the certificate of every `https://` provider. For a provider signed by a private CA, set `"ca_bundle": "/path/to/ca.pem"` in its `extra` settings (the file must be readable inside the container). For a self-signed provider you cannot fix, `"tls_verify": false` (a JSON boolean) turns verification off for that provider only; the stored credentials then travel over a connection anyone on the path can intercept.
+
 ### Nginx Proxy Manager (NPM)
 
 1. In NPM, go to **Users** and create a dedicated API user (or use admin)
@@ -345,6 +347,16 @@ service a webhook points at, never the token. And restoring a *plain* backup bri
 notification targets back **disabled**, with `webhooks_needing_url` in the response saying
 how many — their names, scopes and rules survive, only the one field a secret-free file
 cannot carry is missing. Restoring a secure backup restores them working.
+
+### Failed deliveries
+
+A notification that cannot be sent is queued and retried with a growing delay, for about
+a day and a half. Each retry goes to the webhook as it is at that moment: an edited URL
+receives the retries queued before the edit. **Switching a webhook off or deleting it
+cancels its queued retries for good**; switching it back on does not resend them. Queued
+sends written by older versions did not record their webhook, so they would have gone to
+the URL stored when they failed: they are cancelled once, on the first start after the
+upgrade, with a line in the journal saying how many.
 
 ### Events
 
@@ -586,7 +598,7 @@ apply_template(id, ...) → apply defaults + create the service
 
 ## 13) Prometheus Metrics
 
-Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication required — designed to be scraped directly by a Prometheus server.
+Vauxtra exposes a Prometheus-compatible metrics endpoint, designed to be scraped directly by a Prometheus server with a `read` API key.
 
 ### Endpoint
 
@@ -594,7 +606,7 @@ Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication 
 GET /metrics
 ```
 
-No `Authorization` header required. Response is `text/plain` in Prometheus text exposition format.
+Send a `read` API key as a bearer token (`Authorization: Bearer vx_...`); without one the answer is 401 once a password is configured. Response is `text/plain` in Prometheus text exposition format.
 
 ### Available metrics
 
@@ -634,7 +646,17 @@ scrape_configs:
       - targets: ['vauxtra:8888']
     metrics_path: /metrics
     scrape_interval: 60s
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/vauxtra_api_key  # a key with the `read` scope
 ```
+
+A target given by name, like `vauxtra:8888` here, is answered `421` while the instance has
+no admin password: the DNS-rebinding guard only lets an open instance answer under an IP
+address, `localhost` or a host listed in `CORS_ORIGINS`. Set an admin password, list the
+full origin in `CORS_ORIGINS` (scheme and port included, e.g. `http://vauxtra:8888`; a bare
+name is rejected by the validator), or scrape the container by IP. The same applies to `VAUXTRA_URL`
+for the MCP bridge.
 
 ### Alerting examples
 
@@ -692,7 +714,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |
 | `GET` | `/api/services/{sid}/drift` | Check for drift |
 | `POST` | `/api/services/{sid}/reconcile` | Fix drift |
-| `GET` | `/api/services/{sid}/check` | Single health check |
+| `POST` | `/api/services/{sid}/check` | Single health check |
 
 ### Providers
 
@@ -766,7 +788,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/metrics` | Prometheus metrics (no auth required) |
+| `GET` | `/metrics` | Prometheus metrics (`read` API key) |
 
 ### Tags & Environments
 
@@ -819,9 +841,9 @@ what it was created with. A request that falls short is refused with
 
 | Scope | Covers |
 |---|---|
-| `read` | Every `GET`, plus the read-only diagnostics: `/api/services/{sid}/push/dry-run`, `/api/services/sync`. |
-| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/preflight`, `/api/services/check-all`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`, `/api/docker/endpoints/{id}/test`. |
-| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`. |
+| `read` | Every `GET`, plus the read-only diagnostic `/api/services/{sid}/push/dry-run`. |
+| `write` | Everything that changes state — create/update/delete of services, providers, tags, environments, domains, templates, webhooks — plus anything the server acts on from the outside: `/api/services/sync`, `POST /api/services/{sid}/check` (it probes the target and records the result), `/api/services/preflight`, `/api/services/check-all`, `/api/providers/{pid}/test`, `/api/providers/{pid}/validate`, `/api/providers/validate-draft`, `/api/settings/test-webhook`, `/api/webhooks/test-url`. |
+| `admin` | Credentials and the whole instance: `/api/auth/change-password`, `/api/auth/setup-complete`, `/api/settings/api-keys*`, `/api/backup*`, `/api/restore`, `/api/reset`, `/api/logs/clear` (the journal is the audit trail), and every Docker endpoint route that changes or probes the daemon Vauxtra reads (`POST /api/docker/endpoints` for every scheme, `unix://` included, plus `/default`, `/test` and `DELETE`). |
 
 Two things a `write` key may **not** do, because they choose a URL rather than a value,
 and the server is what goes and fetches it:
@@ -836,7 +858,15 @@ and the server is what goes and fetches it:
   `POST /api/webhooks/test-url`. Every other scheme names a service (`discord://`,
   `tgram://`, `ntfy://`); these six name a host and a body, which is a notification for an
   operator and an arbitrary outbound POST for anyone else. `test-url` sends one straight
-  away, without storing anything.
+  away, without storing anything. The same rule covers any scheme whose host is a
+  loopback, private or link-local address, `localhost`, or a name ending in `.local`,
+  `.lan`, `.internal` or `.home.arpa`. The address is read in every spelling the HTTP
+  stack accepts (`127.1`, `2130706433`, `0x7f.1`), and a public name is resolved: one
+  that points at a private address asks for `admin` too. A host made of a short number
+  spells an address, so it is held to the same rule. Redirects the target answers with are
+  not followed by this check. The three test routes (`/api/webhooks/test-url`,
+  `/api/webhooks/{id}/test`, `/api/settings/test-webhook`) are rate limited (10 per
+  minute), and a failed send answers a generic message; the detail goes to the server log.
 
 Both are refused with the same `403 Insufficient scope: 'admin' required`. Neither is
 blocked outright — posting JSON to your own service is a fair reason to run a tool like

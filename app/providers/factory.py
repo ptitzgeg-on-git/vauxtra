@@ -543,15 +543,47 @@ def create_provider(provider_row):
         raise ValueError(f"Provider '{ptype}' not yet supported")
 
     cls, needs_extra = entry
-    if needs_extra:
-        extra_raw = provider_row["extra"] or "{}"
-        try:
-            extra = json.loads(extra_raw) if extra_raw else {}
-        except Exception:
-            extra = {}
-        return cls(url, user, pwd, extra)
+    try:
+        extra_raw = provider_row["extra"]
+    except (KeyError, IndexError):
+        extra_raw = None
+    try:
+        extra = json.loads(extra_raw) if extra_raw else {}
+    except Exception:
+        extra = {}
+    if not isinstance(extra, dict):
+        extra = {}
 
-    return cls(url, user, pwd)
+    instance = cls(url, user, pwd, extra) if needs_extra else cls(url, user, pwd)
+    _apply_tls_options(instance, extra)
+    return instance
+
+
+def _apply_tls_options(instance, extra: dict) -> None:
+    """Apply the per-provider upstream TLS settings to the provider's HTTP session.
+
+    Certificates are verified by default. `extra.ca_bundle` (a path to a PEM file) trusts a
+    private CA; `extra.tls_verify` set to the boolean `false` turns verification off for a
+    self-signed upstream. Only a real boolean disables it: a string such as "false" keeps
+    verification on rather than guessing.
+    """
+    session = getattr(instance, "session", None)
+    if session is None or not hasattr(session, "verify"):
+        return
+    ca_bundle = extra.get("ca_bundle")
+    if isinstance(ca_bundle, str) and ca_bundle.strip():
+        # Kept even when the file is gone: falling back to the system store would quietly
+        # change which certificate the secret is sent to. `TimeoutSession.send` turns the
+        # OSError `requests` raises for a missing bundle into a ConnectionError, so every
+        # call fails like an unreachable provider instead of escaping as a 500.
+        if not os.path.isfile(ca_bundle.strip()):
+            logger.warning(
+                "Provider %s: CA bundle %s does not exist; its calls will fail until it is fixed",
+                type(instance).__name__, ca_bundle.strip(),
+            )
+        session.verify = ca_bundle.strip()
+    if extra.get("tls_verify") is False:
+        session.verify = False
 
 
 def certificate_provider_types() -> list[str]:

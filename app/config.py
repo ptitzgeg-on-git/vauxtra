@@ -21,18 +21,53 @@ def _get_or_generate_secret() -> str:
     key_file = os.path.join(DATA_DIR, ".secret_key")
     os.makedirs(DATA_DIR, exist_ok=True)
     if os.path.exists(key_file):
+        _restrict_key_file(key_file)
         with open(key_file) as fh:
             stored = fh.read().strip()
         if stored:
             return stored
+        os.remove(key_file)
     generated = secrets.token_hex(32)
-    with open(key_file, "w") as f:
-        f.write(generated)
+    # Written in full to a private temporary file, then linked into place. Creating the key
+    # file itself with O_EXCL and writing afterwards left a window where it existed and was
+    # empty: a second worker starting then read "", fell back to its own key, and the two
+    # workers signed sessions and encrypted secrets under different keys.
+    # `os.link` publishes the complete file or fails because one is already there.
+    tmp = f"{key_file}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.chmod(key_file, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(generated)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, key_file)
+        except FileExistsError:
+            with open(key_file) as fh:
+                return fh.read().strip() or generated
+        except OSError:
+            # A filesystem without hard links: a rename is atomic too, and on the platforms
+            # that lack `link` it refuses an existing destination as well.
+            try:
+                os.rename(tmp, key_file)
+            except FileExistsError:
+                with open(key_file) as fh:
+                    return fh.read().strip() or generated
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return generated
+
+
+def _restrict_key_file(path: str) -> None:
+    """Take group and other access off a key file written before 0600 was enforced."""
+    if os.name != "posix":
+        return
+    try:
+        if os.stat(path).st_mode & 0o077:
+            os.chmod(path, 0o600)
     except OSError:
         pass
-    return generated
 
 
 SECRET_KEY   = _get_or_generate_secret()
@@ -105,17 +140,21 @@ def derive_fernet_from_passphrase(passphrase: str, salt: bytes) -> Fernet:
     return Fernet(key)
 
 
-def encrypt_for_backup(plaintext: str, passphrase: str, salt: bytes) -> str:
-    """Encrypt a string for backup export using a user passphrase."""
+def encrypt_for_backup(plaintext: str, passphrase: str, salt: bytes, fernet: Fernet | None = None) -> str:
+    """Encrypt a string for backup export using a user passphrase.
+
+    `fernet` is the key already derived for this passphrase and salt: each derivation costs
+    600 000 PBKDF2 rounds, and paying them once per secret made a backup take minutes.
+    """
     if not plaintext:
         return ""
-    f = derive_fernet_from_passphrase(passphrase, salt)
+    f = fernet or derive_fernet_from_passphrase(passphrase, salt)
     return f.encrypt(plaintext.encode()).decode()
 
 
-def decrypt_from_backup(ciphertext: str, passphrase: str, salt: bytes) -> str:
-    """Decrypt a string from backup using the user passphrase."""
+def decrypt_from_backup(ciphertext: str, passphrase: str, salt: bytes, fernet: Fernet | None = None) -> str:
+    """Decrypt a string from backup using the user passphrase (see `encrypt_for_backup`)."""
     if not ciphertext:
         return ""
-    f = derive_fernet_from_passphrase(passphrase, salt)
+    f = fernet or derive_fernet_from_passphrase(passphrase, salt)
     return f.decrypt(ciphertext.encode()).decode()

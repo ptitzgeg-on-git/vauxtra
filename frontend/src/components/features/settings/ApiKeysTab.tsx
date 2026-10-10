@@ -22,7 +22,8 @@ import {
   useConfirmDialog,
   type Tone,
 } from '@/components/ui';
-import type { ApiKey, ApiKeyCreated, AuthStatus } from '@/types/api';
+import { authStatusQuery } from '@/api/authStatus';
+import type { ApiKey, ApiKeyCreated } from '@/types/api';
 import { SettingsSection } from './SettingsSection';
 
 const SCOPES = ['read', 'write', 'admin'] as const;
@@ -40,10 +41,7 @@ export function ApiKeysTab() {
     queryKey: ['api-keys'],
     queryFn: () => api.get<ApiKey[]>('/settings/api-keys'),
   });
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-me'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-  });
+  const { data: authStatus } = useQuery(authStatusQuery);
 
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<string[]>(['read']);

@@ -243,7 +243,7 @@ class HttpBindTests(unittest.TestCase):
 
     def _bind(self, env: dict) -> tuple[str, int]:
         with patch.dict(os.environ, env, clear=False):
-            for key in ("VAUXTRA_MCP_HOST", "VAUXTRA_MCP_PORT"):
+            for key in ("VAUXTRA_MCP_HOST", "VAUXTRA_MCP_PORT", "VAUXTRA_MCP_TOKEN"):
                 if key not in env:
                     os.environ.pop(key, None)
             return mcp_server._http_bind()
@@ -251,14 +251,96 @@ class HttpBindTests(unittest.TestCase):
     def test_the_default_is_loopback(self):
         self.assertEqual(self._bind({}), ("127.0.0.1", 9000))
 
+    def test_publishing_without_a_token_refuses_to_start(self):
+        with self.assertRaises(SystemExit):
+            self._bind({"VAUXTRA_MCP_HOST": "0.0.0.0"})
+
     def test_publishing_takes_a_deliberate_variable(self):
-        self.assertEqual(self._bind({"VAUXTRA_MCP_HOST": "0.0.0.0"})[0], "0.0.0.0")
+        self.assertEqual(
+            self._bind({"VAUXTRA_MCP_HOST": "0.0.0.0", "VAUXTRA_MCP_TOKEN": "t" * 32})[0], "0.0.0.0"
+        )
 
     def test_an_unusable_port_falls_back_instead_of_crashing(self):
         self.assertEqual(self._bind({"VAUXTRA_MCP_PORT": "not-a-port"})[1], 9000)
 
     def test_an_empty_host_is_treated_as_unset(self):
         self.assertEqual(self._bind({"VAUXTRA_MCP_HOST": "  "})[0], "127.0.0.1")
+
+
+class HttpGuardTests(unittest.TestCase):
+    """S3: loopback alone let any local web page (or a DNS-rebound one) drive the bridge."""
+
+    def _call(self, headers: dict, bind: str = "127.0.0.1", token: str = "") -> int:
+        import asyncio
+
+        reached = []
+
+        async def _app(scope, receive, send):
+            reached.append(True)
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        sent = []
+
+        async def _send(message):
+            sent.append(message)
+
+        async def _receive():
+            return {"type": "http.request", "body": b""}
+
+        scope = {
+            "type": "http",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        }
+        asyncio.run(mcp_server._HttpGuard(_app, bind, token)(scope, _receive, _send))
+        status = sent[0]["status"]
+        self.assertEqual(bool(reached), status == 200)
+        return status
+
+    def test_a_local_client_still_gets_through(self):
+        self.assertEqual(self._call({"Host": "127.0.0.1:9000"}), 200)
+        self.assertEqual(self._call({"Host": "localhost:9000", "Origin": "http://localhost:3000"}), 200)
+
+    def test_a_rebound_host_header_is_refused(self):
+        self.assertEqual(self._call({"Host": "attacker.example:9000"}), 421)
+
+    def test_a_foreign_origin_is_refused(self):
+        self.assertEqual(
+            self._call({"Host": "127.0.0.1:9000", "Origin": "https://attacker.example"}), 403
+        )
+
+    def test_a_published_bridge_still_refuses_foreign_origins(self):
+        self.assertEqual(self._call({"Host": "10.0.0.4:9000"}, bind="10.0.0.4"), 200)
+        self.assertEqual(
+            self._call({"Host": "10.0.0.4:9000", "Origin": "https://evil.example"}, bind="10.0.0.4"),
+            403,
+        )
+
+    def test_ipv6_loopback_is_understood(self):
+        self.assertEqual(self._call({"Host": "[::1]:9000"}), 200)
+
+    def test_a_token_is_demanded_when_one_is_configured(self):
+        host = {"Host": "127.0.0.1:9000"}
+        self.assertEqual(self._call(host, token="s3cret-test"), 401)
+        self.assertEqual(
+            self._call({**host, "Authorization": "Bearer wrong"}, token="s3cret-test"), 401
+        )
+        self.assertEqual(
+            self._call({**host, "Authorization": "Basic s3cret-test"}, token="s3cret-test"), 401
+        )
+        self.assertEqual(
+            self._call({**host, "Authorization": "Bearer s3cret-test"}, token="s3cret-test"), 200
+        )
+
+    def test_with_a_token_a_foreign_page_still_needs_the_token(self):
+        """The token replaces the Host and Origin checks; a cross-site page cannot know it."""
+        self.assertEqual(
+            self._call(
+                {"Host": "attacker.example", "Origin": "https://attacker.example"},
+                token="s3cret-test",
+            ),
+            401,
+        )
 
 
 if __name__ == "__main__":

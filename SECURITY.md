@@ -36,9 +36,10 @@ An acknowledgement is expected within 72 hours, followed by an assessment and re
 - General API: No hard limit (homelab use case)
 
 ### CORS Policy
-- Default: `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888`
-- Configurable via `CORS_ORIGINS` environment variable
-- In production, restrict to your actual domain(s)
+- Default: no cross-origin caller at all (same-origin only); the interface is served by the same application
+- `DEBUG=true` alone adds the Vite dev server origins (`http://localhost:5173,http://127.0.0.1:5173,http://localhost:8888`)
+- Configurable via `CORS_ORIGINS` environment variable: full origins (`https://vauxtra.example.com`), comma separated
+- A list that does not parse allows no cross-origin caller, it never falls back to a default
 
 ### Security Headers
 The application sets these HTTP headers on all responses:

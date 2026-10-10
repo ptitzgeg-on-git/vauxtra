@@ -2,10 +2,15 @@
 from typing import Any
 
 from vauxtra_mcp import client
-from vauxtra_mcp.app import mcp
+from vauxtra_mcp.app import READ_ONLY, mcp
+
+# Preflight changes nothing in Vauxtra, but it is not a read: the server opens a TCP
+# connection to whatever host and port it is given, which is why the API demands the
+# `write` scope for it. Calling it read-only let a client run it without asking.
+PROBES_THE_NETWORK = {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=PROBES_THE_NETWORK)
 def run_preflight(
     subdomain: str,
     domain: str,
@@ -57,7 +62,7 @@ def run_preflight(
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def dry_run_push(service_id: int) -> dict[str, Any]:
     """
     Simulate pushing a service to all configured providers without making any changes.
@@ -74,14 +79,15 @@ def push_service(service_id: int) -> dict[str, Any]:
     """
     Push a service to all configured providers (proxy + DNS).
 
-    Use dry_run_push first to preview changes.
+    Use dry_run_push first to preview changes. A disabled service is refused with HTTP 409:
+    pushing it would publish a hostname shown as off. Enable it first.
     """
     r = client.post(f"/services/{service_id}/push")
     client.check(r)
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def check_drift(service_id: int) -> dict[str, Any]:
     """
     Compare the expected service state against what is actually configured in providers.
@@ -98,7 +104,8 @@ def reconcile_service(service_id: int) -> dict[str, Any]:
     """
     Run drift detection, push corrections to providers, then verify drift is resolved.
 
-    Returns before/after drift states and push result.
+    Returns before/after drift states and push result. A disabled service is refused with
+    HTTP 409, like push_service.
     """
     r = client.post(f"/services/{service_id}/reconcile")
     client.check(r)

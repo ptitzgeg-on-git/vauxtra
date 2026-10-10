@@ -258,6 +258,138 @@ class SilenceIsAnAnswerTests(_CleanJar):
         self.assertEqual(caught.exception.detail, "Insufficient scope")
 
 
+class M1ADomainNameIsOnePathSegmentTests(_CleanJar):
+    def _deleted_path(self, name: str) -> str:
+        seen: list[httpx.Request] = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        with _served_by(handler):
+            admin_tools.delete_domain(name)
+        return seen[0]
+
+    def test_dot_segments_are_refused_before_any_request(self) -> None:
+        for name in ("", " ", ".", ".."):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                admin_tools.delete_domain(name)
+
+    def test_a_question_mark_does_not_start_a_query_string(self) -> None:
+        request = self._deleted_path("example.com?force=true")
+        self.assertEqual(request.url.query, b"")
+        self.assertEqual(request.url.raw_path, b"/api/domains/example.com%3Fforce%3Dtrue")
+
+    def test_a_hash_and_a_slash_stay_in_the_name(self) -> None:
+        request = self._deleted_path("a#b/c")
+        self.assertEqual(request.url.raw_path, b"/api/domains/a%23b%2Fc")
+
+    def test_an_ordinary_name_is_unchanged(self) -> None:
+        self.assertEqual(self._deleted_path("example.com").url.path, "/api/domains/example.com")
+
+
+class M2TheSnapshotHasOneDeadlineTests(_CleanJar):
+    def test_a_trickling_stream_cannot_hold_the_call_forever(self) -> None:
+        """Keepalives reset the httpx read timeout; the snapshot has to stop on its own clock."""
+        clock = iter(float(i) for i in range(10_000))
+
+        def content():
+            while True:  # a comment line forever, never an event
+                yield b": keepalive\n\n"
+
+        def handler(_request):
+            return httpx.Response(200, content=content())
+
+        with _served_by(handler), patch.object(admin_tools.time, "monotonic", lambda: next(clock)):
+            result = admin_tools.stream_logs_snapshot(timeout_seconds=5)
+
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["count"], 0)
+
+
+class M3ToolsSayWhatTheyDoTests(_CleanJar):
+    @staticmethod
+    def _annotations(name: str):
+        import asyncio
+
+        import vauxtra_mcp.tools.monitoring  # noqa: F401  (registers its tools)
+        import vauxtra_mcp.tools.operations  # noqa: F401
+        import vauxtra_mcp.tools.providers  # noqa: F401
+        import vauxtra_mcp.tools.services  # noqa: F401
+        import vauxtra_mcp.tools.templates  # noqa: F401
+        from vauxtra_mcp.app import mcp
+
+        tool = asyncio.run(mcp.get_tool(name))
+        return tool.annotations
+
+    def test_reads_are_marked_read_only(self) -> None:
+        for name in ("list_services", "get_settings", "check_drift", "dry_run_push", "get_logs"):
+            self.assertTrue(self._annotations(name).readOnlyHint, name)
+
+    def test_the_two_wipes_are_marked_destructive(self) -> None:
+        for name in ("reset_all_data", "restore_backup"):
+            annotations = self._annotations(name)
+            self.assertTrue(annotations.destructiveHint, name)
+            self.assertFalse(annotations.readOnlyHint, name)
+
+    def test_a_write_is_not_passed_off_as_a_read(self) -> None:
+        for name in ("push_service", "delete_service", "save_settings"):
+            annotations = self._annotations(name)
+            self.assertFalse(annotations is not None and annotations.readOnlyHint, name)
+
+    def test_the_wipes_send_nothing_without_confirm(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        with _served_by(handler):
+            with self.assertRaises(ValueError):
+                admin_tools.reset_all_data()
+            with self.assertRaises(ValueError):
+                admin_tools.restore_backup({"version": 1})
+            self.assertEqual(seen, [])
+
+            admin_tools.reset_all_data(confirm=True)
+            admin_tools.restore_backup({"version": 1}, confirm=True)
+
+        self.assertEqual([r.url.path for r in seen], ["/api/reset", "/api/restore"])
+
+
+class M4WithdrawAndStructuredDetailTests(_CleanJar):
+    def test_withdraw_reaches_the_server(self) -> None:
+        from vauxtra_mcp.tools import providers as provider_tools
+
+        seen: list[httpx.Request] = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        with _served_by(handler):
+            provider_tools.delete_provider(4, force=True, withdraw=True)
+            provider_tools.delete_provider(5)
+
+        self.assertEqual(dict(seen[0].url.params), {"force": "true", "withdraw": "true"})
+        self.assertEqual(dict(seen[1].url.params), {})
+
+    def test_a_structured_detail_stays_json(self) -> None:
+        detail = {"message": "in use", "services": [{"id": 3, "fqdn": "a.example.com"}]}
+
+        def handler(_request):
+            return httpx.Response(409, json={"detail": detail})
+
+        with _served_by(handler), self.assertRaises(client.ApiError) as caught:
+            client.check(client.delete("/providers/4"))
+
+        self.assertEqual(json.loads(caught.exception.detail), detail)
+
+    def test_the_dependency_is_pinned_to_the_major_it_was_written_for(self) -> None:
+        text = (REPO_ROOT / "vauxtra_mcp" / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("fastmcp>=3.2,<4", text)
+
+
 class ADraftHasNothingToNameTests(unittest.TestCase):
     def test_the_payload_the_bridge_sends_is_accepted(self) -> None:
         # Exactly what `validate_provider_draft` builds. It used to be a 422, every time.

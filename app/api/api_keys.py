@@ -7,6 +7,7 @@ are kept for display purposes.
 """
 import hashlib
 import secrets
+import sqlite3
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -46,27 +47,11 @@ def _hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-def _ensure_table(conn) -> None:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS api_keys (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            name         TEXT    NOT NULL,
-            key_hash     TEXT    NOT NULL UNIQUE,
-            prefix       TEXT    NOT NULL,
-            scopes       TEXT    NOT NULL DEFAULT 'read',
-            created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
-            last_used_at TEXT
-        )
-    """)
-    conn.commit()
-
-
 @router.get("/api/settings/api-keys")
 def list_api_keys(request: Request):
     require_auth(request, scope="admin")
     conn = get_db()
     try:
-        _ensure_table(conn)
         rows = conn.execute(
             "SELECT id, name, prefix, scopes, created_at, last_used_at FROM api_keys ORDER BY created_at DESC"
         ).fetchall()
@@ -91,7 +76,6 @@ def create_api_key(request: Request, body: ApiKeyCreate):
     require_auth(request, scope="admin")
     conn = get_db()
     try:
-        _ensure_table(conn)
 
         raw_key = f"vx_{secrets.token_urlsafe(32)}"
         key_hash = _hash_key(raw_key)
@@ -129,7 +113,6 @@ def revoke_api_key(request: Request, key_id: int):
     require_auth(request, scope="admin")
     conn = get_db()
     try:
-        _ensure_table(conn)
         row = conn.execute("SELECT name FROM api_keys WHERE id=?", (key_id,)).fetchone()
         if not row:
             raise HTTPException(404, "API key not found")
@@ -145,16 +128,27 @@ def verify_api_key(key: str) -> dict | None:
     """Return the key row (id, name, scopes) if valid, or None."""
     conn = get_db()
     try:
-        _ensure_table(conn)
         key_hash = _hash_key(key)
         row = conn.execute(
             "SELECT id, name, scopes FROM api_keys WHERE key_hash=?", (key_hash,)
         ).fetchone()
         if row:
-            conn.execute(
-                "UPDATE api_keys SET last_used_at=datetime('now') WHERE id=?", (row["id"],)
-            )
-            conn.commit()
+            # A write on every authenticated request, and a valid key answered 500 whenever
+            # the database was busy. The stamp is a hint: once a minute is enough, and failing
+            # to write it must not refuse the request.
+            try:
+                # Not the connection's 15-second default: a hint is not worth making every
+                # API call wait behind a long writer (a restore, a sync cycle).
+                conn.execute("PRAGMA busy_timeout=200")
+                conn.execute(
+                    """UPDATE api_keys SET last_used_at=datetime('now')
+                       WHERE id=? AND (last_used_at IS NULL
+                                       OR last_used_at <= datetime('now', '-60 seconds'))""",
+                    (row["id"],),
+                )
+                conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
             return {"id": row["id"], "name": row["name"], "scopes": row["scopes"].split(",")}
         return None
     finally:

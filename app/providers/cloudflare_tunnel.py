@@ -9,18 +9,36 @@ Storage convention (DB columns):
 
 from __future__ import annotations
 
+import logging
+import re
+import threading
 from urllib.parse import urlparse
 
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import ProxyProvider, TimeoutSession
+
+logger = logging.getLogger(__name__)
+
+_TUNNEL_LOCKS: dict[str, threading.Lock] = {}
+_TUNNEL_LOCKS_GUARD = threading.Lock()
+
+# B5: both identifiers are interpolated into API paths. Cloudflare's are a UUID (tunnel) and
+# 32 hex digits (account); anything carrying `/`, `?`, `#` or `.` would compose another path
+# with the stored token attached, so it is treated as no identifier at all.
+_SAFE_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
+
+
+def _safe_id(value) -> str:
+    value = str(value or "").strip()
+    return value if _SAFE_ID.fullmatch(value) else ""
 
 
 class CloudflareTunnelProvider(ProxyProvider):
     HOST_ID_IS_HOSTNAME = True
 
     def __init__(self, url: str, account_id: str, api_token: str, extra: dict | None = None):
-        self.account_id = (account_id or "").strip()
-        self.tunnel_id = str((extra or {}).get("tunnel_id", "")).strip()
+        self.account_id = _safe_id(account_id)
+        self.tunnel_id = _safe_id((extra or {}).get("tunnel_id", ""))
 
         base = (url or "").strip().rstrip("/")
         if not base:
@@ -82,7 +100,7 @@ class CloudflareTunnelProvider(ProxyProvider):
 
         tunnels = self._request("GET", f"/accounts/{self.account_id}/cfd_tunnel", params={"is_deleted": "false", "per_page": 10})
         if isinstance(tunnels, list) and len(tunnels) == 1:
-            candidate = str(tunnels[0].get("id", "")).strip()
+            candidate = _safe_id(tunnels[0].get("id", "")) if isinstance(tunnels[0], dict) else ""
             if candidate:
                 self.tunnel_id = candidate
         elif isinstance(tunnels, list) and len(tunnels) > 1:
@@ -100,7 +118,12 @@ class CloudflareTunnelProvider(ProxyProvider):
         for i in range(len(labels) - 1):
             candidate = ".".join(labels[i:])
             result = self._request("GET", "/zones", params={"name": candidate, "per_page": 1})
-            for zone in result if isinstance(result, list) else []:
+            if not isinstance(result, list):
+                # A failed lookup is not an empty answer: walking up to the parent after an
+                # error on `sub.example.com` published the CNAME in `example.com` when
+                # `sub.example.com` is a zone of its own. Only "no such zone" goes up.
+                return ""
+            for zone in result:
                 # Same reason as the Cloudflare DNS provider: `name` is a filter, not a
                 # promise. A zone id that is not this domain's would publish the tunnel
                 # CNAME in the wrong zone.
@@ -126,10 +149,27 @@ class CloudflareTunnelProvider(ProxyProvider):
         result = self._request("GET", f"/accounts/{self.account_id}/cfd_tunnel/{tunnel_id}/configurations")
         if not isinstance(result, dict):
             return None
+        if str(result.get("source") or "").strip().lower() == "local":
+            # C8: a locally managed tunnel takes its routes from `config.yml` on the origin.
+            # Its `config: null` read as `{}`, and the PUT that followed could switch the
+            # tunnel to remote management, dropping every route of that file.
+            logger.warning(
+                "Tunnel %s is managed locally (config.yml); Vauxtra will not read or rewrite its ingress",
+                tunnel_id,
+            )
+            return None
+        if "config" not in result:
+            # B6: an answer without the key is not "no configuration yet"; read as `{}`,
+            # the next PUT replaced every route of the tunnel with a single one.
+            return None
         config = result.get("config")
-        if isinstance(config, dict):
-            return config
-        return result
+        if config is None:
+            # A tunnel with no configuration yet answers `config: null`. Handing back
+            # `result` then made the next PUT send the whole envelope (tunnel_id,
+            # version, ...) as if it were the config.
+            return {}
+        # Anything other than an object is an answer that cannot be edited safely.
+        return config if isinstance(config, dict) else None
 
     def _put_configuration(self, config: dict) -> bool:
         tunnel_id = self._resolve_tunnel_id()
@@ -148,54 +188,78 @@ class CloudflareTunnelProvider(ProxyProvider):
                 ingress.append(rule)
         return ingress
 
-    def _upsert_ingress_rule(self, hostname: str, service_url: str) -> bool:
-        config = self._get_configuration()
-        if config is None:
-            # Never rewrite an ingress list we failed to read: the PUT replaces it whole.
-            return False
-        ingress = self._normalize_ingress(config.get("ingress"))
+    def _tunnel_lock(self) -> threading.Lock:
+        """One lock per tunnel: the ingress list is read, edited and PUT back whole, so two
+        concurrent edits (a push and the scheduler) used to drop each other's rule."""
+        key = f"{self.account_id}/{self._resolve_tunnel_id()}"
+        with _TUNNEL_LOCKS_GUARD:
+            return _TUNNEL_LOCKS.setdefault(key, threading.Lock())
 
-        updated: list[dict] = []
+    @staticmethod
+    def _split_fallback(ingress: list[dict]) -> tuple[list[dict], dict]:
+        """The rules, and the catch-all closing them (kept as the operator set it)."""
+        fallback = {"service": "http_status:404"}
+        rules: list[dict] = []
         for rule in ingress:
-            if str(rule.get("hostname", "")).strip().lower() == hostname.lower():
+            if not rule.get("hostname") and not rule.get("path"):
+                fallback = rule
                 continue
-            # Drop fallback to re-append exactly one rule at the end.
-            if not rule.get("hostname") and str(rule.get("service", "")).startswith("http_status:"):
-                continue
-            updated.append(rule)
+            rules.append(rule)
+        return rules, fallback
 
-        updated.append({"hostname": hostname, "service": service_url, "originRequest": {}})
-        updated.append({"service": "http_status:404"})
+    def _upsert_ingress_rule(self, hostname: str, service_url: str) -> bool:
+        with self._tunnel_lock():
+            config = self._get_configuration()
+            if config is None:
+                # Never rewrite an ingress list we failed to read: the PUT replaces it whole.
+                return False
+            rules, fallback = self._split_fallback(self._normalize_ingress(config.get("ingress")))
 
-        config["ingress"] = updated
-        return self._put_configuration(config)
+            updated: list[dict] = []
+            origin_request: dict = {}
+            for rule in rules:
+                same_host = str(rule.get("hostname", "")).strip().lower() == hostname.lower()
+                # Only the host-wide rule is Vauxtra's; `path` rules were added by hand.
+                if same_host and not rule.get("path"):
+                    if isinstance(rule.get("originRequest"), dict):
+                        origin_request = rule["originRequest"]
+                    continue
+                updated.append(rule)
+
+            updated.append({"hostname": hostname, "service": service_url, "originRequest": origin_request})
+            updated.append(fallback)
+
+            config["ingress"] = updated
+            return self._put_configuration(config)
 
     def _delete_ingress_rule(self, hostname: str) -> bool:
-        config = self._get_configuration()
-        if config is None:
-            return False
-        ingress = self._normalize_ingress(config.get("ingress"))
+        with self._tunnel_lock():
+            config = self._get_configuration()
+            if config is None:
+                return False
+            rules, fallback = self._split_fallback(self._normalize_ingress(config.get("ingress")))
 
-        updated: list[dict] = []
-        removed = False
-        for rule in ingress:
-            if str(rule.get("hostname", "")).strip().lower() == hostname.lower():
-                removed = True
-                continue
-            if not rule.get("hostname") and str(rule.get("service", "")).startswith("http_status:"):
-                continue
-            updated.append(rule)
+            updated: list[dict] = []
+            removed = False
+            for rule in rules:
+                same_host = str(rule.get("hostname", "")).strip().lower() == hostname.lower()
+                # Only the host-wide rule is Vauxtra's, as in `_upsert_ingress_rule`: the
+                # `path` rules on the same hostname were added by hand and stay.
+                if same_host and not rule.get("path"):
+                    removed = True
+                    continue
+                updated.append(rule)
 
-        if not removed:
-            # The config WAS read (see the guard above) and the route is genuinely
-            # absent: nothing to write, and a delete of an already-absent route is a
-            # success. Before the guard, this branch also caught read failures and
-            # reported them as successful deletions.
-            return True
+            if not removed:
+                # The config WAS read (see the guard above) and the route is genuinely
+                # absent: nothing to write, and a delete of an already-absent route is a
+                # success. Before the guard, this branch also caught read failures and
+                # reported them as successful deletions.
+                return True
 
-        updated.append({"service": "http_status:404"})
-        config["ingress"] = updated
-        return self._put_configuration(config)
+            updated.append(fallback)
+            config["ingress"] = updated
+            return self._put_configuration(config)
 
     def _ensure_dns_record(self, hostname: str) -> bool:
         tunnel_id = self._resolve_tunnel_id()
@@ -212,7 +276,17 @@ class CloudflareTunnelProvider(ProxyProvider):
             f"/zones/{zone_id}/dns_records",
             params={"type": "CNAME", "name": hostname},
         )
-        records = existing if isinstance(existing, list) else []
+        if not isinstance(existing, list):
+            # B7: a failed listing is not an empty zone; creating on top of it left a
+            # second CNAME next to the existing one.
+            return False
+        # B7: `name` is a filter, not a promise (as in `_find_zone`): only a record that
+        # really carries this name may be rewritten.
+        records = [
+            rec for rec in existing
+            if isinstance(rec, dict)
+            and str(rec.get("name", hostname)).strip(".").lower() == hostname.strip(".").lower()
+        ]
 
         for rec in records:
             rec_id = str(rec.get("id", "")).strip()
@@ -223,16 +297,12 @@ class CloudflareTunnelProvider(ProxyProvider):
                 and bool(rec.get("proxied"))
             ):
                 return True
+            # B7: PATCH, not PUT. A PUT replaces the whole record and wiped the comment
+            # and tags the operator had set on it.
             updated = self._request(
-                "PUT",
+                "PATCH",
                 f"/zones/{zone_id}/dns_records/{rec_id}",
-                json={
-                    "type": "CNAME",
-                    "name": hostname,
-                    "content": cname_target,
-                    "proxied": True,
-                    "ttl": 1,
-                },
+                json={"content": cname_target, "proxied": True},
             )
             return isinstance(updated, dict)
 
@@ -257,7 +327,11 @@ class CloudflareTunnelProvider(ProxyProvider):
             return False
 
         tunnel_id = self._resolve_tunnel_id()
-        tunnel_target = f"{tunnel_id}.cfargotunnel.com" if tunnel_id else ""
+        if not tunnel_id:
+            # Without it every CNAME on the name matched, including ones this tunnel never
+            # published: the delete removed the operator's own record.
+            return False
+        tunnel_target = f"{tunnel_id}.cfargotunnel.com"
         existing = self._request(
             "GET",
             f"/zones/{zone_id}/dns_records",
@@ -272,11 +346,18 @@ class CloudflareTunnelProvider(ProxyProvider):
 
         ok = True
         for rec in existing:
+            if not isinstance(rec, dict):
+                continue
+            # B7, as in `_ensure_dns_record`: `name` is a filter, not a promise. Without
+            # this, a listing that came back unfiltered deleted the CNAME of every hostname
+            # this tunnel publishes. Same reading of a missing `name` as there.
+            if str(rec.get("name", hostname)).strip(".").lower() != hostname.strip(".").lower():
+                continue
             rec_id = str(rec.get("id", "")).strip()
             if not rec_id:
                 continue
             content = str(rec.get("content", "")).strip().lower()
-            if tunnel_target and content != tunnel_target.lower():
+            if content != tunnel_target.lower():
                 continue
             deleted = self._request("DELETE", f"/zones/{zone_id}/dns_records/{rec_id}")
             ok = ok and (deleted is not None)
@@ -296,10 +377,12 @@ class CloudflareTunnelProvider(ProxyProvider):
         tunnel = self._request("GET", f"/accounts/{self.account_id}/cfd_tunnel/{tunnel_id}")
         return isinstance(tunnel, dict)
 
-    def list_hosts(self) -> list[dict]:
+    def list_hosts(self) -> list[dict] | None:
         config = self._get_configuration()
         if config is None:
-            return []
+            # C7: unreadable is not empty. `[]` made the push create a second route for a
+            # name the tunnel already served, and the drift report "missing".
+            return None
         ingress = self._normalize_ingress(config.get("ingress"))
 
         hosts: list[dict] = []
@@ -375,14 +458,19 @@ class CloudflareTunnelProvider(ProxyProvider):
         if not hostname:
             return False
 
-        if old_hostname and old_hostname != hostname:
-            self._delete_ingress_rule(old_hostname)
-            self._delete_dns_record(old_hostname)
-
+        # New route first, old one after: deleting first left the service unreachable when
+        # the publication then failed, and the old deletion's own result was ignored.
         service_url = f"{scheme}://{ip}:{int(port)}"
         if not self._upsert_ingress_rule(hostname, service_url):
             return False
-        return self._ensure_dns_record(hostname)
+        if not self._ensure_dns_record(hostname):
+            return False
+
+        if old_hostname and old_hostname != hostname:
+            ingress_removed = self._delete_ingress_rule(old_hostname)
+            dns_removed = self._delete_dns_record(old_hostname)
+            return ingress_removed and dns_removed
+        return True
 
     def delete_host(self, host_id) -> bool:
         hostname = str(host_id or "").strip().lower()

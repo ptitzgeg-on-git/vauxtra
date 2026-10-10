@@ -2,7 +2,8 @@ import ipaddress
 import re
 
 _SUBDOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$')
-_HOSTNAME_RE  = re.compile(r'^[a-z0-9][a-z0-9\-\.]{0,253}[a-z0-9]$')
+# One DNS label: 1 to 63 characters, no leading or trailing hyphen.
+_HOSTNAME_LABEL_RE = re.compile(r'^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$')
 _DOMAIN_RE = re.compile(r'^[a-z0-9.-]+$')
 _COLOR_VALID  = {
     "blue", "teal", "green", "red", "orange", "purple",
@@ -28,7 +29,13 @@ def is_valid_hostname(value: str) -> bool:
         return True
     except ValueError:
         pass
-    return bool(_HOSTNAME_RE.match(value.lower()))
+    # Checked label by label. A single regex over the whole name let `a..b` and labels
+    # longer than 63 characters through, and `socket.create_connection` then raised a
+    # UnicodeError (IDNA) the health probe did not expect, which stopped the whole cycle.
+    val = value.lower()
+    if len(val) > 253:
+        return False
+    return all(_HOSTNAME_LABEL_RE.match(label) for label in val.split("."))
 
 
 def normalize_domain(value: str) -> str:

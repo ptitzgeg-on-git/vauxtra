@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -8,6 +9,7 @@ from app.api.sync import withdraw_service_routes
 from app.auth import require_auth, require_auth_or_setup
 from app.config import encrypt_secret
 from app.models import add_log, get_db, get_db_ctx
+from app.providers.base import validate_provider_url
 from app.providers.factory import PROVIDER_TYPES, create_provider
 from app.validators import is_valid_url
 
@@ -32,7 +34,50 @@ def _normalize_provider_url(provider_type: str, url_value: str) -> str:
         return _DEFAULT_PROVIDER_URLS[provider_type]
     if not is_valid_url(val):
         raise ValueError("Invalid URL (must start with http:// or https://)")
-    return val.rstrip("/")
+    # Link-local and cloud metadata hosts (169.254.169.254 in any spelling, fe80::/10,
+    # `metadata.google.internal`): a provider test sends the stored credentials to
+    # whatever the URL names. A name that only resolves there is refused at connection
+    # time by `TimeoutSession`.
+    return validate_provider_url(val).rstrip("/")
+
+
+def _validate_tls_extra(
+    extra: dict[str, Any], request: Request | None = None, previous: Any = None
+) -> None:
+    """Refuse a `ca_bundle` that is not a readable file on this server.
+
+    A missing bundle made every call to the provider raise OSError, which no provider
+    catches: 500s on the routes and an error on every scheduler pass.
+
+    N6: the answer says whether a path exists on the server, so a new path is only
+    checked for an `admin` caller; `previous` (the stored value) is not news to anyone.
+    """
+    ca_bundle = extra.get("ca_bundle")
+    if ca_bundle is None or (isinstance(ca_bundle, str) and not ca_bundle.strip()):
+        return
+    if request is not None and ca_bundle != previous:
+        require_auth(request, scope="admin")
+    if not isinstance(ca_bundle, str) or not os.path.isfile(ca_bundle.strip()):
+        raise HTTPException(400, "extra.ca_bundle must be the path of an existing PEM file")
+
+
+def _tls_settings(extra: dict[str, Any]) -> tuple[Any, Any]:
+    """The two `extra` keys that decide which certificate the stored secret is sent to."""
+    ca_bundle = extra.get("ca_bundle")
+    if isinstance(ca_bundle, str):
+        ca_bundle = ca_bundle.strip() or None
+    return extra.get("tls_verify", True), ca_bundle
+
+
+def _url_host(url: str | None) -> tuple[str, str, int | None]:
+    """Scheme, host and port of a provider URL, compared to decide where a secret goes."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit((url or "").strip())
+        return (parts.scheme.lower(), (parts.hostname or "").lower(), parts.port)
+    except ValueError:
+        return ("", (url or "").strip().lower(), None)
 
 
 def _safe_json_load(raw: str | None) -> dict[str, Any]:
@@ -193,16 +238,25 @@ def all_providers_health(request: Request):
             "SELECT id, name, type, url, username, password, enabled, extra FROM providers WHERE enabled=1"
         ).fetchall()
 
-    results = {}
-    for r in rows:
-        pid = r["id"]
+    def _check(row) -> dict:
         try:
-            provider = create_provider(dict(r))
-            provider.test_connection()
-            results[str(pid)] = {"status": "healthy", "error": None}
+            provider = create_provider(dict(row))
+            # The answer used to be discarded: a provider refusing its credentials was
+            # reported healthy, and the dashboard showed it green.
+            if bool(provider.test_connection()):
+                return {"status": "healthy", "error": None}
+            return {"status": "unhealthy", "error": "Connection test failed"}
         except Exception as e:
-            results[str(pid)] = {"status": "unhealthy", "error": str(e)}
-    return results
+            return {"status": "unhealthy", "error": str(e)}
+
+    if not rows:
+        return {}
+    # In parallel: in series, N unreachable providers cost N timeouts.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
+        checked = list(pool.map(_check, rows))
+    return {str(r["id"]): result for r, result in zip(rows, checked, strict=True)}
 
 
 @router.get("/api/providers/types")
@@ -219,6 +273,14 @@ def validate_provider_draft(request: Request, body: ProviderDraftValidationIn):
 
     if not PROVIDER_TYPES.get(body.type, {}).get("available"):
         raise HTTPException(400, f"Provider type '{body.type}' not yet available")
+
+    # B2: the same `ca_bundle` check as a save. Skipped here, the diagnostics answered
+    # whether a path exists on the server to a `write` key (the N6 file oracle).
+    # `require_auth_or_setup` keeps the setup wizard working before any password exists.
+    ca_bundle = (body.extra or {}).get("ca_bundle")
+    if ca_bundle is not None and not (isinstance(ca_bundle, str) and not ca_bundle.strip()):
+        require_auth_or_setup(request, scope="admin")
+    _validate_tls_extra(body.extra or {})
 
     provider_row = {
         "type": body.type,
@@ -312,6 +374,7 @@ def add_provider(request: Request, body: ProviderIn):
     require_auth_or_setup(request, scope="write")
     if not PROVIDER_TYPES.get(body.type, {}).get("available"):
         raise HTTPException(400, f"Provider type '{body.type}' not yet available")
+    _validate_tls_extra(body.extra or {}, request)
     conn = get_db()
     cur  = conn.execute(
         "INSERT INTO providers (name, type, url, username, password, extra) VALUES (?,?,?,?,?,?)",
@@ -356,6 +419,31 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
         extra = body.extra
     else:
         extra = _safe_json_load(row["extra"])
+
+    if body.extra is not None:
+        try:
+            _validate_tls_extra(
+                extra, request, previous=_safe_json_load(row["extra"]).get("ca_bundle")
+            )
+        except HTTPException:
+            conn.close()
+            raise
+
+    # The stored secret goes wherever `url` says, on the next test, health check or
+    # scheduler pass, and `tls_verify` / `ca_bundle` decide which certificate it is handed
+    # to. Changing those while keeping that secret is therefore a way to send it to another
+    # host: a `write` key may only do it by supplying a new secret, the rest needs `admin`.
+    # The other `extra` keys (`proxied`, `tunnel_id`, ...) do not move the secret and stay
+    # at `write`.
+    if not body.password:
+        host_changed = _url_host(url_val) != _url_host(row["url"])
+        tls_changed = _tls_settings(extra) != _tls_settings(_safe_json_load(row["extra"]))
+        if host_changed or tls_changed:
+            try:
+                require_auth(request, scope="admin")
+            except HTTPException:
+                conn.close()
+                raise
 
     if body.password:
         conn.execute(
@@ -520,7 +608,16 @@ def delete_provider(pid: int, request: Request, force: bool = False, withdraw: b
         # Named either way: without `withdraw` these hostnames are exactly what stays
         # published on a provider Vauxtra no longer knows about, and this line is the only
         # trace left of it.
-        what = "withdrawn from it and unlinked" if withdraw else "unlinked, still served by it"
+        # A withdrawal that failed is not reported as done: those records are still live.
+        if withdraw and withdrawal_errors:
+            what = (
+                f"unlinked, {len(withdrawal_errors)} record(s) could not be withdrawn "
+                "and are still served by it"
+            )
+        elif withdraw:
+            what = "withdrawn from it and unlinked"
+        else:
+            what = "unlinked, still served by it"
         add_log(
             "warn",
             f"Provider deleted: {row['name']} -- {len(dependents)} service(s) {what} ({names})",
@@ -701,9 +798,12 @@ def list_dns_records(pid: int, request: Request):
     try:
         provider = create_provider(row)
         records = provider.list_rewrites()
-        return {"provider": row["name"], "records": records or []}
     except Exception as e:
         raise HTTPException(500, f"Failed to list DNS records: {str(e)}")
+    if records is None:
+        # Unreadable, not empty: an empty list here read as "this server holds nothing".
+        raise HTTPException(502, "The provider's DNS records could not be read")
+    return {"provider": row["name"], "records": records}
 
 
 @router.post("/api/providers/{pid}/dns-records", status_code=201)
@@ -753,13 +853,20 @@ def delete_dns_record(pid: int, domain: str, request: Request, answer: str | Non
 
     try:
         provider = create_provider(row)
-        # If answer not provided, find it from list
+        # If answer not provided, find it among the records of that name (M13): an
+        # unreadable list is not "no record" (502), and with several answers the first one
+        # was deleted at random -- the caller has to say which (409).
         if not answer:
-            records = provider.list_rewrites() or []
-            for r in records:
-                if r.get("domain") == domain:
-                    answer = r.get("answer")
-                    break
+            records = provider.lookup_rewrites(domain)
+            if records is None:
+                raise HTTPException(502, "The provider's DNS records could not be read; nothing was deleted")
+            answers = list(dict.fromkeys(str(r.get("answer") or "") for r in records if r.get("answer")))
+            if len(answers) > 1:
+                raise HTTPException(
+                    409,
+                    f"{domain} has {len(answers)} records; pass ?answer= to choose the one to delete",
+                )
+            answer = answers[0] if answers else None
 
         if not answer:
             raise HTTPException(404, "DNS record not found")
@@ -805,11 +912,13 @@ def list_proxy_hosts(pid: int, request: Request):
     try:
         provider = create_provider(row)
         hosts = provider.list_hosts()
-        return {"provider": row["name"], "hosts": hosts or []}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"Failed to list proxy hosts: {str(e)}")
+    if hosts is None:
+        raise HTTPException(502, "The provider's proxy hosts could not be read")
+    return {"provider": row["name"], "hosts": hosts}
 
 
 @router.post("/api/providers/{pid}/proxy-hosts", status_code=201)

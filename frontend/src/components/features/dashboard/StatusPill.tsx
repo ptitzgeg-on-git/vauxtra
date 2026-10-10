@@ -30,8 +30,12 @@ export function StatusPill() {
   const details = data ? (
     <div className="space-y-0.5 text-left">
       <p className="font-medium">{label}</p>
-      <p className="tabular-nums">{t('dashboard.status.latency', { latency: formatLatency(data.latency_ms) })}</p>
-      <p className="tabular-nums">{t('dashboard.status.disk', { disk: formatPercent(data.disk_usage) })}</p>
+      {typeof data.latency_ms === 'number' && (
+        <p className="tabular-nums">{t('dashboard.status.latency', { latency: formatLatency(data.latency_ms) })}</p>
+      )}
+      {typeof data.disk_usage === 'number' && (
+        <p className="tabular-nums">{t('dashboard.status.disk', { disk: formatPercent(data.disk_usage) })}</p>
+      )}
       {data.version && (
         <p>
           {t('common.version')} {data.version}

@@ -34,7 +34,7 @@ class HttpIntegrationTests(unittest.TestCase):
         self._start_patch.start()
         self._configure_patch.start()
 
-        self._client_cm = TestClient(app_main.app)
+        self._client_cm = TestClient(app_main.app, base_url="http://localhost")
         self.client = self._client_cm.__enter__()
 
     def tearDown(self) -> None:

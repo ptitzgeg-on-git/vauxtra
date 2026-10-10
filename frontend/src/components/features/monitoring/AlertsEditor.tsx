@@ -6,6 +6,7 @@ import { BellOff, BellRing, RotateCcw, Save } from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
+import { clampWhole } from '@/lib/format';
 import {
   Badge,
   Button,
@@ -256,7 +257,7 @@ export function AlertsEditor({ serviceId, host }: AlertsEditorProps) {
                       value={String(values.min_down_minutes)}
                       onChange={(event) =>
                         patch(webhook.id, {
-                          min_down_minutes: Math.max(0, Math.min(1440, Number(event.target.value) || 0)),
+                          min_down_minutes: clampWhole(event.target.value, 0, 1440),
                         })
                       }
                     />

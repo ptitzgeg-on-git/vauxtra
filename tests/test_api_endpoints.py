@@ -408,13 +408,13 @@ class WebhooksApiTests(IsolatedDBTestCase):
         with patch.object(webhooks_api, "require_auth", lambda _req, scope=None: None):
             webhook = webhooks_api.add_webhook(
                 _request("POST", "/api/webhooks"),
-                {"name": "Ops", "url": "mailto://ops@example.com"},
+                webhooks_api.WebhookIn(name="Ops", url="mailto://ops@example.com"),
             )
 
             result = webhooks_api.set_service_alerts(
                 1,
                 _request("POST", "/api/services/1/alerts"),
-                {
+                webhooks_api.ServiceAlertsIn.model_validate({
                     "alerts": [
                         {
                             "webhook_id": webhook["id"],
@@ -423,7 +423,7 @@ class WebhooksApiTests(IsolatedDBTestCase):
                             "min_down_minutes": 3,
                         }
                     ]
-                },
+                }),
             )
             self.assertTrue(result["ok"])
 
@@ -482,13 +482,23 @@ class _FakeContainer:
 
 
 class _FakeContainersAPI:
-    def list(self):
+    def __init__(self) -> None:
+        self.list_kwargs: list[dict] = []
+
+    def list(self, **kwargs):
+        # docker-py's signature: `ignore_removed` keeps a container removed mid-listing
+        # from failing the whole call (P4.4).
+        self.list_kwargs.append(kwargs)
         return [_FakeContainer()]
 
 
 class _FakeDockerClient:
     def __init__(self) -> None:
         self.containers = _FakeContainersAPI()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class DockerApiTests(IsolatedDBTestCase):
@@ -573,6 +583,39 @@ class DockerApiTests(IsolatedDBTestCase):
 
             # The selected endpoint host must be used by both test and discovery.
             self.assertIn("tcp://10.0.0.21:2375", requested_hosts)
+
+    def test_listing_closes_the_client_and_survives_a_vanished_image(self) -> None:
+        """P4.4: the client was never closed, `c.image` was fetched three times per
+        container, and a container or image removed mid-listing answered 500."""
+        clients: list[_FakeDockerClient] = []
+
+        class _GoneImage(_FakeContainer):
+            @property
+            def image(self):
+                raise RuntimeError("image not found")
+
+            @image.setter
+            def image(self, _value):
+                pass
+
+        def fake_client(host: str | None = None):
+            client = _FakeDockerClient()
+            client.containers.list = lambda **kw: (client.containers.list_kwargs.append(kw), [_GoneImage()])[1]
+            clients.append(client)
+            return client
+
+        with patch.object(docker_api, "require_auth", lambda _req, scope=None: None), \
+                patch.object(docker_api, "_docker_client", fake_client):
+            containers = docker_api.list_docker_containers(
+                _request("GET", "/api/docker/containers"), endpoint_id=None
+            )
+            docker_api.test_docker_endpoint(1, _request("POST", "/api/docker/endpoints/1/test"))
+
+        self.assertEqual(len(containers), 1)
+        self.assertEqual(containers[0]["image"], "")
+        self.assertTrue(all(c.closed for c in clients), "a Docker client was left open")
+        self.assertTrue(all(kw == {"ignore_removed": True}
+                            for c in clients for kw in c.containers.list_kwargs))
 
     def test_import_logs_endpoint_name(self) -> None:
         with patch.object(docker_api, "require_auth", lambda _req, scope=None: None):

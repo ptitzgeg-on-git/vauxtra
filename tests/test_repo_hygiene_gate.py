@@ -210,5 +210,67 @@ class RepoHygieneAllowlistTests(unittest.TestCase):
             self.assertEqual(token, token.lower())
 
 
+class UnpinnedActionPatternTests(unittest.TestCase):
+    """D5: a quoted `uses:` value used to slip past the pin check unread."""
+
+    SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def _ref(self, line: str) -> str | None:
+        match = hygiene._USES.match(line)
+        return match.group(2) if match else None
+
+    def test_quoted_and_unquoted_tags_are_both_read(self) -> None:
+        for line in (
+            "      - uses: actions/checkout@v4",
+            '      - uses: "actions/checkout@v4"',
+            "        uses: 'actions/checkout@v4'",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self._ref(line), "v4")
+
+    def test_a_pinned_sha_with_a_comment_passes(self) -> None:
+        ref = self._ref(f"      - uses: actions/checkout@{self.SHA} # v4")
+        self.assertEqual(ref, self.SHA)
+        self.assertTrue(hygiene._SHA.match(ref))
+
+
+class UnpinnedActionFilesTests(unittest.TestCase):
+    """B26: `.yaml` workflows, local `action.yml` files and `docker://` steps are all read."""
+
+    SHA = "0123456789abcdef0123456789abcdef01234567"
+    DIGEST = "sha256:" + "ab" * 32
+
+    def _scan(self, files: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            for rel, text in files.items():
+                path = Path(tmp) / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            return hygiene._find_unpinned_actions(tmp)
+
+    def test_a_tag_in_a_yaml_workflow_is_reported(self) -> None:
+        bad = self._scan({".github/workflows/ci.yaml": "steps:\n  - uses: actions/checkout@v4\n"})
+        self.assertEqual(bad, [".github/workflows/ci.yaml:2: actions/checkout@v4"])
+
+    def test_a_tag_in_a_local_composite_action_is_reported(self) -> None:
+        bad = self._scan({
+            ".github/actions/setup/action.yml": "runs:\n  steps:\n    - uses: actions/setup-node@v4\n",
+            "action.yaml": "runs:\n  steps:\n    - uses: 'actions/cache@v4'\n",
+        })
+        self.assertEqual(sorted(bad), [
+            ".github/actions/setup/action.yml:3: actions/setup-node@v4",
+            "action.yaml:3: actions/cache@v4",
+        ])
+
+    def test_a_docker_step_needs_a_digest(self) -> None:
+        bad = self._scan({".github/workflows/ci.yml": (
+            "steps:\n"
+            "  - uses: docker://alpine:3.20\n"
+            f"  - uses: \"docker://alpine:3.20@{self.DIGEST}\"\n"
+            f"  - uses: actions/checkout@{self.SHA} # v4\n"
+        )})
+        self.assertEqual(bad, [".github/workflows/ci.yml:2: docker://alpine:3.20"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,10 +1,18 @@
+import logging
 import socket
+import sqlite3
 import time
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.api.sync import push_extra_targets, withdraw_service_routes
+from app.api.sync import (
+    _find_host_id,
+    _stored_host_id,
+    push_extra_targets,
+    withdraw_former_proxy_host,
+    withdraw_service_routes,
+)
 from app.auth import require_auth
 from app.models import (
     add_log,
@@ -17,7 +25,7 @@ from app.models import (
 from app.providers.factory import create_provider, host_id_is_hostname
 from app.public_target import (
     describe_public_target_failure,
-    resolve_public_target,
+    resolve_dns_target,
     suggest_public_targets,
 )
 from app.validators import (
@@ -29,6 +37,7 @@ from app.validators import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _sync_npm_statuses(conn) -> None:
@@ -94,8 +103,12 @@ def _sync_npm_statuses(conn) -> None:
                 # Log but don't block: continue syncing other services.
                 # SQLite lock contention can happen under concurrent writes; avoid warning spam.
                 msg = str(e).lower()
+                # A failed service must neither keep its half-written transaction nor carry
+                # this warning, uncommitted, into the next provider listing.
+                conn.rollback()
                 if "database is locked" not in msg:
                     add_log("warn", f"Failed to sync NPM status for service {svc['id']}: {e}", conn)
+                    conn.commit()
     except Exception:
         # Non-blocking: sync failures shouldn't break service list
         pass
@@ -120,7 +133,11 @@ def _service_target_reachable(host: str, port: int, timeout: float = 2.0) -> tup
             elapsed = round((time.monotonic() - start) * 1000, 1)
             return True, f"Reachable in {elapsed} ms"
     except Exception as e:
-        return False, str(e)
+        # N15: the exception text told a `write` key whether the port was closed, filtered
+        # or the name unknown -- a TCP scanner for the network behind this instance. The
+        # caller learns "not reachable"; the reason goes to the server log.
+        logger.info("Preflight connection to %s:%s failed: %s", host, port, type(e).__name__)
+        return False, "connection failed"
 
 
 #: Every preflight check carries `detail` (the English sentence, kept for logs and older
@@ -372,12 +389,13 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
             )
 
         if body.dns_provider_id:
-            resolved_target, target_source = resolve_public_target(
+            resolved_target, target_source = resolve_dns_target(
                 conn,
                 mode=body.public_target_mode,
                 manual_value=body.dns_ip,
                 proxy_provider_id=body.proxy_provider_id,
                 current_value="",
+                dns_provider_ids=[body.dns_provider_id, *(body.extra_dns_provider_ids or [])],
             )
             checks.append(
                 {
@@ -711,19 +729,36 @@ def get_service(sid: int, request: Request):
     return service
 
 
-def _conflicting_service(conn, public_host: str, exclude_id: int | None = None):
+def _conflicting_service(
+    conn,
+    public_host: str,
+    exclude_id: int | None = None,
+    subdomain: str | None = None,
+    domain: str | None = None,
+):
     """The service already answering for `public_host`, if there is one.
 
     Comparison goes through `_service_public_hostname` rather than the raw columns, because
     a tunnel service publishes `tunnel_hostname` -- so a tunnel and a proxy service can
     collide while their `(subdomain, domain)` pairs differ, which the unique index in
     `app/models.py` cannot see.
+
+    The raw `(subdomain, domain)` pair is compared as well when given: the unique index
+    still applies to it, and a pair it rejects was only discovered at the INSERT, after
+    the providers had already been written.
     """
     for row in conn.execute(
         "SELECT id, subdomain, domain, expose_mode, tunnel_hostname FROM services"
     ).fetchall():
         if exclude_id is not None and row["id"] == exclude_id:
             continue
+        if (
+            subdomain is not None
+            and domain is not None
+            and (row["subdomain"] or "").lower() == subdomain.lower()
+            and (row["domain"] or "").lower() == domain.lower()
+        ):
+            return row
         existing = _service_public_hostname(
             row["expose_mode"] or "proxy_dns",
             row["tunnel_hostname"] or "",
@@ -733,6 +768,31 @@ def _conflicting_service(conn, public_host: str, exclude_id: int | None = None):
         if existing == public_host:
             return row
     return None
+
+
+def _withdraw_extra_targets(conn, sid: int) -> list[str]:
+    """Take a disabled service off its multi-sync targets, leaving the primaries alone.
+
+    The primaries are handled by the enable/disable code of each route; a provider listed
+    both as a primary and as an extra is left to that code too.
+    """
+    svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not svc:
+        return []
+    extra_ids = {
+        r["provider_id"]
+        for r in conn.execute(
+            "SELECT provider_id FROM service_push_targets WHERE service_id=?", (sid,)
+        )
+    }
+    extra_ids -= {
+        pid for pid in (svc["proxy_provider_id"], svc["dns_provider_id"], svc["tunnel_provider_id"]) if pid
+    }
+    if not extra_ids:
+        return []
+    errors = withdraw_service_routes(conn, svc, sid, only_provider_ids=extra_ids)
+    conn.commit()
+    return errors
 
 
 def _unknown_references(conn, body: ServiceIn) -> list[str]:
@@ -784,13 +844,20 @@ def add_service(request: Request, body: ServiceIn):
 
     public_host = _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain)
     conn   = get_db()
+    try:
+        return _create_service(conn, body, public_host)
+    finally:
+        # Every exit, an unexpected exception included, used to leave the connection open.
+        conn.close()
 
+
+def _create_service(conn, body: ServiceIn, public_host: str):
     unknown = _unknown_references(conn, body)
     if unknown:
         conn.close()
         raise HTTPException(400, f"Nothing was created -- unknown {', '.join(unknown)}")
 
-    clash = _conflicting_service(conn, public_host)
+    clash = _conflicting_service(conn, public_host, subdomain=body.subdomain, domain=body.domain)
     if clash:
         conn.close()
         raise HTTPException(
@@ -806,20 +873,86 @@ def add_service(request: Request, body: ServiceIn):
     dns_target = ""
     dns_target_source = ""
     if body.expose_mode == "proxy_dns" and body.dns_provider_id:
-        dns_target, dns_target_source = resolve_public_target(
+        dns_target, dns_target_source = resolve_dns_target(
             conn,
             mode=body.public_target_mode,
             manual_value=body.dns_ip,
             proxy_provider_id=body.proxy_provider_id,
             current_value="",
+            dns_provider_ids=[body.dns_provider_id, *(body.extra_dns_provider_ids or [])],
         )
         if not dns_target:
             refusal = _public_target_refusal(conn, dns_target_source, body.dns_provider_id)
             conn.close()
             raise HTTPException(400, refusal)
 
-    errors = []
+    if body.expose_mode == "proxy_dns" and not body.dns_provider_id:
+        dns_target = body.dns_ip
 
+    stored_proxy_provider_id = body.proxy_provider_id if body.expose_mode == "proxy_dns" else None
+    stored_dns_provider_id = body.dns_provider_id if body.expose_mode == "proxy_dns" else None
+    stored_tunnel_provider_id = body.tunnel_provider_id if body.expose_mode == "tunnel" else None
+    stored_public_target_mode = body.public_target_mode if body.expose_mode == "proxy_dns" else "manual"
+    stored_auto_update_dns = body.auto_update_dns if body.expose_mode == "proxy_dns" else False
+    stored_tunnel_hostname = public_host if body.expose_mode == "tunnel" else ""
+    stored_dns_target = dns_target if body.expose_mode == "proxy_dns" else ""
+
+    # The row is reserved -- inserted and committed -- before a single provider is written.
+    # `create_host` and `add_rewrite` are idempotent: they answer True for a record that
+    # already exists. When the INSERT ran last, the losing side of two concurrent creations
+    # of one hostname took the winner's record for its own, and its compensating delete then
+    # withdrew the route of the service that had just been committed. Refused here, the loser
+    # has published nothing and has nothing to take back.
+    # N24: reserved switched off. Committed as enabled, the row was visible to the scheduler
+    # while the providers were still being written: the auto-reconcile saw a service with no
+    # proxy host yet and created a second one beside the one in flight. The requested state
+    # is written below, with `npm_host_id`, once the primary providers have answered.
+    try:
+        cur = conn.execute(
+            """INSERT INTO services
+               (subdomain, domain, target_ip, target_port, forward_scheme,
+                    websocket, enabled, dns_provider_id, proxy_provider_id, tunnel_provider_id,
+                    expose_mode, public_target_mode, auto_update_dns, tunnel_hostname,
+                    dns_ip, npm_host_id, icon_url)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (body.subdomain, body.domain, body.target_ip, body.target_port,
+                body.forward_scheme, int(body.websocket), 0,
+             stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
+             body.expose_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
+             stored_dns_target, None,
+             body.icon_url),
+        )
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise HTTPException(
+            409,
+            f"{public_host} was created by another request meanwhile -- nothing was changed.",
+        ) from None
+    sid = cur.lastrowid
+
+    primary_proxy_provider_id = stored_proxy_provider_id or stored_tunnel_provider_id
+    extra_proxy_ids = [
+        int(pid)
+        for pid in dict.fromkeys(body.extra_proxy_provider_ids)
+        if pid and pid != primary_proxy_provider_id
+    ]
+    extra_dns_ids = [
+        int(pid)
+        for pid in dict.fromkeys(body.extra_dns_provider_ids)
+        if pid and pid != stored_dns_provider_id
+    ]
+
+    set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
+
+    if body.tag_ids:
+        set_tags(conn, sid, body.tag_ids)
+    if body.environment_ids:
+        set_environments(conn, sid, body.environment_ids)
+    # Committed before the provider calls: holding SQLite's single writer across HTTP calls
+    # is what `update_service` documents as the cause of `database is locked`.
+    conn.commit()
+
+    errors = []
     npm_host_id = None
 
     if body.expose_mode == "tunnel":
@@ -877,6 +1010,7 @@ def add_service(request: Request, body: ServiceIn):
                 except Exception as e:
                     errors.append(str(e))
 
+        dns_write_failed = False
         if body.dns_provider_id:
             row = conn.execute("SELECT * FROM providers WHERE id=?", (body.dns_provider_id,)).fetchone()
             if row and not body.enabled:
@@ -889,55 +1023,21 @@ def add_service(request: Request, body: ServiceIn):
                     if dns.add_rewrite(public_host, dns_target):
                         add_log("info", f"DNS added: {public_host} → {dns_target} ({dns_target_source})")
                     else:
+                        dns_write_failed = True
                         errors.append("Failed to create DNS rewrite")
                         add_log("error", f"DNS failed: {public_host}")
                 except Exception as e:
+                    dns_write_failed = True
                     errors.append(str(e))
-        else:
-            dns_target = body.dns_ip
+        if dns_write_failed and stored_public_target_mode == "auto":
+            # M6: the reserved row named an address no DNS server took. Cleared, so the
+            # push and the auto-DNS see a record still to create.
+            conn.execute("UPDATE services SET dns_ip='' WHERE id=?", (sid,))
 
-    stored_proxy_provider_id = body.proxy_provider_id if body.expose_mode == "proxy_dns" else None
-    stored_dns_provider_id = body.dns_provider_id if body.expose_mode == "proxy_dns" else None
-    stored_tunnel_provider_id = body.tunnel_provider_id if body.expose_mode == "tunnel" else None
-    stored_public_target_mode = body.public_target_mode if body.expose_mode == "proxy_dns" else "manual"
-    stored_auto_update_dns = body.auto_update_dns if body.expose_mode == "proxy_dns" else False
-    stored_tunnel_hostname = public_host if body.expose_mode == "tunnel" else ""
-    stored_dns_target = dns_target if body.expose_mode == "proxy_dns" else ""
-
-    cur = conn.execute(
-        """INSERT INTO services
-           (subdomain, domain, target_ip, target_port, forward_scheme,
-                websocket, enabled, dns_provider_id, proxy_provider_id, tunnel_provider_id,
-                expose_mode, public_target_mode, auto_update_dns, tunnel_hostname,
-                dns_ip, npm_host_id, icon_url)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (body.subdomain, body.domain, body.target_ip, body.target_port,
-            body.forward_scheme, int(body.websocket), int(body.enabled),
-         stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
-         body.expose_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
-         stored_dns_target, npm_host_id,
-         body.icon_url),
+    conn.execute(
+        "UPDATE services SET enabled=?, npm_host_id=COALESCE(?, npm_host_id) WHERE id=?",
+        (int(body.enabled), npm_host_id, sid),
     )
-    sid = cur.lastrowid
-
-    primary_proxy_provider_id = stored_proxy_provider_id or stored_tunnel_provider_id
-    extra_proxy_ids = [
-        int(pid)
-        for pid in dict.fromkeys(body.extra_proxy_provider_ids)
-        if pid and pid != primary_proxy_provider_id
-    ]
-    extra_dns_ids = [
-        int(pid)
-        for pid in dict.fromkeys(body.extra_dns_provider_ids)
-        if pid and pid != stored_dns_provider_id
-    ]
-
-    set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
-
-    if body.tag_ids:
-        set_tags(conn, sid, body.tag_ids)
-    if body.environment_ids:
-        set_environments(conn, sid, body.environment_ids)
     conn.commit()
 
     # The block above published on one proxy and one DNS server. The multi-sync targets were
@@ -954,7 +1054,7 @@ def add_service(request: Request, body: ServiceIn):
 
 
 @router.put("/api/services/{sid}")
-def update_service(sid: int, request: Request, body: ServiceIn):
+def update_service(sid: int, request: Request, body: ServiceIn, response: Response = None):
     require_auth(request, scope="write")
     conn = get_db()
     old  = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
@@ -974,6 +1074,8 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         conn,
         _service_public_hostname(body.expose_mode, body.tunnel_hostname, body.subdomain, body.domain),
         exclude_id=sid,
+        subdomain=body.subdomain,
+        domain=body.domain,
     )
     if clash:
         conn.close()
@@ -995,12 +1097,13 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     dns_ip = ""
     dns_target_source = "n/a"
     if new_mode == "proxy_dns":
-        dns_ip, dns_target_source = resolve_public_target(
+        dns_ip, dns_target_source = resolve_dns_target(
             conn,
             mode=body.public_target_mode,
             manual_value=body.dns_ip,
             proxy_provider_id=body.proxy_provider_id,
             current_value=old["dns_ip"] or "",
+            dns_provider_ids=[body.dns_provider_id, *(body.extra_dns_provider_ids or [])],
         )
         if not dns_ip:
             # Detection can blip. A target the service already holds beats no target at all.
@@ -1010,7 +1113,35 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             conn.close()
             raise HTTPException(400, refusal)
 
+    # M2: the hostname is reserved before any provider is called, the way `add_service`
+    # reserves its row. Caught only at the final UPDATE, a concurrent create of the same
+    # name surfaced after the proxy rule had already been renamed to it: the 409 said
+    # "nothing was saved" while the provider served the new name for this service, and the
+    # other service's idempotent create could adopt that rule. Here the unique indexes
+    # refuse the name while nothing has been published yet.
+    reserved = (
+        body.subdomain, body.domain, new_public_host if new_mode == "tunnel" else "", new_mode,
+    )
+    if reserved != (old["subdomain"], old["domain"], old["tunnel_hostname"] or "", old_mode):
+        try:
+            conn.execute(
+                "UPDATE services SET subdomain=?, domain=?, tunnel_hostname=?, expose_mode=? WHERE id=?",
+                (*reserved, sid),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            conn.close()
+            raise HTTPException(
+                409,
+                "That hostname was just taken by another service. Nothing was changed.",
+            ) from None
+
     errors = []
+    # M6: set when the DNS provider refused (or failed) the new record. The row then keeps
+    # the address it held: storing the new one claimed a record no server answers with,
+    # and the next push compared against it and saw nothing to fix.
+    dns_write_failed = False
 
     next_npm_host_id = None
     if new_mode == "proxy_dns" and old_mode == "proxy_dns" and old["proxy_provider_id"] == body.proxy_provider_id:
@@ -1019,12 +1150,12 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     if new_mode == "tunnel":
         if old_mode == "proxy_dns":
             if old["proxy_provider_id"] and old["npm_host_id"]:
-                old_proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["proxy_provider_id"],)).fetchone()
-                if old_proxy_row:
-                    try:
-                        create_provider(old_proxy_row).delete_host(old["npm_host_id"])
-                    except Exception as e:
-                        add_log("warn", f"Could not clean up old proxy host during mode switch: {e}")
+                # N1: a refused removal was only a log line; it is reported and retried.
+                failure = withdraw_former_proxy_host(
+                    conn, old["proxy_provider_id"], old["npm_host_id"], old_public_host
+                )
+                if failure:
+                    errors.append(failure)
             if old["dns_provider_id"] and old["dns_ip"]:
                 old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["dns_provider_id"],)).fetchone()
                 if old_dns_row:
@@ -1143,6 +1274,18 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                                 next_npm_host_id = old["npm_host_id"]
                         else:
                             errors.append("Failed to update proxy host")
+                    elif not body.enabled:
+                        # M4: a disabled service moved to another proxy got an *active* host
+                        # there, and nothing suspended it when the service was already off.
+                        # The route is created on the next enable (a NULL id re-deploys it);
+                        # the one on the former proxy is withdrawn now.
+                        next_npm_host_id = None
+                        if old_mode == "proxy_dns" and old["proxy_provider_id"] and old["npm_host_id"]:
+                            failure = withdraw_former_proxy_host(
+                                conn, old["proxy_provider_id"], old["npm_host_id"], old_public_host
+                            )
+                            if failure:
+                                errors.append(failure)
                     else:
                         created = proxy.create_host(
                             new_public_host,
@@ -1155,12 +1298,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                         if created:
                             next_npm_host_id = created.get("id")
                             if old_mode == "proxy_dns" and old["proxy_provider_id"] and old["npm_host_id"]:
-                                old_proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["proxy_provider_id"],)).fetchone()
-                                if old_proxy_row:
-                                    try:
-                                        create_provider(old_proxy_row).delete_host(old["npm_host_id"])
-                                    except Exception as e:
-                                        add_log("warn", f"Could not clean up old proxy host: {e}")
+                                failure = withdraw_former_proxy_host(
+                                    conn, old["proxy_provider_id"], old["npm_host_id"], old_public_host
+                                )
+                                if failure:
+                                    errors.append(failure)
                         else:
                             errors.append("Failed to create proxy host")
 
@@ -1207,12 +1349,15 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                             if dns.update_rewrite(old_public_host, old_dns_ip, new_public_host, dns_ip):
                                 add_log("info", f"DNS updated: {new_public_host} → {dns_ip} ({dns_target_source})")
                             else:
+                                dns_write_failed = True
                                 errors.append("Failed to update DNS rewrite")
                     else:
                         if dns.add_rewrite(new_public_host, dns_ip):
                             # Only clean up a previous record that is genuinely a different
-                            # one -- otherwise this deletes what was just added.
-                            if old_mode == "proxy_dns" and old["dns_provider_id"] and old_dns_ip and moved:
+                            # one -- otherwise this deletes what was just added. A record on
+                            # another provider is a different one even under the same name.
+                            if old_mode == "proxy_dns" and old["dns_provider_id"] and old_dns_ip \
+                                    and (moved or not same_provider):
                                 old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old["dns_provider_id"],)).fetchone()
                                 if old_dns_row:
                                     try:
@@ -1221,9 +1366,36 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                                         add_log("warn", f"Could not clean up old DNS rewrite: {e}")
                             add_log("info", f"DNS updated: {new_public_host} → {dns_ip} ({dns_target_source})")
                         else:
+                            dns_write_failed = True
                             errors.append("Failed to update DNS rewrite")
                 except Exception as e:
+                    dns_write_failed = True
                     errors.append(str(e))
+            else:
+                dns_write_failed = True
+
+        # A provider removed from the service, or swapped while the service is disabled,
+        # still holds what was published there: none of the branches above address it.
+        if old_mode == "proxy_dns":
+            old_dns_id = old["dns_provider_id"]
+            if old_dns_id and (old["dns_ip"] or "") and old_dns_id != body.dns_provider_id \
+                    and (not body.dns_provider_id or not body.enabled):
+                old_dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (old_dns_id,)).fetchone()
+                if old_dns_row:
+                    try:
+                        if not create_provider(old_dns_row).delete_rewrite(old_public_host, old["dns_ip"]):
+                            add_log("warn", f"Could not remove {old_public_host} from its former DNS provider")
+                    except Exception as e:
+                        add_log("warn", f"Could not clean up old DNS rewrite: {e}")
+            old_proxy_id = old["proxy_provider_id"]
+            if old_proxy_id and old["npm_host_id"] and not body.proxy_provider_id:
+                # A failed removal used to be a log line only, then kept the former proxy as
+                # the service's own, so the drift check called the route missing and the
+                # auto-reconcile recreated it. It is now an error (207) and the removal is
+                # queued for the scheduler to retry; the service lets go of the proxy (C3).
+                failure = withdraw_former_proxy_host(conn, old_proxy_id, old["npm_host_id"], old_public_host)
+                if failure:
+                    errors.append(failure)
 
     stored_proxy_provider_id = body.proxy_provider_id if new_mode == "proxy_dns" else None
     stored_dns_provider_id = body.dns_provider_id if new_mode == "proxy_dns" else None
@@ -1232,21 +1404,11 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     stored_auto_update_dns = body.auto_update_dns if new_mode == "proxy_dns" else False
     stored_tunnel_hostname = new_public_host if new_mode == "tunnel" else ""
     stored_dns_ip = dns_ip if new_mode == "proxy_dns" else ""
-
-    conn.execute(
-        """UPDATE services SET
-               subdomain=?, domain=?, target_ip=?, target_port=?,
-               forward_scheme=?, websocket=?, enabled=?,
-               dns_provider_id=?, proxy_provider_id=?, tunnel_provider_id=?,
-               expose_mode=?, public_target_mode=?, auto_update_dns=?, tunnel_hostname=?,
-               dns_ip=?, npm_host_id=?, icon_url=?
-           WHERE id=?""",
-        (body.subdomain, body.domain, body.target_ip, body.target_port,
-         body.forward_scheme, int(body.websocket), int(body.enabled),
-         stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
-         new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
-         stored_dns_ip, next_npm_host_id, body.icon_url, sid),
-    )
+    if dns_write_failed and stored_public_target_mode == "auto":
+        # In `auto` mode the address is derived state: kept as it was, so the push and the
+        # auto-DNS still see the record as out of date. A manual address is the operator's
+        # setting and is kept as typed, for the push to retry.
+        stored_dns_ip = old["dns_ip"] or ""
 
     primary_proxy_provider_id = stored_proxy_provider_id or stored_tunnel_provider_id
     extra_proxy_ids = [
@@ -1277,9 +1439,57 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     primaries = {pid for pid in (primary_proxy_provider_id, stored_dns_provider_id) if pid}
     renamed = old_public_host != new_public_host
     stale_targets = (previous_extras if renamed else previous_extras - still_targeted) - primaries
+    # M5: withdrawn before the UPDATE below. `withdraw_service_routes` commits before every
+    # provider call, so run after the UPDATE it committed the new row half-way, without its
+    # push targets, tags and environments, for any reader (the reconcile) to act on.
     if stale_targets:
+        conn.commit()
         for message in withdraw_service_routes(conn, old, sid, only_provider_ids=stale_targets):
             add_log("warn", f"Could not withdraw {old_public_host} from a former target: {message}", conn)
+        conn.commit()
+
+    try:
+        conn.execute(
+            """UPDATE services SET
+                   subdomain=?, domain=?, target_ip=?, target_port=?,
+                   forward_scheme=?, websocket=?, enabled=?,
+                   dns_provider_id=?, proxy_provider_id=?, tunnel_provider_id=?,
+                   expose_mode=?, public_target_mode=?, auto_update_dns=?, tunnel_hostname=?,
+                   dns_ip=?, npm_host_id=?, icon_url=?
+               WHERE id=?""",
+            (body.subdomain, body.domain, body.target_ip, body.target_port,
+             body.forward_scheme, int(body.websocket), int(body.enabled),
+             stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
+             new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
+             stored_dns_ip, next_npm_host_id, body.icon_url, sid),
+        )
+    except sqlite3.IntegrityError as exc:
+        # The hostname was reserved above, so what lands here is mostly a provider deleted
+        # while this route was calling the others (foreign keys are enforced). Either way a
+        # 409, not an unhandled 500, and a message that names the actual cause.
+        conn.rollback()
+        conn.close()
+        if "FOREIGN KEY" in str(exc).upper():
+            cause = "A provider this service uses was deleted while it was being updated."
+        else:
+            cause = "That hostname was taken by another service while this one was being updated."
+        # M5: "nothing was saved" was not true. By now the hostname reservation is committed
+        # and the providers, the former multi-sync targets included, have been written to:
+        # the message says what already happened, so the operator knows what to check.
+        done = []
+        if reserved != (old["subdomain"], old["domain"], old["tunnel_hostname"] or "", old_mode):
+            done.append(f"the hostname was already changed to {new_public_host}")
+        if stale_targets:
+            done.append(
+                f"{old_public_host} was already withdrawn from {len(stale_targets)} former "
+                "target(s)"
+            )
+        done.append("the primary providers may already carry the new configuration")
+        detail = (
+            f"{cause} The other service settings were not saved; " + "; ".join(done)
+            + ". Edit the service again or push it to bring its providers back in line."
+        )
+        raise HTTPException(409, detail) from None
 
     set_push_targets(conn, sid, extra_proxy_ids, extra_dns_ids)
 
@@ -1336,10 +1546,13 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                         if next_npm_host_id:
                             if proxy.toggle_host(next_npm_host_id, False):
                                 add_log("info", f"Proxy suspended: {new_public_host}", conn)
-                            else:
-                                proxy.delete_host(next_npm_host_id)
+                            elif proxy.delete_host(next_npm_host_id):
+                                # Forgotten only once it is really gone: a NULL id is what
+                                # sends the enable path to create a second host.
                                 conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid,))
                                 add_log("info", f"Proxy removed (suspend not supported, config kept in Vauxtra): {new_public_host}", conn)
+                            else:
+                                errors.append("Failed to withdraw the proxy host of the disabled service")
             except Exception as e:
                 add_log("warn", f"Could not manage proxy enabled state: {e}", conn)
 
@@ -1347,8 +1560,15 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         # `body.enabled` and runs on every PUT, not only on a transition, so it already adds
         # the record on enable and withdraws it on disable. Repeating it here would push the
         # same change twice and log it twice.
-    
+
     conn.commit()
+
+    # The multi-sync targets of a disabled service. Everything above addresses the two
+    # primary columns, and `push_extra_targets` below only ever adds: a disabled service
+    # kept resolving and forwarding on every extra target.
+    if not body.enabled:
+        errors.extend(_withdraw_extra_targets(conn, sid))
+
     add_log("info", f"Service updated: {new_public_host}")
 
     # Same gap as `add_service`: everything above addresses one proxy and one DNS server.
@@ -1407,6 +1627,10 @@ def update_service(sid: int, request: Request, body: ServiceIn):
         t["provider_id"] for t in push_targets if t["role"] == "dns"
     ]
 
+    # 207 as `add_service` does: a 200 carrying errors read as a clean save to any client
+    # that checks the status only.
+    if errors and response is not None:
+        response.status_code = 207
     return {**service, "errors": errors}
 
 
@@ -1445,9 +1669,13 @@ def delete_service(sid: int, request: Request):
     return {"ok": True, "errors": errors}
 
 
-@router.get("/api/services/{sid}/check")
+@router.post("/api/services/{sid}/check")
 def check_service(sid: int, request: Request):
-    require_auth(request)
+    # `write`, like `check-all`: this connects to the target and rewrites the service's
+    # `status` and `last_checked`, then adds a journal line.
+    # N17: POST, not GET. A GET escapes the cross-site write check, so an `<img>` on any
+    # page could make an open instance probe its targets on the visitor's behalf.
+    require_auth(request, scope="write")
     conn = get_db()
     svc  = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not svc:
@@ -1461,7 +1689,8 @@ def check_service(sid: int, request: Request):
         with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
             status     = "ok"
             latency_ms = round((time.monotonic() - start) * 1000, 1)
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError: `UnicodeError` from the IDNA codec on a malformed name (M2).
         status = "error"
 
     public_host = _service_public_hostname(
@@ -1498,6 +1727,9 @@ def check_all(request: Request):
     ).fetchall()
     ok_count = error_count = 0
 
+    # Probe everything first, then write: an UPDATE inside the loop held SQLite's single
+    # writer lock across every remaining three-second connection attempt.
+    results: list[tuple[str, int]] = []
     for svc in services:
         if (svc["expose_mode"] or "").strip().lower() == "tunnel":
             continue
@@ -1506,22 +1738,29 @@ def check_all(request: Request):
             with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
                 status = "ok"
                 ok_count += 1
-        except OSError:
+        except (OSError, ValueError):
             status = "error"
             error_count += 1
-        conn.execute(
-            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-            (status, svc["id"]),
-        )
+        results.append((status, svc["id"]))
 
+    conn.executemany(
+        "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?", results
+    )
     conn.commit()
     conn.close()
     return {"checked": len(services), "ok": ok_count, "error": error_count}
 
 
 class _BulkActionBody(BaseModel):
-    ids:    list[int]
+    # Bounded: the ids become SQL placeholders (SQLite caps them) and each one costs
+    # provider calls. Repeated ids were processed, and counted, once per repetition.
+    ids:    list[int] = Field(max_length=500)
     action: str  # "enable" | "disable" | "delete"
+
+    @field_validator("ids")
+    @classmethod
+    def _unique_ids(cls, v: list[int]) -> list[int]:
+        return list(dict.fromkeys(v))
 
 
 @router.post("/api/services/bulk")
@@ -1564,6 +1803,11 @@ def bulk_action(body: _BulkActionBody, request: Request):
         # Generalized enable/disable: manage each provider
         for svc in services:
             sid_b = svc["id"]
+            if bool(svc["enabled"]) == enable:
+                # M3: no transition, nothing to publish or withdraw. Enabling a service that
+                # was already on added a record for the freshly resolved address beside the
+                # live one, then overwrote `dns_ip`: the old record was left orphaned.
+                continue
             mode = (svc["expose_mode"] or "proxy_dns").strip().lower()
             pub = _service_public_hostname(
                 mode, svc["tunnel_hostname"] or "", svc["subdomain"], svc["domain"]
@@ -1594,6 +1838,11 @@ def bulk_action(body: _BulkActionBody, request: Request):
                                     errors.append(f"Service {sid_b}: failed to withdraw the tunnel route")
                     except Exception as e:
                         errors.append(f"Service {sid_b}: tunnel state error — {e}")
+                conn.commit()
+                if enable:
+                    errors.extend(f"Service {sid_b}: {e}" for e in push_extra_targets(conn, sid_b))
+                else:
+                    errors.extend(f"Service {sid_b}: {e}" for e in _withdraw_extra_targets(conn, sid_b))
                 continue
 
             if mode != "proxy_dns":
@@ -1605,9 +1854,25 @@ def bulk_action(body: _BulkActionBody, request: Request):
                     proxy_row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["proxy_provider_id"],)).fetchone()
                     if proxy_row:
                         proxy = create_provider(proxy_row)
+                        # The push looks the rule up live when the stored id no longer names
+                        # it; the toggles used the stale id as is. Same lookup here, and the
+                        # id found is written back.
+                        host_id = svc["npm_host_id"]
+                        if host_id:
+                            host_id = _stored_host_id(
+                                host_id_is_hostname(proxy, proxy_row["type"]), svc, pub
+                            ) or _find_host_id(proxy, pub)
+                            if host_id != svc["npm_host_id"]:
+                                conn.execute(
+                                    "UPDATE services SET npm_host_id=? WHERE id=?", (host_id, sid_b)
+                                )
+                                # Committed before the toggle, delete or create below: those
+                                # are HTTP calls, and SQLite's single writer must not be held
+                                # across them.
+                                conn.commit()
                         if enable:
-                            if svc["npm_host_id"]:
-                                if proxy.toggle_host(svc["npm_host_id"], True):
+                            if host_id:
+                                if proxy.toggle_host(host_id, True):
                                     add_log("info", f"Proxy enabled: {pub}", conn)
                                 else:
                                     add_log("info", f"Proxy active (toggle not supported): {pub}", conn)
@@ -1624,30 +1889,80 @@ def bulk_action(body: _BulkActionBody, request: Request):
                                 else:
                                     errors.append(f"Service {sid_b}: failed to re-deploy proxy")
                         else:
-                            if svc["npm_host_id"]:
-                                if proxy.toggle_host(svc["npm_host_id"], False):
+                            if host_id:
+                                if proxy.toggle_host(host_id, False):
                                     add_log("info", f"Proxy suspended: {pub}", conn)
-                                else:
-                                    proxy.delete_host(svc["npm_host_id"])
+                                elif proxy.delete_host(host_id):
                                     conn.execute("UPDATE services SET npm_host_id=NULL WHERE id=?", (sid_b,))
                                     add_log("info", f"Proxy removed (suspend not supported): {pub}", conn)
+                                else:
+                                    errors.append(f"Service {sid_b}: failed to withdraw the proxy host")
                 except Exception as e:
                     errors.append(f"Service {sid_b}: proxy state error — {e}")
+            conn.commit()
+
+            # An automatic target is resolved again on enable, as the push does: the address
+            # stored when the service was disabled may be weeks old, and re-adding it would
+            # publish a former WAN IP until the next reconcile.
+            dns_ip = svc["dns_ip"]
+            refreshed = False
+            if enable and (svc["public_target_mode"] or "manual") == "auto":
+                try:
+                    extra_dns = [
+                        r["provider_id"]
+                        for r in conn.execute(
+                            "SELECT provider_id FROM service_push_targets WHERE service_id=? AND role='dns'",
+                            (sid_b,),
+                        )
+                    ]
+                    fresh, _source = resolve_dns_target(
+                        conn,
+                        mode="auto",
+                        manual_value="",
+                        proxy_provider_id=svc["proxy_provider_id"],
+                        current_value=dns_ip or "",
+                        dns_provider_ids=[svc["dns_provider_id"], *extra_dns],
+                    )
+                except Exception as e:
+                    # Detection can blip; the stored target beats no record at all.
+                    logger.info("Public target detection failed on enable for %s: %s", pub, type(e).__name__)
+                    fresh = ""
+                if fresh and fresh != dns_ip:
+                    # M6: stored only once the DNS provider has taken the record (below).
+                    # Written here, a refused add left the row naming an address no server
+                    # answered with, and the next push saw nothing to fix.
+                    refreshed = True
+                    dns_ip = fresh
 
             # DNS provider: remove on disable, re-add on enable
-            if svc["dns_provider_id"] and svc["dns_ip"]:
+            if svc["dns_provider_id"] and dns_ip:
                 try:
                     dns_row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["dns_provider_id"],)).fetchone()
                     if dns_row:
                         dns = create_provider(dns_row)
                         if enable:
-                            dns.add_rewrite(pub, svc["dns_ip"])
-                            add_log("info", f"DNS re-added on enable: {pub} → {svc['dns_ip']}", conn)
+                            if dns.add_rewrite(pub, dns_ip):
+                                if refreshed:
+                                    conn.execute("UPDATE services SET dns_ip=? WHERE id=?", (dns_ip, sid_b))
+                                    add_log("info", f"Public target refreshed on enable: {pub} → {dns_ip}", conn)
+                                add_log("info", f"DNS re-added on enable: {pub} → {dns_ip}", conn)
+                            else:
+                                errors.append(f"Service {sid_b}: failed to re-add the DNS record")
                         else:
-                            dns.delete_rewrite(pub, svc["dns_ip"])
-                            add_log("info", f"DNS removed on disable: {pub}", conn)
+                            if dns.delete_rewrite(pub, dns_ip):
+                                add_log("info", f"DNS removed on disable: {pub}", conn)
+                            else:
+                                errors.append(f"Service {sid_b}: failed to remove the DNS record")
                 except Exception as e:
                     errors.append(f"Service {sid_b}: DNS state error — {e}")
+            conn.commit()
+
+            # The multi-sync targets, which this loop never reached: a bulk disable left the
+            # hostname live on every extra target, and a bulk enable did not bring it back.
+            if enable:
+                errors.extend(f"Service {sid_b}: {e}" for e in push_extra_targets(conn, sid_b))
+            else:
+                errors.extend(f"Service {sid_b}: {e}" for e in _withdraw_extra_targets(conn, sid_b))
 
             # Once per service, not once for the route. The commit above released the writer
             # lock, but every `add_log(..., conn)` in this loop takes it again -- so without
@@ -1656,10 +1971,9 @@ def bulk_action(body: _BulkActionBody, request: Request):
             # hangs on service seven no longer costs the audit trail of services one to six.
             conn.commit()
 
-        affected = conn.execute(
-            f"SELECT COUNT(*) FROM services WHERE id IN ({placeholders})",
-            body.ids,
-        ).fetchone()[0]
+        # M3: only the services whose state changed count; one already in the asked state
+        # was skipped above, and reporting it as affected told the operator work was done.
+        affected = sum(1 for svc in services if bool(svc["enabled"]) != enable)
         conn.commit()
         add_log("info", f"Bulk {body.action}: {affected} service(s)")
 
@@ -1688,6 +2002,9 @@ def bulk_action(body: _BulkActionBody, request: Request):
             )
             conn.execute("DELETE FROM services WHERE id=?", (sid,))
             affected += 1
+            # Per service: the next one starts with provider calls, which must not run with
+            # SQLite's single writer lock held by this one's DELETE.
+            conn.commit()
 
         conn.commit()
         add_log("info", f"Bulk delete: {affected} service(s)")

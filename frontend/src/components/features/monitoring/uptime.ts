@@ -9,7 +9,7 @@
  *
  * Two things the table has to be honest about:
  *  - there is no latency column in `uptime_events`. Latency exists only in the answer of
- *    `GET /api/services/{sid}/check`, which measures one service on demand.
+ *    `POST /api/services/{sid}/check`, which measures one service on demand.
  *  - `expose_mode === 'tunnel'` services are skipped by both the scheduler and
  *    `POST /api/services/check-all` (TCP against a tunnel target always fails), so they
  *    have no history and no `last_checked` — that is expected, not a fault.
@@ -200,7 +200,7 @@ export function overallAvailability(
 // On-demand latency
 // ---------------------------------------------------------------------------
 
-/** One `GET /api/services/{sid}/check` result, kept for as long as the page is open. */
+/** One `POST /api/services/{sid}/check` result, kept for as long as the page is open. */
 export interface LatencyProbe {
   /** Null when the target never answered — the check says `error`, not "0 ms". */
   latencyMs: number | null;

@@ -10,12 +10,13 @@
  * sessionStorage). The keys it owns are listed once, in `SETUP_SESSION_KEYS`.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Monitor, Moon, Sun } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/api/client';
+import { AUTH_STATUS_KEY, authStatusQuery } from '@/api/authStatus';
 import { BrandMark } from '@/components/layout/BrandMark';
 import { IconButton, Select, useConfirmDialog } from '@/components/ui';
 import { getErrorDetail, getHttpStatus, translateApiError } from '@/lib/errors';
@@ -146,10 +147,46 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   /* ─────────────────── API Calls ─────────────────── */
 
+  // A failed load used to be swallowed: the list stayed empty and read exactly like an
+  // instance with no integration yet.
+  //
+  // Every load takes a ticket and only the latest one may write the list. The mount load
+  // below and a reload after adding an integration can be in flight together, and the older
+  // answer landing last put back a list without the integration just created.
+  const providersLoadSeq = useRef(0);
   const refreshProviders = useCallback(async () => {
+    const seq = ++providersLoadSeq.current;
     try {
-      setProviders(await api.get<ProviderItem[]>('/providers'));
-    } catch { /* ignore */ }
+      const list = await api.get<ProviderItem[]>('/providers');
+      if (seq === providersLoadSeq.current) setProviders(list);
+    } catch (err) {
+      if (seq === providersLoadSeq.current) toast.error(translateApiError(err, t, t('providers.error_title')));
+    }
+  }, [t]);
+
+  // `step` survives a reload (session storage) but `providers` does not: a wizard reopened
+  // past the welcome screen showed no integration and offered to import from none.
+  useEffect(() => {
+    if (step === 'welcome') return;
+    // `active` drops the answer once the wizard is gone (setup finished, or unmounted
+    // mid-request), so it neither writes state nor raises a toast over the next screen.
+    let active = true;
+    const seq = ++providersLoadSeq.current;
+    const isCurrent = () => active && seq === providersLoadSeq.current;
+    // The state is set from the promise callback, not from the effect body.
+    api.get<ProviderItem[]>('/providers').then(
+      (list) => {
+        if (isCurrent()) setProviders(list);
+      },
+      (err) => {
+        if (isCurrent()) toast.error(translateApiError(err, t, t('providers.error_title')));
+      },
+    );
+    return () => {
+      active = false;
+    };
+    // Mount only: later steps reload the list themselves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const goToProviders = () => {
@@ -160,7 +197,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
   const handleSetPassword = async (password: string) => {
     try {
       await api.post('/auth/setup-password', { password });
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
       toast.success(t('setup.toast.password_set'));
       goToProviders();
     } catch (err: unknown) {
@@ -267,7 +304,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
 
   const handleRestoreFinish = async (summary: { secretsIncluded: boolean }) => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['auth-status'] }),
+      queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY }),
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
       queryClient.invalidateQueries({ queryKey: ['services'] }),
       queryClient.invalidateQueries({ queryKey: ['domains'] }),
@@ -285,7 +322,7 @@ export function Setup({ onComplete }: { onComplete: () => void | Promise<void> }
     // spinner, nothing more.
     try {
       await Promise.all([
-        queryClient.fetchQuery({ queryKey: ['auth-status'], queryFn: () => api.get('/auth/me') }),
+        queryClient.fetchQuery(authStatusQuery),
         queryClient.fetchQuery({ queryKey: ['providers'], queryFn: () => api.get('/providers') }),
         queryClient.fetchQuery({ queryKey: ['services'], queryFn: () => api.get('/services'), staleTime: 0 }),
         queryClient.fetchQuery({ queryKey: ['health'], queryFn: () => api.get('/health') }),

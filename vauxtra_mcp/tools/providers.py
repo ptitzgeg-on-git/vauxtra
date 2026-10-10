@@ -2,10 +2,10 @@
 from typing import Any
 
 from vauxtra_mcp import client
-from vauxtra_mcp.app import mcp
+from vauxtra_mcp.app import READ_ONLY, mcp
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_providers() -> list[dict[str, Any]]:
     """List all configured providers (NPM, Zoraxy, Traefik, Pi-hole, AdGuard, Cloudflare, etc.)."""
     r = client.get("/providers")
@@ -13,7 +13,7 @@ def list_providers() -> list[dict[str, Any]]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_provider_types() -> list[dict[str, Any]]:
     """Return all supported provider types with their capabilities and required fields."""
     r = client.get("/providers/types")
@@ -94,15 +94,24 @@ def update_provider(
 
 
 @mcp.tool()
-def delete_provider(provider_id: int, force: bool = False) -> dict[str, Any]:
+def delete_provider(provider_id: int, force: bool = False, withdraw: bool = False) -> dict[str, Any]:
     """Delete a provider by ID.
 
     Refuses with 409 while services still reference it, and the error carries the list
     (`detail.services`, each with `id`, `fqdn` and the `roles` it fills). Call again with
     `force=True` to delete anyway: those services keep their public hostname but lose the
     link, so nothing is pushed for them until another provider is chosen.
+
+    With `force=True` alone, the records those services had on this provider stay live on it.
+    Add `withdraw=True` to remove them from the provider first; the answer's `errors` lists
+    any record that could not be withdrawn.
     """
-    r = client.delete(f"/providers/{provider_id}", params={"force": "true"} if force else None)
+    params: dict[str, str] = {}
+    if force:
+        params["force"] = "true"
+    if withdraw:
+        params["withdraw"] = "true"
+    r = client.delete(f"/providers/{provider_id}", params=params or None)
     client.check(r)
     return r.json()
 
@@ -151,7 +160,7 @@ def validate_provider_draft(
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_provider_health(provider_id: int) -> dict[str, Any]:
     """Get the current health status of a specific provider."""
     r = client.get(f"/providers/{provider_id}/health")
@@ -159,7 +168,7 @@ def get_provider_health(provider_id: int) -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_all_providers_health() -> dict[str, Any]:
     """Batch health check for all enabled providers. Returns status per provider ID."""
     r = client.get("/providers/health")
@@ -167,7 +176,7 @@ def get_all_providers_health() -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_tunnel_health() -> dict[str, Any]:
     """Get the aggregate health status of all Cloudflare Tunnel providers."""
     r = client.get("/providers/tunnels/health")

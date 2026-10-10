@@ -7,6 +7,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Upgrading
+
+- **MCP bridge: `restore_backup` and `reset_all_data` now require `confirm=True`.** Called
+  without it, both tools refuse and change nothing. A script or an agent prompt that called
+  them directly has to pass `confirm=True` after asking the user.
+- **MCP bridge: `fastmcp` moved to the 3.x line (`fastmcp>=3.2,<4`).** Reinstall the bridge
+  dependencies (`pip install -r vauxtra_mcp/requirements.txt`) before restarting it; the bridge
+  is no longer tested against 2.x.
+- **Docker discovery is off when `/var/run/docker.sock` belongs to group 0.** The container
+  no longer adds its user to the root group (Docker Desktop, some rootless setups); the log
+  says so at start. Give the socket its own group, or point a Docker endpoint at a socket
+  proxy, to get discovery back.
+- **Anonymous `GET /api/health` now answers `{"ok", "db"}` only.** The version, latency and
+  disk usage need a session or an API key. Container health checks are unaffected; a
+  monitor that read `version` without credentials has to send a key.
+
 ### Security
 
 - **The port was published on every interface of the host, and what answers it holds the
@@ -45,7 +61,89 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   nothing about the sixty commits behind it, and reported green for a history it never
   opened.
 
+- **`/metrics` now takes a `read` API key.** It was open to anyone who could reach the
+  port, and named the provider types in use, the services that are down and the schema
+  version. **Upgrading:** add `authorization: {type: Bearer, credentials_file: ...}` to the
+  scrape job (see `docs/HOWTO.md`), with a key that has the `read` scope.
+
+- **Every Docker endpoint route that changes or probes an endpoint takes the `admin`
+  scope**, whatever its scheme (`unix://` included): adding one, making it the default,
+  testing it and deleting it. A
+  daemon that cannot be reached is reported as unavailable without the underlying error:
+  the text told "refused" from "timed out", which made the endpoint test a port scanner.
+  The detail is in the server log. `/api/docker/containers` only returns the `vauxtra.*`,
+  `traefik.*` and compose project/service labels, minus anything that looks like a
+  credential.
+
+- **The MCP bridge over HTTP (`--http`) is protected by `VAUXTRA_MCP_TOKEN`.** With a token,
+  every request needs `Authorization: Bearer <token>` (401 otherwise) and the Host and
+  Origin checks are skipped, so a reverse proxy works. Without one, the bridge only listens
+  on loopback and checks Host (421) and Origin (403). **Upgrading:** a bridge started with
+  `VAUXTRA_MCP_HOST` set to a non-loopback address and no token now refuses to start. Set
+  the token, or tunnel to the loopback port. See `vauxtra_mcp/README.md`.
+
+- **The image no longer receives `.env.*` files or the `lab/` tree.** `.dockerignore`
+  excluded `.env` only, so a `.env.local` or `.env.production` next to the Dockerfile was
+  copied into the build context and could end up in a layer.
+
+- **The repository hygiene gate reads every file that runs actions.** The pin check
+  (`scripts/check_repo_hygiene.py`) now reads quoted `uses:` values, `.yaml` workflows, local
+  composite actions (`action.yml`, `action.yaml`) and `docker://` steps, which must be pinned
+  by `@sha256:` digest.
+
+- **Second review pass.** Webhook URLs aimed at the local network, and the generic
+  `json://`, `form://` and `xml://` schemes, need the `admin` scope. The webhook test routes
+  are rate limited and no longer echo the sender's error. A restore runs every service,
+  provider URL and Docker endpoint through the API's validators before anything is wiped,
+  and no longer echoes the SQLite error. Provider requests refuse link-local and cloud
+  metadata addresses, after name resolution as well. Redirects are only followed to the
+  same origin. Clearing the journal takes `admin`. Checking a service and running a sync
+  take `write`. The log stream reads SQLite off the event loop. At most 10 streams can
+  be open at once and 5 per caller (each API key, each browser login); an admin caller may
+  go past the global cap but never past its own.
+
+- **Browser and session hardening.** A state-changing request whose `Origin` names another
+  site is refused with `403`. While no admin password is set, the instance only answers
+  under an IP address, `localhost` or a host listed in `CORS_ORIGINS`; any other name gets
+  `421` (DNS rebinding). Logging out revokes every session, a session lasts at most 7 days
+  whatever its activity, and changing `APP_PASSWORD` revokes the sessions opened with the
+  previous one. **Upgrading:** a Prometheus job or an MCP bridge that reaches an instance
+  without a password by name (`vauxtra:8888`) now gets `421`; see `docs/HOWTO.md`.
+
+- **Third review pass.**
+  - `POST /api/services/{id}/check` replaces the `GET`, which a cross-site `<img>` could
+    trigger. **Upgrading:** scripts calling it with `GET` must switch to `POST`.
+  - A provider `ca_bundle` that changes takes the `admin` scope, so a `write` key cannot use
+    it to learn which files exist on the server.
+  - The image no longer gives the runtime user ownership of the application code; only
+    `/app/data` is writable.
+  - Pending webhook deliveries without a target, left over from older versions, are
+    cancelled once at startup instead of being retried forever.
+  - A service being created is stored disabled until its providers answer, and a unique
+    index keeps two services from claiming the same public hostname.
+  - The settings webhook test is rate limited and no longer echoes the sender's error; at
+    most 5 log streams are open per identity; the WAN address is detected once per
+    reconcile cycle; enabling a service with an automatic DNS target resolves it again.
+
+### Changed
+
+- **Tag and environment names may no longer contain `:` or `,`.** **Upgrading:** existing
+  names holding either character are renamed at startup (`-` replaces them, followed by
+  `-<id>` when the result is already taken), and the names of a restored backup are renamed
+  the same way and listed in the restore report.
+
+- **A restore checks the backup before anything is wiped.** A provider URL or a Docker
+  endpoint the API would refuse fails the whole restore with `400`, and nothing is
+  replaced. A service the form refuses today is left out and listed in the report.
+
+- **Pushing a disabled service answers `409`** instead of publishing a hostname the
+  interface shows as off.
+
 ### Added
+
+- **Per-provider upstream TLS settings.** Certificates are still verified by default.
+  `extra.ca_bundle` points a provider at a private CA, and `extra.tls_verify: false` (a JSON
+  boolean, nothing else) turns verification off for that provider alone.
 
 - **A frontend test runner, because three fixes in a row shipped with the same caveat.** The
   bodies of the last three pull requests each ended by saying their defect could only be

@@ -1,6 +1,7 @@
 """Service templates — pre-configured defaults that accelerate service creation."""
 
 import json
+import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -58,6 +59,28 @@ class TemplateIn(BaseModel):
             raise ValueError("target_port must be between 1 and 65535")
         return v
 
+    @field_validator("public_target_mode")
+    @classmethod
+    def valid_public_target_mode(cls, v):
+        if v not in {"manual", "auto"}:
+            raise ValueError("public_target_mode must be 'manual' or 'auto'")
+        return v
+
+
+def _write_template(conn, sql: str, params: tuple):
+    """Run the INSERT or UPDATE; an unknown provider id or a name taken meanwhile is a 4xx.
+
+    Both used to surface as a 500: the provider columns are foreign keys, and the name
+    check above the write is not atomic with it.
+    """
+    try:
+        return conn.execute(sql, params)
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        if "FOREIGN KEY" in str(e).upper():
+            raise HTTPException(400, "Unknown provider") from None
+        raise HTTPException(409, "A template with this name already exists") from None
+
 
 def _row_to_dict(row) -> dict:
     d = dict(row)
@@ -107,7 +130,8 @@ def create_template(request: Request, body: TemplateIn):
         if existing:
             raise HTTPException(409, "A template with this name already exists")
 
-        cur = conn.execute(
+        cur = _write_template(
+            conn,
             """INSERT INTO service_templates
                (name, description, forward_scheme, target_port, websocket, expose_mode,
                 proxy_provider_id, dns_provider_id, tunnel_provider_id,
@@ -144,7 +168,8 @@ def update_template(tid: int, request: Request, body: TemplateIn):
         if conflict:
             raise HTTPException(409, "A template with this name already exists")
 
-        conn.execute(
+        _write_template(
+            conn,
             """UPDATE service_templates SET
                name=?, description=?, forward_scheme=?, target_port=?, websocket=?,
                expose_mode=?, proxy_provider_id=?, dns_provider_id=?,

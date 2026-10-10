@@ -10,7 +10,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/ptitzgeg-on-git/vauxtra?label=release)](https://github.com/ptitzgeg-on-git/vauxtra/releases)
 [![Docker Image](https://ghcr-badge.egpl.dev/ptitzgeg-on-git/vauxtra/latest_tag?trim=major&label=ghcr)](https://github.com/ptitzgeg-on-git/vauxtra/pkgs/container/vauxtra)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.13-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.14-blue)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-green)](https://fastapi.tiangolo.com/)
 [![MCP Ready](https://img.shields.io/badge/MCP-Ready-purple)](https://modelcontextprotocol.io/)
@@ -33,7 +33,7 @@
 | **Service Templates** | Pre-configured blueprints that pre-fill the service form — one click to deploy a standard HTTPS app, internal tool, or tunnel service |
 | **Certificate monitoring** | Track NPM and Zoraxy certificates; alerts at < 30 days (warn) and < 7 days (error) |
 | **Webhook retry** | Failed Apprise notifications are retried with exponential backoff (1 min → 24 h); delivery log visible in metrics |
-| **Prometheus metrics** | `/metrics` endpoint in Prometheus text format — scrape service health, provider counts, logs, webhooks, templates |
+| **Prometheus metrics** | `/metrics` endpoint in Prometheus text format (`read` API key) — scrape service health, provider counts, logs, webhooks, templates |
 | **API Keys** | Bearer token auth for CI/CD pipelines and MCP server access |
 | **MCP Server** | Expose core operations as tools for MCP-compatible clients and automation |
 | **Webhook alerts** | Apprise-compatible webhooks for service down/recovery, provider state changes, and reconcile events |
@@ -141,6 +141,17 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `FORWARDED_ALLOW_IPS` | *(empty)* | Address of the reverse proxy in front of this instance. Unset, every rate limit keys on the socket peer — behind a proxy that is one address for every visitor, so five failed logins from anywhere lock you out. Do not set it without a proxy actually in front. |
 
 > **⚠️ Important**: Do not change `SECRET_KEY` after adding providers. All stored credentials are encrypted with this key.
+
+> **Behind a reverse proxy**, forward the original host so the browser's `Origin` matches
+> what Vauxtra sees: with nginx, `proxy_set_header Host $host;` next to `proxy_pass`. If the
+> proxy cannot do that, set `FORWARDED_ALLOW_IPS` and send `X-Forwarded-Host`, or list the
+> public origin in `CORS_ORIGINS`. Otherwise every write of the interface, the login
+> included, is refused with a 403 and the log says why once.
+
+> **No admin password yet?** Until one is set (setup wizard or `APP_PASSWORD`), the instance
+> grants the admin scope to every request, so it only answers under an IP address,
+> `localhost`, or a host listed in `CORS_ORIGINS`. Any other name gets a 421: a page could
+> otherwise rebind its own domain to your instance and drive it from a visitor's browser.
 
 > **Forgot your password?** If set via `.env`, edit the file. If set via the Setup wizard, use Settings → Change Password while logged in. Locked out entirely, clear **both** rows and restart:
 >
@@ -270,7 +281,7 @@ Add an equivalent server block to your MCP client configuration:
 
 ### Available MCP tools
 
-See [docs/HOWTO.md](docs/HOWTO.md#10-mcp-integration) for the full list. Summary:
+See [docs/HOWTO.md](docs/HOWTO.md#11-mcp-integration) for the full list. Summary:
 
 **Services** — `list_services`, `get_service`, `create_service`, `update_service`, `delete_service`, `toggle_service`, `sync_services_from_providers`, `import_services_from_sync`
 
@@ -303,7 +314,7 @@ All endpoints accept `Authorization: Bearer <api_key>` in addition to session co
 ### Backend
 
 ```bash
-# Requires Python 3.13+
+# Requires Python 3.14 (the version the image and CI run)
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -332,7 +343,7 @@ The frontend dev server (`npm run dev`) proxies `/api/*` to the FastAPI backend 
 docker compose up --build
 ```
 
-The Dockerfile uses a multi-stage build: Node 22 for the frontend, Python 3.13-slim for the final image.
+The Dockerfile uses a multi-stage build: Node 26 for the frontend, Python 3.14-slim for the final image.
 
 ---
 

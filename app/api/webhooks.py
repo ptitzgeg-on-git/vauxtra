@@ -1,12 +1,54 @@
-from fastapi import APIRouter, HTTPException, Request
+import logging
 
-from app.auth import require_auth
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from app.auth import _get_auth_context, _scope_satisfies, require_auth
+from app.limiter import limiter
 from app.models import get_db
 from app.security import mask_secret_url
+from app.webhook_targets import refuse_local_connections, targets_the_local_network
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _WEBHOOK_SCOPE_TYPES = {"all", "provider", "service"}
+
+
+class WebhookIn(BaseModel):
+    """Body of the webhook create and update routes.
+
+    Every field is optional so the update stays partial (the toggle sends only `enabled`);
+    the routes read `model_dump(exclude_unset=True)`. The bodies were plain dicts, so a
+    number in place of `name` or text in place of `min_down_minutes` ended as a 500.
+    """
+
+    name: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
+    scope_type: str | None = None
+    scope_ref_id: int | str | None = None
+    alert_on_any_down: bool | None = None
+    alert_on_any_up: bool | None = None
+    alert_on_integration_down: bool | None = None
+    alert_on_integration_up: bool | None = None
+    min_down_minutes: int | None = None
+    repeat_interval_minutes: int | None = None
+
+
+class WebhookUrlIn(BaseModel):
+    url: str = ""
+
+
+class ServiceAlertIn(BaseModel):
+    webhook_id: int | None = None
+    on_up: bool = True
+    on_down: bool = True
+    min_down_minutes: int = 0
+
+
+class ServiceAlertsIn(BaseModel):
+    alerts: list[ServiceAlertIn] = Field(default_factory=list)
 
 
 def _normalize_scope(body: dict, existing: dict | None = None) -> tuple[str, int | None]:
@@ -44,6 +86,23 @@ def _normalize_scope(body: dict, existing: dict | None = None) -> tuple[str, int
 _GENERIC_HTTP_SCHEMES = ("json://", "jsons://", "form://", "forms://", "xml://", "xmls://")
 
 
+def _targets_the_local_network(url: str, apprise_obj=None) -> bool:
+    """True when the URL makes apprise connect to a loopback, private or link-local host.
+
+    Any apprise scheme that takes a host (`ntfy://`, `gotify://`, `mqtt://`...) can be
+    pointed at a service inside the network this instance runs in, not only the generic
+    ones above. H1: the hosts are read from the instances apprise builds (`host`,
+    `smtp_host`...), since `urlsplit()` and apprise disagree on `a@b@c` and only apprise
+    reads `?smtp=`. See `app.webhook_targets`.
+    """
+    return targets_the_local_network(url, apprise_obj)
+
+
+def _caller_is_admin(request: Request) -> bool:
+    ctx = _get_auth_context(request)
+    return ctx is not None and _scope_satisfies(ctx["scopes"], "admin")
+
+
 def _validate_apprise_url(url: str, request: Request | None = None) -> str:
     """Validate and normalize an Apprise URL string.
 
@@ -51,6 +110,18 @@ def _validate_apprise_url(url: str, request: Request | None = None) -> str:
     scheme check is skipped -- that is how a partial update keeps working: toggling
     `enabled` on a webhook an admin created must not demand admin.
     """
+    # The scheme check reads the raw text, before apprise splits it: a generic scheme hidden
+    # behind a comma still asks for admin first.
+    if request is not None and any(s in (url or "").lower() for s in _GENERIC_HTTP_SCHEMES):
+        require_auth(request, scope="admin")
+    value, apprise_obj = _parse_apprise_url(url)
+    if request is not None and _targets_the_local_network(value, apprise_obj):
+        require_auth(request, scope="admin")
+    return value
+
+
+def _parse_apprise_url(url: str):
+    """The stripped URL and the `Apprise()` it was added to, or a 400."""
     value = (url or "").strip()
     if not value:
         raise HTTPException(400, "URL is required")
@@ -65,21 +136,55 @@ def _validate_apprise_url(url: str, request: Request | None = None) -> str:
             "Notification URLs are never readable back -- retype the full URL, "
             "or omit the field to keep the one already stored.",
         )
-    if request is not None and value.lower().startswith(_GENERIC_HTTP_SCHEMES):
-        require_auth(request, scope="admin")
+    # apprise splits its input on whitespace and commas: `discord://... json://host` is two
+    # targets, and a prefix check only ever saw the first one. One webhook is one URL.
+    if any(ch.isspace() for ch in value):
+        raise HTTPException(400, "One webhook takes one URL: remove the spaces")
 
     try:
         import apprise
         a = apprise.Apprise()
         if not a.add(value):
             raise HTTPException(400, "Invalid or unrecognized Apprise URL")
+        if len(a) != 1:
+            raise HTTPException(400, "One webhook takes one URL: add each target separately")
     except ImportError:
         raise HTTPException(500, "Package 'apprise' not installed")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
-    return value
+        raise _generic_failure("validate", e)
+    return value, a
+
+
+def _generic_failure(action: str, exc: Exception) -> HTTPException:
+    """An apprise exception, logged without its text and answered without it either.
+
+    The message of a failed connection names the host, port and sometimes the response of
+    whatever the URL pointed at: echoed back, it turned the test routes into a probe that
+    reported what answered inside the network. B25: the text can also carry the URL and its
+    token, so the log gets the exception type only.
+    """
+    logger.warning("Webhook %s failed: %s", action, type(exc).__name__)
+    return HTTPException(500, f"Could not {action} the notification URL. See the server log for details.")
+
+
+_LOCAL_REFUSED_TEST = (
+    "This notification target led inside the local network while sending (redirect, "
+    "discovery or DNS answer). An admin must save it before Vauxtra sends to it."
+)
+
+
+def _refuse_unapproved_local_target(url: str, local_target_allowed) -> None:
+    """M11: a stored URL that now resolves inside the network, stored without `admin`."""
+    if not int(local_target_allowed if local_target_allowed is not None else 1) and (
+        _targets_the_local_network(url)
+    ):
+        raise HTTPException(
+            403,
+            "This notification URL now points inside the local network. An admin must "
+            "save it again before Vauxtra sends to it.",
+        )
 
 
 def _public_webhook(row) -> dict:
@@ -112,11 +217,12 @@ def list_webhooks(request: Request):
 
 
 @router.post("/api/webhooks", status_code=201)
-def add_webhook(request: Request, body: dict):
+def add_webhook(request: Request, data: WebhookIn):
     """Create a new webhook notification target."""
     require_auth(request, scope="write")
-    name = body.get("name", "").strip()
-    url  = _validate_apprise_url(body.get("url", ""), request)
+    body = data.model_dump(exclude_unset=True)
+    name = (body.get("name") or "").strip()
+    url  = _validate_apprise_url(body.get("url") or "", request)
     if not name or not url:
         raise HTTPException(400, "Name and URL are required")
     alert_on_any_down        = int(bool(body.get("alert_on_any_down", False)))
@@ -126,14 +232,15 @@ def add_webhook(request: Request, body: dict):
     min_down_minutes         = max(0, int(body.get("min_down_minutes", 0) or 0))
     repeat_interval_minutes  = max(0, int(body.get("repeat_interval_minutes", 0) or 0))
     scope_type, scope_ref_id = _normalize_scope(body)
+    local_target_allowed = int(_caller_is_admin(request))
     conn = get_db()
     try:
         cur = conn.execute(
             """INSERT INTO webhooks
                (name, url, enabled, scope_type, scope_ref_id, repeat_interval_minutes,
                 alert_on_any_down, alert_on_any_up, alert_on_integration_down,
-                alert_on_integration_up, min_down_minutes)
-               VALUES (?,?,1,?,?,?,?,?,?,?,?)""",
+                alert_on_integration_up, min_down_minutes, local_target_allowed)
+               VALUES (?,?,1,?,?,?,?,?,?,?,?,?)""",
             (
                 name,
                 url,
@@ -145,6 +252,7 @@ def add_webhook(request: Request, body: dict):
                 alert_on_integration_down,
                 alert_on_integration_up,
                 min_down_minutes,
+                local_target_allowed,
             ),
         )
         wid = cur.lastrowid
@@ -161,9 +269,10 @@ def add_webhook(request: Request, body: dict):
 
 
 @router.put("/api/webhooks/{wid}")
-def update_webhook(wid: int, request: Request, body: dict):
+def update_webhook(wid: int, request: Request, data: WebhookIn):
     """Update an existing webhook by ID."""
     require_auth(request, scope="write")
+    body = data.model_dump(exclude_unset=True)
     conn = get_db()
     try:
         existing = conn.execute("SELECT * FROM webhooks WHERE id=?", (wid,)).fetchone()
@@ -183,8 +292,13 @@ def update_webhook(wid: int, request: Request, body: dict):
         repeat_interval_minutes   = max(0, int(body.get("repeat_interval_minutes", existing["repeat_interval_minutes"]) or 0))
 
         name = (name or "").strip()
-        # Only when the caller supplied one: `url` otherwise holds what is already stored.
-        url  = _validate_apprise_url(url, request if "url" in body else None)
+        # N5: only a URL the caller supplied is validated. The stored one used to be run
+        # through the current rules too, so a webhook written before "one URL per webhook"
+        # could no longer be renamed or switched off (400).
+        local_target_allowed = existing["local_target_allowed"]
+        if "url" in body:
+            url = _validate_apprise_url(url, request)
+            local_target_allowed = int(_caller_is_admin(request))
         if not name or not url:
             raise HTTPException(400, "Name and URL are required")
 
@@ -192,7 +306,7 @@ def update_webhook(wid: int, request: Request, body: dict):
             """UPDATE webhooks SET name=?, url=?, enabled=?, scope_type=?, scope_ref_id=?,
                repeat_interval_minutes=?, alert_on_any_down=?, alert_on_any_up=?,
                alert_on_integration_down=?, alert_on_integration_up=?,
-               min_down_minutes=?
+               min_down_minutes=?, local_target_allowed=?
                WHERE id=?""",
             (
                 name,
@@ -206,6 +320,7 @@ def update_webhook(wid: int, request: Request, body: dict):
                 alert_on_integration_down,
                 alert_on_integration_up,
                 min_down_minutes,
+                local_target_allowed,
                 wid,
             ),
         )
@@ -237,15 +352,21 @@ def delete_webhook(wid: int, request: Request):
 
 
 @router.post("/api/webhooks/test-url")
-def test_webhook_url(request: Request, body: dict):
+@limiter.limit("10/minute")
+def test_webhook_url(request: Request, body: WebhookUrlIn):
     """Test a webhook URL without saving it (for pre-validation in setup wizard)."""
     require_auth(request, scope="write")
-    url = _validate_apprise_url(body.get("url", ""), request)
+    url = _validate_apprise_url(body.url, request)
     try:
         import apprise
         a = apprise.Apprise()
         a.add(url)
-        ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
+        # H1: the URL check above only reads the URL. A non-admin caller's test is also
+        # refused when a redirect or a discovery lookup leads inside the network.
+        with refuse_local_connections(not _caller_is_admin(request), a) as guard:
+            ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
+        if guard.refused:
+            raise HTTPException(403, _LOCAL_REFUSED_TEST)
         if not ok:
             raise HTTPException(500, "Send failed - check your URL and try again")
         return {"ok": True}
@@ -254,10 +375,11 @@ def test_webhook_url(request: Request, body: dict):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _generic_failure("send to", e)
 
 
 @router.post("/api/webhooks/{wid}/test")
+@limiter.limit("10/minute")
 def test_webhook(wid: int, request: Request):
     require_auth(request, scope="write")
     conn = get_db()
@@ -267,12 +389,19 @@ def test_webhook(wid: int, request: Request):
         conn.close()
     if not row:
         raise HTTPException(404, "Webhook not found")
+    _refuse_unapproved_local_target(row["url"], row["local_target_allowed"])
     try:
         import apprise
         a = apprise.Apprise()
         if not a.add(row["url"]):
             raise HTTPException(400, "Invalid or unrecognized Apprise URL")
-        ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
+        allowed = row["local_target_allowed"]
+        with refuse_local_connections(
+            not int(allowed if allowed is not None else 1), a
+        ) as guard:
+            ok = a.notify(title="Vauxtra: Test", body="Test notification from Vauxtra.")
+        if guard.refused:
+            raise HTTPException(403, _LOCAL_REFUSED_TEST)
         if not ok:
             raise HTTPException(500, "Send failed")
         return {"ok": True}
@@ -281,7 +410,7 @@ def test_webhook(wid: int, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _generic_failure("send to", e)
 
 
 # ── Per-service alerts ─────────────────────────────────────────────────────
@@ -309,12 +438,26 @@ def get_service_alerts(sid: int, request: Request):
 
 
 @router.post("/api/services/{sid}/alerts")
-def set_service_alerts(sid: int, request: Request, body: dict):
+def set_service_alerts(sid: int, request: Request, body: ServiceAlertsIn):
     """Replace all alerts for the service with the provided list."""
     require_auth(request, scope="write")
-    alerts = body.get("alerts", [])
+    alerts = [a.model_dump() for a in body.alerts]
     conn   = get_db()
     try:
+        # An unknown service or webhook failed the foreign key, and a non-numeric delay the
+        # int() below: both surfaced as 500.
+        if not conn.execute("SELECT id FROM services WHERE id=?", (sid,)).fetchone():
+            raise HTTPException(404, "Service not found")
+        for a in alerts:
+            wid = a.get("webhook_id")
+            if wid and not conn.execute(
+                "SELECT id FROM webhooks WHERE id=?", (wid,)
+            ).fetchone():
+                raise HTTPException(400, f"Unknown webhook: {wid}")
+            try:
+                int(a.get("min_down_minutes", 0))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "min_down_minutes must be a number") from None
         conn.execute("DELETE FROM service_alerts WHERE service_id=?", (sid,))
         for a in alerts:
             wid = a.get("webhook_id")

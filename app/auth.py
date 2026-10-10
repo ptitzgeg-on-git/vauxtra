@@ -175,6 +175,46 @@ def bump_session_epoch(conn) -> None:
     )
 
 
+ENV_PASSWORD_FINGERPRINT_KEY = "app_password_env_fingerprint"
+
+
+def revoke_sessions_if_env_password_changed() -> bool:
+    """Bump the session epoch when `APP_PASSWORD` differs from the one seen at the last boot.
+
+    With the password in the environment, changing it is the only revocation an operator
+    has, and it revoked nothing: the cookie is signed with `SECRET_KEY`, which stays put.
+    Only a keyed fingerprint is stored, never the value. The first boot that records one
+    logs nobody out. Returns True when sessions were revoked.
+    """
+    if not APP_PASSWORD:
+        return False
+    from app.config import SECRET_KEY
+    from app.models import get_db
+
+    fingerprint = hmac.new(
+        str(SECRET_KEY).encode("utf-8"), APP_PASSWORD.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?", (ENV_PASSWORD_FINGERPRINT_KEY,)
+        ).fetchone()
+        stored = row["value"] if row else ""
+        if stored == fingerprint:
+            return False
+        changed = bool(stored)
+        if changed:
+            bump_session_epoch(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (ENV_PASSWORD_FINGERPRINT_KEY, fingerprint),
+        )
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
+
 def mark_password_configured(conn) -> None:
     """Record that this instance is password-protected. Call inside the caller's transaction."""
     conn.execute(
@@ -243,7 +283,8 @@ def check_password(candidate: str) -> bool:
         if APP_PASSWORD.startswith("pbkdf2:"):
             return verify_password_hash(candidate, APP_PASSWORD)
         if _ALLOW_PLAINTEXT_APP_PASSWORD:
-            return hmac.compare_digest(candidate, APP_PASSWORD)
+            # Bytes: on `str`, compare_digest raises TypeError for any non-ASCII character.
+            return hmac.compare_digest(candidate.encode("utf-8"), APP_PASSWORD.encode("utf-8"))
         # Say so. An operator who sets a plaintext APP_PASSWORD gets a 401 on a password
         # that is, from their point of view, exactly the one they configured -- and the
         # setup wizard refuses to run because `has_password_configured()` sees the variable
@@ -299,6 +340,27 @@ def _scope_satisfies(granted: list[str], required: str) -> bool:
     return any(_SCOPE_LEVEL.get(g, -1) >= req_level for g in granted)
 
 
+# Absolute lifetime of a login. The cookie's own `max_age` slides: Starlette re-issues it
+# on every response, so a stolen cookie used once a week never expired.
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
+def _session_is_fresh(session: dict) -> bool:
+    """Stamp a session without a login time, refuse one older than the absolute lifetime.
+
+    A cookie minted before the stamp existed gets it on first use, so an upgrade does not
+    log anyone out; its lifetime is counted from then.
+    """
+    import time
+
+    now = int(time.time())
+    issued = session.get("issued_at")
+    if not isinstance(issued, int):
+        session["issued_at"] = now
+        return True
+    return 0 <= now - issued <= SESSION_MAX_AGE_SECONDS
+
+
 def _get_auth_context(request: Request) -> dict | None:
     """Return {kind, scopes} if authenticated, else None.
 
@@ -306,8 +368,29 @@ def _get_auth_context(request: Request) -> dict | None:
     the 'admin' scope implicitly. Bearer tokens carry the scopes stored
     on the API key row.
     """
-    if not has_password_configured():
-        if password_was_configured_once():
+    # One read of the auth settings per request: `has_password_configured`,
+    # `password_was_configured_once` and `current_session_epoch` each opened their own
+    # connection for the same row set. Each failure keeps the answer its function gives.
+    try:
+        auth_settings = _read_auth_settings()
+    except (KeyError, ValueError, OSError, sqlite3.Error):
+        auth_settings = None
+    if auth_settings is None:
+        has_password = bool(APP_PASSWORD)
+        configured_once = True
+        epoch = -1
+    else:
+        has_password = bool(APP_PASSWORD) or bool(auth_settings.get("app_password_hash", ""))
+        configured_once = bool(APP_PASSWORD) or (
+            auth_settings.get(AUTH_MODE_KEY, "") == AUTH_MODE_PASSWORD
+        )
+        try:
+            epoch = int(auth_settings.get(SESSION_EPOCH_KEY, "0") or "0")
+        except (TypeError, ValueError):
+            epoch = -1
+
+    if not has_password:
+        if configured_once:
             return None  # the hash vanished -- refuse, do not fall back to anonymous admin
         return {"kind": "open", "scopes": ["admin"]}
     session = get_session(request)
@@ -316,7 +399,7 @@ def _get_auth_context(request: Request) -> dict | None:
         # stored one. A cookie from before this existed has no epoch at all, so an upgrade
         # costs one re-login -- which is the correct answer for a cookie minted under rules
         # that could not expire it.
-        if session.get("epoch") == current_session_epoch():
+        if session.get("epoch") == epoch and _session_is_fresh(session):
             return {"kind": "session", "scopes": ["admin"]}
         # Drop it rather than merely ignore it: the browser gets an empty cookie back and
         # stops presenting a credential that will never be accepted again.
@@ -329,7 +412,11 @@ def _get_auth_context(request: Request) -> dict | None:
             from app.api.api_keys import verify_api_key
             key_info = verify_api_key(token)
             if key_info:
-                return {"kind": "api_key", "scopes": list(key_info.get("scopes") or [])}
+                return {
+                    "kind": "api_key",
+                    "scopes": list(key_info.get("scopes") or []),
+                    "key_id": key_info.get("id"),
+                }
     return None
 
 

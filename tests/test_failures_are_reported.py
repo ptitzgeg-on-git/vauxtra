@@ -203,8 +203,12 @@ class PushReportsProviderRefusalTests(_IsolatedDB):
         self.assertTrue(any(e.startswith("DNS (AdGuard):") for e in result["errors"]), result)
         self.assertFalse(any("DNS synced" in m for m in self._logs()))
 
-    def test_a_failed_removal_does_not_add_a_second_record(self) -> None:
-        """AdGuard and Pi-hole hold two rewrites for one name without complaining."""
+    def test_a_failed_removal_does_not_leave_a_second_record(self) -> None:
+        """AdGuard and Pi-hole hold two rewrites for one name without complaining.
+
+        M7 (fourth pass): the new record is added first, so the name is never left
+        without one; when the stale one cannot be removed, the new one is withdrawn.
+        """
         self.provider = _ScriptedProvider(
             self.calls,
             delete_ok=False,
@@ -215,8 +219,14 @@ class PushReportsProviderRefusalTests(_IsolatedDB):
         result = sync_api.push_service(sid, _request())
 
         self.assertFalse(result["ok"])
-        self.assertIn("delete_rewrite", [c[0] for c in self.calls])
-        self.assertNotIn("add_rewrite", [c[0] for c in self.calls])
+        self.assertEqual(
+            [c for c in self.calls if c[0] in ("delete_rewrite", "add_rewrite")],
+            [
+                ("add_rewrite", "app.example.com", "198.51.100.7"),
+                ("delete_rewrite", "app.example.com", "203.0.113.4"),
+                ("delete_rewrite", "app.example.com", "198.51.100.7"),
+            ],
+        )
         self.assertTrue(any("removal of the stale" in e for e in result["errors"]), result)
 
     def test_a_stale_record_is_replaced_when_the_provider_cooperates(self) -> None:
@@ -232,8 +242,8 @@ class PushReportsProviderRefusalTests(_IsolatedDB):
         self.assertEqual(
             [c for c in self.calls if c[0] in ("delete_rewrite", "add_rewrite")],
             [
-                ("delete_rewrite", "app.example.com", "203.0.113.4"),
                 ("add_rewrite", "app.example.com", "198.51.100.7"),
+                ("delete_rewrite", "app.example.com", "203.0.113.4"),
             ],
         )
 
@@ -319,7 +329,7 @@ class CloudflareRecordTargetingTests(unittest.TestCase):
                 outer.listed = kwargs
                 return list(records)
 
-            def update(self, **kwargs):
+            def edit(self, **kwargs):
                 outer.updated.append(kwargs)
                 return _FakeRecord(kwargs["dns_record_id"], kwargs["name"], kwargs["content"])
 
@@ -463,7 +473,7 @@ class StartupSurvivesABadIntervalTests(_IsolatedDB):
             patch.object(auth, "APP_PASSWORD", ""),
             patch.object(scheduler, "start", lambda interval_minutes=0: started.append(interval_minutes)),
         ):
-            with TestClient(app_main.app) as client:
+            with TestClient(app_main.app, base_url="http://localhost") as client:
                 self.assertEqual(client.get("/api/health").status_code, 200)
 
         self.assertEqual(started, [0])
@@ -605,7 +615,7 @@ class MissingDnsTargetIsReportedTests(_IsolatedDB):
             services_api.add_service(
                 _request(), self._service_in(dns_provider_id=3, public_target_mode="manual")
             )
-        with patch.object(services_api, "resolve_public_target", return_value=("", "auto_unavailable")):
+        with patch.object(services_api, "resolve_dns_target", return_value=("", "auto_unavailable")):
             with self.assertRaises(HTTPException) as failed:
                 services_api.add_service(
                     _request(), self._service_in(dns_provider_id=3, public_target_mode="auto")

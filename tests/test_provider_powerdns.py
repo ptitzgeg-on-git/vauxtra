@@ -190,13 +190,20 @@ class TestPowerDNSZones(unittest.TestCase):
         _wire(self.provider, _FakePowerDNS({"home.lab.": []}, with_ids=False))
         self.assertEqual(self.provider._find_zone("a.home.lab"), "home.lab.")
 
-    def test_a_refused_zone_list_is_empty_not_an_error(self):
+    def test_a_refused_zone_list_is_unknown_not_empty(self):
+        """H3: "no zone" and "could not read" are two different answers."""
         self.provider.session.get = MagicMock(return_value=_response(403, {}))
-        self.assertEqual(self.provider._list_zones(), [])
+        self.assertIsNone(self.provider._list_zones())
+        self.assertIsNone(self.provider.list_rewrites())
 
-    def test_a_zone_list_that_is_not_a_list_is_empty(self):
+    def test_a_zone_list_that_is_not_a_list_is_unknown(self):
         self.provider.session.get = MagicMock(return_value=_response(200, {"error": "nope"}))
+        self.assertIsNone(self.provider._list_zones())
+
+    def test_an_empty_zone_list_is_an_empty_list(self):
+        self.provider.session.get = MagicMock(return_value=_response(200, []))
         self.assertEqual(self.provider._list_zones(), [])
+        self.assertEqual(self.provider.list_rewrites(), [])
 
 
 class TestPowerDNSListRewrites(unittest.TestCase):
@@ -443,12 +450,12 @@ class TestPowerDNSRefusedRead(unittest.TestCase):
         self.assertFalse(self.provider.delete_rewrite("app.home.lab", "192.168.1.10"))
         self.assertEqual(fake.patches, [])
 
-    def test_listing_still_skips_a_zone_it_cannot_read(self):
-        """Listing is read-only, so a zone it cannot open simply contributes nothing."""
+    def test_listing_with_a_zone_it_cannot_read_is_unknown(self):
+        """H3: a zone left out made the push add the new address next to the stale one."""
         _wire(self.provider, _RefusesTheZoneBody({"home.lab.": [
             _rrset("app.home.lab.", "A", "192.168.1.10"),
         ]}))
-        self.assertEqual(self.provider.list_rewrites(), [])
+        self.assertIsNone(self.provider.list_rewrites())
 
     def test_an_empty_zone_is_still_writable(self):
         """The guard must not turn a genuinely empty zone into a failure."""

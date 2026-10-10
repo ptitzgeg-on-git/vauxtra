@@ -45,10 +45,14 @@ class NPMProvider(ProxyProvider):
                 timeout=PROVIDER_TIMEOUT,
             )
             r.raise_for_status()
-            self._token = r.json().get("token", "")
+            body = r.json()
+            token = body.get("token", "") if isinstance(body, dict) else ""
+            self._token = token if isinstance(token, str) else ""
             self.session.headers["Authorization"] = f"Bearer {self._token}"
             return bool(self._token)
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
+            # B4: a non-JSON or non-object answer is a failed login, not an exception
+            # escaping through `list_hosts`.
             return False
 
     def _ensure_auth(self) -> bool:
@@ -68,9 +72,11 @@ class NPMProvider(ProxyProvider):
     def test_connection(self) -> bool:
         return self._ensure_auth()
 
-    def list_hosts(self) -> list[dict]:
+    def list_hosts(self) -> list[dict] | None:
+        # None, not [], when the list could not be read: the push took [] for "no host yet"
+        # and created a second one for a name NPM already served.
         if not self._ensure_auth():
-            return []
+            return None
         try:
             r = self.session.get(
                 f"{self.api_url}/nginx/proxy-hosts",
@@ -78,6 +84,10 @@ class NPMProvider(ProxyProvider):
             )
             r.raise_for_status()
             hosts = r.json()
+            if not isinstance(hosts, list):
+                # B4: `{}` or `""` iterate as nothing, which read as "no host yet" and made
+                # the push create a duplicate.
+                return None
             return [
                 {
                     "id": h["id"],
@@ -93,8 +103,10 @@ class NPMProvider(ProxyProvider):
                 }
                 for h in hosts
             ]
-        except requests.RequestException:
-            return []
+        except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+            # B4: a body that is not JSON, not a list, or a host without the expected keys
+            # is an unreadable list too, not an exception for every caller to meet.
+            return None
 
     def create_host(self, domain: str, ip: str, port: int,
                     scheme: str = "http", websocket: bool = False,
@@ -136,7 +148,10 @@ class NPMProvider(ProxyProvider):
                 f"{self.api_url}/nginx/proxy-hosts/{host_id}",
                 timeout=PROVIDER_TIMEOUT,
             )
-            return r.status_code in (200, 204) or r.text == "true"
+            # 404: the host is already gone, which is what the caller asked for. Answering
+            # False kept the service attached to it forever, and the auto-reconcile then
+            # recreated the host on the proxy the operator was moving away from.
+            return r.status_code in (200, 204, 404) or r.text == "true"
         except requests.RequestException:
             return False
 
@@ -161,6 +176,11 @@ class NPMProvider(ProxyProvider):
             "locations": [],
             "meta": {},
         }
+        payload = self._merge_with_current(host_id, payload, domain, cert_id)
+        if payload is None:
+            # The PUT replaces the whole host: sent without the current one, it wiped the
+            # locations, HSTS, advanced config and metadata the operator had set.
+            return False
         try:
             r = self.session.put(
                 f"{self.api_url}/nginx/proxy-hosts/{host_id}",
@@ -170,6 +190,56 @@ class NPMProvider(ProxyProvider):
             return r.status_code == 200
         except requests.RequestException:
             return False
+
+    # Settings an operator sets in the NPM interface and Vauxtra never manages: a PUT built
+    # from scratch reset them all (custom locations, HSTS, advanced config, access list).
+    _OPERATOR_FIELDS = (
+        "locations", "hsts_enabled", "hsts_subdomains", "advanced_config", "access_list_id",
+        "caching_enabled", "block_exploits", "meta",
+    )
+
+    def _merge_with_current(self, host_id: int, payload: dict, domain: str,
+                            cert_id: int | None) -> dict | None:
+        """Carry over what the operator configured on the host; Vauxtra only owns the route.
+
+        None when the host cannot be read: the update is then refused rather than sent as a
+        bare payload that resets everything Vauxtra does not manage (N11).
+        """
+        try:
+            r = self.session.get(
+                f"{self.api_url}/nginx/proxy-hosts/{host_id}",
+                timeout=PROVIDER_TIMEOUT,
+            )
+            if r.status_code != 200:
+                return None
+            current = r.json()
+        except (requests.RequestException, ValueError):
+            return None
+        if not isinstance(current, dict):
+            return None
+
+        merged = dict(payload)
+        for field in self._OPERATOR_FIELDS:
+            if field in current:
+                merged[field] = current[field]
+        # The first name is the one Vauxtra created the host with; aliases the operator
+        # added after it stay.
+        names = [n for n in (current.get("domain_names") or []) if isinstance(n, str)]
+        merged["domain_names"] = [domain] + [n for n in names[1:] if n != domain]
+        # No certificate found by Vauxtra does not mean the attached one must go.
+        if cert_id is None and current.get("certificate_id"):
+            merged["certificate_id"] = current["certificate_id"]
+            merged["ssl_forced"] = merged["http2_support"] = True
+        # `ssl_forced` and `http2_support` are the operator's once the host has a
+        # certificate: an update forced both on, turning back on what had been switched
+        # off in NPM. They are only Vauxtra's to set when this update attaches the
+        # host's first certificate, which is what `create_host` does too.
+        attaches_first_cert = cert_id is not None and not current.get("certificate_id")
+        if not attaches_first_cert:
+            for field in ("ssl_forced", "http2_support"):
+                if field in current:
+                    merged[field] = bool(current[field])
+        return merged
 
     def toggle_host(self, host_id: int | str, enabled: bool) -> bool:
         """Enable or disable a proxy host via NPM's dedicated enable/disable endpoints."""

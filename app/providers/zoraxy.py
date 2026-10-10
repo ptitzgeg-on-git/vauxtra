@@ -283,12 +283,14 @@ class ZoraxyProvider(ProxyProvider):
             "tags": list(rule.get("Tags") or []),
         }
 
-    def list_hosts(self) -> list[dict]:
+    def list_hosts(self) -> list[dict] | None:
+        # C7: None, not [], when the rules could not be read. An empty list made the push
+        # create a duplicate rule and the drift report the route "missing".
         if not self._ensure_auth():
-            return []
+            return None
         rules = self._get("/api/proxy/list", {"type": "host"})
         if not isinstance(rules, list):
-            return []
+            return None
         return [
             self._normalize_rule(rule)
             for rule in rules

@@ -5,6 +5,7 @@ import { Bell, ChevronDown, ExternalLink, Plus, Send, Trash2 } from 'lucide-reac
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
+import { clampWhole, commitWhole } from '@/lib/format';
 import { translateApiError } from '@/lib/errors';
 import { useWebhookActions } from '@/hooks/useWebhookActions';
 import {
@@ -180,17 +181,22 @@ export function WebhooksTab() {
     updateRules.mutate({ id: webhook.id, patch: next });
   };
 
-  const testOne = (webhook: Webhook) => {
+  // Awaited rather than handed per-call callbacks: `mutate(vars, { ... })` only fires them for
+  // the latest call, so testing a second webhook before the first answered lost the first
+  // outcome.
+  const testOne = async (webhook: Webhook) => {
     setTestingId(webhook.id);
-    hook.testWebhookById.mutate(webhook.id, {
-      onSuccess: () => setOutcomes((prev) => ({ ...prev, [webhook.id]: { ok: true } })),
-      onError: (err: unknown) =>
-        setOutcomes((prev) => ({
-          ...prev,
-          [webhook.id]: { ok: false, error: translateApiError(err, t, t('settings.webhooks.test_failed')) },
-        })),
-      onSettled: () => setTestingId(null),
-    });
+    try {
+      await hook.testWebhookById.mutateAsync(webhook.id);
+      setOutcomes((prev) => ({ ...prev, [webhook.id]: { ok: true } }));
+    } catch (err: unknown) {
+      setOutcomes((prev) => ({
+        ...prev,
+        [webhook.id]: { ok: false, error: translateApiError(err, t, t('settings.webhooks.test_failed')) },
+      }));
+    } finally {
+      setTestingId((current) => (current === webhook.id ? null : current));
+    }
   };
 
   const requestDelete = async (webhook: Webhook) => {
@@ -359,7 +365,7 @@ export function WebhooksTab() {
                 min={0}
                 max={720}
                 value={repeat}
-                onChange={(e) => setRepeat(Math.max(0, Math.min(720, Number(e.target.value) || 0)))}
+                onChange={(e) => setRepeat(clampWhole(e.target.value, 0, 720))}
                 className="tabular-nums"
               />
             </Field>
@@ -550,7 +556,7 @@ export function WebhooksTab() {
                             defaultValue={webhook.repeat_interval_minutes ?? 0}
                             disabled={updateRules.isPending}
                             onBlur={(e) => {
-                              const value = Math.max(0, Math.min(720, Number(e.target.value) || 0));
+                              const value = commitWhole(e.target, 0, 720);
                               if (value !== (webhook.repeat_interval_minutes ?? 0)) {
                                 updateRule(webhook, { repeat_interval_minutes: value });
                               }
@@ -608,7 +614,7 @@ export function WebhooksTab() {
                           defaultValue={webhook.min_down_minutes ?? 0}
                           disabled={updateRules.isPending}
                           onBlur={(e) => {
-                            const value = Math.max(0, Math.min(60, Number(e.target.value) || 0));
+                            const value = commitWhole(e.target, 0, 60);
                             if (value !== (webhook.min_down_minutes ?? 0)) updateRule(webhook, { min_down_minutes: value });
                           }}
                           className="tabular-nums"

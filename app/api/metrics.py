@@ -1,27 +1,41 @@
 """Prometheus-compatible /metrics endpoint."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 
+from app.auth import require_auth
 from app.models import get_db
 
 router = APIRouter()
 
 
+def _label_value(value) -> str:
+    """A label value escaped as the exposition format requires: backslash, quote, newline.
+
+    Provider types come from plugins and delivery statuses from the database; one quote in
+    either broke the line, and Prometheus rejects the whole scrape over one bad line.
+    """
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _gauge(name: str, value, labels: dict | None = None) -> str:
     if labels:
-        label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+        label_str = ",".join(f'{k}="{_label_value(v)}"' for k, v in labels.items())
         return f"{name}{{{label_str}}} {value}"
     return f"{name} {value}"
 
 
 @router.get("/metrics", response_class=PlainTextResponse)
-def prometheus_metrics() -> str:
+def prometheus_metrics(request: Request) -> str:
     """
     Expose Vauxtra operational metrics in Prometheus text exposition format.
     Intended to be scraped by a Prometheus instance.
-    No authentication required (standard Prometheus scrape path).
+
+    Requires a `read` API key, sent as a bearer token (`authorization: credentials` in the
+    scrape config). It used to be open: anyone who could reach the port learned which
+    provider types run the network, how many services are down and the schema version.
     """
+    require_auth(request)
     conn = get_db()
     lines: list[str] = []
     try:
@@ -53,6 +67,12 @@ def prometheus_metrics() -> str:
         ).fetchall()
         for r in prov_rows:
             lines.append(_gauge("vauxtra_providers_total", r["n"], {"type": r["type"]}))
+        # Its own HELP/TYPE block: the exposition format wants every sample of a family
+        # together, after that family's header, and strict parsers reject an untyped one
+        # interleaved with another family's samples.
+        lines.append("# HELP vauxtra_providers_enabled Enabled providers grouped by type")
+        lines.append("# TYPE vauxtra_providers_enabled gauge")
+        for r in prov_rows:
             lines.append(_gauge("vauxtra_providers_enabled", r["en"] or 0, {"type": r["type"]}))
 
         # ── Logs (last 24 h) ──────────────────────────────────────────────────
@@ -64,6 +84,9 @@ def prometheus_metrics() -> str:
                GROUP BY level"""
         ).fetchall()
         log_counts = {r["level"]: r["n"] for r in log_rows}
+        # `add_log` stores "warn" as "warning", so the `warn` series read 0 whatever
+        # happened. The label keeps its name for the dashboards that query it.
+        log_counts["warn"] = log_counts.get("warn", 0) + log_counts.get("warning", 0)
         for level in ("info", "ok", "warn", "error"):
             lines.append(_gauge("vauxtra_logs_24h", log_counts.get(level, 0), {"level": level}))
 

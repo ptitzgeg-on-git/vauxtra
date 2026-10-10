@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import ipaddress
 import logging
+import time
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.validators import is_valid_hostname
 
@@ -56,7 +59,9 @@ def _parse_sources(raw: str) -> list[str]:
     text = (raw or "").replace(",", "\n")
     for line in text.splitlines():
         source = line.strip()
-        if source and source.startswith(("http://", "https://")):
+        # B14: an `http://` source saved by an older version is dropped here too, not only
+        # refused at save time.
+        if source and source.lower().startswith("https://"):
             items.append(source)
     return items
 
@@ -112,10 +117,16 @@ def load_public_target_policy(conn) -> dict:
     }
 
 
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_publicly_routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Whether this is an address the outside world could route back to us."""
     return not (
         ip.is_private
+        # B14: carrier-grade NAT (RFC 6598). `is_private` leaves it out, yet a resolver
+        # behind CGNAT reporting it would publish an address nobody outside can reach.
+        or (ip.version == 4 and ip in _SHARED_ADDRESS_SPACE)
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
@@ -124,15 +135,85 @@ def _is_publicly_routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
     )
 
 
+def is_unroutable_literal(value: str) -> bool:
+    """Whether *value* is an IP address the outside world cannot reach (a name is not)."""
+    try:
+        return not _is_publicly_routable(ipaddress.ip_address(_normalize_target(value)))
+    except ValueError:
+        return False
+
+
+_wan_cycle_cache: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "vauxtra_wan_cycle_cache", default=None
+)
+
+
+@contextlib.contextmanager
+def one_wan_detection_per_cycle():
+    """Within the block, the WAN address is detected once per resolver policy.
+
+    N21: the auto-reconcile asked the resolvers again for every service, twice (drift, then
+    push), under the scheduler lock: with three slow resolvers and a hundred services the
+    cycle held the lock for minutes, for an answer that does not change within it.
+    """
+    token = _wan_cycle_cache.set({})
+    try:
+        yield
+    finally:
+        _wan_cycle_cache.reset(token)
+
+
 def detect_server_public_ip(
     sources: list[str] | None = None,
     timeout_seconds: float = 2.0,
 ) -> str:
     """Return the first detected WAN IP from configured resolvers, else empty string."""
+    cache = _wan_cycle_cache.get()
+    if cache is None:
+        return _detect_server_public_ip(sources, timeout_seconds)
+    key = (tuple(sources or DEFAULT_PUBLIC_IP_SOURCES), float(timeout_seconds))
+    if key not in cache:
+        cache[key] = _detect_server_public_ip(sources, timeout_seconds)
+    return cache[key]
+
+
+class _HttpsOnlyRedirects(HTTPRedirectHandler):
+    """B14: a resolver may redirect, but not off https: the redirect target's answer is
+    trusted exactly as much as the source's."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not str(newurl).lower().startswith("https://"):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = build_opener(_HttpsOnlyRedirects)
+
+
+def urlopen(req, timeout):
+    """`urllib.request.urlopen`, with redirects held to https (the name stays the seam
+    tests patch)."""
+    return _OPENER.open(req, timeout=timeout)
+
+
+# B14: the timeout applied to each source; the whole detection gets this many times it.
+# Three slow resolvers used to hold a push, a page load or a scheduler pass for
+# `3 x timeout`, and more with every source the operator added.
+_WAN_DEADLINE_FACTOR = 2
+
+
+def _detect_server_public_ip(sources: list[str] | None, timeout_seconds: float) -> str:
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.1) * _WAN_DEADLINE_FACTOR
     for source in (sources or DEFAULT_PUBLIC_IP_SOURCES):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning("WAN address detection gave up: every source was too slow")
+            break
+        if not str(source).lower().startswith("https://"):
+            continue
         try:
             req = Request(source, headers={"User-Agent": "Vauxtra/1.0"})
-            with urlopen(req, timeout=timeout_seconds) as resp:
+            with urlopen(req, timeout=min(timeout_seconds, remaining)) as resp:
                 raw = resp.read(96).decode("utf-8", "ignore").strip()
             candidate = raw.split()[0].strip()
             ip = ipaddress.ip_address(candidate)
@@ -160,8 +241,13 @@ def suggest_public_targets(
     proxy_provider_id: int | None = None,
     current_value: str = "",
     server_public_ip: str | None = None,
+    public_only: bool = False,
 ) -> dict:
-    """Return candidate targets and the recommended value."""
+    """Return candidate targets and the recommended value.
+
+    `public_only` is set for a public DNS provider: a LAN address (the proxy host is often
+    192.168.x) written there points every visitor at their own network.
+    """
     policy = load_public_target_policy(conn)
 
     candidates: list[dict] = []
@@ -172,6 +258,8 @@ def suggest_public_targets(
         if not candidate or candidate in seen:
             return
         if not is_valid_hostname(candidate):
+            return
+        if public_only and is_unroutable_literal(candidate):
             return
         seen.add(candidate)
         candidates.append({"value": candidate, "source": source})
@@ -184,7 +272,9 @@ def suggest_public_targets(
         add_candidate(proxy_host, "proxy_provider_host")
 
     wan_ip = _normalize_target(server_public_ip) if server_public_ip is not None else ""
-    if not wan_ip:
+    # B15: an operator who took `server_public_ip` out of the priority asked for this
+    # machine's WAN address to stay out of DNS; the resolvers are not even asked.
+    if not wan_ip and "server_public_ip" in policy["priority"]:
         wan_ip = _normalize_target(
             detect_server_public_ip(
                 sources=policy["sources"],
@@ -215,6 +305,7 @@ def resolve_public_target(
     proxy_provider_id: int | None = None,
     current_value: str = "",
     server_public_ip: str | None = None,
+    public_only: bool = False,
 ) -> tuple[str, str]:
     """Resolve the effective public target and return (value, source)."""
     normalized_mode = _normalize_target(mode) or "manual"
@@ -231,6 +322,7 @@ def resolve_public_target(
         proxy_provider_id=proxy_provider_id,
         current_value=current_value,
         server_public_ip=server_public_ip,
+        public_only=public_only,
     )
     value = _normalize_target(result.get("recommended", ""))
     if not value:
@@ -243,6 +335,69 @@ def resolve_public_target(
             break
 
     return value, source
+
+
+# Passed as `server_public_ip` once a lookup has failed: not a valid hostname, so it is
+# never a candidate, and non-empty, so the resolvers are not asked again.
+WAN_LOOKUP_FAILED = "!wan-lookup-failed"
+
+
+def is_public_dns_provider(conn, provider_id) -> bool:
+    """Whether the provider writes public DNS (Cloudflare, deSEC...), by its stored type."""
+    if not provider_id:
+        return False
+    from app.providers.factory import PROVIDER_TYPES
+
+    row = conn.execute("SELECT type FROM providers WHERE id=?", (provider_id,)).fetchone()
+    if not row:
+        return False
+    return bool(PROVIDER_TYPES.get(row["type"], {}).get("capabilities", {}).get("public_dns"))
+
+
+def resolve_dns_target(
+    conn,
+    mode: str,
+    manual_value: str,
+    proxy_provider_id: int | None = None,
+    current_value: str = "",
+    dns_provider_ids=(),
+) -> tuple[str, str]:
+    """`resolve_public_target` for a record about to be written to `dns_provider_ids`.
+
+    H2: only the scheduler's auto-DNS used to pass `public_only` and keep the record when
+    the WAN lookup failed (C6). The push, the edit, the creation and the bulk enable did
+    neither: with the default priority and the WAN resolvers down, the proxy host -- often
+    `192.168.x` -- was written to Cloudflare. Every caller now goes through here.
+
+    `public_only` holds as soon as one of the DNS targets is public: the same address is
+    written to all of them. When the WAN address is the first choice and cannot be found,
+    a public target gets nothing (`auto_unavailable`) rather than the next candidate.
+    """
+    public_only = any(is_public_dns_provider(conn, pid) for pid in dns_provider_ids or ())
+    manual = _normalize_target(manual_value)
+    server_public_ip = None
+    if (_normalize_target(mode) or "manual") == "auto" and not (manual and is_valid_hostname(manual)):
+        policy = load_public_target_policy(conn)
+        if "server_public_ip" in policy["priority"]:
+            server_public_ip = detect_server_public_ip(
+                sources=policy["sources"], timeout_seconds=policy["timeout_seconds"]
+            )
+            if not server_public_ip:
+                if public_only and policy["priority"][:1] == ["server_public_ip"]:
+                    return "", "auto_unavailable"
+                server_public_ip = WAN_LOOKUP_FAILED
+        else:
+            # B15: a source the operator removed is not consulted at all.
+            server_public_ip = WAN_LOOKUP_FAILED
+    return resolve_public_target(
+        conn,
+        mode=mode,
+        manual_value=manual_value,
+        proxy_provider_id=proxy_provider_id,
+        current_value=current_value,
+        server_public_ip=server_public_ip,
+        public_only=public_only,
+    )
 
 
 def describe_public_target_failure(source: str, provider_name: str = "") -> tuple[str, str]:

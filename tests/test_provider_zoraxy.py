@@ -376,18 +376,24 @@ class TestZoraxyListHosts(unittest.TestCase):
                             _rule(ProxyType=2, RootOrMatchingDomain="vdir"))
         self.assertEqual([h["id"] for h in hosts], ["app.example.com"])
 
-    def test_list_hosts_returns_empty_on_auth_fail(self):
+    # C7: an unreadable list is None (unknown), not [] (no rule): the push read [] as
+    # "no rule yet" and created a duplicate.
+    def test_list_hosts_is_unknown_on_auth_fail(self):
         self.z._ensure_auth = MagicMock(return_value=False)
         self.z.session.get = MagicMock()
-        self.assertEqual(self.z.list_hosts(), [])
+        self.assertIsNone(self.z.list_hosts())
         self.z.session.get.assert_not_called()
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    def test_list_hosts_is_unknown_on_network_error(self):
         self.z.session.get = MagicMock(side_effect=requests.RequestException("down"))
-        self.assertEqual(self.z.list_hosts(), [])
+        self.assertIsNone(self.z.list_hosts())
 
-    def test_list_hosts_returns_empty_when_answer_is_not_a_list(self):
+    def test_list_hosts_is_unknown_when_answer_is_not_a_list(self):
         self.z.session.get = MagicMock(return_value=_response(200, {"error": "nope"}))
+        self.assertIsNone(self.z.list_hosts())
+
+    def test_an_empty_list_is_still_empty(self):
+        self.z.session.get = MagicMock(return_value=_response(200, []))
         self.assertEqual(self.z.list_hosts(), [])
 
 

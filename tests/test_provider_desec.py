@@ -10,7 +10,7 @@ account must never be read as an empty one.
 """
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -41,7 +41,7 @@ class _FakeDesec:
 
     @staticmethod
     def _path(url: str) -> list[str]:
-        return [p for p in url.split("/api/v1/", 1)[1].split("/") if p]
+        return [p for p in url.split("?", 1)[0].split("/api/v1/", 1)[1].split("/") if p]
 
     def _domain(self, name: str) -> dict | None:
         return self.domains.get(name)
@@ -183,7 +183,8 @@ class TestDesecPagination(unittest.TestCase):
     def test_a_rate_limited_read_is_unknown_not_empty(self):
         """429 must not read as "this account has no records"."""
         self.provider.session.get = MagicMock(return_value=_response(429, {"detail": "throttled"}))
-        self.assertIsNone(self.provider._get_all("https://desec.io/api/v1/domains/"))
+        with patch("app.providers.desec.time.sleep"):
+            self.assertIsNone(self.provider._get_all("https://desec.io/api/v1/domains/"))
 
     def test_a_network_error_is_unknown(self):
         self.provider.session.get = MagicMock(side_effect=requests.RequestException("boom"))
@@ -208,6 +209,21 @@ class TestDesecPagination(unittest.TestCase):
         self.assertEqual(self.provider._get_all("https://desec.io/api/v1/domains/"),
                          [{"name": "a.dedyn.io"}])
         self.assertEqual(self.provider.session.get.call_count, 1)
+
+    def test_a_next_link_to_another_host_is_not_followed(self):
+        """S9.9: the session carries the token, so a foreign `next` would receive it."""
+        first = _response(200, [{"name": "a.dedyn.io"}],
+                          links={"next": {"url": "https://attacker.example/api/v1/domains/?cursor=2"}})
+        self.provider.session.get = MagicMock(return_value=first)
+        self.assertIsNone(self.provider._get_all("https://desec.io/api/v1/domains/"))
+        self.assertEqual(self.provider.session.get.call_count, 1)
+
+    def test_a_next_link_with_an_explicit_default_port_is_the_same_host(self):
+        first = _response(200, [{"name": "a.dedyn.io"}],
+                          links={"next": {"url": "https://desec.io:443/api/v1/domains/?cursor=2"}})
+        second = _response(200, [{"name": "b.dedyn.io"}])
+        self.provider.session.get = MagicMock(side_effect=[first, second])
+        self.assertEqual(len(self.provider._get_all("https://desec.io/api/v1/domains/")), 2)
 
     def test_a_runaway_cursor_stops_at_the_page_cap(self):
         loop = _response(200, [{"name": "a.dedyn.io"}],

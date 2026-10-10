@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, LayoutDashboard, LockOpen, Plug, PlugZap, Plus, RefreshCw, ShieldAlert } from 'lucide-react';
 import { api } from '@/api/client';
+import { authStatusQuery } from '@/api/authStatus';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
@@ -15,7 +16,6 @@ import { RecentActivity } from '@/components/features/dashboard/RecentActivity';
 import { IntegrationsGlance } from '@/components/features/dashboard/IntegrationsGlance';
 import { QuickActions } from '@/components/features/dashboard/QuickActions';
 import type {
-  AuthStatus,
   CertificateExpiryResponse,
   LogsResponse,
   Provider,
@@ -29,6 +29,13 @@ const PROVIDERS_CACHE_KEY = 'vauxtra.cache.providers';
 
 /** How many rows the "logs today" count reads; the backend caps `per_page` at 200. */
 const TODAY_LOGS_SAMPLE = 200;
+const RECENT_LOGS = 8;
+/**
+ * The sample above was re-read every 15 s: 200 rows, four times a minute, for an
+ * eight-line list and a day count. Neither needs to be that fresh; the backend has no date
+ * filter to shrink the request instead, so it is asked for less often.
+ */
+const DASHBOARD_LOGS_REFRESH_MS = 60_000;
 
 function readArrayCache<T>(key: string): T[] | undefined {
   try {
@@ -120,30 +127,27 @@ export function Dashboard() {
     refetchInterval: 5 * 60 * 1000,
   });
 
+  // One request for both the recent-activity list and today's count. There used to be two,
+  // the first page of the second already holding the eight rows of the first, and each one
+  // made the server count the whole log table again.
   const {
-    data: logsResp,
+    data: todayLogsResp,
     isPending: logsPending,
-    isError: logsError,
+    isError: todayLogsError,
     refetch: refetchLogs,
   } = useQuery<LogsResponse>({
     queryKey: ['logs', 'dashboard'],
-    queryFn: () => api.get<LogsResponse>('/logs?per_page=8'),
-    refetchInterval: 15000,
-  });
-
-  const { data: todayLogsResp, isError: todayLogsError } = useQuery<LogsResponse>({
-    queryKey: ['logs', 'dashboard-today'],
     queryFn: () => api.get<LogsResponse>(`/logs?per_page=${TODAY_LOGS_SAMPLE}`),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
+    refetchInterval: DASHBOARD_LOGS_REFRESH_MS,
   });
+  const logsResp = todayLogsResp;
+  const logsError = todayLogsError;
+  const recentLogs = useMemo(
+    () => (Array.isArray(logsResp?.items) ? logsResp.items.slice(0, RECENT_LOGS) : undefined),
+    [logsResp],
+  );
 
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
-    queryFn: () => api.get<AuthStatus>('/auth/me'),
-    staleTime: 120_000,
-    retry: false,
-  });
+  const { data: authStatus } = useQuery(authStatusQuery);
 
   // -- Session cache (survives a reload within the tab) ----------------------
   useEffect(() => {
@@ -187,7 +191,7 @@ export function Dashboard() {
   const todayItems = Array.isArray(todayLogsResp?.items) ? todayLogsResp.items : [];
   const logsToday = todayItems.filter((log) => formatDate(log.created_at, 'short') === todayKey).length;
   const logsTodayCapped = todayItems.length >= TODAY_LOGS_SAMPLE && logsToday === todayItems.length;
-  const logsTotal = stats?.logs ?? todayLogsResp?.total ?? logsResp?.total;
+  const logsTotal = stats?.logs ?? todayLogsResp?.total;
 
   const hasError = servicesError || providersError;
   /**
@@ -373,7 +377,7 @@ export function Dashboard() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
         <div className="space-y-6 xl:col-span-3">
           <RecentActivity
-            logs={Array.isArray(logsResp?.items) ? logsResp.items : undefined}
+            logs={recentLogs}
             loading={logsPending && !logsResp}
             error={logsError && !logsResp}
             onRetry={() => refetchLogs()}

@@ -83,7 +83,7 @@ class _ScopedClient(unittest.TestCase):
 
         import app.main as app_main
 
-        self._client_cm = TestClient(app_main.app)
+        self._client_cm = TestClient(app_main.app, base_url="http://localhost")
         self.client = self._client_cm.__enter__()
 
         conn = models.get_db()
@@ -298,7 +298,7 @@ class _FakeResponse:
     def read(self, size: int) -> bytes:
         return self._body[:size]
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> "_FakeResponse":  # noqa: UP037 -- still evaluated eagerly before 3.14
         return self
 
     def __exit__(self, *_exc) -> bool:
@@ -552,6 +552,48 @@ class TheExportPassphraseMeetsTheSameFloorAsThePasswordTests(_ScopedClient):
             headers=self._headers("adm"),
         )
         self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_the_key_is_derived_once_per_export_and_per_restore(self) -> None:
+        """P1: 600 000 PBKDF2 rounds per secret, the restore's share under BEGIN EXCLUSIVE."""
+        from app.api import backup as backup_api
+        from app.config import encrypt_secret
+
+        conn = models.get_db()
+        for i in range(1, 4):
+            conn.execute(
+                """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
+                   VALUES (?, ?, 'npm', 'http://npm:81', 'admin', ?, '{}', 1)""",
+                (i, f"NPM {i}", encrypt_secret(f"secret-{i}")),
+            )
+            conn.execute(
+                "INSERT INTO webhooks (name, url, enabled) VALUES (?, ?, 1)",
+                (f"w{i}", f"mailto://ops{i}@example.com"),
+            )
+        conn.commit()
+        conn.close()
+
+        real = backup_api.derive_fernet_from_passphrase
+        calls: list = []
+
+        def _counting(passphrase, salt):
+            calls.append(1)
+            return real(passphrase, salt)
+
+        with patch.object(backup_api, "derive_fernet_from_passphrase", _counting):
+            resp = self.client.post(
+                "/api/backup/secure", json={"passphrase": self.GOOD}, headers=self._headers("adm")
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(len(calls), 1, "the export derived the key once per secret")
+
+            calls.clear()
+            resp = self.client.post(
+                "/api/restore",
+                json={"backup": json.loads(resp.content), "passphrase": self.GOOD},
+                headers=self._headers("adm"),
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(len(calls), 1, "the restore derived the key again per secret")
 
     def test_a_restore_does_bring_back_the_wan_resolvers(self) -> None:
         """What the comment on that loop used to deny. It comes through, on purpose: a

@@ -1,5 +1,6 @@
 """Shared HTTP client for all MCP tools — reads VAUXTRA_URL and VAUXTRA_API_KEY from env."""
 import http.cookiejar
+import json
 import os
 
 import httpx
@@ -88,6 +89,12 @@ def check(response: httpx.Response) -> httpx.Response:
                 for item in raw
                 if isinstance(item, dict)
             )
+            if not detail and raw:
+                detail = json.dumps(raw, default=str)
+        elif isinstance(raw, dict):
+            # A structured detail (a conflict naming the services that still hold a provider,
+            # for instance) has to stay JSON: `str()` gave a Python repr the agent cannot parse.
+            detail = json.dumps(raw, default=str)
         else:
             detail = str(raw)
 

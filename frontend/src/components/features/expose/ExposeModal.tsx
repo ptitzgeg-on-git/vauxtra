@@ -33,7 +33,6 @@ import type {
   PreflightCheck,
   PreflightRequest,
   PreflightResult,
-  PushResult,
   Service,
   ServicePayload,
   Tag,
@@ -43,6 +42,7 @@ import type {
 import { type FormState, type Provider, fqdnOf, initialForm, providerHasCapability, toFormState } from './types';
 import { ServiceForm } from './ServiceForm';
 import { ServicePreview } from './ServicePreview';
+import { persistService } from './persistService';
 
 interface ExposeModalProps {
   isOpen: boolean;
@@ -332,18 +332,9 @@ export function ExposeModal({
 
   const saveService = useMutation({
     mutationFn: async (payload: ServicePayload) => {
-      const persisted = isEditMode
-        ? await api.put<Record<string, unknown>>(`/services/${serviceId}`, payload)
-        : await api.post<Record<string, unknown>>('/services', payload);
-
-      const needFanoutPush = payload.extra_proxy_provider_ids.length > 0 || payload.extra_dns_provider_ids.length > 0;
-      const persistedId = Number(persisted?.id || serviceId || 0);
-
-      if (needFanoutPush && persistedId) {
-        const pushResult = await api.post<PushResult>(`/services/${persistedId}/push`);
-        return { persisted, pushResult, payload };
-      }
-      return { persisted, pushResult: null, payload };
+      // The create and update routes publish the extra targets themselves (C4).
+      const persisted = await persistService(payload, isEditMode ? serviceId : null);
+      return { persisted, payload };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['services'] });
@@ -351,8 +342,7 @@ export function ExposeModal({
       queryClient.invalidateQueries({ queryKey: ['logs'] });
 
       const serviceErrors = isRecordWithErrors(result.persisted) ? result.persisted.errors : [];
-      const pushErrors = result.pushResult && Array.isArray(result.pushResult.errors) ? result.pushResult.errors : [];
-      const allErrors = [...serviceErrors, ...pushErrors].map(String);
+      const allErrors = serviceErrors.map(String);
       const host =
         result.payload.expose_mode === 'tunnel' && result.payload.tunnel_hostname
           ? result.payload.tunnel_hostname

@@ -33,14 +33,19 @@ class TestPiholeVersionDetection(unittest.TestCase):
         self.p.session.get = MagicMock(return_value=_response(401))
         self.assertEqual(self.p._detect_version(), 6)
 
-    def test_detect_v5_on_network_error(self):
+    def test_no_version_on_network_error(self):
+        # A guess of v5 sent the password in the query string to a v6 that was only slow.
         self.p.session.get = MagicMock(side_effect=requests.RequestException("conn refused"))
+        self.assertIsNone(self.p._detect_version())
+
+    def test_detect_v5_on_404(self):
+        # `/api/auth` does not exist on v5
+        self.p.session.get = MagicMock(return_value=_response(404))
         self.assertEqual(self.p._detect_version(), 5)
 
-    def test_detect_v5_on_other_status(self):
-        # Any non-200/401 falls back to v5
+    def test_no_version_on_server_error(self):
         self.p.session.get = MagicMock(return_value=_response(500))
-        self.assertEqual(self.p._detect_version(), 5)
+        self.assertIsNone(self.p._detect_version())
 
 
 class TestPiholeV6Auth(unittest.TestCase):
@@ -296,12 +301,12 @@ class TestPiholeApiSeats(unittest.TestCase):
 
     def test_network_error_still_releases_session(self):
         self.p.session.get = MagicMock(side_effect=requests.RequestException("boom"))
-        self.assertEqual(self.p.list_rewrites(), [])
+        self.assertIsNone(self.p.list_rewrites())  # C11: a failed read is not "empty"
         self.assertSeatReturned()
 
     def test_rejected_auth_takes_no_seat(self):
         self.p._ensure_auth = MagicMock(return_value=False)
-        self.assertEqual(self.p.list_rewrites(), [])
+        self.assertIsNone(self.p.list_rewrites())
         self.assertFalse(self.p.test_connection())
         self.assertEqual(self._logouts(), 0)
 

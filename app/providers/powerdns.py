@@ -17,7 +17,7 @@ import ipaddress
 
 import requests
 
-from app.providers.base import DNSProvider, TimeoutSession
+from app.providers.base import DNSProvider, TimeoutSession, record_value_key
 
 DEFAULT_SERVER_ID = "localhost"
 DEFAULT_TTL = 3600
@@ -70,15 +70,18 @@ class PowerDNSProvider(DNSProvider):
 
     # ── Zones ─────────────────────────────────────────────────────────────
 
-    def _list_zones(self) -> list[dict]:
+    def _list_zones(self) -> list[dict] | None:
+        """The zones, or None when the API could not be asked (not the same as no zone)."""
         try:
             r = self.session.get(self._api("/zones"))
             if r.status_code != 200:
-                return []
+                return None
             data = r.json()
-            return [z for z in data if isinstance(z, dict) and z.get("name")] if isinstance(data, list) else []
+            if not isinstance(data, list):
+                return None
+            return [z for z in data if isinstance(z, dict) and z.get("name")]
         except (requests.RequestException, ValueError):
-            return []
+            return None
 
     def _zone_id(self, zone: dict) -> str:
         """The zone's own id when it has one, its name otherwise.
@@ -93,7 +96,7 @@ class PowerDNSProvider(DNSProvider):
         """The id of the longest zone that contains *domain*, or None."""
         target = self._relative(domain)
         best: tuple[int, str] | None = None
-        for zone in self._list_zones():
+        for zone in self._list_zones() or []:
             name = self._relative(zone.get("name", ""))
             if not name:
                 continue
@@ -149,13 +152,30 @@ class PowerDNSProvider(DNSProvider):
         except requests.RequestException:
             return False
 
-    def _write_rrset(self, zone_id: str, name: str, rtype: str, contents: list[str], ttl: int) -> bool:
+    @staticmethod
+    def _disabled_contents(rrset) -> set[str]:
+        """The values of a record set the operator switched off."""
+        if not rrset:
+            return set()
+        return {
+            str(r.get("content", "")).strip()
+            for r in (rrset.get("records") or [])
+            if isinstance(r, dict) and r.get("disabled")
+        }
+
+    def _write_rrset(self, zone_id: str, name: str, rtype: str, contents: list[str], ttl: int,
+                     disabled: set[str] | None = None) -> bool:
         """Replace the `(name, type)` record set with *contents*, or delete it when empty.
 
         `REPLACE` with an empty `records` list is not a delete -- it is a validation
         error on some versions and an empty RRset on others -- so the empty case gets
         its own changetype.
+
+        `disabled` names the sibling values to write back switched off: the REPLACE used to
+        send every value with `disabled: False`, re-enabling records the operator had
+        disabled by hand.
         """
+        disabled = disabled or set()
         if not contents:
             return self._patch(zone_id, {
                 "name": self._fqdn(name),
@@ -167,7 +187,7 @@ class PowerDNSProvider(DNSProvider):
             "type": rtype,
             "ttl": ttl,
             "changetype": "REPLACE",
-            "records": [{"content": c, "disabled": False} for c in contents],
+            "records": [{"content": c, "disabled": c in disabled} for c in contents],
         })
 
     # ── DNSProvider interface ─────────────────────────────────────────────
@@ -184,26 +204,64 @@ class PowerDNSProvider(DNSProvider):
         except (requests.RequestException, ValueError):
             return False
 
-    def list_rewrites(self) -> list[dict]:
+    def list_rewrites(self) -> list[dict] | None:
+        """Every managed record, or None when the zones or any one of them could not be read.
+
+        A zone left out is not harmless: the push reads this list, takes the current
+        record for absent, and adds the new address next to the stale one.
+        """
+        zones = self._list_zones()
+        if zones is None:
+            return None
         records: list[dict] = []
-        for zone in self._list_zones():
-            # A zone this token cannot read contributes nothing here. That is the one
-            # place the distinction is safely ignorable: listing is read-only.
-            for rrset in self._zone_rrsets(self._zone_id(zone)) or []:
-                rtype = rrset.get("type")
-                if rtype not in MANAGED_TYPES:
-                    continue
-                domain = self._relative(rrset.get("name", ""))
-                if not domain:
-                    continue
-                for record in rrset.get("records") or []:
-                    if not isinstance(record, dict) or record.get("disabled"):
-                        continue
-                    answer = self._relative(record.get("content", "")) if rtype == "CNAME" \
-                        else str(record.get("content", "")).strip()
-                    if answer:
-                        records.append({"domain": domain, "answer": answer, "type": rtype})
+        for zone in zones:
+            rrsets = self._zone_rrsets(self._zone_id(zone))
+            if rrsets is None:
+                return None
+            records.extend(self._managed_records(rrsets))
         return records
+
+    def _managed_records(self, rrsets: list[dict], only: str | None = None) -> list[dict]:
+        """The enabled A, AAAA and CNAME values of *rrsets*, of the name *only* if given."""
+        records: list[dict] = []
+        for rrset in rrsets:
+            rtype = rrset.get("type")
+            if rtype not in MANAGED_TYPES:
+                continue
+            domain = self._relative(rrset.get("name", ""))
+            if not domain or (only is not None and domain != only):
+                continue
+            for record in rrset.get("records") or []:
+                if not isinstance(record, dict) or record.get("disabled"):
+                    continue
+                answer = self._relative(record.get("content", "")) if rtype == "CNAME" \
+                    else str(record.get("content", "")).strip()
+                if answer:
+                    records.append({"domain": domain, "answer": answer, "type": rtype})
+        return records
+
+    def lookup_rewrites(self, name: str) -> list[dict] | None:
+        """The records of *name*, read from the one zone that holds it.
+
+        Another zone the key may not read has nothing to do with this name and no longer
+        blocks its push.
+        """
+        zones = self._list_zones()
+        if zones is None:
+            return None
+        target = self._relative(name)
+        best: tuple[int, dict] | None = None
+        for zone in zones:
+            zname = self._relative(zone.get("name", ""))
+            holds = bool(zname) and (target == zname or target.endswith("." + zname))
+            if holds and (best is None or len(zname) > best[0]):
+                best = (len(zname), zone)
+        if best is None:
+            return []  # no zone holds the name: there is no record to see
+        rrsets = self._zone_rrsets(self._zone_id(best[1]))
+        if rrsets is None:
+            return None
+        return self._managed_records(rrsets, only=target)
 
     def add_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)
@@ -228,16 +286,26 @@ class PowerDNSProvider(DNSProvider):
             for r in (existing.get("records") or []) if isinstance(r, dict)
         ] if existing else []
         contents = [c for c in contents if c]
+        # M14: the value is matched as a DNS value, and the server's own spelling reused.
+        # Compared literally, `2001:db8:0::1` beside a stored `2001:db8::1` was appended as
+        # a duplicate the server refuses, and a disabled record written in another spelling
+        # was never re-enabled.
+        stored = next((c for c in contents if record_value_key(c) == record_value_key(content)), None)
+        if stored is not None:
+            content = stored
+        # The value written is the one enabled; its siblings keep their state.
+        disabled = self._disabled_contents(existing) - {content}
 
         if content in contents:
-            return True
-        if rtype == "CNAME":
+            if content not in self._disabled_contents(existing):
+                return True
+        elif rtype == "CNAME":
             # A name has at most one CNAME, and it excludes every other type. Appending
             # would build an RRset the server rejects, so the value is replaced.
             contents = [content]
         else:
             contents = contents + [content]
-        return self._write_rrset(zone_id, domain, rtype, contents, ttl)
+        return self._write_rrset(zone_id, domain, rtype, contents, ttl, disabled)
 
     def delete_rewrite(self, domain: str, ip: str) -> bool:
         zone_id = self._find_zone(domain)
@@ -256,10 +324,12 @@ class PowerDNSProvider(DNSProvider):
             str(r.get("content", "")).strip()
             for r in (existing.get("records") or []) if isinstance(r, dict)
         ]
-        remaining = [c for c in contents if c and c != content]
+        remaining = [c for c in contents if c and record_value_key(c) != record_value_key(content)]
         if len(remaining) == len([c for c in contents if c]):
             return True  # this value was not in the set
-        return self._write_rrset(zone_id, domain, rtype, remaining, ttl)
+        return self._write_rrset(
+            zone_id, domain, rtype, remaining, ttl, self._disabled_contents(existing)
+        )
 
     # ── Diagnostics ───────────────────────────────────────────────────────
 
@@ -284,7 +354,11 @@ class PowerDNSProvider(DNSProvider):
         if not api_ok:
             return {"ok": False, "checks": checks, "warnings": warnings}
 
-        zones = self._list_zones()
+        listed = self._list_zones()
+        if listed is None:
+            _add("List zones", False, "Could not read the zone list", "zones_error")
+            return {"ok": False, "checks": checks, "warnings": warnings}
+        zones = listed
         _add(
             "List zones",
             True,
@@ -335,5 +409,5 @@ class PowerDNSProvider(DNSProvider):
         return {
             "ok": ok,
             "status": "healthy" if ok else "down",
-            "zones_visible": len(self._list_zones()) if ok else 0,
+            "zones_visible": len(self._list_zones() or []) if ok else 0,
         }

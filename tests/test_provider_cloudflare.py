@@ -144,7 +144,9 @@ class TestCloudflareProvider(unittest.TestCase):
         ]
         result = p.add_rewrite("app.example.com", "2.2.2.2")
         self.assertTrue(result)
-        client.dns.records.update.assert_called_once()
+        # PATCH (`edit`), not PUT (`update`): a PUT wiped the record's comment and tags.
+        client.dns.records.edit.assert_called_once()
+        client.dns.records.update.assert_not_called()
 
     def test_add_rewrite_returns_false_when_zone_not_found(self):
         p, client = self._make_provider()  # No configured zone
@@ -183,13 +185,13 @@ class TestCloudflareProvider(unittest.TestCase):
         result = p.delete_rewrite("app.unknown.invalid", "1.2.3.4")
         self.assertFalse(result)
 
-    def test_cname_not_proxied(self):
-        """CNAME records must never be proxied (Cloudflare error 1014 risk)."""
+    def test_cname_keeps_the_configured_proxy_flag(self):
+        """A proxied CNAME is valid in Cloudflare; forcing it off exposed the origin."""
         p, client = self._make_provider(zone_id="zone123", proxied=True)
         client.dns.records.list.return_value = []
         p.add_rewrite("app.example.com", "cdn.otherdomain.com")
         call_kwargs = client.dns.records.create.call_args[1]
-        self.assertFalse(call_kwargs.get("proxied"), "CNAME must not be proxied")
+        self.assertIs(call_kwargs.get("proxied"), True)
 
 
 if __name__ == "__main__":

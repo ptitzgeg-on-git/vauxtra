@@ -1,4 +1,4 @@
-import type { Environment, Provider, Service, ServicePayload, Tag } from '@/types/api';
+import type { BulkActionResult, Environment, Provider, Service, ServicePayload, Tag } from '@/types/api';
 
 export type ModeFilter = 'all' | 'tunnel' | 'proxy' | 'dns' | 'disabled';
 export const MODE_FILTERS: ModeFilter[] = ['all', 'tunnel', 'proxy', 'dns', 'disabled'];
@@ -106,6 +106,19 @@ export const buildServicePayload = (
     extra_proxy_provider_ids: overrides.extra_proxy_provider_ids ?? numberIds(service?.extra_proxy_provider_ids),
     extra_dns_provider_ids: overrides.extra_dns_provider_ids ?? numberIds(service?.extra_dns_provider_ids),
   };
+};
+
+/**
+ * The tone of the toast for a `POST /api/services/bulk` answer.
+ *
+ * `noop` is its own case: an answer with no error and `affected: 0` used to be reported with
+ * a green tick ("0 routes enabled"), as if something had happened.
+ */
+export type BulkOutcome = 'success' | 'warning' | 'noop';
+
+export const bulkOutcomeOf = (result: Partial<BulkActionResult> | null | undefined): BulkOutcome => {
+  if (Array.isArray(result?.errors) && result.errors.length > 0) return 'warning';
+  return Number(result?.affected ?? 0) > 0 ? 'success' : 'noop';
 };
 
 /** One provider a route touches, with the role it plays there. */

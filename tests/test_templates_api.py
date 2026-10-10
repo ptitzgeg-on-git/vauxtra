@@ -26,7 +26,7 @@ class TestTemplatesAPI(unittest.TestCase):
         init_db()
 
         from app.main import app
-        cls.client = TestClient(app, raise_server_exceptions=True)
+        cls.client = TestClient(app, raise_server_exceptions=True, base_url="http://localhost")
 
     @classmethod
     def tearDownClass(cls):

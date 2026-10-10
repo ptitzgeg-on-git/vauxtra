@@ -110,6 +110,16 @@ def init_db() -> None:
             created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT    NOT NULL,
+            key_hash     TEXT    NOT NULL UNIQUE,
+            prefix       TEXT    NOT NULL,
+            scopes       TEXT    NOT NULL DEFAULT 'read',
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS environments (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name       TEXT    NOT NULL UNIQUE,
@@ -191,6 +201,19 @@ def init_db() -> None:
             created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
             updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         );
+
+        -- A route a service left behind on a proxy it no longer uses, whose removal the
+        -- provider refused. Kept here, not as the service's proxy: as its proxy, the drift
+        -- check reported it missing and the auto-reconcile recreated it. The scheduler
+        -- retries the removal each cycle.
+        CREATE TABLE IF NOT EXISTS pending_proxy_removals (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+            host_id     TEXT    NOT NULL,
+            public_host TEXT    NOT NULL DEFAULT '',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(provider_id, host_id)
+        );
     """)
     _migrate(conn)
     _update_schema_version(conn)
@@ -246,6 +269,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE webhooks ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'all'",
         "ALTER TABLE webhooks ADD COLUMN scope_ref_id INTEGER",
         "ALTER TABLE webhooks ADD COLUMN repeat_interval_minutes INTEGER NOT NULL DEFAULT 0",
+        # M11: 1 when an admin stored the URL, so it may reach the local network. The
+        # senders re-check the target on every send and refuse a local one otherwise.
+        # Rows written before the column existed keep working (DEFAULT 1); the routes
+        # always set it explicitly.
+        "ALTER TABLE webhooks ADD COLUMN local_target_allowed INTEGER NOT NULL DEFAULT 1",
     ]:
         try:
             conn.execute(sql)
@@ -265,6 +293,120 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_legacy_webhook_url(conn)
     _ensure_unique_service_hostnames(conn)
     _rebuild_webhook_delivery_log_fk(conn)
+    _rename_labels_with_separators(conn)
+    _ensure_unique_template_names(conn)
+    _cancel_unowned_pending_deliveries(conn)
+
+
+_TEMPLATE_NAME_MAX = 64  # mirrors TemplateIn.name_not_empty in app/api/templates.py
+
+
+def _ensure_unique_template_names(conn: sqlite3.Connection) -> None:
+    """B17: `service_templates.name` had no unique index, so the 409 of a concurrent save
+    could never fire and two templates ended with one name. Duplicates written before are
+    renamed "<name> (<id>)" (the oldest keeps its name), then the index is created.
+    The base is cut so the new name stays within the 64 characters `TemplateIn` accepts,
+    otherwise the renamed template could no longer be saved nor survive a restore."""
+    rows = conn.execute("SELECT id, name FROM service_templates ORDER BY id").fetchall()
+    taken = {r["name"] for r in rows}
+    seen: set[str] = set()
+    for row in rows:
+        if row["name"] not in seen:
+            seen.add(row["name"])
+            continue
+        attempt = 0
+        while True:
+            suffix = f" ({row['id']})" if attempt == 0 else f" ({row['id']}-{attempt})"
+            base = (row["name"] or "")[: max(0, _TEMPLATE_NAME_MAX - len(suffix))].rstrip()
+            new_name = f"{base}{suffix}".strip()
+            if new_name not in taken:
+                break
+            attempt += 1
+        taken.add(new_name)
+        seen.add(new_name)
+        conn.execute("UPDATE service_templates SET name=? WHERE id=?", (new_name, row["id"]))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_service_templates_name ON service_templates(name)")
+
+
+_UNOWNED_DELIVERIES_MARKER = "migration_unowned_deliveries_cancelled"
+
+
+def _cancel_unowned_pending_deliveries(conn: sqlite3.Connection) -> None:
+    """N20: settle, once, the queued sends written before they carried their webhook id.
+
+    Those rows hold the URL as it was when the send failed, and the retry job follows the
+    webhook only through `webhook_id`: an edited or revoked URL kept receiving them for up
+    to a day and a half. They are cancelled on the first start after the upgrade; rows
+    queued later carry their webhook and follow it. Marked in `settings` so a send queued
+    without a webhook after that (none of today's callers does) is not cancelled at the
+    next restart.
+    """
+    try:
+        if conn.execute(
+            "SELECT 1 FROM settings WHERE key=?", (_UNOWNED_DELIVERIES_MARKER,)
+        ).fetchone():
+            return
+        cancelled = conn.execute(
+            """UPDATE webhook_delivery_log
+               SET status='cancelled', updated_at=datetime('now')
+               WHERE status='pending' AND webhook_id IS NULL"""
+        ).rowcount
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')",
+            (_UNOWNED_DELIVERIES_MARKER,),
+        )
+    except sqlite3.Error as exc:
+        add_log("error", f"Could not settle the queued webhook deliveries without a webhook: {exc}", conn)
+        return
+    if cancelled:
+        add_log(
+            "warn",
+            f"Cancelled {cancelled} queued webhook deliveries written by an older version "
+            "without their webhook: they would have gone to the URL stored at the time.",
+            conn,
+        )
+
+
+LABEL_MAX_LENGTH = 32
+
+
+def legacy_label(name: str, taken: set[str], ident) -> str:
+    """*name* with ':' and ',' replaced by '-', and unique among *taken*.
+
+    Tag and environment names may no longer hold either character: service rows carry them
+    as "name:color:id" joined by commas, and such a name was split apart there. Names
+    created before the rule are renamed rather than refused, at startup and on restore.
+    """
+    base = str(name or "").strip().replace(":", "-").replace(",", "-")[:LABEL_MAX_LENGTH].strip()
+    base = base or "label"
+    if base not in taken:
+        return base
+    # B8: "<base>-<id>" can itself be taken (an operator's own "a-b-7", or the label next
+    # to it): the UPDATE then failed on the UNIQUE index and the startup with it. A counter
+    # is added until the name is free.
+    attempt = 0
+    while True:
+        suffix = f"-{ident}" if attempt == 0 else f"-{ident}-{attempt}"
+        candidate = f"{base[: LABEL_MAX_LENGTH - len(suffix)]}{suffix}"
+        if candidate not in taken:
+            return candidate
+        attempt += 1
+
+
+def _rename_labels_with_separators(conn: sqlite3.Connection) -> None:
+    """C9: rename the tags and environments created before ':' and ',' were refused."""
+    for table in ("tags", "environments"):
+        rows = conn.execute(
+            f"SELECT id, name FROM {table} WHERE name LIKE '%:%' OR name LIKE '%,%'"  # noqa: S608
+        ).fetchall()
+        if not rows:
+            continue
+        taken = {r["name"] for r in conn.execute(f"SELECT name FROM {table}")}  # noqa: S608
+        for row in rows:
+            new_name = legacy_label(row["name"], taken, row["id"])
+            taken.discard(row["name"])
+            taken.add(new_name)
+            conn.execute(f"UPDATE {table} SET name=? WHERE id=?", (new_name, row["id"]))  # noqa: S608
 
 
 def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:
@@ -391,11 +533,35 @@ def _ensure_unique_service_hostnames(conn: sqlite3.Connection) -> None:
             f"Duplicate service hostnames prevent the uniqueness index: {listed}. "
             "Merge or delete the extra rows -- until then two services can push over "
             "each other.",
+            # On the migration connection: it may hold the write lock here, and a second
+            # connection waited out the busy timeout before failing the boot.
+            conn,
         )
         return
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_services_hostname ON services (subdomain, domain)"
     )
+    # N24: the name a service actually publishes. A tunnel service publishes
+    # `tunnel_hostname`, which the pair above does not see, so two concurrent creations of
+    # one tunnel hostname (or a tunnel and a proxy service on one name) both got through
+    # the check `_conflicting_service` makes before the INSERT. Same expression as
+    # `_service_public_hostname` in `app/api/services.py`.
+    try:
+        conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS idx_services_public_hostname ON services ({PUBLIC_HOSTNAME_SQL})")
+    except sqlite3.IntegrityError:
+        add_log(
+            "warn",
+            "Two services publish the same hostname (one of them through a tunnel), which "
+            "prevents the public hostname index. Merge or delete the extra rows.",
+            conn,
+        )
+
+
+PUBLIC_HOSTNAME_SQL = (
+    "CASE WHEN expose_mode = 'tunnel' AND trim(tunnel_hostname) <> '' "
+    "THEN lower(trim(tunnel_hostname)) "
+    "ELSE lower(trim(subdomain || '.' || domain, '.')) END"
+)
 
 
 def _drop_legacy_service_environment(conn: sqlite3.Connection) -> None:
@@ -562,26 +728,28 @@ def add_log(level: str, message: str, conn: sqlite3.Connection | None = None) ->
         conn.close()
 
 
-def parse_tags(tags_raw: str | None) -> list[dict]:
-    if not tags_raw:
+def _parse_labels(raw: str | None) -> list[dict]:
+    """Read the `name:color:id` list, comma-joined, that tags and environments share.
+
+    Names cannot hold `:` or `,` (refused by the tag and environment routes): either one
+    would split a label apart here.
+    """
+    if not raw:
         return []
     result = []
-    for chunk in tags_raw.split(","):
+    for chunk in raw.split(","):
         parts = chunk.split(":")
         if len(parts) == 3:
             result.append({"name": parts[0], "color": parts[1], "id": int(parts[2])})
     return result
+
+
+def parse_tags(tags_raw: str | None) -> list[dict]:
+    return _parse_labels(tags_raw)
 
 
 def parse_environments(envs_raw: str | None) -> list[dict]:
-    if not envs_raw:
-        return []
-    result = []
-    for chunk in envs_raw.split(","):
-        parts = chunk.split(":")
-        if len(parts) == 3:
-            result.append({"name": parts[0], "color": parts[1], "id": int(parts[2])})
-    return result
+    return _parse_labels(envs_raw)
 
 
 def row_to_service(row, tags_raw: str | None = None) -> dict:

@@ -3,10 +3,10 @@
 from typing import Any
 
 from vauxtra_mcp import client
-from vauxtra_mcp.app import mcp
+from vauxtra_mcp.app import READ_ONLY, mcp
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_templates() -> list[dict[str, Any]]:
     """List all service templates. Templates provide pre-configured defaults for new services."""
     r = client.get("/templates")
@@ -14,7 +14,7 @@ def list_templates() -> list[dict[str, Any]]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_template(template_id: int) -> dict[str, Any]:
     """Get full details of a single service template."""
     r = client.get(f"/templates/{template_id}")

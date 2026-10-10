@@ -154,9 +154,10 @@ class TestTraefikListHosts(unittest.TestCase):
         self._mock_responses(routers=routers_no_host)
         self.assertEqual(self.tr.list_hosts(), [])
 
-    def test_list_hosts_returns_empty_on_network_error(self):
+    def test_list_hosts_returns_none_on_network_error(self):
+        # None, not []: an empty list read as "Traefik serves no route at all".
         self.tr.session.get = MagicMock(side_effect=requests.RequestException("err"))
-        self.assertEqual(self.tr.list_hosts(), [])
+        self.assertIsNone(self.tr.list_hosts())
 
     def test_list_hosts_includes_middlewares(self):
         self._mock_responses()

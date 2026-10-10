@@ -258,6 +258,28 @@ export function formatRelative(input: DateInput, options: FormatRelativeOptions)
 // Numbers
 // ---------------------------------------------------------------------------
 
+/**
+ * A whole number typed into a numeric field, kept within `[min, max]`. The API takes only
+ * integers there, so `2.5` becomes `2` rather than a 422; anything unreadable becomes `min`.
+ */
+export function clampWhole(raw: string | number, min: number, max: number): number {
+  const value = Math.trunc(Number(raw));
+  // `1e400` reads as Infinity: past the top, so `max`, not `min`.
+  if (value === Infinity) return max;
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * `clampWhole` for an uncontrolled `<input>`, written back into the field. Without the
+ * write-back the field kept showing `999` while `720` was saved.
+ */
+export function commitWhole(input: { value: string }, min: number, max: number): number {
+  const value = clampWhole(input.value, min, max);
+  input.value = String(value);
+  return value;
+}
+
 /** Grouped, localized number. Non-finite input renders as an em dash. */
 export function formatNumber(
   value: number | null | undefined,

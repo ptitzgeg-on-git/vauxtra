@@ -27,6 +27,11 @@ services:
       - .env
     environment:
       - TZ=${TZ:-UTC}
+      # `.env` also carries the MCP bridge's credentials, which the panel never reads.
+      # `environment:` wins over `env_file:`, so blank them here: an API key and a bearer
+      # token have no business in this container's environment (`docker inspect`, /proc).
+      - VAUXTRA_API_KEY=
+      - VAUXTRA_MCP_TOKEN=
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8888/api/health"]
       interval: 30s

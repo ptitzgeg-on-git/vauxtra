@@ -175,6 +175,16 @@ export function useDockerDiscovery() {
           skipped: data?.skipped ?? 0,
         }),
       );
+      // The per-container failures used to be dropped: a green toast was all the operator saw.
+      const errors = Array.isArray(data?.errors) ? data.errors : [];
+      if (errors.length) {
+        // One error per line. The toast collapsed the `\n`s into spaces, which ran the
+        // container errors together into one unreadable sentence.
+        toast.error(`${t('settings.docker.import_errors', { count: errors.length })}\n${errors.slice(0, 3).join('\n')}`, {
+          duration: 8000,
+          style: { whiteSpace: 'pre-line' },
+        });
+      }
     },
     onError: (err: unknown) => {
       toast.error(translateApiError(err, t, t('settings.docker.import_failed')));

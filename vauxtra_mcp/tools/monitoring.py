@@ -2,10 +2,10 @@
 from typing import Any
 
 from vauxtra_mcp import client
-from vauxtra_mcp.app import mcp
+from vauxtra_mcp.app import READ_ONLY, mcp
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_health() -> dict[str, Any]:
     """
     Get the overall Vauxtra system health.
@@ -17,7 +17,7 @@ def get_health() -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dict[str, Any]:
     """
     Retrieve recent operational logs.
@@ -32,7 +32,7 @@ def get_logs(level: str | None = None, page: int = 1, per_page: int = 50) -> dic
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_certificates() -> list[dict[str, Any]]:
     """List SSL certificates managed by proxy providers (e.g., NPM)."""
     r = client.get("/certificates")
@@ -40,7 +40,7 @@ def get_certificates() -> list[dict[str, Any]]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_certificate_expiry() -> dict[str, Any]:
     """
     List all SSL certificates with their expiry dates and remaining days.
@@ -61,7 +61,7 @@ def check_all_services() -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_stats() -> dict[str, Any]:
     """Return global counters: number of services, providers, and log entries."""
     r = client.get("/stats")

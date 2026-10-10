@@ -1,21 +1,27 @@
 """Automatic health check and reconcile scheduler."""
+import datetime
 import json
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.models import add_log, get_db
-from app.providers.factory import certificate_provider_types, create_provider
+from app.providers.base import record_value_key
+from app.providers.factory import PROVIDER_TYPES, certificate_provider_types, create_provider
 from app.public_target import (
     detect_server_public_ip,
     load_public_target_policy,
+    one_wan_detection_per_cycle,
     resolve_public_target,
 )
 from app.security import mask_secret_url
 
-_scheduler = BackgroundScheduler(daemon=True)
+# UTC, like every other time-sensitive default: the host's local zone made interval
+# jobs depend on wherever the container happened to run.
+_scheduler = BackgroundScheduler(daemon=True, timezone="UTC")
 _lock      = threading.Lock()
 _alert_down_since: dict[tuple[int, int], float] = {}
 _alert_down_sent: set[tuple[int, int]] = set()
@@ -29,6 +35,14 @@ _DNS_FAILURE_THRESHOLD = 3  # Disable auto-update after this many consecutive fa
 _cert_alert_state: dict[tuple[int, int], dict] = {}
 # Webhook retry backoff in seconds for successive failed attempts
 _WEBHOOK_RETRY_BACKOFF = [60, 300, 1800, 7200, 86400]
+# Upper bound on concurrent TCP probes. Run one after the other, thirty unreachable
+# services at 3 s each outlasted the shortest (1 minute) health-check interval.
+_PROBE_MAX_WORKERS = 16
+# Stands in for a WAN lookup that already failed this cycle. `resolve_public_target`
+# looks the WAN address up again whenever it is handed an empty one, so an outage cost
+# one full round of resolvers per service, all of it under `_lock`. This value is not a
+# valid hostname, so it is never offered as a candidate either.
+_WAN_LOOKUP_FAILED = "!wan-lookup-failed"
 
 
 def _utc_stamp(delay_seconds: int = 0) -> str:
@@ -39,8 +53,7 @@ def _utc_stamp(delay_seconds: int = 0) -> str:
     "T" separator sorts above the space, so a due retry only ever became due the day
     after.
     """
-    import datetime as _dt
-    stamp = _dt.datetime.now(_dt.UTC) + _dt.timedelta(seconds=delay_seconds)
+    stamp = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=delay_seconds)
     return stamp.strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -185,38 +198,65 @@ def run_auto_reconcile() -> None:
     # Import inside the function body to avoid circular module-level imports.
     from app.api.sync import _compute_service_drift, _execute_push  # noqa: PLC0415
 
-    conn = get_db()
-    services = conn.execute("SELECT * FROM services WHERE enabled=1").fetchall()
-    conn.close()
-
     corrected: list[str] = []
     errors: list[str] = []
 
-    for svc in services:
-        sid  = int(svc["id"])
-        fqdn = f"{svc['subdomain']}.{svc['domain']}"
-        try:
-            conn  = get_db()
-            drift = _compute_service_drift(conn, svc, sid)
-            conn.close()
+    # Under the scheduler lock, like the health checks: the two ran concurrently and both
+    # write the providers and the services table. One WAN detection for the whole cycle
+    # (N21), not two per service.
+    #
+    # M9: the lock is taken per service, not for the whole cycle. Each service costs one
+    # `list_hosts()` per proxy and one DNS read per server, sequentially: held across all of
+    # them, the lock made the health checks skip their turn and DOWN alerts arrive minutes
+    # late. A health check now runs between two services.
+    with one_wan_detection_per_cycle():
+        conn = get_db()
+        service_ids = [
+            int(r["id"]) for r in conn.execute("SELECT id FROM services WHERE enabled=1")
+        ]
+        conn.close()
 
-            if drift.get("ok"):
-                continue  # no drift, skip
-
-            result = _execute_push(svc, sid)
-            if result.get("ok"):
-                corrected.append(fqdn)
-                add_log("info", f"[AutoReconcile] Corrected drift for {fqdn}")
-            else:
-                err_detail = "; ".join(result.get("errors", []))
-                errors.append(f"{fqdn}: {err_detail}")
-                add_log("error", f"[AutoReconcile] Push failed for {fqdn}: {err_detail}")
-        except Exception as e:
-            errors.append(f"{fqdn}: {e}")
-            add_log("error", f"[AutoReconcile] {fqdn}: {e}")
+        for sid in service_ids:
+            with _lock:
+                _reconcile_one_service(sid, corrected, errors, _compute_service_drift, _execute_push)
 
     if corrected:
         _fire_reconcile_webhook(corrected, errors)
+
+
+def _reconcile_one_service(sid: int, corrected: list, errors: list, compute_drift, execute_push) -> None:
+    """One service of `run_auto_reconcile`, under the scheduler lock held by the caller."""
+    fqdn = f"service {sid}"
+    try:
+        # Re-read right before the push: the list is a snapshot, and a service disabled or
+        # edited meanwhile was pushed back as it had been. Closed in a finally: a drift
+        # computation that raised used to leak the connection.
+        conn = get_db()
+        try:
+            svc = conn.execute(
+                "SELECT * FROM services WHERE id=? AND enabled=1", (sid,)
+            ).fetchone()
+            if svc is None:
+                return
+            fqdn  = f"{svc['subdomain']}.{svc['domain']}"
+            drift = compute_drift(conn, svc, sid)
+        finally:
+            conn.close()
+
+        if drift.get("ok"):
+            return  # no drift, skip
+
+        result = execute_push(svc, sid)
+        if result.get("ok"):
+            corrected.append(fqdn)
+            add_log("info", f"[AutoReconcile] Corrected drift for {fqdn}")
+        else:
+            err_detail = "; ".join(result.get("errors", []))
+            errors.append(f"{fqdn}: {err_detail}")
+            add_log("error", f"[AutoReconcile] Push failed for {fqdn}: {err_detail}")
+    except Exception as e:
+        errors.append(f"{fqdn}: {e}")
+        add_log("error", f"[AutoReconcile] {fqdn}: {e}")
 
 
 # ── TCP health check ──────────────────────────────────────────────────────
@@ -225,8 +265,57 @@ def _tcp_ok(ip: str, port: int) -> str:
     try:
         with socket.create_connection((ip, port), timeout=3):
             return "ok"
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeError: a malformed name (`a..b`, a label over 63
+        # characters) fails IDNA encoding before any socket exists, and used to escape
+        # here and stop the whole cycle.
         return "error"
+
+
+def _probe_services(services) -> list[tuple]:
+    """TCP-probe the services concurrently and return `(svc, status)` pairs in order.
+
+    Only the network calls run in the pool; the rows are plain data and nothing here
+    touches SQLite, whose connections must not cross threads.
+    """
+    if not services:
+        return []
+    workers = max(1, min(_PROBE_MAX_WORKERS, len(services)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vauxtra-probe") as pool:
+        statuses = list(
+            pool.map(lambda svc: _tcp_ok(svc["target_ip"], svc["target_port"]), services)
+        )
+    return list(zip(services, statuses, strict=True))
+
+
+def _run_phase(name: str, func, conn=None):
+    """Run one phase of the health cycle, logging a failure instead of raising it.
+
+    The phases are independent: a provider API that throws, a malformed certificate date
+    or a broken retry row used to abort the cycle, and every phase after it (the purge
+    included) was skipped until the cause went away.
+
+    With `conn`, the phase is committed when it returns. What a failed phase (or its
+    commit) left uncommitted is rolled back first, so the log line below is not stuck
+    behind its write lock and the next phase starts on a clean transaction.
+    """
+    try:
+        result = func()
+        if conn is not None:
+            conn.commit()
+        return result
+    except Exception:
+        import traceback
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        try:
+            add_log("error", f"[Scheduler] {name} failed: {traceback.format_exc()}")
+        except Exception:
+            pass
+        return None
 
 
 # ── Job principal ─────────────────────────────────────────────────────────
@@ -267,12 +356,19 @@ def _purge_history(conn) -> None:
     try:
         conn.execute(
             """DELETE FROM webhook_delivery_log
-               WHERE status IN ('delivered', 'failed')
+               WHERE status IN ('delivered', 'failed', 'cancelled')
                  AND updated_at < datetime('now', ?)""",
             (f"-{webhook_retry_retention_days} days",),
         )
     except Exception:
         pass
+
+
+def _retry_former_proxy_routes(conn) -> int:
+    """Retry the removal of routes services left on proxies they no longer use (C3)."""
+    from app.api.sync import retry_pending_proxy_removals  # noqa: PLC0415 - circular import
+
+    return retry_pending_proxy_removals(conn)
 
 
 def run_health_checks() -> None:
@@ -305,69 +401,88 @@ def run_health_checks() -> None:
         #
         # Tunnel services are health-checked via the Cloudflare API, not TCP. Running TCP
         # against cfargotunnel.com or similar targets always fails.
-        probes = [
-            (svc, _tcp_ok(svc["target_ip"], svc["target_port"]))
-            for svc in services
-            if (svc["expose_mode"] or "").strip().lower() != "tunnel"
-        ]
+        probes = _run_phase(
+            "Service probes",
+            lambda: _probe_services(
+                [s for s in services if (s["expose_mode"] or "").strip().lower() != "tunnel"]
+            ),
+        ) or []
 
         changed: list[dict] = []
         conn = get_db()
         try:
-            for svc, new_status in probes:
-                old_status = svc["status"] or "unknown"
-
-                conn.execute(
-                    "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-                    (new_status, svc["id"]),
-                )
-                conn.execute(
-                    "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-                    (svc["id"], new_status),
-                )
-
-                if old_status != new_status:
-                    fqdn = f"{svc['subdomain']}.{svc['domain']}"
-                    changed.append(
-                        {
-                            "service_id": svc["id"],
-                            "fqdn": fqdn,
-                            "old": old_status,
-                            "new": new_status,
-                        }
-                    )
-                    add_log(
-                        "ok" if new_status == "ok" else "error",
-                        f"[Auto] {fqdn} : {old_status} → {new_status}",
-                        conn,
-                    )
-            # One commit for the whole round of probes: these are writes only, with no
-            # network between them, so the lock is held for as long as they take and no
-            # longer. Every phase below commits per item instead, for the same reason.
-            conn.commit()
-
-            _run_dns_auto_updates(conn)
-            conn.commit()
-            changed.extend(_run_provider_health_checks(conn))
-            conn.commit()
-            _run_cert_expiry_alerts(conn)
-            conn.commit()
-            _run_webhook_retry(conn)
-            conn.commit()
-
-            _purge_history(conn)
-            conn.commit()
+            # Each phase on its own: one that raises is logged and rolled back, and the
+            # ones after it still run.
+            _run_phase(
+                "Service status update",
+                lambda: _record_probe_results(conn, probes, changed),
+                conn,
+            )
+            _run_phase("DNS auto-update", lambda: _run_dns_auto_updates_once(conn), conn)
+            changed.extend(
+                _run_phase("Provider health", lambda: _run_provider_health_checks(conn), conn)
+                or []
+            )
+            _run_phase("Certificate expiry", lambda: _run_cert_expiry_alerts(conn), conn)
+            _run_phase("Former proxy routes", lambda: _retry_former_proxy_routes(conn), conn)
+            _run_phase("Webhook retry", lambda: _run_webhook_retry(conn), conn)
+            _run_phase("History purge", lambda: _purge_history(conn), conn)
         finally:
             conn.close()
 
         # Persist scheduler state after closing connection to avoid locks
-        _save_scheduler_state()
+        _run_phase("Scheduler state save", _save_scheduler_state)
 
         if changed:
-            _fire_global_webhook()
+            _run_phase("Global webhook", _fire_global_webhook)
         if any("provider_id" in c for c in changed):
-            _fire_integration_webhook(changed)
-        _fire_service_webhooks()
+            _run_phase("Integration webhook", lambda: _fire_integration_webhook(changed))
+        _run_phase("Service webhooks", _fire_service_webhooks)
+
+
+def _record_probe_results(conn, probes, changed: list[dict]) -> None:
+    """Write the probe results in one short burst and collect the status transitions."""
+    transitions: list[dict] = []
+    for svc, new_status in probes:
+        old_status = svc["status"] or "unknown"
+
+        cur = conn.execute(
+            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
+            (new_status, svc["id"]),
+        )
+        if cur.rowcount == 0:
+            # Deleted while it was being probed. Its uptime event would violate the
+            # foreign key, and that one failure rolled back every result of the round.
+            continue
+        conn.execute(
+            """INSERT INTO uptime_events (service_id, status)
+               SELECT ?, ? WHERE EXISTS (SELECT 1 FROM services WHERE id=?)""",
+            (svc["id"], new_status, svc["id"]),
+        )
+
+        if old_status != new_status:
+            fqdn = f"{svc['subdomain']}.{svc['domain']}"
+            transitions.append(
+                {
+                    "service_id": svc["id"],
+                    "fqdn": fqdn,
+                    "old": old_status,
+                    "new": new_status,
+                }
+            )
+            add_log(
+                "ok" if new_status == "ok" else "error",
+                f"[Auto] {fqdn} : {old_status} → {new_status}",
+                conn,
+            )
+    # One commit for the whole round of probes: these are writes only, with no network
+    # between them, so the lock is held for as long as they take and no longer. Every
+    # phase after this one commits per item instead, for the same reason.
+    conn.commit()
+    # Reported only once committed: a round rolled back must not announce transitions
+    # that were never stored.
+    changed.extend(transitions)
+
 
 def _run_provider_health_checks(conn) -> list[dict]:
     """Check enabled providers and return status transitions for notifications."""
@@ -440,6 +555,57 @@ def _run_tunnel_health_checks(conn) -> list[dict]:
     return _run_provider_health_checks(conn)
 
 
+def _propagate_to_secondary_dns(conn, sid: int, fqdn: str) -> None:
+    """H4: carry a new WAN address to the service's secondary DNS targets.
+
+    Only the primary DNS provider was updated, and the reconcile does not correct it
+    either (`dns_target_mismatch` is a warning): visitors resolving through a secondary
+    server kept reaching the former address, which a dynamic IP hands to someone else.
+    The push resolves the same target again; within the cycle the WAN lookup is cached.
+    """
+    extra_dns = {
+        int(r["provider_id"])
+        for r in conn.execute(
+            "SELECT provider_id FROM service_push_targets WHERE service_id=? AND role='dns'",
+            (sid,),
+        )
+    }
+    if not extra_dns:
+        _secondary_dns_pending.discard(sid)
+        return
+    conn.commit()
+    from app.api.sync import _push_service_row  # noqa: PLC0415 - circular import
+
+    try:
+        svc = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+        if svc is None:
+            _secondary_dns_pending.discard(sid)
+            return
+        failures = _push_service_row(conn, svc, sid, only_provider_ids=extra_dns)["errors"]
+    except Exception as e:
+        failures = [str(e)]
+    # A secondary that missed the move is tried again on the next cycles: once the primary
+    # holds the new address, nothing else would bring it here again, and the reconcile
+    # only warns about the mismatch (`dns_target_mismatch`).
+    if failures:
+        _secondary_dns_pending.add(sid)
+    else:
+        _secondary_dns_pending.discard(sid)
+    for message in failures:
+        add_log("warn", f"[AutoDNS] {fqdn}: a secondary DNS target was not updated: {message}", conn)
+
+
+# Services whose secondary DNS targets missed the last address move (H4). In memory: after
+# a restart the reconcile's `dns_target_mismatch` warning still points at them.
+_secondary_dns_pending: set[int] = set()
+
+
+def _run_dns_auto_updates_once(conn) -> bool:
+    """`_run_dns_auto_updates` with one WAN lookup for the primary and secondary targets."""
+    with one_wan_detection_per_cycle():
+        return _run_dns_auto_updates(conn)
+
+
 def _run_dns_auto_updates(conn) -> bool:
     """Refresh DNS targets for services configured with auto public target updates.
     
@@ -462,17 +628,51 @@ def _run_dns_auto_updates(conn) -> bool:
         return False
 
     policy = load_public_target_policy(conn)
-    server_public_ip = detect_server_public_ip(
-        sources=policy["sources"],
-        timeout_seconds=policy["timeout_seconds"],
-    )
+    # The WAN lookup and every provider call below are network round trips: none of them
+    # may run with SQLite's single writer lock held by an earlier write on this connection.
+    conn.commit()
+    if "server_public_ip" in list(policy.get("priority") or []):
+        server_public_ip = detect_server_public_ip(
+            sources=policy["sources"],
+            timeout_seconds=policy["timeout_seconds"],
+        )
+    else:
+        # B15, as in `resolve_dns_target`: a source the operator removed from the priority
+        # is not consulted at all, so the resolvers are not called every cycle for nothing.
+        server_public_ip = _WAN_LOOKUP_FAILED
+    if not server_public_ip:
+        if list(policy.get("priority") or [])[:1] == ["server_public_ip"]:
+            # C6: the WAN address is the preferred answer and is unknown for now. Falling
+            # through to the next candidate published the proxy host (often a LAN address)
+            # until the next cycle switched back: every name flapped. Keep what is there.
+            return False
+        # Remembered for the rest of the cycle: handed an empty address, every
+        # `resolve_public_target` below ran the whole resolver list again, each at its
+        # full timeout. The other candidates (proxy host, current value) still apply.
+        server_public_ip = _WAN_LOOKUP_FAILED
 
+    public_dns_ids = {
+        r["id"]
+        for r in conn.execute("SELECT id, type FROM providers").fetchall()
+        if PROVIDER_TYPES.get(r["type"], {}).get("capabilities", {}).get("public_dns")
+    }
     state_changed = False
     for svc in services:
         sid = int(svc["id"])
         fqdn = f"{svc['subdomain']}.{svc['domain']}"
         current_target = (svc["dns_ip"] or "").strip().lower()
 
+        # H2: the same address goes to every DNS target of the service (the secondaries get
+        # it through `_propagate_to_secondary_dns`), so it must suit the most exposed one,
+        # as `resolve_dns_target` decides for the push. Judged on the primary alone, a LAN
+        # primary got the proxy host, the push then gave a public secondary the WAN address
+        # and stored it, and the next cycle moved the primary again: every cycle flapped.
+        dns_ids = [svc["dns_provider_id"], *(
+            r["provider_id"] for r in conn.execute(
+                "SELECT provider_id FROM service_push_targets WHERE service_id=? AND role='dns'",
+                (sid,),
+            )
+        )]
         resolved_target, target_source = resolve_public_target(
             conn,
             mode="auto",
@@ -480,12 +680,16 @@ def _run_dns_auto_updates(conn) -> bool:
             proxy_provider_id=svc["proxy_provider_id"],
             current_value=current_target,
             server_public_ip=server_public_ip,
+            public_only=any(pid in public_dns_ids for pid in dns_ids),
         )
-        if not resolved_target or resolved_target == current_target:
+        if not resolved_target or record_value_key(resolved_target) == record_value_key(current_target):
             # Success (no update needed) - reset failure count
             if sid in _dns_update_failures:
                 del _dns_update_failures[sid]
                 state_changed = True
+            if resolved_target and sid in _secondary_dns_pending:
+                _propagate_to_secondary_dns(conn, sid, fqdn)
+                conn.commit()
             continue
 
         row = conn.execute(
@@ -495,13 +699,58 @@ def _run_dns_auto_updates(conn) -> bool:
         if not row:
             continue
 
-        old_target = current_target or resolved_target
+        old_target = current_target or "(none)"
+        # Released before this service's provider calls: the previous one's UPDATE and log
+        # line would otherwise hold the writer lock across them.
+        conn.commit()
+        # Re-read right before the provider call: the list above was read before the WAN
+        # lookup and every earlier service's API calls, and a service disabled, switched
+        # to manual or retargeted meanwhile was still pushed as it had been.
+        stored_target = svc["dns_ip"] or ""
+        fresh = conn.execute(
+            """SELECT id FROM services
+               WHERE id=? AND enabled=1
+                 AND COALESCE(auto_update_dns, 0)=1
+                 AND COALESCE(public_target_mode, 'manual')='auto'
+                 AND dns_provider_id IS ?
+                 AND COALESCE(dns_ip, '')=?""",
+            (sid, svc["dns_provider_id"], stored_target),
+        ).fetchone()
+        if fresh is None:
+            continue
         try:
             dns = create_provider(row)
-            if not dns.update_rewrite(fqdn, old_target, fqdn, resolved_target):
-                dns.add_rewrite(fqdn, resolved_target)
-            conn.execute("UPDATE services SET dns_ip=? WHERE id=?", (resolved_target, svc["id"]))
-            add_log("info", f"[AutoDNS] {fqdn}: {old_target} → {resolved_target} ({target_source})", conn)
+            # Every outcome is checked now. A refused write used to be followed by the UPDATE
+            # below anyway, so the row named an address the provider never received.
+            if not current_target:
+                if not dns.add_rewrite(fqdn, resolved_target):
+                    raise RuntimeError("the DNS provider refused the new record")
+            elif not dns.update_rewrite(fqdn, current_target, fqdn, resolved_target):
+                if not dns.add_rewrite(fqdn, resolved_target):
+                    raise RuntimeError("the DNS provider refused the new record")
+                if not dns.delete_rewrite(fqdn, current_target):
+                    add_log(
+                        "warn",
+                        f"[AutoDNS] {fqdn}: the old record {current_target} could not be "
+                        "removed and is still live beside the new one",
+                        conn,
+                    )
+            # Conditional on the value the provider calls were based on: an edit saved while
+            # they ran wins over this cycle's result instead of being overwritten by it.
+            cur = conn.execute(
+                "UPDATE services SET dns_ip=? WHERE id=? AND COALESCE(dns_ip, '')=?",
+                (resolved_target, sid, stored_target),
+            )
+            if cur.rowcount == 0:
+                add_log(
+                    "warn",
+                    f"[AutoDNS] {fqdn}: the service changed while its record was being "
+                    f"updated to {resolved_target}; the saved target was left as it is",
+                    conn,
+                )
+            else:
+                add_log("info", f"[AutoDNS] {fqdn}: {old_target} → {resolved_target} ({target_source})", conn)
+                _propagate_to_secondary_dns(conn, sid, fqdn)
             # Success - reset failure count
             if sid in _dns_update_failures:
                 del _dns_update_failures[sid]
@@ -543,7 +792,9 @@ def _run_cert_expiry_alerts(conn) -> None:
     Re-alerts after 24 h or when the severity level changes.
     """
     global _cert_alert_state
-    import datetime as _dt
+    # The certificates page's own parser, so both read the same expiry: it accepts every
+    # format the providers send and converts an offset to UTC rather than cutting it off.
+    from app.api.certificates import _parse_expiry  # noqa: PLC0415
 
     try:
         cert_types = certificate_provider_types()
@@ -557,7 +808,7 @@ def _run_cert_expiry_alerts(conn) -> None:
         if not cert_rows:
             return
 
-        now_utc = _dt.datetime.utcnow()
+        now_utc = datetime.datetime.now(datetime.UTC)
         seen_keys: set[tuple[int, int]] = set()
 
         for prow in cert_rows:
@@ -577,12 +828,15 @@ def _run_cert_expiry_alerts(conn) -> None:
                 if not expires_raw:
                     continue
 
-                try:
-                    # Strip timezone info for naïve comparison with utcnow()
-                    normalized = expires_raw.replace("Z", "").split("+")[0].split(".")[0]
-                    expires = _dt.datetime.fromisoformat(normalized)
-                except Exception:
+                # Both sides aware UTC. Comparing an aware expiry with a naive "now" raised
+                # TypeError, and the offset used to be cut off rather than applied.
+                expires = _parse_expiry(expires_raw)
+                if expires is None:
                     continue
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=datetime.UTC)
+                else:
+                    expires = expires.astimezone(datetime.UTC)
 
                 days_left = (expires - now_utc).days
                 key = (provider_id, cert_id)
@@ -625,6 +879,61 @@ def _run_cert_expiry_alerts(conn) -> None:
 
 # ── Webhook retry ─────────────────────────────────────────────────────────
 
+def _local_target_allowed(webhook_id, conn) -> bool:
+    """Whether a webhook was saved by an admin, so it may reach the local network.
+
+    An ad-hoc send (no webhook row) is allowed, as before. Fails closed: an unreadable
+    approval is no approval. Only a LAN target is refused, so an ordinary public webhook
+    is still sent.
+    """
+    if webhook_id is None:
+        return True
+    try:
+        if conn is not None:
+            row = conn.execute(
+                "SELECT local_target_allowed FROM webhooks WHERE id=?", (webhook_id,)
+            ).fetchone()
+        else:
+            own = get_db()
+            try:
+                row = own.execute(
+                    "SELECT local_target_allowed FROM webhooks WHERE id=?", (webhook_id,)
+                ).fetchone()
+            finally:
+                own.close()
+    except Exception:
+        return False
+    return row is None or row["local_target_allowed"] is None or bool(int(row["local_target_allowed"]))
+
+
+def _log_local_refusal(url: str, conn) -> None:
+    add_log(
+        "error",
+        f"[Webhook] Not sent: {mask_secret_url(url)} now points inside the local network "
+        "and was not saved by an admin. Save it again with an admin session to allow it.",
+        conn,
+    )
+
+
+def _local_send_refused(url: str, webhook_id, conn, apprise_obj) -> bool:
+    """M11: True (and logged) when a webhook stored without `admin` now targets the LAN.
+
+    The save-time check resolves the name once; a DNS answer that later moves onto a
+    private address would otherwise turn the webhook into a standing request into the
+    network. Checked against the hosts apprise will really connect to, on every send.
+    H1: this only reads the URL; `refuse_local_connections` around `notify()` covers the
+    redirects, discovery lookups and DNS answers that change after this check.
+    """
+    if _local_target_allowed(webhook_id, conn):
+        return False
+    from app.webhook_targets import targets_the_local_network
+
+    if not targets_the_local_network(url, apprise_obj):
+        return False
+    _log_local_refusal(url, conn)
+    return True
+
+
 def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=None) -> bool:
     """Send a notification via Apprise, queueing it for retry when the send fails.
 
@@ -645,8 +954,19 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
     if not a.add(url):
         add_log("error", f"[Webhook] Unusable notification URL, nothing sent: {safe_url}")
         return False
+    if _local_send_refused(url, webhook_id, conn, a):
+        return False
+    from app.webhook_targets import refuse_local_connections
+
+    guarded = not _local_target_allowed(webhook_id, conn)
     try:
-        ok = bool(a.notify(title=title, body=body))
+        with refuse_local_connections(guarded, a) as guard:
+            ok = bool(a.notify(title=title, body=body))
+        if guard.refused:
+            # H1: a redirect, a discovery lookup or a fresh DNS answer led inside the
+            # network. Not queued: a retry would only be refused again.
+            _log_local_refusal(url, conn)
+            return False
         if not ok:
             raise RuntimeError("Apprise.notify() returned False")
         return True
@@ -681,15 +1001,40 @@ def _run_webhook_retry(conn) -> None:
 
     import apprise as _apprise
 
+    from app.webhook_targets import refuse_local_connections
+
     # +1 because attempt 1 is the original send, already counted when the row was
     # queued: without it the last backoff tier (24 h) was never reachable.
     MAX_ATTEMPTS = len(_WEBHOOK_RETRY_BACKOFF) + 1
     try:
+        # Settled for good when their webhook is switched off or gone: the query below
+        # skips them, so they used to sit in 'pending' forever, never sent and never
+        # purged. 'cancelled' is terminal, and purged like 'delivered' and 'failed'.
+        # An ad-hoc send (NULL webhook_id) has no parent to lose and is left alone.
+        conn.execute(
+            """UPDATE webhook_delivery_log
+               SET status='cancelled', updated_at=datetime('now')
+               WHERE status='pending'
+                 AND webhook_id IS NOT NULL
+                 AND webhook_id NOT IN (SELECT id FROM webhooks WHERE enabled=1)"""
+        )
+        conn.commit()
+    except Exception:
+        import traceback
+        conn.rollback()
+        add_log("error", f"[Webhook] Could not cancel orphaned retries: {traceback.format_exc()}")
+    try:
         rows = conn.execute(
-            """SELECT id, webhook_id, url, title, body, attempt
-               FROM webhook_delivery_log
-               WHERE status='pending' AND next_retry_at <= datetime('now')
-               ORDER BY next_retry_at
+            # Joined on the webhook as it is now: a webhook switched off kept receiving the
+            # retries queued before, and an edited URL kept getting the old one. An ad-hoc
+            # send (NULL webhook_id) has no webhook to follow and keeps its own URL.
+            """SELECT d.id, d.webhook_id, COALESCE(w.url, d.url) AS url, d.title, d.body,
+                      d.attempt
+               FROM webhook_delivery_log d
+               LEFT JOIN webhooks w ON w.id = d.webhook_id
+               WHERE d.status='pending' AND d.next_retry_at <= datetime('now')
+                 AND (d.webhook_id IS NULL OR w.enabled = 1)
+               ORDER BY d.next_retry_at
                LIMIT 20"""
         ).fetchall()
     except Exception:
@@ -714,7 +1059,7 @@ def _run_webhook_retry(conn) -> None:
             continue
 
         a = _apprise.Apprise()
-        if not a.add(row["url"]):
+        if not a.add(row["url"]) or _local_send_refused(row["url"], row["webhook_id"], conn, a):
             conn.execute(
                 "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
                 (dlid,),
@@ -723,7 +1068,18 @@ def _run_webhook_retry(conn) -> None:
             continue
 
         try:
-            result = a.notify(title=row["title"] or "", body=row["body"] or "")
+            with refuse_local_connections(
+                not _local_target_allowed(row["webhook_id"], conn), a
+            ) as guard:
+                result = a.notify(title=row["title"] or "", body=row["body"] or "")
+            if guard.refused:
+                _log_local_refusal(row["url"], conn)
+                conn.execute(
+                    "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
+                    (dlid,),
+                )
+                conn.commit()
+                continue
             if result:
                 conn.execute(
                     "UPDATE webhook_delivery_log SET status='delivered', updated_at=datetime('now') WHERE id=?",
@@ -864,6 +1220,9 @@ def _fire_global_webhook() -> None:
                 had_down = key in _webhook_service_down_since or key in _webhook_service_last_sent
                 if had_down and status == "ok" and bool(row["alert_on_any_up"]):
                     messages_by_url.setdefault(row["url"], []).append(f"RECOVERED: {fqdn}")
+                    # Tied to its webhook like a DOWN, so a retry follows it if it is
+                    # switched off, instead of being queued as a parentless send.
+                    webhook_id_by_url.setdefault(row["url"], int(row["webhook_id"]))
                 _webhook_service_down_since.pop(key, None)
                 _webhook_service_last_sent.pop(key, None)
 
@@ -966,6 +1325,7 @@ def _fire_service_webhooks() -> None:
                     messages_by_url.setdefault(row["webhook_url"], []).append(
                         f"RECOVERED: {fqdn}"
                     )
+                    webhook_id_by_url.setdefault(row["webhook_url"], int(row["webhook_id"]))
                 _alert_down_since.pop(key, None)
                 _alert_down_sent.discard(key)
 
@@ -1054,22 +1414,54 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
     try:
         conn = get_db()
         webhooks = conn.execute(
-            "SELECT id, url FROM webhooks WHERE enabled=1 AND alert_on_any_down=1"
+            "SELECT id, url, scope_type, scope_ref_id FROM webhooks "
+            "WHERE enabled=1 AND alert_on_any_down=1"
+        ).fetchall()
+        services = conn.execute(
+            """SELECT id AS service_id, subdomain, domain, dns_provider_id,
+                      proxy_provider_id, tunnel_provider_id
+               FROM services"""
+        ).fetchall()
+        extra_rows = conn.execute(
+            "SELECT service_id, provider_id FROM service_push_targets"
         ).fetchall()
         conn.close()
         if not webhooks:
             return
 
-        lines = [f"Auto-reconcile corrected {len(corrected)} service(s):"]
-        lines.extend(f"  ✓ {fqdn}" for fqdn in corrected)
-        if errors:
-            lines.append(f"Errors ({len(errors)}):")
-            lines.extend(f"  ✗ {e}" for e in errors)
-        body = "\n".join(lines)
+        extra_target_map: dict[int, set[int]] = {}
+        for extra in extra_rows:
+            extra_target_map.setdefault(int(extra["service_id"]), set()).add(int(extra["provider_id"]))
+        by_fqdn = {f"{s['subdomain']}.{s['domain']}".lower(): dict(s) for s in services}
 
         for wh in webhooks:
+            # The report went to every webhook, a webhook scoped to one service or one
+            # provider included. Each now gets the services its scope covers.
+            if (wh["scope_type"] or "all").lower() != "all":
+                covered = {
+                    fqdn for fqdn, svc in by_fqdn.items()
+                    if _service_matches_scope(
+                        {**svc, "scope_type": wh["scope_type"], "scope_ref_id": wh["scope_ref_id"]},
+                        extra_target_map,
+                    )
+                }
+                mine = [f for f in corrected if str(f).lower() in covered]
+                # Errors read "<fqdn>: <detail>"; a scoped webhook gets those of its services.
+                my_errors = [
+                    e for e in errors if str(e).split(":", 1)[0].strip().lower() in covered
+                ]
+            else:
+                mine, my_errors = list(corrected), list(errors)
+            if not mine and not my_errors:
+                continue
+
+            lines = [f"Auto-reconcile corrected {len(mine)} service(s):"]
+            lines.extend(f"  ✓ {fqdn}" for fqdn in mine)
+            if my_errors:
+                lines.append(f"Errors ({len(my_errors)}):")
+                lines.extend(f"  ✗ {e}" for e in my_errors)
             _try_send_apprise(
-                wh["url"], "Vauxtra: Auto-Reconcile", body, webhook_id=wh["id"]
+                wh["url"], "Vauxtra: Auto-Reconcile", "\n".join(lines), webhook_id=wh["id"]
             )
     except Exception:
         import traceback

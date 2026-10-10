@@ -62,12 +62,18 @@ else
 fi
 
 echo "== Technitium =="
-token=$(curl -s "$TECHNITIUM/api/user/login?user=admin&pass=$PW&includeInfo=true" \
-  | grep -oE '"token":"[^"]*"' | cut -d'"' -f4)
+# POST form bodies, not query strings: a password or token in the URL ends up in the
+# server's access log and in the process list.
+token=$(curl -s -X POST "$TECHNITIUM/api/user/login" \
+  --data-urlencode "user=admin" --data-urlencode "pass=$PW" --data-urlencode "includeInfo=true" \
+  | grep -oE '"token":"[^"]*"' | cut -d'"' -f4 || true)
+# `|| true`: under `set -euo pipefail` a reply without a token made grep fail and ended the
+# script here, before the message below could name the failed login.
 if [ -z "$token" ]; then
   say technitium "login FAILED"
 else
-  reply=$(curl -s "$TECHNITIUM/api/zones/create?token=$token&zone=vxlab.test&type=Primary")
+  reply=$(curl -s -X POST "$TECHNITIUM/api/zones/create" \
+    --data-urlencode "token=$token" --data-urlencode "zone=vxlab.test" --data-urlencode "type=Primary")
   say technitium "zone vxlab.test -> $(echo "$reply" | grep -oE '"status":"[^"]*"')"
 fi
 
@@ -87,5 +93,5 @@ say adguard   "$(curl -s -o /dev/null -w '%{http_code}' -u "admin:$PW" "$ADGUARD
 say pihole    "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PIHOLE/api/auth" -H 'Content-Type: application/json' -d "{\"password\":\"$PW\"}")"
 say npm       "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$NPM/api/tokens" -H 'Content-Type: application/json' -d "{\"identity\":\"admin@example.com\",\"secret\":\"$PW\"}")"
 say zoraxy    "$(curl -s -o /dev/null -w '%{http_code}' "$ZORAXY/api/auth/checkLogin")"
-say technitium "$(curl -s -o /dev/null -w '%{http_code}' "$TECHNITIUM/api/user/login?user=admin&pass=$PW")"
+say technitium "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$TECHNITIUM/api/user/login" --data-urlencode "user=admin" --data-urlencode "pass=$PW")"
 say powerdns  "$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $PW" "$POWERDNS/api/v1/servers/localhost")"

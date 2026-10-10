@@ -7,7 +7,7 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 ## Prerequisites
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
-2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`; `write` covers every tool except the admin ones (`change_password`, backup/restore, factory reset, API key management).
+2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`; `write` covers every tool except the admin ones: `change_password`, backup/restore, factory reset, API key management, `clear_logs`, every Docker endpoint tool that changes or probes an endpoint (`add_docker_endpoint`, `set_default_docker_endpoint`, `test_docker_endpoint`, `delete_docker_endpoint`), `update_provider` when the host or the TLS settings change, a provider `ca_bundle`, the settings that point the server at the network, and a webhook URL that is a generic HTTP scheme or reaches the local network.
 3. Python 3.12+ with dependencies installed:
 
 ```bash
@@ -67,16 +67,36 @@ For remote instances or browser-based clients, run the server in HTTP mode:
 
 ```bash
 VAUXTRA_URL=http://vauxtra:8888 VAUXTRA_API_KEY=vx_... python -m vauxtra_mcp.server --http
-# Listens on http://127.0.0.1:9000
+# Listens on http://127.0.0.1:9000/mcp
 ```
 
-Then point your MCP client at `http://127.0.0.1:9000`.
+Then point your MCP client at `http://127.0.0.1:9000/mcp`, the streamable HTTP endpoint.
 
-The HTTP transport has **no authentication of its own** while holding an API key that can
-reach every Vauxtra route, so it binds to loopback only. To expose it, set
-`VAUXTRA_MCP_HOST` explicitly — and put an authenticating reverse proxy in front of it, or
-tunnel to the loopback port instead. The server prints a warning whenever it binds
-anything other than `127.0.0.1`.
+`VAUXTRA_URL` is subject to Vauxtra's DNS-rebinding guard: while the instance has no admin
+password, it answers `421` to any name that is not an IP address, `localhost` or a host
+listed in `CORS_ORIGINS`. A name such as `http://vauxtra:8888` therefore needs an admin
+password set on the instance (or that name in `CORS_ORIGINS`); otherwise use its IP address.
+
+The HTTP transport holds an API key that can reach every Vauxtra route, so it binds to
+loopback only by default. How it protects itself depends on `VAUXTRA_MCP_TOKEN`:
+
+- **With a token**: every request must carry `Authorization: Bearer <token>`, or it gets
+  `401`. The `Host` and `Origin` headers are not checked: a DNS-rebound or cross-site page
+  cannot know the token, and a reverse proxy forwarding its public name
+  (`Host: mcp.example.com`) is accepted.
+- **Without a token**: the bridge authenticates nobody, so it may only listen on loopback.
+  The `Host` header must then be a loopback name or the bind address (`421` otherwise),
+  and a browser `Origin` must be local (`403` otherwise). These checks stop a web page in
+  a local browser, including through DNS rebinding.
+
+To expose it, set `VAUXTRA_MCP_HOST` explicitly together with `VAUXTRA_MCP_TOKEN`. The
+server refuses to start on a non-loopback address without a token; there is no opt-out.
+Tunnelling to the loopback port is the other option. Behind a reverse proxy, set the token
+and have the client send it:
+
+```bash
+VAUXTRA_MCP_HOST=0.0.0.0 VAUXTRA_MCP_TOKEN=... python -m vauxtra_mcp.server --http
+```
 
 ---
 
@@ -87,8 +107,9 @@ anything other than `127.0.0.1`.
 | `VAUXTRA_URL` | `http://localhost:8888` | Base URL of your Vauxtra instance |
 | `VAUXTRA_API_KEY` | *(required)* | Bearer API key created in Vauxtra settings |
 | `VAUXTRA_TIMEOUT` | `120` | Seconds to wait for a Vauxtra call. A push walks every provider in series. |
-| `VAUXTRA_MCP_HOST` | `127.0.0.1` | Interface `--http` binds to. Anything else is published without authentication. |
+| `VAUXTRA_MCP_HOST` | `127.0.0.1` | Interface `--http` binds to. Anything else requires `VAUXTRA_MCP_TOKEN`, or the server refuses to start. |
 | `VAUXTRA_MCP_PORT` | `9000` | Port `--http` binds to |
+| `VAUXTRA_MCP_TOKEN` | (unset) | When set, `--http` refuses any request without `Authorization: Bearer <token>` (and then skips the Host and Origin checks). At least 32 characters, or the server refuses to start |
 
 ---
 
@@ -139,7 +160,7 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `get_provider_types` | Supported provider types, their capabilities and required fields |
 | `create_provider` | Add a provider integration |
 | `update_provider` | Update a provider; only the fields you send are changed |
-| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them) |
+| `delete_provider` | Remove a provider (409 while services use it; `force=True` unlinks them, `withdraw=True` also removes their records from it) |
 | `test_provider` | Test a provider's connection and validate its credentials |
 | `test_provider_connection` | Same test, returning structured diagnostics |
 | `validate_provider_draft` | Validate a provider's settings before creating it (no DB write) |
@@ -241,8 +262,8 @@ session is always `admin`. Use `auth_login` only on an instance with no key yet.
 |---|---|
 | `create_backup` | Export a backup without credentials |
 | `create_secure_backup` | Export a backup with credentials encrypted by a passphrase |
-| `restore_backup` | Restore from a backup payload — this replaces current data |
-| `reset_all_data` | Delete all application data |
+| `restore_backup` | Restore from a backup payload — this replaces current data (refused without `confirm=True`) |
+| `reset_all_data` | Delete all application data (refused without `confirm=True`) |
 
 ---
 

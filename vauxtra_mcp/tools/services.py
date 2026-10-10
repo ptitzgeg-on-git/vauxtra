@@ -2,7 +2,7 @@
 from typing import Any
 
 from vauxtra_mcp import client
-from vauxtra_mcp.app import mcp
+from vauxtra_mcp.app import READ_ONLY, mcp
 
 # Exactly the keys `ServiceIn` accepts. An allowlist, not a blocklist: a GET also returns
 # computed columns, provider names and monitoring state, and a new column added to the
@@ -33,7 +33,7 @@ def _service_to_payload(current: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_services() -> list[dict[str, Any]]:
     """List all configured services with their current health status and routing info."""
     r = client.get("/services")
@@ -41,7 +41,7 @@ def list_services() -> list[dict[str, Any]]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_service(service_id: int) -> dict[str, Any]:
     """Get full details of a single service, including provider assignments and push targets."""
     r = client.get(f"/services/{service_id}")
@@ -187,7 +187,7 @@ def import_services_from_sync(proxy_hosts: list[dict[str, Any]] | None = None, d
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def discover_docker_containers(endpoint_id: int | None = None) -> list[dict[str, Any]]:
     """
     Discover running Docker containers from a Docker endpoint.
@@ -201,7 +201,7 @@ def discover_docker_containers(endpoint_id: int | None = None) -> list[dict[str,
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_docker_endpoints() -> list[dict[str, Any]]:
     """List configured Docker endpoints (hosts) for container discovery."""
     r = client.get("/docker/endpoints")
@@ -240,7 +240,7 @@ def import_docker_containers(
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_services_history() -> dict[str, Any]:
     """Return the last 24h uptime history for all services."""
     r = client.get("/services/history")
@@ -248,7 +248,7 @@ def get_services_history() -> dict[str, Any]:
     return r.json()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, Any]:
     """Suggest WAN/public targets for DNS based on current connectivity and provider context."""
     params = {"proxy_provider_id": proxy_provider_id} if proxy_provider_id is not None else {}
@@ -260,7 +260,7 @@ def suggest_public_targets(proxy_provider_id: int | None = None) -> dict[str, An
 @mcp.tool()
 def check_service_health(service_id: int) -> dict[str, Any]:
     """Run a live health/TCP and DNS check for one service."""
-    r = client.get(f"/services/{service_id}/check")
+    r = client.post(f"/services/{service_id}/check")
     client.check(r)
     return r.json()
 
@@ -290,7 +290,7 @@ def add_docker_endpoint(name: str, docker_host: str, enabled: bool = True) -> di
 
 @mcp.tool()
 def set_default_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
-    """Mark one Docker endpoint as default for discovery/import."""
+    """Mark one Docker endpoint as default for discovery/import. Needs an admin-scoped key."""
     r = client.post(f"/docker/endpoints/{endpoint_id}/default")
     client.check(r)
     return r.json()
@@ -298,7 +298,10 @@ def set_default_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def test_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
-    """Test connectivity to one Docker endpoint and return visible container count."""
+    """Test connectivity to one Docker endpoint and return visible container count.
+
+    Needs an admin-scoped key.
+    """
     r = client.post(f"/docker/endpoints/{endpoint_id}/test")
     client.check(r)
     return r.json()
@@ -306,7 +309,7 @@ def test_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def delete_docker_endpoint(endpoint_id: int) -> dict[str, Any]:
-    """Delete a Docker endpoint (requires at least one endpoint to remain)."""
+    """Delete a Docker endpoint (requires at least one endpoint to remain). Needs an admin-scoped key."""
     r = client.delete(f"/docker/endpoints/{endpoint_id}")
     client.check(r)
     return r.json()

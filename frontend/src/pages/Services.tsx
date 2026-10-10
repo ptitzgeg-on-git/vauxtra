@@ -49,7 +49,7 @@ import { ServiceCard } from '@/components/features/services/ServiceCard';
 import { ServiceRow } from '@/components/features/services/ServiceRow';
 import {
   MODE_FILTERS,
-  buildServicePayload,
+  bulkOutcomeOf,
   isStatusFilter,
   matchesMode,
   matchesSearch,
@@ -410,15 +410,32 @@ export function Services() {
   }, [routeModal, driftDrawerId, selectedIds.size, visibleIds.length, clearSelection, toggleSelectAll, openCreate]);
 
   // --- mutations ----------------------------------------------------------
+  // Through the bulk route with one id, the same path as the toolbar: the full PUT rebuilt the
+  // whole service from the list row the page last fetched, so a toggle could write back
+  // stale fields, and the provider errors the bulk route reports were never shown.
   const toggleStatus = useMutation({
     mutationFn: (service: Service) =>
-      api.put<Service>(`/services/${service.id}`, buildServicePayload(service, { enabled: !service.enabled })),
+      api.post<BulkActionResult>('/services/bulk', {
+        ids: [service.id],
+        action: service.enabled ? 'disable' : 'enable',
+      }),
     onMutate: (service) => startAction(service.id),
-    onSuccess: (_data, service) => {
+    onSuccess: (result, service) => {
       invalidateAfterPush();
       forgetDrift([service.id]);
       const host = publicHostOf(service);
-      toast.success(service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host }));
+      const label = service.enabled ? t('services.toast.disabled', { host }) : t('services.toast.enabled', { host });
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      const outcome = bulkOutcomeOf(result);
+      if (outcome === 'warning') {
+        const shown = errors.slice(0, 2).join(' · ');
+        const more = errors.length > 2 ? t('services.toast.more', { count: errors.length - 2 }) : '';
+        toast(t('services.bulk.result.with_errors', { label, errors: shown, more }), { icon: '⚠️', duration: 8000 });
+      } else if (outcome === 'noop') {
+        toast(t('services.toast.unchanged', { host }), { icon: 'ℹ️' });
+      } else {
+        toast.success(label);
+      }
     },
     onError: (err, service) => {
       toast.error(translateApiError(err, t, t('services.toast.update_failed', { host: publicHostOf(service) })));
@@ -455,7 +472,7 @@ export function Services() {
   });
 
   const checkService = useMutation({
-    mutationFn: (service: Service) => api.get<ServiceCheckResult>(`/services/${service.id}/check`),
+    mutationFn: (service: Service) => api.post<ServiceCheckResult>(`/services/${service.id}/check`),
     onMutate: (service) => startAction(service.id),
     onSuccess: (result, service) => {
       setCheckById((prev) => ({ ...prev, [service.id]: result }));
@@ -520,10 +537,13 @@ export function Services() {
             ? t('services.bulk.result.disabled', { count: affected })
             : t('services.bulk.result.deleted', { count: affected });
       const errors = Array.isArray(result?.errors) ? result.errors : [];
-      if (errors.length > 0) {
+      const outcome = bulkOutcomeOf(result);
+      if (outcome === 'warning') {
         const shown = errors.slice(0, 2).join(' · ');
         const more = errors.length > 2 ? t('services.toast.more', { count: errors.length - 2 }) : '';
         toast(t('services.bulk.result.with_errors', { label, errors: shown, more }), { icon: '⚠️', duration: 8000 });
+      } else if (outcome === 'noop') {
+        toast(t('services.bulk.result.none'), { icon: 'ℹ️' });
       } else {
         toast.success(label);
       }
@@ -549,7 +569,7 @@ export function Services() {
       for (const service of targets) {
         startAction(service.id);
         try {
-          const result = await api.get<ServiceCheckResult>(`/services/${service.id}/check`);
+          const result = await api.post<ServiceCheckResult>(`/services/${service.id}/check`);
           setCheckById((prev) => ({ ...prev, [service.id]: result }));
           if (result.status === 'ok') ok += 1;
           else failed += 1;

@@ -53,7 +53,17 @@ def _parse_expiry(raw: str | None) -> datetime.datetime | None:
             return datetime.datetime.strptime(raw, fmt)
         except ValueError:
             continue
-    return None
+    # NPM answers "2026-01-31 12:00:00" (a space, no zone), which none of the formats above
+    # read: its certificates showed no expiry at all here while the scheduler, which goes
+    # through `fromisoformat`, warned about them. Same reading as the scheduler now, with an
+    # offset converted to UTC rather than cut off.
+    try:
+        parsed = datetime.datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(datetime.UTC).replace(tzinfo=None)
+    return parsed
 
 
 @router.get("/api/certificates")
