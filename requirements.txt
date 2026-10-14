@@ -9,5 +9,5 @@ apscheduler>=3.11
 cloudflare>=5.7.0,<6
 sse-starlette>=3.3
 docker>=7.2.0
-slowapi>=0.1.9
+slowapi>=0.1.10
 dnspython>=2.8
