@@ -6,7 +6,7 @@ RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-FROM python:3.14-slim
+FROM python:3.15-slim
 ARG APP_VERSION=dev
 WORKDIR /app
 ENV TZ=UTC
