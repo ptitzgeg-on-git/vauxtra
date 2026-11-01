@@ -52,11 +52,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26"
           cache: npm
@@ -147,7 +147,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload image scan results to Security tab
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && hashFiles('trivy-image-results.sarif') != '' && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: trivy-image-results.sarif
@@ -183,13 +183,13 @@ jobs:
           exit-code: "1"
 
       - name: Upload Trivy results to Security tab
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: trivy-results.sarif
           category: trivy
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
 
@@ -212,7 +212,7 @@ jobs:
       # is created -- so the asset has no release to land on, and the step fails the whole
       # publish. The SBOM already leaves as a workflow artifact, which is what we read.
       - name: Generate SBOM with Syft
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: .
           format: cyclonedx-json
@@ -288,7 +288,7 @@ jobs:
           exit 0
 
       - name: Upload Grype results to Security tab
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && hashFiles('grype-results.sarif') != '' && !startsWith(github.ref, 'refs/tags/')
         with:
           sarif_file: grype-results.sarif
