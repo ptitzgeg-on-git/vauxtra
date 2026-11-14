@@ -402,12 +402,13 @@ class SettingsRejectionTests(_IsolatedDB):
             self._save({"check_interval": "later"})
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("check_interval", ctx.exception.detail)
-        self.assertIsNone(self._stored("check_interval"))
+        # Untouched: still the default `init_db` writes, not the refused value.
+        self.assertEqual(self._stored("check_interval"), "5")
 
     def test_an_out_of_range_interval_is_refused(self) -> None:
         with self.assertRaises(HTTPException):
             self._save({"check_interval": "100000"})
-        self.assertIsNone(self._stored("check_interval"))
+        self.assertEqual(self._stored("check_interval"), "5")
 
     def test_nothing_is_written_when_one_key_is_bad(self) -> None:
         with self.assertRaises(HTTPException):

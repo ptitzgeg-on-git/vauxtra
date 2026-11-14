@@ -193,7 +193,8 @@ class ResetRegressionTests(IsolatedDBTestCase):
         )
         conn.execute("INSERT INTO uptime_events (service_id, status) VALUES (1, 'ok')")
         conn.execute("INSERT INTO domains (name) VALUES ('example.com')")
-        conn.execute("INSERT INTO settings (key, value) VALUES ('check_interval', '1')")
+        # REPLACE: `init_db` already wrote the default interval (`_default_check_interval`).
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('check_interval', '1')")
         conn.execute("INSERT INTO logs (level, message) VALUES ('info', 'seed log')")
         conn.commit()
         conn.close()

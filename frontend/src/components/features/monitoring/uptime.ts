@@ -8,17 +8,18 @@
  * bucketed into a heat strip without carrying a state forward between events.
  *
  * Three things the table has to be honest about:
- *  - there is no latency column in `uptime_events`. Latency exists only in the answer of
- *    `POST /api/services/{sid}/check`, which measures one service on demand, and in
- *    the `results` of `POST /api/services/check-all`, which measures every one of them.
- *  - `expose_mode === 'tunnel'` services are skipped by both the scheduler and
- *    `POST /api/services/check-all` (TCP against a tunnel target always fails), so they
- *    have no history and no `last_checked` — that is expected, not a fault.
- *  - so are the services without a port (`target_port` 0, published in DNS alone), for the
- *    plainer reason that there is nothing to connect to.
+ *  - there is no latency column in `uptime_events`. The service row keeps the latency of its
+ *    last probe (`latency_ms`), and the two check routes answer a fresher one, with the DNS
+ *    answer on top for the per-row check.
+ *  - a tunnel route is not dialled: its target is `localhost:<port>` as `cloudflared` sees
+ *    it, which the Vauxtra container cannot reach. It is requested by its public name through
+ *    the Cloudflare edge instead (`app/probe.py`), and `status_detail` says what came back.
+ *  - the services without a port (`target_port` 0, published in DNS alone) are not probed,
+ *    for the plain reason that there is nothing to connect to.
  */
 
 import { parseBackendTimestamp } from '@/lib/format';
+import type { TranslateFn } from '@/i18n';
 import type { Tone } from '@/components/ui';
 import { hasNoPort } from '@/components/features/services/helpers';
 import type { Service, ServiceHistoryPoint, ServiceHistoryResponse, ServiceStatus } from '@/types/api';
@@ -105,9 +106,84 @@ export function autoCheckCadence(raw: string | number | null | undefined): AutoC
   return minutes === 0 ? { state: 'off' } : { state: 'every', minutes };
 }
 
-/** Tunnel endpoints are never TCP-checked; the Cloudflare API is what says they are up. */
+/** Tunnel routes are tested by their public name through Cloudflare, never dialled. */
 export function isTunnelService(service: Service): boolean {
   return service.expose_mode === 'tunnel';
+}
+
+// ---------------------------------------------------------------------------
+// What the last probe saw
+// ---------------------------------------------------------------------------
+
+export interface StatusDetail {
+  /** One of `DETAIL_CODES` in `app/probe.py`. */
+  code: string;
+  /** The HTTP status the edge answered, `null` for a TCP probe. */
+  http: number | null;
+}
+
+/** `edge_access:302` gives `{code: 'edge_access', http: 302}`; empty gives `null`. */
+export function parseStatusDetail(raw: string | null | undefined): StatusDetail | null {
+  const value = (raw || '').trim();
+  if (!value) return null;
+  const [code, rest] = value.split(':', 2);
+  const http = rest ? Number(rest) : NaN;
+  return { code, http: Number.isInteger(http) && http > 0 ? http : null };
+}
+
+/**
+ * Caption key per probe code. Mirrors `DETAIL_CODES` in `app/probe.py`; `uptime.test.ts`
+ * reads that set out of the Python and fails when a code has no key here or in en.json.
+ *
+ * `tcp_failed` keeps the sentence the table always wrote, with the target in it.
+ */
+export const DETAIL_KEY: Record<string, string> = {
+  tcp_open: 'monitoring.detail.tcp_open',
+  tcp_failed: 'monitoring.error.tcp_unreachable',
+  no_port: 'monitoring.detail.no_port',
+  edge_ok: 'monitoring.detail.edge_ok',
+  edge_access: 'monitoring.detail.edge_access',
+  edge_tunnel_down: 'monitoring.detail.edge_tunnel_down',
+  edge_origin_down: 'monitoring.detail.edge_origin_down',
+  edge_origin_error: 'monitoring.detail.edge_origin_error',
+  edge_unreachable: 'monitoring.detail.edge_unreachable',
+  dns_unresolved: 'monitoring.detail.dns_unresolved',
+  dns_not_cloudflare: 'monitoring.detail.dns_not_cloudflare',
+  no_hostname: 'monitoring.detail.no_hostname',
+};
+
+export interface StatusCaption {
+  text: string;
+  /** Written in the danger colour: the probe failed. */
+  failed: boolean;
+}
+
+/**
+ * One line under the status badge: what the last probe saw, in words.
+ *
+ * `null` for a switched-off service, for one without a port (the row has its own caption for
+ * that), and for a probe code this build does not know. A tunnel route still in error with no
+ * detail at all carries a verdict written before the edge probe existed, by a TCP dial that
+ * could never succeed: it is called stale rather than repeated.
+ */
+export function statusCaption(service: Service, t: TranslateFn): StatusCaption | null {
+  const status = serviceStatus(service);
+  if (status === 'disabled' || hasNoPort(service)) return null;
+  const detail = parseStatusDetail(service.status_detail);
+  const failed = status === 'error';
+  if (!detail) {
+    if (!failed) return null;
+    return isTunnelService(service)
+      ? { text: t('monitoring.detail.stale'), failed: false }
+      : { text: t('monitoring.error.tcp_unreachable', { target: serviceTarget(service) }), failed };
+  }
+  const key = DETAIL_KEY[detail.code];
+  if (!key) return null;
+  const text = t(key, { target: serviceTarget(service) });
+  return {
+    text: detail.http ? `${text} · ${t('monitoring.detail.http', { status: detail.http })}` : text,
+    failed,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +311,7 @@ export function overallAvailability(
 }
 
 // ---------------------------------------------------------------------------
-// On-demand latency
+// Latency
 // ---------------------------------------------------------------------------
 
 /** One measurement, from either check route, kept for as long as the page is open. */
@@ -251,24 +327,55 @@ export interface LatencyProbe {
 
 export type LatencyProbes = Record<number, LatencyProbe>;
 
-/** The latencies actually measured: a check that failed, or had no port to try, has none. */
-function measuredLatencies(probes: LatencyProbes): number[] {
-  return Object.values(probes)
-    .map((probe) => probe.latencyMs)
-    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-}
-
-/** Mean of the latencies measured this session, `null` while none has been. */
-export function averageLatency(probes: LatencyProbes): number | null {
-  const values = measuredLatencies(probes);
-  if (values.length === 0) return null;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+export interface ServiceLatency {
+  /** `null` when the last probe did not answer. */
+  ms: number | null;
+  /** Epoch ms of the measurement, `null` when the row does not say. */
+  at: number | null;
 }
 
 /**
- * How many services that mean is taken over. Counting every check instead put "Measured on
- * 1 service" under a dash, after a check that measured nothing.
+ * The latency to show for one service: this session's check when there is one, since it also
+ * carries the DNS answer, else what the last probe stored on the row. `null` when neither
+ * exists, so the cell shows a dash and never a zero pretending to be a measurement.
  */
-export function measuredCount(probes: LatencyProbes): number {
-  return measuredLatencies(probes).length;
+export function serviceLatency(service: Service, probe: LatencyProbe | undefined): ServiceLatency | null {
+  if (probe) return { ms: probe.latencyMs, at: probe.at };
+  const stored = service.latency_ms;
+  if (typeof stored !== 'number' || !Number.isFinite(stored)) return null;
+  return { ms: stored, at: parseBackendTimestamp(service.last_checked)?.getTime() ?? null };
+}
+
+/**
+ * Mean latency over the enabled services, from `serviceLatency`, and how many it covers.
+ *
+ * `count` is the services that measured something, never the checks that ran: counting every
+ * check once put "measured on 1 service" under a dash, after a check that measured nothing.
+ */
+export function fleetLatency(services: Service[], probes: LatencyProbes): { average: number | null; count: number } {
+  let sum = 0;
+  let count = 0;
+  for (const service of services) {
+    if (!service.enabled) continue;
+    const ms = serviceLatency(service, probes[service.id])?.ms;
+    if (typeof ms !== 'number' || !Number.isFinite(ms)) continue;
+    sum += ms;
+    count += 1;
+  }
+  return { average: count ? sum / count : null, count };
+}
+
+// ---------------------------------------------------------------------------
+// Card order
+// ---------------------------------------------------------------------------
+
+/** Down first, then unknown, then up, switched off last: the cards read like a to-do list. */
+const CARD_RANK: Record<MonitoringStatus, number> = { error: 0, unknown: 1, ok: 2, disabled: 3 };
+
+export function sortForCards(services: Service[]): Service[] {
+  return [...services].sort(
+    (a, b) =>
+      CARD_RANK[serviceStatus(a)] - CARD_RANK[serviceStatus(b)] ||
+      serviceHost(a).localeCompare(serviceHost(b)),
+  );
 }

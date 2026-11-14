@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { screen, within } from '@testing-library/react';
+import { EM_DASH } from '@/lib/format';
 import { renderWithProviders } from '@/test/render';
 import type { Service, ServiceHistoryResponse } from '@/types/api';
 import { MonitoringTable } from './MonitoringTable';
@@ -57,13 +58,15 @@ function renderTable(overrides: Partial<Parameters<typeof MonitoringTable>[0]> =
   );
 }
 
-/** The 24 h cell of the only row, found through its column header rather than by index. */
-function uptimeCell(): HTMLElement {
+/** A cell of the only row, found through its column header rather than by index. */
+function cellUnder(header: string): HTMLElement {
   const headers = screen.getAllByRole('columnheader');
-  const column = headers.findIndex((cell) => cell.textContent === 'monitoring.table.uptime_24h');
+  const column = headers.findIndex((cell) => cell.textContent === header);
   expect(column).toBeGreaterThanOrEqual(0);
   return screen.getAllByRole('cell')[column];
 }
+
+const uptimeCell = () => cellUnder('monitoring.table.uptime_24h');
 
 describe('MonitoringTable, the 24 h cell', () => {
   it('says "no check in the last 24 hours" once, not twice', () => {
@@ -140,5 +143,47 @@ describe('MonitoringTable, a service without a port', () => {
   it('keeps the check button on a service that has a port', () => {
     renderTable();
     expect(screen.getByRole('button', { name: 'monitoring.check_row' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * A tunnel route used to read "down, check the tunnel connector" while it answered fine: the
+ * verdict came from a TCP dial to `localhost`, which the Vauxtra container cannot reach. The
+ * row now says what the Cloudflare edge answered, and calls an older verdict stale.
+ */
+const TUNNEL: Service = {
+  ...SERVICE,
+  expose_mode: 'tunnel',
+  target_ip: 'localhost',
+  tunnel_provider_id: 3,
+  tunnel_provider_name: 'Maison',
+};
+
+describe('MonitoringTable, what the last probe saw', () => {
+  it('says what the edge answered for a tunnel route', () => {
+    renderTable({ services: [{ ...TUNNEL, status_detail: 'edge_access:302' }] });
+
+    const cell = cellUnder('monitoring.table.status');
+    expect(within(cell).getByText(/^monitoring\.detail\.edge_access · monitoring\.detail\.http$/)).toBeInTheDocument();
+  });
+
+  it('calls a tunnel verdict without detail stale, not a connector failure', () => {
+    renderTable({ services: [{ ...TUNNEL, status: 'error' }] });
+
+    const cell = cellUnder('monitoring.table.status');
+    expect(within(cell).getByText('monitoring.detail.stale')).toBeInTheDocument();
+    expect(within(cell).queryByText(/tunnel_unreachable|tcp_unreachable/)).toBeNull();
+  });
+
+  it('shows the latency the last probe stored, before any check this session', () => {
+    renderTable({ services: [{ ...SERVICE, latency_ms: 18 }] });
+
+    expect(within(cellUnder('monitoring.table.latency')).queryByText(EM_DASH)).toBeNull();
+  });
+
+  it('shows a dash, never a zero, when nothing was ever measured', () => {
+    renderTable();
+
+    expect(within(cellUnder('monitoring.table.latency')).getByText(EM_DASH)).toBeInTheDocument();
   });
 });

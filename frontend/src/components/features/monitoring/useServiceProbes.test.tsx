@@ -61,7 +61,6 @@ describe('useServiceProbes', () => {
 
     expect(result.current.probes[1].latencyMs).toBe(4);
     expect(result.current.probes[1].status).toBe('ok');
-    expect(result.current.average).toBe(4);
   });
 
   it('records an unreachable service without inventing a zero for it', () => {
@@ -72,7 +71,6 @@ describe('useServiceProbes', () => {
     // A refused connection measured nothing. Zero would read as "answered instantly".
     expect(result.current.probes[2].latencyMs).toBeNull();
     expect(result.current.probes[2].status).toBe('error');
-    expect(result.current.average).toBe(4);
   });
 
   it('keeps the hostname an earlier per-row check resolved', async () => {

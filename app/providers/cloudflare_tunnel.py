@@ -3,7 +3,9 @@
 Storage convention (DB columns):
   url      → Cloudflare API base (defaults to https://api.cloudflare.com/client/v4)
   username → Account ID (required)
-  password → API Token  (requires Account:Cloudflare Tunnel:Edit + Zone:DNS:Edit)
+  password → API Token  (requires Account:Cloudflare Tunnel:Edit + Zone:DNS:Edit; reading
+             which routes Access protects also needs Account:Access: Apps and Policies Read,
+             and protecting one from the panel needs the Edit level of the same)
   extra    → JSON object with {"tunnel_id": "<uuid>"}
 """
 
@@ -13,6 +15,14 @@ from urllib.parse import urlparse
 
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import ProviderListingRefused, ProxyProvider, TimeoutSession
+from app.providers.cloudflare_access import (
+    is_permission_refusal,
+    new_application_body,
+    summarize_policy,
+)
+
+ACCESS_PAGE_SIZE = 50
+ACCESS_MAX_PAGES = 10
 
 
 class CloudflareTunnelProvider(ProxyProvider):
@@ -625,4 +635,71 @@ class CloudflareTunnelProvider(ProxyProvider):
             "active_clients": active_clients,
             "cloudflared_versions": sorted(versions),
             "declared_status": declared_status or None,
+        }
+
+    # -- Cloudflare Access ---------------------------------------------------------------
+
+    def _access_listing(self, path: str) -> dict:
+        """Every page of an Access listing, and whether Cloudflare refused it outright."""
+        items: list[dict] = []
+        for page in range(1, ACCESS_MAX_PAGES + 1):
+            resp = self._request_detailed(
+                "GET", path, params={"page": page, "per_page": ACCESS_PAGE_SIZE},
+            )
+            if not resp["ok"]:
+                return {
+                    "ok": False,
+                    "refused": is_permission_refusal(resp),
+                    "status": resp["status"],
+                    "items": items,
+                }
+            result = resp["result"] if isinstance(resp["result"], list) else []
+            items.extend(r for r in result if isinstance(r, dict))
+            if len(result) < ACCESS_PAGE_SIZE:
+                break
+        return {"ok": True, "refused": False, "status": 200, "items": items}
+
+    def access_overview(self) -> dict:
+        """Access applications and reusable policies of the account, as far as the token sees.
+
+        `permission` is the honest part of the answer (see `app/providers/cloudflare_access.py`
+        for why an empty list cannot be trusted): `ok` with at least one application read,
+        `unverified` on an empty listing, `missing` when Cloudflare refused, `error` otherwise.
+        `apps` is raw and carries policy rules, so it is for classification here, never for
+        the response body.
+        """
+        if not self.account_id:
+            return {"permission": "error", "reason": "missing_account_id", "apps": [], "policies": []}
+        apps = self._access_listing(f"/accounts/{self.account_id}/access/apps")
+        if not apps["ok"]:
+            return {
+                "permission": "missing" if apps["refused"] else "error",
+                "reason": "refused" if apps["refused"] else "unreachable",
+                "apps": [],
+                "policies": [],
+            }
+        policies = self._access_listing(f"/accounts/{self.account_id}/access/policies")
+        return {
+            "permission": "ok" if apps["items"] else "unverified",
+            "reason": "" if apps["items"] else "empty_listing",
+            "apps": apps["items"],
+            "policies": [summarize_policy(p) for p in policies["items"]] if policies["ok"] else [],
+        }
+
+    def create_access_app(self, hostname: str, policy_ids: list[str]) -> dict:
+        """Put a self-hosted Access application in front of one hostname."""
+        if not self.account_id:
+            return {"ok": False, "refused": False, "status": None, "id": "", "errors": ["missing_account_id"]}
+        resp = self._request_detailed(
+            "POST",
+            f"/accounts/{self.account_id}/access/apps",
+            json=new_application_body(hostname, policy_ids),
+        )
+        result = resp["result"] if isinstance(resp["result"], dict) else {}
+        return {
+            "ok": bool(resp["ok"] and result.get("id")),
+            "refused": is_permission_refusal(resp),
+            "status": resp["status"],
+            "id": str(result.get("id") or ""),
+            "errors": [str(e.get("message") or "") for e in resp["errors"] if isinstance(e, dict)],
         }

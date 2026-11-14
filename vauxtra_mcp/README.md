@@ -147,6 +147,8 @@ listed here does not exist, or if a tool exists and is not listed here.
 | `get_provider_health` | Health of one provider |
 | `get_all_providers_health` | Health of every enabled provider, by id |
 | `get_tunnel_health` | Aggregate health of all Cloudflare Tunnel providers |
+| `get_tunnel_access` | Which tunnel routes Cloudflare Access protects, and whether the token may read Access |
+| `protect_tunnel_route` | Create an Access application in front of one tunnel route, from reusable policies |
 
 Raw per-provider record editing (`/api/providers/{id}/dns-records`, `/proxy-hosts`) is
 deliberately not exposed. A service is the bridge's unit of work: push a service and the
