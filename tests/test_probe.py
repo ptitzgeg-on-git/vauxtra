@@ -55,7 +55,7 @@ class CloudflareRangesTests(unittest.TestCase):
             self.assertTrue(probe.is_cloudflare_ip(addr), addr)
 
     def test_a_lan_or_foreign_address_is_not(self):
-        for addr in ("10.0.10.5", "192.168.1.1", "8.8.8.8", "2001:db8::1", "not-an-ip"):
+        for addr in ("10.0.0.5", "192.168.1.1", "8.8.8.8", "2001:db8::1", "not-an-ip"):
             self.assertFalse(probe.is_cloudflare_ip(addr), addr)
 
 
@@ -84,7 +84,7 @@ class EdgeProbeTests(unittest.TestCase):
             dialled.append(address)
             return 200, ""
 
-        with patch.object(probe, "_resolve_local", lambda _h: ["10.0.10.5"]), \
+        with patch.object(probe, "_resolve_local", lambda _h: ["10.0.0.5"]), \
              patch.object(probe, "_resolve_public", lambda _h: ["104.21.3.4"]), \
              patch.object(probe, "_https_head_of", head):
             result = probe.edge_probe("app.example.com")
@@ -93,7 +93,7 @@ class EdgeProbeTests(unittest.TestCase):
         self.assertEqual(result.stored_detail, "edge_ok:200")
 
     def test_a_name_that_never_reaches_cloudflare_says_so(self):
-        with patch.object(probe, "_resolve_local", lambda _h: ["10.0.10.5"]), \
+        with patch.object(probe, "_resolve_local", lambda _h: ["10.0.0.5"]), \
              patch.object(probe, "_resolve_public", lambda _h: ["203.0.113.7"]):
             result = probe.edge_probe("app.example.com")
         self.assertEqual((result.status, result.detail), ("error", "dns_not_cloudflare"))
