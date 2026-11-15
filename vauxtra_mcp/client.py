@@ -1,4 +1,4 @@
-"""Shared HTTP client for all MCP tools — reads VAUXTRA_URL and VAUXTRA_API_KEY from env."""
+"""Shared HTTP client for all MCP tools: reads VAUXTRA_URL and VAUXTRA_API_KEY from env."""
 import http.cookiejar
 import os
 
@@ -9,11 +9,9 @@ _API_KEY = os.environ.get("VAUXTRA_API_KEY", "")
 
 
 def _timeout() -> float:
-    """Read VAUXTRA_TIMEOUT once per call so a test can change it.
+    """Read VAUXTRA_TIMEOUT on each call (tests change it).
 
-    The default is generous on purpose: a single push or reconcile walks every configured
-    provider in series, each with its own timeout, so 30 s cut off perfectly healthy calls
-    and the tool reported a failure for work the server went on to finish.
+    The default is generous: a push or reconcile walks every provider in series.
     """
     raw = os.environ.get("VAUXTRA_TIMEOUT", "").strip()
     try:
@@ -23,17 +21,8 @@ def _timeout() -> float:
     return value if value > 0 else 120.0
 
 
-# The session cookie has to outlive the request that obtained it.
-#
-# Every helper below opens its own short-lived `httpx.Client`, which is the right shape for a
-# bridge whose base URL and timeout are read from the environment on each call. But it meant
-# `auth_login` received a `Set-Cookie`, closed the client, and dropped it: the login answered
-# `{"ok": true}` and authenticated nothing, and `auth_logout` cleared a session it had never
-# joined. Only an API key ever worked, and the two tools said otherwise.
-#
-# A plain `CookieJar` is what fixes it: `httpx.Cookies` copies any jar it is handed, so
-# responses would update a copy, while a bare `http.cookiejar.CookieJar` is adopted by
-# reference and the clients share it.
+# Shared cookie jar so a session from auth_login survives across the short-lived clients.
+# A plain CookieJar is shared by reference; httpx.Cookies would copy it.
 _SESSION_JAR = http.cookiejar.CookieJar()
 
 
@@ -53,13 +42,8 @@ def clear_session() -> None:
 
 
 class ApiError(RuntimeError):
-    """An error the API explained, with its explanation kept.
-
-    `raise_for_status()` produces "Client error '400 Bad Request' for url ...", which throws
-    away the `detail` the API went to the trouble of writing -- and since 1.1 those details
-    are the useful part: which setting was refused and why, which provider still holds a
-    service, that a hostname is already taken. The agent on the other end of the bridge got
-    a status code and had to guess.
+    """An HTTP error carrying the API's `detail` message, which is what tells the agent
+    what was refused and why.
     """
 
     def __init__(self, status_code: int, detail: str, method: str, url: str) -> None:
@@ -95,6 +79,10 @@ def check(response: httpx.Response) -> httpx.Response:
         detail = (response.text or response.reason_phrase or "").strip()[:500]
 
     raise ApiError(response.status_code, detail or "no detail", response.request.method, str(response.request.url))
+
+
+def has_api_key() -> bool:
+    return bool(_API_KEY)
 
 
 def auth_headers() -> dict[str, str]:

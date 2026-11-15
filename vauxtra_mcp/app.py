@@ -5,9 +5,7 @@ from vauxtra_mcp import __version__
 
 mcp = FastMCP(
     name="Vauxtra",
-    # Without this, `version` falls back to FastMCP's own. The handshake then answered
-    # `serverInfo: {name: "Vauxtra", version: "3.2.4"}`, naming a release of Vauxtra that
-    # has never existed and moving with the library instead of with this repository.
+    # Report Vauxtra's version, not FastMCP's default.
     version=__version__,
     instructions=(
         "You are connected to Vauxtra, a self-hosted DNS and reverse proxy management panel. "

@@ -48,8 +48,8 @@ from pydantic import ValidationError
 
 # What a tool raises when its own schema turns an argument away, before the body runs.
 #
-# `vauxtra_mcp/requirements.txt` asks for `fastmcp>=2.0` and pins nothing, and the versions
-# that satisfy it disagree about this: 3.2.4 lets pydantic's own `ValidationError` out of
+# `vauxtra_mcp/requirements.txt` asked for `fastmcp>=2.0` when this was written, and the
+# versions that satisfied it disagree about this: 3.2.4 lets pydantic's own `ValidationError` out of
 # `Tool.run()`, while 4.0.3 -- what CI resolves today -- wraps it in its own class. Naming
 # only the wrapper made these two tests pass or fail on which version the resolver picked,
 # over a refusal that works in both. The guarantee under test is that the call is refused

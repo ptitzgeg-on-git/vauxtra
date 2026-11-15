@@ -142,7 +142,9 @@ def is_valid_subdomain(value: str, *, allow_wildcard: bool = False) -> bool:
 
 
 def is_valid_hostname(value: str) -> bool:
-    if not value:
+    # `ip_address` accepts an IPv6 scope id made of almost any text, quotes and newlines
+    # included, and the target ends up inside the proxy's nginx configuration.
+    if not value or "%" in value:
         return False
     try:
         ipaddress.ip_address(value)

@@ -37,6 +37,20 @@ from app.api.webhooks import router as webhooks_router
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
+# The generated key is 64 hex characters; only a hand-set SECRET_KEY can fall short of this.
+_MIN_KEY_LENGTH = 32
+
+
+def _warn_if_secret_key_is_short() -> None:
+    if len(SECRET_KEY) < _MIN_KEY_LENGTH:
+        _logger.warning(
+            "SECURITY: SECRET_KEY is shorter than %d characters. It signs the session cookie "
+            "and encrypts the stored credentials, so use a longer random value. Changing it "
+            "makes the stored credentials unreadable: re-enter them afterwards.",
+            _MIN_KEY_LENGTH,
+        )
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
@@ -69,6 +83,7 @@ async def _lifespan(_app: FastAPI):
             "is granted the admin scope, with no credential. Set one in Settings > Security, "
             "or through APP_PASSWORD, before exposing port 8888 to anything but localhost."
         )
+    _warn_if_secret_key_is_short()
 
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key='check_interval'").fetchone()

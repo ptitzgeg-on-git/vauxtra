@@ -14,8 +14,12 @@
 # branch was whether anyone read the diff that morning.
 version: 2
 updates:
+  # Two manifests. `vauxtra_mcp/requirements.txt` is the MCP bridge, which is not in the
+  # image but is the component an operator points at the panel with an API key in hand;
+  # pip-audit reads it every week, and until now nothing proposed the fix it reports.
+  # `directories` keeps it one entry, so the group below still opens a single weekly PR.
   - package-ecosystem: pip
-    directory: /
+    directories: ["/", "/vauxtra_mcp"]
     target-branch: dev
     schedule:
       interval: weekly

@@ -11,18 +11,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { HttpError } from '@/api/httpError';
 import { translateApiError } from './errors';
 
 /** `t` as the provider hands it out, returning the key so a case can assert on it. */
 const t = (key: string) => key;
 
-/** An axios rejection carrying a response, the shape the browser receives. */
+/** A rejection carrying a response, the shape the client throws. */
 function httpError(status: number, data: unknown = { detail: 'boom' }) {
-  return {
-    isAxiosError: true,
-    message: `Request failed with status code ${status}`,
-    response: { status, data },
-  };
+  return new HttpError(`Request failed with status code ${status}`, '/domains', { status, data, headers: {} });
 }
 
 describe('translateApiError', () => {
@@ -56,7 +53,7 @@ describe('translateApiError', () => {
   });
 
   it('says the server was never reached when no response came back', () => {
-    const offline = { isAxiosError: true, message: 'Network Error' };
+    const offline = new HttpError('Network Error', '/domains');
     expect(translateApiError(offline, t, 'fallback')).toBe('common.error.network');
   });
 });

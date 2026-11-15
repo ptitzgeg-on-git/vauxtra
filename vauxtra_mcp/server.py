@@ -1,42 +1,21 @@
-"""
-Vauxtra MCP Server
-
-Exposes Vauxtra's DNS & proxy management capabilities as MCP tools
-for integration with MCP-compatible clients (Claude Desktop, Cursor, etc.).
+"""Vauxtra MCP server: exposes Vauxtra's DNS and proxy management as MCP tools.
 
 Environment variables:
-  VAUXTRA_URL      — Base URL of the Vauxtra instance (default: http://localhost:8888)
-  VAUXTRA_API_KEY  — API key created in Vauxtra Settings → API Keys (Bearer auth)
-
-  VAUXTRA_MCP_HOST — interface --http binds to (default: 127.0.0.1)
-  VAUXTRA_MCP_PORT — port --http binds to (default: 9000)
+  VAUXTRA_URL       base URL of the Vauxtra instance (default: http://localhost:8888)
+  VAUXTRA_API_KEY   API key from Settings > API Keys (Bearer auth)
+  VAUXTRA_MCP_HOST  interface --http binds to (default: 127.0.0.1)
+  VAUXTRA_MCP_PORT  port --http binds to (default: 9000)
 
 Usage:
   python -m vauxtra_mcp.server          # stdio transport (Claude Desktop)
   python -m vauxtra_mcp.server --http   # HTTP transport on 127.0.0.1:9000
 
-Claude Desktop config (~/.config/claude/claude_desktop_config.json):
-  {
-    "mcpServers": {
-      "vauxtra": {
-        "command": "python",
-        "args": ["-m", "vauxtra_mcp.server"],
-        "cwd": "/path/to/vauxtra",
-        "env": {
-          "VAUXTRA_URL": "http://localhost:8888",
-          "VAUXTRA_API_KEY": "vx_..."
-        }
-      }
-    }
-  }
+Client configuration examples are in vauxtra_mcp/README.md.
 """
 import os
 import sys
 
-# Register every tool module: the @mcp.tool decorators fire at import time, and nothing
-# imports these names, which is what the noqa marks. isort orders them and no order is
-# required -- each module imports the shared instance from vauxtra_mcp.app itself rather
-# than taking it from this file.
+# Imported for their @mcp.tool side effects; order does not matter.
 import vauxtra_mcp.tools.admin  # noqa: F401
 import vauxtra_mcp.tools.monitoring  # noqa: F401
 import vauxtra_mcp.tools.operations  # noqa: F401
@@ -47,10 +26,8 @@ import vauxtra_mcp.tools.templates  # noqa: F401
 # The instance main() runs below, carrying every tool the imports above registered on it.
 from vauxtra_mcp.app import mcp
 
-# Loopback, not 0.0.0.0. The HTTP transport carries no authentication of its own while
-# holding an API key that can reach every Vauxtra route: binding every interface handed
-# that key's privileges to anyone who could reach the port. Publishing it remains possible,
-# but it now takes a deliberate VAUXTRA_MCP_HOST and a warning on stderr.
+# Loopback by default: the HTTP transport has no auth of its own but holds an API key.
+# Exposing it needs an explicit VAUXTRA_MCP_HOST and prints a warning.
 _DEFAULT_HTTP_HOST = "127.0.0.1"
 _DEFAULT_HTTP_PORT = 9000
 
@@ -74,9 +51,20 @@ def _http_bind() -> tuple[str, int]:
     return host, port
 
 
+def _http_run_kwargs() -> dict:
+    host, port = _http_bind()
+    # Loopback does not stop DNS rebinding from the operator's own browser, so "auto"
+    # refuses a Host or Origin that is not the loopback address.
+    return {
+        "transport": "streamable-http",
+        "host": host,
+        "port": port,
+        "host_origin_protection": "auto",
+    }
+
+
 if __name__ == "__main__":
     if "--http" in sys.argv:
-        _host, _port = _http_bind()
-        mcp.run(transport="streamable-http", host=_host, port=_port)
+        mcp.run(**_http_run_kwargs())
     else:
         mcp.run()

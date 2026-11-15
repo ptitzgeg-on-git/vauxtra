@@ -306,6 +306,17 @@ class TimeoutSession(requests.Session):
             return target
         return None
 
+    # `requests` drops `Authorization` when a redirect leaves the host, and nothing else.
+    # These carry the same credential for PowerDNS and Pi-hole v6. `get_redirect_target`
+    # already stops such a redirect; this keeps the headers off it if that ever changes.
+    _CREDENTIAL_HEADERS = ("X-API-Key", "X-FTL-SID", "X-FTL-CSRF")
+
+    def rebuild_auth(self, prepared_request, response):
+        super().rebuild_auth(prepared_request, response)
+        if self.should_strip_auth(response.request.url, prepared_request.url):
+            for name in self._CREDENTIAL_HEADERS:
+                prepared_request.headers.pop(name, None)
+
 
 def reachability_check(session, url: str) -> dict:
     """One diagnostic check saying whether anything at all answered at `url`.

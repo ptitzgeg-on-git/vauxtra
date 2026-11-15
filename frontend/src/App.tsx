@@ -100,7 +100,7 @@ export function AuthGate() {
   // own password step and its first saved integration both flip that answer mid-way.
   const wizardInProgress = useWizardInProgress();
 
-  // Listen for 401 events from Axios interceptor
+  // Listen for the 401 event the API client dispatches
   useEffect(() => {
     const handler = () => qc.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
     window.addEventListener('vauxtra:auth-expired', handler);

@@ -20,6 +20,7 @@ import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { translateApiError } from '@/lib/errors';
+import { isArray, readJSON, writeJSON } from '@/lib/storage';
 import { EM_DASH } from '@/lib/format';
 import {
   Button,
@@ -132,14 +133,7 @@ function readViewMode(): ViewMode {
 }
 
 function readServicesCache(): Service[] | undefined {
-  try {
-    const raw = sessionStorage.getItem(SERVICES_CACHE_KEY);
-    if (!raw) return undefined;
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as Service[]) : undefined;
-  } catch {
-    return undefined;
-  }
+  return readJSON(SERVICES_CACHE_KEY, isArray<Service>, undefined, 'session');
 }
 
 /**
@@ -197,11 +191,8 @@ export function Monitoring() {
   }, []);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(REFRESH_STORAGE_KEY, String(refreshMs));
-    } catch {
-      // Private mode: the choice simply does not survive a reload.
-    }
+    // Private mode: the choice simply does not survive a reload.
+    writeJSON(REFRESH_STORAGE_KEY, refreshMs);
   }, [refreshMs]);
 
   useEffect(() => {
@@ -259,11 +250,7 @@ export function Monitoring() {
   // page reading that key would then render its "no services" empty state instead of a skeleton.
   useEffect(() => {
     if (!Array.isArray(servicesQuery.data)) return;
-    try {
-      sessionStorage.setItem(SERVICES_CACHE_KEY, JSON.stringify(servicesQuery.data));
-    } catch {
-      // Ignore storage quota / private mode errors.
-    }
+    writeJSON(SERVICES_CACHE_KEY, servicesQuery.data, 'session');
   }, [servicesQuery.data]);
 
   const probes = useServiceProbes();

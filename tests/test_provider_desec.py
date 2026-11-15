@@ -176,6 +176,14 @@ class TestDesecPagination(unittest.TestCase):
         got = self.provider._get_all("https://desec.io/api/v1/domains/")
         self.assertEqual([d["name"] for d in got], ["a.dedyn.io", "b.dedyn.io"])
 
+    def test_a_next_link_to_another_host_is_not_followed(self):
+        """The token goes with every page, so the listing stops and says it is unknown."""
+        first = _response(200, [{"name": "a.dedyn.io"}],
+                          links={"next": {"url": "https://collector.example/steal?cursor=2"}})
+        self.provider.session.get = MagicMock(side_effect=[first])
+        self.assertIsNone(self.provider._get_all("https://desec.io/api/v1/domains/"))
+        self.assertEqual(self.provider.session.get.call_count, 1)
+
     def test_an_empty_collection_is_an_empty_list(self):
         self.provider.session.get = MagicMock(return_value=_response(200, []))
         self.assertEqual(self.provider._get_all("https://desec.io/api/v1/domains/"), [])
