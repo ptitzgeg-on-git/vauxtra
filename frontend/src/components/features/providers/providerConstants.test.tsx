@@ -19,6 +19,7 @@ import {
   emptyForm,
   firstIncompleteStep,
   getGuidedSteps,
+  getProjectUrl,
   missingFields,
   requiredFields,
   seedFormForType,
@@ -196,5 +197,29 @@ describe('The way through the guided steps', () => {
       { key: 'url', label: 'provider_modal.field.url', step: undefined },
       { key: 'username', label: 'provider_modal.field.username', step: undefined },
     ]);
+  });
+});
+
+/** The project link is an `href`: only http(s) may reach it, whoever sent it. */
+describe('getProjectUrl', () => {
+  it('takes the URL the server names when it is http(s)', () => {
+    expect(getProjectUrl('npm', { project_url: 'https://example.test/npm' })).toBe('https://example.test/npm');
+    expect(getProjectUrl('npm', { project_url: 'HTTP://example.test' })).toBe('HTTP://example.test');
+  });
+
+  it('falls back to the built-in URL when the server names none', () => {
+    expect(getProjectUrl('npm')).toBe('https://nginxproxymanager.com');
+    expect(getProjectUrl('npm', { project_url: '' })).toBe('https://nginxproxymanager.com');
+  });
+
+  it('drops a URL that would run script, in favour of the built-in one', () => {
+    expect(getProjectUrl('npm', { project_url: 'javascript:alert(1)' })).toBe('https://nginxproxymanager.com');
+    expect(getProjectUrl('npm', { project_url: ' data:text/html,x' })).toBe('https://nginxproxymanager.com');
+    expect(getProjectUrl('npm', { project_url: '//evil.test' })).toBe('https://nginxproxymanager.com');
+  });
+
+  it('answers nothing when no candidate is http(s)', () => {
+    expect(getProjectUrl('unknown-type', { project_url: 'javascript:alert(1)' })).toBeUndefined();
+    expect(getProjectUrl('unknown-type')).toBeUndefined();
   });
 });

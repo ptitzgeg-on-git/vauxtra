@@ -121,7 +121,7 @@ function pad(n: number, width = 2): string {
 }
 
 /** `2026-09-05 14:03 UTC` -- what is shown when `Intl` refuses the locale or zone. */
-export function toIsoLike(date: Date, parts: 'datetime' | 'date' | 'time' = 'datetime'): string {
+function toIsoLike(date: Date, parts: 'datetime' | 'date' | 'time' = 'datetime'): string {
   const d = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
   const t = `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
   if (parts === 'date') return d;
@@ -222,7 +222,7 @@ const RELATIVE_UNITS: Array<[RelativeUnit, number]> = [
 ];
 
 /** The unit and signed amount a difference in milliseconds reads best in. */
-export function pickRelativeUnit(diffMs: number): { unit: RelativeUnit; value: number } {
+function pickRelativeUnit(diffMs: number): { unit: RelativeUnit; value: number } {
   const abs = Math.abs(diffMs);
   for (const [unit, size] of RELATIVE_UNITS) {
     if (abs >= size) return { unit, value: Math.round(diffMs / size) };

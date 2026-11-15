@@ -7,11 +7,9 @@ export { WebhooksTab } from './WebhooksTab';
 export { DataTab } from './DataTab';
 export { LogsTab } from './LogsTab';
 export { SecurityTab } from './SecurityTab';
-export { SettingsSection, SectionEyebrow } from './SettingsSection';
 export {
   SETTINGS_TABS,
   SETTINGS_GROUPS,
-  VALID_TABS,
   resolveSettingsTab,
   type SettingsTabId,
   type SettingsGroupId,

@@ -23,19 +23,11 @@ def run_preflight(
     dns_ip: str = "",
     service_id: int | None = None,
 ) -> dict[str, Any]:
-    """
-    Run preflight checks before creating or updating a service.
+    """Run preflight checks before creating or updating a service.
 
-    Returns blocking and non-blocking check results:
-    - Route conflict detection
-    - TCP reachability of the target
-    - Provider connection tests
-    - DNS target resolution
-
-    The body is validated by `ServicePreflightIn`, which is `ServiceIn` plus `service_id`,
-    so the constrained fields carry the same `Literal` sets and port bounds as
-    `create_service`. A preflight that is refused for a bad scheme has checked nothing, and
-    the point of this tool is to answer before anything is created.
+    Returns blocking and non-blocking results: route conflicts, target TCP reachability,
+    provider connections and DNS target resolution. The body is validated like
+    `create_service` (same allowed values and port bounds), plus `service_id` for an edit.
     """
     payload: dict[str, Any] = {
         "subdomain": subdomain,
@@ -81,16 +73,11 @@ def dry_run_push(service_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def push_service(service_id: int) -> dict[str, Any]:
-    """
-    Push a service to all configured providers (proxy + DNS).
+    """Push a service to all configured providers (proxy + DNS). Preview with `dry_run_push`.
 
-    A push converges the providers on the service record, and a disabled service is
-    therefore withdrawn rather than published: the primary proxy host is suspended, every
-    other route is removed. Enable the service first if you meant to publish it. On an
-    enabled service the push also lifts a suspension it finds, so it repairs a route that
-    exists and answers nothing.
-
-    Use dry_run_push first to preview changes.
+    A disabled service is withdrawn instead (primary proxy host suspended, other routes
+    removed): enable it first to publish. On an enabled service the push also lifts a
+    suspension it finds.
     """
     r = client.post(f"/services/{service_id}/push")
     client.check(r)
@@ -99,21 +86,14 @@ def push_service(service_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def check_drift(service_id: int) -> dict[str, Any]:
-    """
-    Compare the expected service state against what is actually configured in providers.
+    """Compare a service's expected state with what its providers hold.
 
-    Returns a list of issues (errors and warnings) if discrepancies are detected. A disabled
-    service expects the opposite, so its issues name a provider that is still serving the
-    route (`proxy_route_still_served`, `dns_rewrite_still_served`) rather than one missing it.
-    A route that exists and is switched off on the provider is `proxy_route_suspended`: an
-    enabled service whose hostname answers nothing, which a push repairs.
-
-    The other enabled DNS integrations are asked as well. One that answers the hostname with
-    another address is `dns_answered_elsewhere` (expected with split-horizon DNS, a leftover
-    otherwise), and one that could not be read is `dns_elsewhere_check_failed`. Both are
-    warnings: `ok` stays true and `reconcile_service` leaves them alone, because the record
-    is not the service's to rewrite. `ok` is false only when an issue is an error, so read
-    `issues`, not `ok`, to know whether anything differs.
+    Returns `issues` (errors and warnings). For a disabled service the issues name
+    providers still serving it (`proxy_route_still_served`, `dns_rewrite_still_served`);
+    `proxy_route_suspended` is an enabled route switched off, which a push repairs.
+    Other DNS integrations answering the name give the warnings `dns_answered_elsewhere`
+    or `dns_elsewhere_check_failed`, which `reconcile_service` leaves alone. `ok` is false
+    only for errors, so read `issues` to know whether anything differs.
     """
     r = client.get(f"/services/{service_id}/drift")
     client.check(r)

@@ -245,7 +245,7 @@ class ServicesApiTests(IsolatedDBTestCase):
         with patch.object(services_api, "require_auth", lambda _req, scope=None: None), patch.object(
             services_api,
             "suggest_public_targets",
-            lambda _conn, proxy_provider_id=None: {
+            lambda _conn, proxy_provider_id=None, **_kw: {
                 "candidates": [{"value": "198.51.100.7", "source": "server_public_ip"}],
                 "recommended": "198.51.100.7",
             },

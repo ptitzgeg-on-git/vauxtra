@@ -39,6 +39,11 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Nothing by default. Every job below names the scopes it uses, so a job added later
+# without a `permissions:` block gets a token that can do nothing rather than whatever the
+# repository default happens to be.
+permissions: {}
+
 # This workflow used to end with a `release:` job of its own, and that job is the reason
 # three release pages on this repository advertise a `docker pull` for an image the
 # registry does not have. It ran `softprops/action-gh-release` the moment the build step
@@ -63,6 +68,10 @@ jobs:
   tests:
     name: Gate — tests
     uses: ./.github/workflows/tests.yml
+    # The called workflow asks for `contents: read` and cannot be granted more than the
+    # calling job holds, so the grant is written here rather than left to the default.
+    permissions:
+      contents: read
 
   security:
     name: Gate — security scan
@@ -71,9 +80,30 @@ jobs:
       contents: read
       security-events: write
 
+  # A version tag publishes `latest`, a signed image and a release page, and branch
+  # protection does not cover tags: any commit someone can push could be tagged and shipped.
+  # The compare API answers `behind` or `identical` exactly when the commit is on `main`.
+  tag-on-main:
+    name: "Gate: release tag is on main"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a tag that is not on main
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq .status)
+          case "$status" in
+            identical|behind) echo "${GITHUB_SHA} is on main." ;;
+            *) echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main (${status})."; exit 1 ;;
+          esac
+
   build-and-push:
     name: Build & Push Docker Image
-    needs: [tests, security]
+    needs: [tests, security, tag-on-main]
     runs-on: ubuntu-latest
     # A wedged build here does not stall one run, it stalls the branch. This workflow keeps
     # `cancel-in-progress: false` for the reason written above, and it is the only producer
@@ -93,6 +123,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 

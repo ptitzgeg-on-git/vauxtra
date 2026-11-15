@@ -696,7 +696,7 @@ class NothingElseEverChecksAGetAnswer(unittest.TestCase):
     A declared `T` on a GET is checked by nothing at either end. FastAPI validates a
     `response_model=` and serialises through it; not one route in `app/` sets one, so every
     GET answer is a bare dict or list assembled in Python and sent as-is. On the other end,
-    `api.get<T>` casts through `unknown` and hands the caller the axios body untouched, so
+    `api.get<T>` casts the parsed body to `T` and hands it to the caller untouched, so
     `T` is not checked at build time either -- `tsc` believes it by construction.
 
     That is the whole reason two declarations of one answer can disagree for a year without
@@ -714,4 +714,4 @@ class NothingElseEverChecksAGetAnswer(unittest.TestCase):
         client = (REPO_ROOT / "frontend" / "src" / "api" / "client.ts").read_text(
             encoding="utf-8"
         )
-        self.assertIn("_axios.get<T>(url, config) as unknown as Promise<T>", client)
+        self.assertIn("if (res.ok) return body as T;", client)

@@ -1,3 +1,4 @@
 # MCP server dependencies (not needed in the Docker image)
-fastmcp>=2.0
+# 4.0 is the first release that checks Host and Origin on the HTTP transport (server.py).
+fastmcp>=4.0,<5
 httpx>=0.28

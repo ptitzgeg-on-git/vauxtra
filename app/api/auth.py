@@ -143,12 +143,18 @@ def auth_logout(request: Request):
 @limiter.limit("3/minute")
 def setup_password(request: Request, body: SetPasswordBody):
     """Set the admin password during initial setup (only when no password ever existed)."""
-    # "Has a password now" is not the question. An instance whose hash row went missing
-    # (an old database restored, a hand edit) reads as passwordless, and this route used
-    # to let the first caller pick the new admin password. `password_was_configured_once`
-    # remembers, and answers yes on a database it cannot read.
-    if has_password_configured() or password_was_configured_once():
+    if has_password_configured():
         raise HTTPException(400, "Password is already configured")
+    # "Has a password now" is not the whole question. An instance whose hash row went
+    # missing (an old database restored, a hand edit) reads as passwordless, and this
+    # anonymous route used to let the first caller pick the new admin password.
+    # `password_was_configured_once` remembers, and answers yes on a database it cannot read.
+    if password_was_configured_once():
+        raise HTTPException(
+            409,
+            "This instance had an admin password and its hash is no longer in the database. "
+            "Restore the database, or set APP_PASSWORD to a 'pbkdf2:'-prefixed hash.",
+        )
 
     password = body.password.strip()
     ok, why = validate_password_strength(password)

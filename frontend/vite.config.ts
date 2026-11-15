@@ -11,7 +11,15 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return undefined;
-          if (id.includes('react-router-dom') || id.includes('/react/') || id.includes('/react-dom/')) {
+          // react-router-dom is a thin re-export of react-router, and scheduler is react-dom's
+          // own dependency: both load with React on every page, so they ship with it.
+          if (
+            id.includes('react-router-dom') ||
+            id.includes('/react-router/') ||
+            id.includes('/react/') ||
+            id.includes('/react-dom/') ||
+            id.includes('/scheduler/')
+          ) {
             return 'vendor-react';
           }
           if (id.includes('@tanstack/react-query')) return 'vendor-query';
@@ -25,7 +33,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   server: {

@@ -5,6 +5,7 @@ import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.config import decrypt_secret, encrypt_secret
 from app.expiry import parse_expiry
 from app.models import add_log, get_db
 from app.probe import ProbeResult, edge_probe, is_tunnel, probe_many, public_hostname, tcp_probe
@@ -14,7 +15,7 @@ from app.public_target import (
     load_public_target_policy,
     resolve_public_target,
 )
-from app.security import mask_secret_url
+from app.security import mask_secret_url, redact_query_secrets
 from app.text import plural, time_to_expiry
 
 _scheduler = BackgroundScheduler(daemon=True)
@@ -188,25 +189,35 @@ def run_auto_reconcile() -> None:
     from app.api.sync import _compute_service_drift, _execute_push  # noqa: PLC0415
 
     conn = get_db()
-    services = conn.execute("SELECT * FROM services WHERE enabled=1").fetchall()
+    service_ids = [int(r["id"]) for r in conn.execute("SELECT id FROM services WHERE enabled=1")]
     conn.close()
 
     corrected: list[str] = []
     errors: list[str] = []
 
-    for svc in services:
-        sid  = int(svc["id"])
+    for sid in service_ids:
+        # Read fresh, and again before pushing: the drift check asks every provider, and the
+        # operator may disable or delete the service meanwhile. A stale row would publish it
+        # again.
+        svc = _enabled_service(sid)
+        if svc is None:
+            continue
         fqdn = f"{svc['subdomain']}.{svc['domain']}"
         try:
-            conn  = get_db()
-            # Only `ok` is read here, and a record on another integration never moves it:
-            # asking each of them about every service, every round, would buy nothing.
-            drift = _compute_service_drift(conn, svc, sid, look_elsewhere=False)
-            conn.close()
+            conn = get_db()
+            try:
+                # Only `ok` is read here, and a record on another integration never moves it:
+                # asking each of them about every service, every round, would buy nothing.
+                drift = _compute_service_drift(conn, svc, sid, look_elsewhere=False)
+            finally:
+                conn.close()
 
             if drift.get("ok"):
                 continue  # no drift, skip
 
+            svc = _enabled_service(sid)
+            if svc is None:
+                continue
             result = _execute_push(svc, sid)
             if result.get("ok"):
                 corrected.append(fqdn)
@@ -216,11 +227,21 @@ def run_auto_reconcile() -> None:
                 errors.append(f"{fqdn}: {err_detail}")
                 add_log("error", f"[AutoReconcile] Push failed for {fqdn}: {err_detail}")
         except Exception as e:
-            errors.append(f"{fqdn}: {e}")
-            add_log("error", f"[AutoReconcile] {fqdn}: {e}")
+            # This text goes to an outside webhook, so a token in a quoted URL is masked.
+            message = redact_query_secrets(str(e))
+            errors.append(f"{fqdn}: {message}")
+            add_log("error", f"[AutoReconcile] {fqdn}: {message}")
 
     if corrected:
         _fire_reconcile_webhook(corrected, errors)
+
+
+def _enabled_service(sid: int):
+    conn = get_db()
+    try:
+        return conn.execute("SELECT * FROM services WHERE id=? AND enabled=1", (sid,)).fetchone()
+    finally:
+        conn.close()
 
 
 # ── TCP health check ──────────────────────────────────────────────────────
@@ -726,7 +747,7 @@ def _try_send_apprise(url: str, title: str, body: str, conn=None, webhook_id=Non
             sql = """INSERT INTO webhook_delivery_log
                      (webhook_id, url, title, body, status, attempt, next_retry_at, error_msg)
                      VALUES (?,?,?,?,?,?,?,?)"""
-            params = (webhook_id, url, title, body, "pending", 1, next_retry, str(exc))
+            params = (webhook_id, encrypt_secret(url), title, body, "pending", 1, next_retry, str(exc))
             if conn is not None:
                 conn.execute(sql, params)
             else:
@@ -766,6 +787,7 @@ def _run_webhook_retry(conn) -> None:
     for row in rows:
         dlid = int(row["id"])
         attempt = int(row["attempt"] or 0)
+        url = decrypt_secret(row["url"])
 
         if attempt >= MAX_ATTEMPTS:
             conn.execute(
@@ -775,14 +797,14 @@ def _run_webhook_retry(conn) -> None:
             add_log(
                 "error",
                 f"[Webhook] Delivery abandoned after {attempt} attempts: "
-                f"{mask_secret_url(row['url'])}",
+                f"{mask_secret_url(url)}",
                 conn,
             )
             conn.commit()
             continue
 
         a = _apprise.Apprise()
-        if not a.add(row["url"]):
+        if not a.add(url):
             conn.execute(
                 "UPDATE webhook_delivery_log SET status='failed', updated_at=datetime('now') WHERE id=?",
                 (dlid,),
@@ -808,7 +830,7 @@ def _run_webhook_retry(conn) -> None:
                        WHERE id=?""",
                     (new_attempt, str(exc), dlid),
                 )
-                add_log("error", f"[Webhook] Delivery abandoned: {mask_secret_url(row['url'])}", conn)
+                add_log("error", f"[Webhook] Delivery abandoned: {mask_secret_url(url)}", conn)
             else:
                 delay = _WEBHOOK_RETRY_BACKOFF[new_attempt - 1]
                 next_retry = _utc_stamp(delay)
@@ -899,6 +921,7 @@ def _fire_global_webhook() -> None:
         for row in rows:
             if not _service_matches_scope(row, extra_target_map):
                 continue
+            url = decrypt_secret(row["url"])
             key = (int(row["webhook_id"]), int(row["service_id"]))
             valid_keys.add(key)
             fqdn = f"{row['subdomain']}.{row['domain']}"
@@ -924,14 +947,14 @@ def _fire_global_webhook() -> None:
                     message = f"REMINDER: {fqdn} still down ({elapsed_minutes:.1f}m)"
 
                 if should_send:
-                    messages_by_url.setdefault(row["url"], []).append(message)
-                    keys_by_url.setdefault(row["url"], []).append(key)
-                    webhook_id_by_url.setdefault(row["url"], int(row["webhook_id"]))
+                    messages_by_url.setdefault(url, []).append(message)
+                    keys_by_url.setdefault(url, []).append(key)
+                    webhook_id_by_url.setdefault(url, int(row["webhook_id"]))
                     _webhook_service_last_sent[key] = now
             else:
                 had_down = key in _webhook_service_down_since or key in _webhook_service_last_sent
                 if had_down and status == "ok" and bool(row["alert_on_any_up"]):
-                    messages_by_url.setdefault(row["url"], []).append(f"RECOVERED: {fqdn}")
+                    messages_by_url.setdefault(url, []).append(f"RECOVERED: {fqdn}")
                 _webhook_service_down_since.pop(key, None)
                 _webhook_service_last_sent.pop(key, None)
 
@@ -1004,6 +1027,7 @@ def _fire_service_webhooks() -> None:
         for row in rows:
             key = (int(row["service_id"]), int(row["webhook_id"]))
             valid_keys.add(key)
+            url = decrypt_secret(row["webhook_url"])
 
             status = (row["status"] or "unknown").lower()
             fqdn = f"{row['subdomain']}.{row['domain']}"
@@ -1022,16 +1046,16 @@ def _fire_service_webhooks() -> None:
 
                 elapsed_minutes = (now - since) / 60.0
                 if elapsed_minutes >= min_down and key not in _alert_down_sent:
-                    messages_by_url.setdefault(row["webhook_url"], []).append(
+                    messages_by_url.setdefault(url, []).append(
                         f"DOWN: {fqdn} ({elapsed_minutes:.1f}m)"
                     )
-                    keys_by_url.setdefault(row["webhook_url"], []).append(key)
-                    webhook_id_by_url.setdefault(row["webhook_url"], int(row["webhook_id"]))
+                    keys_by_url.setdefault(url, []).append(key)
+                    webhook_id_by_url.setdefault(url, int(row["webhook_id"]))
                     _alert_down_sent.add(key)
             else:
                 had_down = key in _alert_down_since or key in _alert_down_sent
                 if had_down and status == "ok" and on_up:
-                    messages_by_url.setdefault(row["webhook_url"], []).append(
+                    messages_by_url.setdefault(url, []).append(
                         f"RECOVERED: {fqdn}"
                     )
                 _alert_down_since.pop(key, None)
@@ -1110,7 +1134,7 @@ def _fire_integration_webhook(changed: list[dict]) -> None:
             if not lines:
                 continue
             _try_send_apprise(
-                wh["url"], "Vauxtra - Integration alert", "\n".join(lines),
+                decrypt_secret(wh["url"]), "Vauxtra - Integration alert", "\n".join(lines),
                 webhook_id=wh["id"],
             )
     except Exception:
@@ -1137,7 +1161,7 @@ def _fire_reconcile_webhook(corrected: list[str], errors: list[str]) -> None:
 
         for wh in webhooks:
             _try_send_apprise(
-                wh["url"], "Vauxtra: Auto-Reconcile", body, webhook_id=wh["id"]
+                decrypt_secret(wh["url"]), "Vauxtra: Auto-Reconcile", body, webhook_id=wh["id"]
             )
     except Exception:
         import traceback
