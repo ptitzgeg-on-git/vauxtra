@@ -14,6 +14,7 @@
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
+import { api } from '@/api/client';
 import { renderWithProviders } from '@/test/render';
 import type { CheckAllResult, Service } from '@/types/api';
 
@@ -23,6 +24,9 @@ let logsPending = false;
 
 /** What `POST /api/services/check-all` answers, set by each test that presses the button. */
 let checkAllAnswer: CheckAllResult = { checked: 0, ok: 0, error: 0 };
+
+/** `GET /api/settings`: the scheduler runs every 5 min unless a test switches it off. */
+let settingsAnswer: Record<string, string> = { check_interval: '5' };
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -39,9 +43,15 @@ vi.mock('@/api/client', () => ({
       if (path === '/providers/tunnels/health') {
         return Promise.resolve({ total: 0, healthy: 0, down: 0, items: [] });
       }
+      if (path === '/providers/tunnels/access') return Promise.resolve({ total: 0, items: [] });
+      if (path === '/settings') return Promise.resolve(settingsAnswer);
       return Promise.resolve({});
     }),
-    post: vi.fn((path: string) => Promise.resolve(path === '/services/check-all' ? checkAllAnswer : { ok: true })),
+    post: vi.fn((path: string) => {
+      if (path === '/services/check-all') return Promise.resolve(checkAllAnswer);
+      if (path === '/settings') return Promise.resolve({ ok: true, saved: ['check_interval'], ignored: [], not_applied: [] });
+      return Promise.resolve({ ok: true });
+    }),
     put: vi.fn(() => Promise.resolve({ ok: true })),
     delete: vi.fn(() => Promise.resolve({ ok: true })),
   },
@@ -120,9 +130,9 @@ describe('Monitoring, a deep link opened before the page has read anything', () 
 /**
  * What the summary of "Check all services" says was left out.
  *
- * The page worked the skipped tunnels out as `checked - ok - error`: the check-all route
- * skipped nothing else. It now also leaves out the services without a port, and the same
- * subtraction called them tunnels.
+ * The tunnel routes used to be skipped, and the summary said so. They are probed through the
+ * Cloudflare edge now, so the only services a check leaves out are the ones without a port,
+ * which have nothing to connect to.
  */
 describe('Monitoring, the summary of a check of every service', () => {
   beforeEach(() => {
@@ -134,26 +144,58 @@ describe('Monitoring, the summary of a check of every service', () => {
     checkAllAnswer = answer;
     renderWithProviders(<Monitoring />, { route: '/monitoring' });
     fireEvent.click(await screen.findByRole('button', { name: 'monitoring.check_all' }));
+    return screen.findByText('monitoring.check_summary');
   }
 
-  it('does not call the services without a port tunnels', async () => {
+  it('says how many services without a port were left out', async () => {
     await checkAll({ checked: 3, ok: 1, error: 0, skipped: 2, skipped_tunnel: 0, skipped_no_port: 2, results: [] });
 
-    expect(await screen.findByText('monitoring.check_skipped_no_port')).toBeInTheDocument();
-    expect(screen.queryByText('monitoring.check_skipped')).toBeNull();
+    expect(screen.getByText('monitoring.check_skipped_no_port')).toBeInTheDocument();
   });
 
-  it('gives both reasons when both kinds were left out', async () => {
-    await checkAll({ checked: 4, ok: 1, error: 0, skipped: 3, skipped_tunnel: 1, skipped_no_port: 2, results: [] });
+  it('says nothing was left out when every service was probed, tunnels included', async () => {
+    await checkAll({ checked: 2, ok: 2, error: 0, skipped: 0, skipped_tunnel: 0, skipped_no_port: 0, results: [] });
 
-    expect(await screen.findByText('monitoring.check_skipped_no_port')).toBeInTheDocument();
-    expect(screen.getByText('monitoring.check_skipped')).toBeInTheDocument();
+    expect(screen.queryByText('monitoring.check_skipped_no_port')).toBeNull();
   });
 
-  it('still works the tunnels out on an older instance, which does not split them', async () => {
+  it('does not invent a skipped count from an older answer that gives none', async () => {
+    // `checked - ok - error` once stood for "tunnels skipped". It stands for nothing now.
     await checkAll({ checked: 3, ok: 1, error: 1 });
 
-    expect(await screen.findByText('monitoring.check_skipped')).toBeInTheDocument();
     expect(screen.queryByText('monitoring.check_skipped_no_port')).toBeNull();
+  });
+});
+
+/**
+ * Production ran with `check_interval` at 0: no check had run for weeks, and the page only
+ * said so in a small grey line of its header. It now says it where it is read, with the one
+ * button that fixes it.
+ */
+describe('Monitoring, when the automatic checks are off', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  it('says so, and switches them back on every 5 minutes', async () => {
+    settingsAnswer = { check_interval: '0' };
+    try {
+      renderWithProviders(<Monitoring />, { route: '/monitoring' });
+
+      expect(await screen.findByText('monitoring.checks_off.title')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'monitoring.checks_off.enable' }));
+
+      await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith('/settings', { check_interval: '5' }));
+    } finally {
+      settingsAnswer = { check_interval: '5' };
+    }
+  });
+
+  it('stays quiet while the scheduler runs', async () => {
+    renderWithProviders(<Monitoring />, { route: '/monitoring' });
+
+    expect(await screen.findByText('monitoring.auto_checks_every')).toBeInTheDocument();
+    expect(screen.queryByText('monitoring.checks_off.title')).toBeNull();
   });
 });

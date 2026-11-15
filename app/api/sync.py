@@ -1051,9 +1051,10 @@ def _push_service_row(conn, svc, sid: int, *, only_provider_ids: set[int] | None
     A disabled service is withheld instead of published. The record is what a push converges
     the providers on, and the record says this one is off -- publishing it here is how a
     service the table showed as disabled came back. Two one-click paths reach this: the drift
-    drawer offers Reconcile beside the errors it just reported, and `ExposeModal` fires a push
-    of its own right after saving any service that has a multi-sync target, so pressing Save
-    on a disabled service republished it on every provider at once.
+    drawer offers Reconcile beside the errors it just reported, and `ExposeModal` used to fire
+    a push of its own right after saving any service that has a multi-sync target, so pressing
+    Save on a disabled service republished it on every provider at once. The write routes
+    reach those targets themselves now, and the modal no longer pushes.
     """
     if not svc["enabled"]:
         errors = withhold_service_routes(conn, svc, sid, only_provider_ids=only_provider_ids)

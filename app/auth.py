@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import time
 
 from fastapi import HTTPException, Request
 
@@ -175,6 +176,60 @@ def bump_session_epoch(conn) -> None:
     )
 
 
+ENV_PASSWORD_FINGERPRINT_KEY = "app_password_env_fingerprint"
+
+
+def _env_password_fingerprint() -> str:
+    """A fingerprint of `APP_PASSWORD` that tells two values apart and gives neither back.
+
+    PBKDF2 at the cost of the stored password hash, salted with `SECRET_KEY`: a plaintext
+    `APP_PASSWORD` otherwise lives only in the environment, and a fast HMAC stored next to
+    the database would let whoever copies `data/` test guesses against it far faster than
+    against the hash this instance would have written itself.
+    """
+    from app.config import SECRET_KEY
+
+    salt = hashlib.sha256(("vauxtra-env-password:" + str(SECRET_KEY)).encode("utf-8")).digest()
+    return hashlib.pbkdf2_hmac(
+        PBKDF2_HASH_NAME, APP_PASSWORD.encode("utf-8"), salt, PBKDF2_ITERATIONS, PBKDF2_DK_LENGTH
+    ).hex()
+
+
+def revoke_sessions_if_env_password_changed() -> bool:
+    """Bump the session epoch when `APP_PASSWORD` differs from the one seen at the last boot.
+
+    With the password in the environment, changing it and restarting is the only
+    revocation an operator has, and it revoked nothing: the cookie is signed with
+    `SECRET_KEY`, which stays put, so a stolen cookie outlived the password it was opened
+    with. Only a fingerprint is stored, never the value. The first boot that records one
+    logs nobody out. Returns True when sessions were revoked.
+    """
+    if not APP_PASSWORD:
+        return False
+    from app.models import get_db
+
+    fingerprint = _env_password_fingerprint()
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?", (ENV_PASSWORD_FINGERPRINT_KEY,)
+        ).fetchone()
+        stored = row["value"] if row else ""
+        if hmac.compare_digest(stored.encode("utf-8"), fingerprint.encode("utf-8")):
+            return False
+        changed = bool(stored)
+        if changed:
+            bump_session_epoch(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (ENV_PASSWORD_FINGERPRINT_KEY, fingerprint),
+        )
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
+
 def mark_password_configured(conn) -> None:
     """Record that this instance is password-protected. Call inside the caller's transaction."""
     conn.execute(
@@ -243,7 +298,11 @@ def check_password(candidate: str) -> bool:
         if APP_PASSWORD.startswith("pbkdf2:"):
             return verify_password_hash(candidate, APP_PASSWORD)
         if _ALLOW_PLAINTEXT_APP_PASSWORD:
-            return hmac.compare_digest(candidate, APP_PASSWORD)
+            # Bytes on both sides: `compare_digest` raises TypeError on a str that is not
+            # ASCII, so `mötdepasse` answered 500 instead of a refused login.
+            return hmac.compare_digest(
+                (candidate or "").encode("utf-8"), APP_PASSWORD.encode("utf-8")
+            )
         # Say so. An operator who sets a plaintext APP_PASSWORD gets a 401 on a password
         # that is, from their point of view, exactly the one they configured -- and the
         # setup wizard refuses to run because `has_password_configured()` sees the variable
@@ -307,6 +366,25 @@ def _scope_satisfies(granted: list[str], required: str) -> bool:
     return any(_SCOPE_LEVEL.get(g, -1) >= req_level for g in granted)
 
 
+# Absolute lifetime of a login. The cookie's own `max_age` slides: Starlette re-issues it on
+# every response, so a stolen cookie used once a week never expired.
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
+def _session_is_fresh(session: dict) -> bool:
+    """Stamp a session without a login time, refuse one older than the absolute lifetime.
+
+    A cookie minted before the stamp existed gets it on first use, so an upgrade logs
+    nobody out; its lifetime is counted from then.
+    """
+    now = int(time.time())
+    issued = session.get("issued_at")
+    if not isinstance(issued, int):
+        session["issued_at"] = now
+        return True
+    return 0 <= now - issued <= SESSION_MAX_AGE_SECONDS
+
+
 def _get_auth_context(request: Request) -> dict | None:
     """Return {kind, scopes} if authenticated, else None.
 
@@ -323,8 +401,8 @@ def _get_auth_context(request: Request) -> dict | None:
         # A session carries the epoch it was opened in, and `change_password` bumps the
         # stored one. A cookie from before this existed has no epoch at all, so an upgrade
         # costs one re-login -- which is the correct answer for a cookie minted under rules
-        # that could not expire it.
-        if session.get("epoch") == current_session_epoch():
+        # that could not expire it. `_session_is_fresh` adds the absolute lifetime.
+        if session.get("epoch") == current_session_epoch() and _session_is_fresh(session):
             return {"kind": "session", "scopes": ["admin"]}
         # Drop it rather than merely ignore it: the browser gets an empty cookie back and
         # stops presenting a credential that will never be accepted again.

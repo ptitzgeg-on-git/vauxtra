@@ -583,6 +583,8 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_provider_health` | Get provider health |
 | `get_all_providers_health` | Get all providers health (batch) |
 | `get_tunnel_health` | Aggregate tunnel health |
+| `get_tunnel_access` | Access state of every tunnel route |
+| `protect_tunnel_route` | Put Access in front of one tunnel route |
 | `create_provider` | Create a new provider |
 | `update_provider` | Update an existing provider |
 | `delete_provider` | Delete a provider (409 while services use it; `force=True` unlinks them) |
@@ -712,7 +714,7 @@ apply_template(id, ...) → apply defaults + create the service
 
 ## 13) Prometheus Metrics
 
-Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication required — designed to be scraped directly by a Prometheus server.
+Vauxtra exposes a Prometheus-compatible metrics endpoint, designed to be scraped directly by a Prometheus server with a `read` API key.
 
 ### Endpoint
 
@@ -720,7 +722,7 @@ Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication 
 GET /metrics
 ```
 
-No `Authorization` header required. Response is `text/plain` in Prometheus text exposition format.
+Send a `read` API key as `Authorization: Bearer <api_key>`; without one the answer is `401`. The endpoint used to be open, and told anyone who could reach the port which provider types run the network and how many services are down. Response is `text/plain` in Prometheus text exposition format.
 
 ### Available metrics
 
@@ -803,6 +805,8 @@ scrape_configs:
       - targets: ['vauxtra:8888']
     metrics_path: /metrics
     scrape_interval: 60s
+    authorization:
+      credentials_file: /etc/prometheus/vauxtra_read_key   # a `read` API key
 ```
 
 ### Alerting examples
@@ -891,12 +895,14 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/types` | Supported provider types |
 | `GET` | `/api/providers/health` | All providers health (batch) |
 | `GET` | `/api/providers/tunnels/health` | Tunnel providers health |
+| `GET` | `/api/providers/tunnels/access` | Which tunnel routes Cloudflare Access protects (`protected`, `partial`, `open`, `unknown`), and whether the token may read Access. An empty listing reads as `unverified`, never as open: Cloudflare returns the same empty list to a token without "Access: Apps and Policies Read" |
 | `POST` | `/api/providers/validate-draft` | Validate before saving |
 | `PUT` | `/api/providers/{pid}` | Update a provider |
 | `DELETE` | `/api/providers/{pid}` | Delete a provider. `?force=true` unlinks the services still using it; add `?withdraw=true` to take its proxy hosts and DNS records down first, without it they stay published on a provider Vauxtra no longer knows about |
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |
+| `POST` | `/api/providers/{pid}/access/apps` | Protect one tunnel route with a new Access application built from reusable policies (`{hostname, policy_ids}`). Needs the `write` scope and a token with "Access: Apps and Policies Edit" |
 
 #### Direct provider access
 
@@ -971,7 +977,7 @@ no such capability, and 502 when the provider itself refuses.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/metrics` | Prometheus metrics (no auth required) |
+| `GET` | `/metrics` | Prometheus metrics (`read` API key) |
 
 ### Tags & Environments
 

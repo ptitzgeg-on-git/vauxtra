@@ -2,10 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Activity, ArrowDownCircle, CircleHelp, Gauge, Radio, ShieldCheck, Timer } from 'lucide-react';
+import {
+  Activity,
+  ArrowDownCircle,
+  CircleHelp,
+  Gauge,
+  LayoutGrid,
+  LayoutList,
+  Power,
+  Radio,
+  ShieldCheck,
+  Timer,
+  Waypoints,
+} from 'lucide-react';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { useFormat } from '@/hooks/useFormat';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { translateApiError } from '@/lib/errors';
 import { EM_DASH } from '@/lib/format';
 import {
@@ -13,25 +26,33 @@ import {
   Card,
   CardContent,
   CardHeader,
-  CardTitle,
   Chip,
   ChipGroup,
+  IconButton,
   InlineAlert,
   PageHeader,
   ProgressBar,
   SearchInput,
   Select,
   StatCard,
+  Tab,
+  TabList,
+  TabPanel,
+  Tabs,
+  cn,
 } from '@/components/ui';
+import { AccessPanel } from '@/components/features/monitoring/AccessPanel';
 import { MonitoringTable } from '@/components/features/monitoring/MonitoringTable';
+import { ServiceCards } from '@/components/features/monitoring/ServiceCards';
 import { ServiceDrawer } from '@/components/features/monitoring/ServiceDrawer';
 import { TunnelsCard } from '@/components/features/monitoring/TunnelsCard';
 import { useServiceProbes } from '@/components/features/monitoring/useServiceProbes';
+import { openRouteCount, useTunnelAccess } from '@/components/features/monitoring/useTunnelAccess';
 import {
   STATUS_FILTERS,
   STATUS_LABEL_KEY,
   autoCheckCadence,
-  measuredCount,
+  fleetLatency,
   overallAvailability,
   serviceHost,
   serviceStatus,
@@ -45,25 +66,35 @@ import type {
   LogsResponse,
   Service,
   ServiceHistoryResponse,
+  SettingsSaveResult,
   TunnelHealthResponse,
 } from '@/types/api';
 
 /**
- * Monitoring — is every published endpoint answering, and has it been answering all day.
+ * Monitoring: is every published endpoint answering, has it been answering all day, and does
+ * it ask for a login.
  *
- * Data sources, all read-only except the two check routes:
- *  - `GET  /api/services`                the rows, their last known status and `last_checked`
- *  - `GET  /api/services/history`        the `uptime_events` of the last 24 h, per service
- *  - `GET  /api/logs`                    the recent lines, matched to a host in the drawer
+ * The figures sit above three tabs, kept in the URL (`?tab=`) so a link lands on the right one:
+ *  - services: every service, as tiles or as a table, with the drawer behind each one;
+ *  - tunnels:  the Cloudflare connectors, the reason a whole tunnel goes down at once;
+ *  - access:   which tunnel routes Cloudflare Access protects, and the button that protects one.
+ *
+ * Data sources, all read-only except the check routes, the settings switch and Protect:
+ *  - `GET  /api/services`                 the rows, their last status, `status_detail`, latency
+ *  - `GET  /api/services/history`         the `uptime_events` of the last 24 h, per service
+ *  - `GET  /api/logs`                     the recent lines, matched to a host in the drawer
  *  - `GET  /api/providers/tunnels/health` the Cloudflare connectors
- *  - `POST /api/services/check-all`      probe everything now
- *  - `POST /api/services/{sid}/check`    probe one service and resolve its hostname
+ *  - `GET  /api/providers/tunnels/access` the Access state of every tunnel route
+ *  - `POST /api/services/check-all`       probe everything now
+ *  - `POST /api/services/{sid}/check`     probe one service and resolve its hostname
+ *  - `POST /api/settings`                 turn the automatic checks back on, from the banner
  */
 
 const SERVICES_CACHE_KEY = 'vauxtra.cache.services';
 const REFRESH_STORAGE_KEY = 'vauxtra.monitoring.refresh';
+const VIEW_STORAGE_KEY = 'vauxtra.monitoring.view';
 
-/** `get_logs` clamps `per_page` to 200 — asking for 300 silently returned 200. */
+/** `get_logs` clamps `per_page` to 200: asking for 300 silently returned 200. */
 const LOGS_PAGE_SIZE = 200;
 /** How many recent lines the drawer searches through; two clamped pages. */
 const LOGS_SAMPLE = 300;
@@ -71,12 +102,32 @@ const LOGS_SAMPLE = 300;
 const REFRESH_CHOICES = [0, 10_000, 15_000, 30_000, 60_000, 300_000] as const;
 const DEFAULT_REFRESH = 15_000;
 
+/** What the banner switches the checks to: the default of a fresh install. */
+const DEFAULT_CHECK_INTERVAL = '5';
+
+const TABS = ['services', 'tunnels', 'access'] as const;
+type MonitoringTab = (typeof TABS)[number];
+
+function toTab(raw: string | null): MonitoringTab {
+  return (TABS as readonly string[]).includes(raw ?? '') ? (raw as MonitoringTab) : 'services';
+}
+
+type ViewMode = 'cards' | 'table';
+
 function readRefreshChoice(): number {
   try {
     const raw = Number(localStorage.getItem(REFRESH_STORAGE_KEY));
     return (REFRESH_CHOICES as readonly number[]).includes(raw) ? raw : DEFAULT_REFRESH;
   } catch {
     return DEFAULT_REFRESH;
+  }
+}
+
+function readViewMode(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === 'table' ? 'table' : 'cards';
+  } catch {
+    return 'cards';
   }
 }
 
@@ -108,14 +159,13 @@ async function fetchRecentLogs(): Promise<LogEntry[]> {
 }
 
 /**
- * `checked` counts every enabled service, and the route probes neither the tunnels nor the
- * services without a port. Each is named apart: the two reasons have nothing in common.
+ * `checked` counts every enabled service. Tunnel routes are probed through Cloudflare like
+ * the rest; only a service without a port is left out, and the summary says how many.
  */
 interface CheckSummary {
   checked: number;
   ok: number;
   error: number;
-  skippedTunnel: number;
   skippedNoPort: number;
 }
 
@@ -125,12 +175,19 @@ export function Monitoring() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const tab = toTab(searchParams.get('tab'));
   const statusFilter = toStatusFilter(searchParams.get('status'));
   const selectedId = Number(searchParams.get('service')) || null;
 
   const [search, setSearch] = useState('');
   const [refreshMs, setRefreshMs] = useState<number>(readRefreshChoice);
+  const [savedView, setSavedView] = useState<ViewMode>(readViewMode);
   const [summary, setSummary] = useState<CheckSummary | null>(null);
+
+  // The table needs a desktop's width; below `md` it only scrolls sideways, so phones get the
+  // tiles whatever was saved, and the switch that could not change that is hidden.
+  const isNarrow = useMediaQuery('(max-width: 767px)');
+  const view: ViewMode = isNarrow ? 'cards' : savedView;
 
   // One instant per tick, shared by every strip and every relative date on the page.
   const [now, setNow] = useState(() => Date.now());
@@ -146,6 +203,14 @@ export function Monitoring() {
       // Private mode: the choice simply does not survive a reload.
     }
   }, [refreshMs]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, savedView);
+    } catch {
+      // Same.
+    }
+  }, [savedView]);
 
   const autoRefresh = refreshMs > 0 ? refreshMs : false;
 
@@ -181,6 +246,8 @@ export function Monitoring() {
     refetchInterval: refreshMs > 0 ? Math.max(refreshMs, 30_000) : false,
   });
 
+  const accessQuery = useTunnelAccess();
+
   const services = useMemo(
     () => (Array.isArray(servicesQuery.data) ? servicesQuery.data : []),
     [servicesQuery.data],
@@ -205,13 +272,12 @@ export function Monitoring() {
     mutationFn: () => api.post<CheckAllResult>('/services/check-all'),
     onSuccess: async (result) => {
       const checked = result?.checked ?? 0;
-      const ok = result?.ok ?? 0;
-      const error = result?.error ?? 0;
-      // An instance older than the split skipped the tunnels alone and did not say so: what it
-      // left out is worked out from the three counts it does return.
-      const skippedNoPort = result?.skipped_no_port ?? 0;
-      const skippedTunnel = result?.skipped_tunnel ?? Math.max(0, checked - ok - error - skippedNoPort);
-      setSummary({ checked, ok, error, skippedTunnel, skippedNoPort });
+      setSummary({
+        checked,
+        ok: result?.ok ?? 0,
+        error: result?.error ?? 0,
+        skippedNoPort: result?.skipped_no_port ?? 0,
+      });
       // The fleet check measured every latency on its way through; `results` is absent on
       // an instance older than 1.5.0, and the column then stays as it was.
       probes.record(result?.results ?? []);
@@ -226,6 +292,19 @@ export function Monitoring() {
       setSummary(null);
       toast.error(translateApiError(err, t, t('monitoring.toast.check_failed')));
     },
+  });
+
+  // Checks were found off in production: every status on this page was then frozen at the
+  // last manual check, and the only way back was a setting three screens away.
+  const enableChecks = useMutation({
+    mutationFn: () => api.post<SettingsSaveResult>('/settings', { check_interval: DEFAULT_CHECK_INTERVAL }),
+    onSuccess: async (result) => {
+      const refused = [...(result?.ignored ?? []), ...(result?.not_applied ?? [])].includes('check_interval');
+      if (refused) toast.error(t('monitoring.checks_off.enable_failed'));
+      else toast.success(t('monitoring.checks_off.enabled'));
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: (err: unknown) => toast.error(translateApiError(err, t, t('monitoring.checks_off.enable_failed'))),
   });
 
   // --- counts -------------------------------------------------------------
@@ -243,7 +322,9 @@ export function Monitoring() {
 
   // `autoCheckCadence` carries why this is read from the setting and never from `last_checked`.
   const cadence = autoCheckCadence(settings?.check_interval);
-  const measured = measuredCount(probes.probes);
+  const latency = useMemo(() => fleetLatency(services, probes.probes), [services, probes.probes]);
+  const tunnelCount = Array.isArray(tunnelsQuery.data?.items) ? tunnelsQuery.data.items.length : 0;
+  const openRoutes = openRouteCount(accessQuery.data);
 
   // --- filtering ----------------------------------------------------------
 
@@ -262,7 +343,7 @@ export function Monitoring() {
   }, [services, statusFilter, search]);
 
   const setParams = useCallback(
-    (next: { status?: StatusFilter; service?: number | null }) => {
+    (next: { status?: StatusFilter; service?: number | null; tab?: MonitoringTab }) => {
       const params = new URLSearchParams(searchParams);
       if (next.status !== undefined) {
         if (next.status === 'all') params.delete('status');
@@ -272,10 +353,18 @@ export function Monitoring() {
         if (next.service === null) params.delete('service');
         else params.set('service', String(next.service));
       }
+      if (next.tab !== undefined) {
+        if (next.tab === 'services') params.delete('tab');
+        else params.set('tab', next.tab);
+      }
       setSearchParams(params, { replace: true });
     },
     [searchParams, setSearchParams],
   );
+
+  /** A figure filters the services, so it also brings their tab forward. */
+  const toggleStatus = (status: StatusFilter) =>
+    setParams({ status: statusFilter === status ? 'all' : status, tab: 'services' });
 
   const selectedService = useMemo(
     () => services.find((service) => service.id === selectedId) ?? null,
@@ -302,8 +391,42 @@ export function Monitoring() {
 
   const loading = servicesQuery.isPending && services.length === 0;
 
+  const empty =
+    statusFilter !== 'all' || search
+      ? {
+          title: t('monitoring.empty.filter'),
+          description: t('monitoring.empty.filter_hint'),
+          action: (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSearch('');
+                setParams({ status: 'all' });
+              }}
+            >
+              {t('monitoring.empty.clear_filters')}
+            </Button>
+          ),
+        }
+      : { title: t('monitoring.empty.all'), description: t('monitoring.empty.all_hint') };
+
+  const listProps = {
+    services: filtered,
+    history: historyQuery.data,
+    historyError: historyQuery.isError,
+    probes: probes.probes,
+    checkingId: probes.checkingId,
+    now,
+    selectedId,
+    loading,
+    onSelect: (service: Service) => setParams({ service: service.id }),
+    onCheck: probes.check,
+    empty,
+  };
+
   return (
-    <div className="mx-auto max-w-7xl space-y-6 pb-8 duration-200 animate-in fade-in">
+    <div className="mx-auto max-w-screen-2xl space-y-6 pb-8 duration-200 animate-in fade-in">
       <PageHeader
         eyebrow={t('nav.group.operations')}
         title={t('nav.monitoring')}
@@ -315,7 +438,6 @@ export function Monitoring() {
               {t('monitoring.auto_checks_every', { minutes: cadence.minutes })}
             </span>
           ) : cadence.state === 'off' ? (
-            // The only screen that can switch them back on, one click away from the bad news.
             <Link
               to="/settings?tab=general"
               className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
@@ -357,6 +479,21 @@ export function Monitoring() {
         }
       />
 
+      {cadence.state === 'off' && (
+        <InlineAlert
+          tone="warning"
+          icon={<Power />}
+          title={t('monitoring.checks_off.title')}
+          action={
+            <Button size="sm" loading={enableChecks.isPending} onClick={() => enableChecks.mutate()}>
+              {t('monitoring.checks_off.enable')}
+            </Button>
+          }
+        >
+          {t('monitoring.checks_off.body')}
+        </InlineAlert>
+      )}
+
       {checkAll.isPending && (
         <InlineAlert tone="info" title={t('monitoring.check_running')}>
           <ProgressBar indeterminate size="sm" label={t('monitoring.check_running')} className="mt-2" />
@@ -373,7 +510,6 @@ export function Monitoring() {
           })}
           onDismiss={() => setSummary(null)}
         >
-          {summary.skippedTunnel > 0 && <p>{t('monitoring.check_skipped', { count: summary.skippedTunnel })}</p>}
           {summary.skippedNoPort > 0 && (
             <p>{t('monitoring.check_skipped_no_port', { count: summary.skippedNoPort })}</p>
           )}
@@ -408,7 +544,9 @@ export function Monitoring() {
         </InlineAlert>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      {/* Two columns from the smallest screen up: one card per row pushed the tabs a whole phone
+          screen down. The fifth card takes the full width until three columns fit. */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label={t('monitoring.stat.up')}
           value={formatNumber(counts.ok)}
@@ -416,7 +554,7 @@ export function Monitoring() {
           icon={<ShieldCheck />}
           tone="success"
           loading={loading}
-          onClick={() => setParams({ status: statusFilter === 'ok' ? 'all' : 'ok' })}
+          onClick={() => toggleStatus('ok')}
         />
         <StatCard
           label={t('monitoring.stat.down')}
@@ -425,7 +563,7 @@ export function Monitoring() {
           icon={<ArrowDownCircle />}
           tone={counts.error > 0 ? 'danger' : 'neutral'}
           loading={loading}
-          onClick={() => setParams({ status: statusFilter === 'error' ? 'all' : 'error' })}
+          onClick={() => toggleStatus('error')}
         />
         <StatCard
           label={t('monitoring.stat.unknown')}
@@ -434,7 +572,7 @@ export function Monitoring() {
           icon={<CircleHelp />}
           tone={counts.unknown > 0 ? 'warning' : 'neutral'}
           loading={loading}
-          onClick={() => setParams({ status: statusFilter === 'unknown' ? 'all' : 'unknown' })}
+          onClick={() => toggleStatus('unknown')}
         />
         <StatCard
           label={t('monitoring.stat.availability')}
@@ -452,91 +590,94 @@ export function Monitoring() {
         />
         <StatCard
           label={t('monitoring.stat.latency')}
-          value={probes.average === null ? EM_DASH : formatLatency(probes.average)}
+          value={latency.average === null ? EM_DASH : formatLatency(latency.average)}
           hint={
-            measured > 0
-              ? t('monitoring.stat.latency_hint', { count: measured })
+            latency.count > 0
+              ? t('monitoring.stat.latency_stored_hint', { count: latency.count })
               : t('monitoring.stat.latency_empty')
           }
           icon={<Timer />}
           tone="neutral"
+          loading={loading}
+          className="col-span-2 lg:col-span-1"
         />
       </div>
 
-      {/* `min-w-0` on both children: a grid item defaults to `min-width: auto`, so the table's
-          `min-w-[820px]` climbed back up and sized the card at 820px on a phone. The card then
-          overflowed `main`, whose `overflow-x: hidden` cut 476px off with no scrollbar, while
-          the table's own `overflow-x-auto` had nothing left to scroll.
+      <Tabs value={tab} onValueChange={(value) => setParams({ tab: toTab(value) })}>
+        <TabList aria-label={t('monitoring.tabs_label')}>
+          <Tab value="services" icon={<Activity />} count={counts.all}>
+            {t('monitoring.tab.services')}
+          </Tab>
+          <Tab value="tunnels" icon={<Waypoints />} count={tunnelCount || undefined}>
+            {t('monitoring.tab.tunnels')}
+          </Tab>
+          <Tab value="access" icon={<ShieldCheck />} count={openRoutes || undefined}>
+            {t('monitoring.tab.access')}
+          </Tab>
+        </TabList>
 
-          9/3 and not 8/4: the page container caps the grid at 1280px, so the split is the
-          same at 1440px and at 2560px. Eight columns left the table scroller 798px against
-          a table whose min-content width is 820px, and that missing 22px was a permanent
-          horizontal scrollbar that hid most of the ACTIONS column. The tunnels card's own
-          min-content is 237px, so it still has room at three columns. */}
-      <div className="grid gap-4 xl:grid-cols-12">
-        <Card className="min-w-0 xl:col-span-9">
-          <CardHeader className="gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <CardTitle>{t('monitoring.route_health')}</CardTitle>
-              <SearchInput
-                size="sm"
-                value={search}
-                onChange={setSearch}
-                placeholder={t('monitoring.filter_routes_placeholder')}
-                aria-label={t('monitoring.filter_routes_placeholder')}
-                wrapperClassName="w-full max-w-xs"
-              />
-            </div>
-            <ChipGroup label={t('monitoring.filters_label')}>
-              {STATUS_FILTERS.map((key) => (
-                <Chip
-                  key={key}
-                  selected={statusFilter === key}
-                  count={key === 'all' ? counts.all : counts[key]}
-                  onClick={() => setParams({ status: key })}
+        <TabPanel value="services" className="pt-4">
+          {/* `min-w-0`: a grid or flex item defaults to `min-width: auto`, so the table's
+              `min-w-[820px]` climbed back up and sized the card at 820px on a phone, which
+              `main` then cut off with no scrollbar. */}
+          <Card className="min-w-0">
+            <CardHeader className="gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <SearchInput
+                  size="sm"
+                  value={search}
+                  onChange={setSearch}
+                  placeholder={t('monitoring.filter_routes_placeholder')}
+                  aria-label={t('monitoring.filter_routes_placeholder')}
+                  wrapperClassName="w-full max-w-sm"
+                />
+                <div
+                  className="hidden items-center gap-1 rounded-xl bg-muted p-1 md:inline-flex"
+                  role="group"
+                  aria-label={t('monitoring.view_label')}
                 >
-                  {key === 'all' ? t('monitoring.filter.all') : t(STATUS_LABEL_KEY[key])}
-                </Chip>
-              ))}
-            </ChipGroup>
-          </CardHeader>
-          <CardContent className="px-0 pb-0">
-            <MonitoringTable
-              services={filtered}
-              history={historyQuery.data}
-              historyError={historyQuery.isError}
-              probes={probes.probes}
-              checkingId={probes.checkingId}
-              now={now}
-              selectedId={selectedId}
-              loading={loading}
-              onSelect={(service) => setParams({ service: service.id })}
-              onCheck={probes.check}
-              empty={
-                statusFilter !== 'all' || search
-                  ? {
-                      title: t('monitoring.empty.filter'),
-                      description: t('monitoring.empty.filter_hint'),
-                      action: (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            setSearch('');
-                            setParams({ status: 'all' });
-                          }}
-                        >
-                          {t('monitoring.empty.clear_filters')}
-                        </Button>
-                      ),
-                    }
-                  : { title: t('monitoring.empty.all'), description: t('monitoring.empty.all_hint') }
-              }
-            />
-          </CardContent>
-        </Card>
+                  <IconButton
+                    label={t('monitoring.view.cards')}
+                    icon={<LayoutGrid />}
+                    tooltip
+                    size="sm"
+                    variant="ghost"
+                    aria-pressed={view === 'cards'}
+                    className={cn('h-8 w-8', view === 'cards' ? 'bg-card text-primary shadow-sm hover:bg-card' : 'text-muted-foreground')}
+                    onClick={() => setSavedView('cards')}
+                  />
+                  <IconButton
+                    label={t('monitoring.view.table')}
+                    icon={<LayoutList />}
+                    tooltip
+                    size="sm"
+                    variant="ghost"
+                    aria-pressed={view === 'table'}
+                    className={cn('h-8 w-8', view === 'table' ? 'bg-card text-primary shadow-sm hover:bg-card' : 'text-muted-foreground')}
+                    onClick={() => setSavedView('table')}
+                  />
+                </div>
+              </div>
+              <ChipGroup label={t('monitoring.filters_label')}>
+                {STATUS_FILTERS.map((key) => (
+                  <Chip
+                    key={key}
+                    selected={statusFilter === key}
+                    count={key === 'all' ? counts.all : counts[key]}
+                    onClick={() => setParams({ status: key })}
+                  >
+                    {key === 'all' ? t('monitoring.filter.all') : t(STATUS_LABEL_KEY[key])}
+                  </Chip>
+                ))}
+              </ChipGroup>
+            </CardHeader>
+            <CardContent className="px-0 pb-0">
+              {view === 'cards' ? <ServiceCards {...listProps} /> : <MonitoringTable {...listProps} />}
+            </CardContent>
+          </Card>
+        </TabPanel>
 
-        <div className="min-w-0 xl:col-span-3">
+        <TabPanel value="tunnels" className="pt-4">
           <TunnelsCard
             data={tunnelsQuery.data}
             loading={tunnelsQuery.isPending}
@@ -544,8 +685,18 @@ export function Monitoring() {
             refreshing={tunnelsQuery.isFetching}
             onRefresh={() => void tunnelsQuery.refetch()}
           />
-        </div>
-      </div>
+        </TabPanel>
+
+        <TabPanel value="access" className="pt-4">
+          <AccessPanel
+            data={accessQuery.data}
+            loading={accessQuery.isPending}
+            isError={accessQuery.isError}
+            refreshing={accessQuery.isFetching}
+            onRefresh={() => void accessQuery.refetch()}
+          />
+        </TabPanel>
+      </Tabs>
 
       <ServiceDrawer
         open={selectedService !== null}

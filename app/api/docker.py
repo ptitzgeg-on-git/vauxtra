@@ -1,3 +1,4 @@
+import logging
 import re
 import sqlite3
 from urllib.parse import urlparse
@@ -13,6 +14,8 @@ from app.text import plural
 from app.validators import is_valid_domain, normalize_domain
 
 router = APIRouter()
+
+_logger = logging.getLogger(__name__)
 
 
 DOCKER_HOST_RE = re.compile(r"^(unix|tcp|ssh)://.+")
@@ -92,10 +95,14 @@ def _docker_client(docker_host: str | None = None):
         client.ping()
         return client
     except Exception as e:
+        # The exception text stays in the server log. Handed back, it told "connection
+        # refused" from "timed out" from "not a Docker daemon" for any host and port the
+        # caller named: a port scanner of the network behind this instance.
+        _logger.warning("Docker daemon unavailable at %s: %s", docker_host or "the environment", e)
         raise HTTPException(
             502,
-            f"Docker daemon unavailable: {e}. Check the endpoint's Docker host, "
-            "and that this instance can reach it.",
+            "Docker daemon unavailable. Check the endpoint's Docker host, and that this "
+            "instance can reach it; the server log has the reason.",
         )
 
 
@@ -172,8 +179,12 @@ def add_docker_endpoint(request: Request, body: DockerEndpointIn):
     lookup stays, because it is what produces the readable refusal in the ordinary case; the
     handler below catches the one exception the index raises, and answers the same 409 with
     the same sentence.
+
+    `admin`, whatever the scheme. A `tcp://` host makes this instance connect wherever the
+    caller says, and a `unix://` path hands it a socket of the caller's choosing: either
+    one is a grant over the machine and its network, not an edit of the configuration.
     """
-    require_auth(request, scope="write")
+    require_auth(request, scope="admin")
     conn = get_db()
     try:
         existing = conn.execute("SELECT COUNT(*) FROM docker_endpoints").fetchone()[0]
@@ -275,6 +286,28 @@ def delete_docker_endpoint(endpoint_id: int, request: Request):
         conn.close()
     add_log("info", f"Docker endpoint deleted: {row['name']}")
     return {"ok": True}
+
+
+# Labels a reader of the discovery list needs: the routing ones the analyzer reads and the
+# two that say which compose stack a container belongs to. Everything else stays on the
+# host: labels routinely carry basic-auth hashes, tokens and file paths, and the listing is
+# open to read-only keys. The analyzer itself still reads every label.
+_LABEL_PREFIXES = ("vauxtra.", "traefik.")
+_LABEL_KEYS = frozenset({"com.docker.compose.project", "com.docker.compose.service"})
+_SENSITIVE_LABEL_PARTS = ("auth", "pass", "secret", "token", "key", "users", "credential")
+
+
+def _public_labels(labels: dict) -> dict[str, str]:
+    kept: dict[str, str] = {}
+    for key, value in (labels or {}).items():
+        name = str(key)
+        lowered = name.lower()
+        if lowered not in _LABEL_KEYS and not lowered.startswith(_LABEL_PREFIXES):
+            continue
+        if any(part in lowered for part in _SENSITIVE_LABEL_PARTS):
+            continue
+        kept[name] = value
+    return kept
 
 
 def _extract_container_port(attrs: dict) -> int | None:
@@ -384,7 +417,7 @@ def list_docker_containers(request: Request, endpoint_id: int | None = Query(def
                 "status": c.status,
                 "target_ip": ip,
                 "target_port": suggestion["target_port"] if suggestion["target_port"] is not None else port,
-                "labels": labels,
+                "labels": _public_labels(labels),
                 # Legacy fields kept for backwards-compatibility with existing frontend
                 "suggested_subdomain": suggestion["subdomain"],
                 "suggested_scheme": suggestion["forward_scheme"],

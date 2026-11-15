@@ -14,7 +14,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from app import models, scheduler
+from app import models, probe, scheduler
 
 
 class SchedulerAlertTestCase(unittest.TestCase):
@@ -165,7 +165,7 @@ class TestNoSecondConnectionInsideTheCycle(SchedulerAlertTestCase):
         conn.commit()
         conn.close()
 
-        with patch.object(scheduler, "_tcp_ok", return_value="error"):
+        with patch.object(scheduler, "_tcp_probe", return_value=probe.ProbeResult("error", "tcp_failed")):
             scheduler.run_health_checks()
 
         conn = models.get_db()

@@ -1,6 +1,5 @@
 """Automatic health check and reconcile scheduler."""
 import json
-import socket
 import threading
 import time
 
@@ -8,6 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.expiry import parse_expiry
 from app.models import add_log, get_db
+from app.probe import ProbeResult, edge_probe, is_tunnel, probe_many, public_hostname, tcp_probe
 from app.providers.factory import certificate_provider_types, create_provider
 from app.public_target import (
     detect_server_public_ip,
@@ -226,11 +226,27 @@ def run_auto_reconcile() -> None:
 # ── TCP health check ──────────────────────────────────────────────────────
 
 def _tcp_ok(ip: str, port: int) -> str:
-    try:
-        with socket.create_connection((ip, port), timeout=3):
-            return "ok"
-    except OSError:
-        return "error"
+    """Kept for callers that only want the word. The cycle itself uses `_probe`."""
+    return tcp_probe(ip, port).status
+
+
+# Module attributes rather than direct calls, so a test can stand in for either network.
+_tcp_probe = tcp_probe
+_edge_probe = edge_probe
+
+
+def _probe(svc) -> ProbeResult:
+    """A tunnel route through the Cloudflare edge, anything else through TCP. See app/probe.py."""
+    if is_tunnel(svc):
+        return _edge_probe(public_hostname(svc))
+    return _tcp_probe(svc["target_ip"], int(svc["target_port"] or 0))
+
+
+def _is_probed(svc) -> bool:
+    """A tunnel route always has its public name to probe; anything else needs a port."""
+    if is_tunnel(svc):
+        return bool(public_hostname(svc))
+    return bool(svc["target_port"])
 
 
 # ── Job principal ─────────────────────────────────────────────────────────
@@ -337,7 +353,8 @@ def run_health_checks() -> None:
         conn = get_db()
         try:
             services = conn.execute(
-                "SELECT id, target_ip, target_port, subdomain, domain, status, expose_mode FROM services WHERE enabled=1"
+                "SELECT id, target_ip, target_port, subdomain, domain, status, expose_mode,"
+                " tunnel_hostname FROM services WHERE enabled=1"
             ).fetchall()
         finally:
             conn.close()
@@ -345,25 +362,26 @@ def run_health_checks() -> None:
         # Probe with nothing open. A TCP probe against a host that is simply gone costs
         # the full 3 s timeout, and a panel can hold dozens of services: run between two
         # UPDATEs on one transaction, that alone was minutes of held write lock a cycle.
+        # They also run in parallel now, for the same arithmetic.
         #
-        # Tunnel services are health-checked via the Cloudflare API, not TCP. Running TCP
-        # against cfargotunnel.com or similar targets always fails. A service without a
-        # port is a name in DNS and nothing more: there is no connection to open.
-        probes = [
-            (svc, _tcp_ok(svc["target_ip"], svc["target_port"]))
-            for svc in services
-            if (svc["expose_mode"] or "").strip().lower() != "tunnel" and svc["target_port"]
-        ]
+        # A tunnel route is probed through the Cloudflare edge, never by dialling its target:
+        # `localhost:8080` is the connector's localhost, not ours. They used to be skipped
+        # outright, and the status they kept was whatever an old manual probe had written,
+        # which is how twenty working routes read "error" for seven weeks. A service without
+        # a port is a name in DNS and nothing more: there is no connection to open.
+        probes = probe_many([svc for svc in services if _is_probed(svc)], probe=_probe)
 
         changed: list[dict] = []
         conn = get_db()
         try:
-            for svc, new_status in probes:
+            for svc, result in probes:
                 old_status = svc["status"] or "unknown"
+                new_status = result.status
 
                 conn.execute(
-                    "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-                    (new_status, svc["id"]),
+                    "UPDATE services SET status=?, status_detail=?, latency_ms=?,"
+                    " last_checked=datetime('now') WHERE id=?",
+                    (new_status, result.stored_detail, result.latency_ms, svc["id"]),
                 )
                 conn.execute(
                     "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
@@ -371,7 +389,7 @@ def run_health_checks() -> None:
                 )
 
                 if old_status != new_status:
-                    fqdn = f"{svc['subdomain']}.{svc['domain']}"
+                    fqdn = public_hostname(svc)
                     changed.append(
                         {
                             "service_id": svc["id"],

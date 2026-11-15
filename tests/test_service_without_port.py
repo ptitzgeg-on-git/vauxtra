@@ -22,7 +22,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from app import models, scheduler
+from app import models, probe, scheduler
 from app.api import services as services_api
 from app.api import sync as sync_api
 from app.api.services import ServiceIn
@@ -225,11 +225,11 @@ class TheHealthCycleSkipsItTests(_ServicesTestCase):
         with_port = self._seed("app", 9001)
         dialled: list[int] = []
 
-        def probe(_ip, port):
+        def tcp(_ip, port):
             dialled.append(port)
-            return "ok"
+            return probe.ProbeResult("ok", "tcp_open", 1.0)
 
-        with patch.object(scheduler, "_tcp_ok", side_effect=probe), \
+        with patch.object(scheduler, "_tcp_probe", side_effect=tcp), \
              patch.object(scheduler, "_sync_npm_once"), \
              patch.object(scheduler, "_run_provider_health_checks", return_value=[]), \
              patch.object(scheduler, "_fire_global_webhook"), \
@@ -247,19 +247,26 @@ class CheckAllCountsItAsSkippedTests(_ServicesTestCase):
         without = self._seed("vpn", 0)
         tunnel = self._seed("tun", 8443, mode="tunnel")
         with_port = self._seed("app", 9001)
+        through_edge: list[str] = []
 
-        with self._sockets() as dialled:
+        def edge(hostname):
+            through_edge.append(hostname)
+            return probe.ProbeResult("ok", "edge_ok", 20.0, http_status=200)
+
+        with self._sockets() as dialled, patch.object(probe, "edge_probe", edge):
             result = services_api.check_all(_request())
 
+        # The tunnel's 8443 is the connector's port: it is never dialled from here, its
+        # public name is probed through the edge instead.
         self.assertEqual(dialled, [9001])
+        self.assertEqual(through_edge, ["tun.example.com"])
         self.assertEqual(
-            (result["checked"], result["ok"], result["error"], result["skipped"]), (3, 1, 0, 2)
+            (result["checked"], result["ok"], result["error"], result["skipped"]), (2, 2, 0, 1)
         )
-        # Apart, since the panel says why each one was left out.
-        self.assertEqual((result["skipped_tunnel"], result["skipped_no_port"]), (1, 1))
-        self.assertEqual([r["id"] for r in result["results"]], [with_port])
+        self.assertEqual((result["skipped_tunnel"], result["skipped_no_port"]), (0, 1))
+        self.assertEqual([r["id"] for r in result["results"]], [tunnel, with_port])
         self.assertEqual(self._events(without), [])
-        self.assertEqual(self._events(tunnel), [])
+        self.assertEqual(self._events(tunnel), ["ok"])
 
 
 class TheRowCheckSaysItWasNotTestedTests(_ServicesTestCase):

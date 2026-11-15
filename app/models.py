@@ -10,7 +10,7 @@ from app.security import redact_query_secrets
 # settings table, and it is the only thing that tells two schemas apart after the fact:
 # leave it behind and a 1.4.0 database and a 1.5.0 one both answer 11, which is what
 # happened to 1.5.0. `tests/test_regressions_v2.py` pins the pair so it cannot happen twice.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def get_db():
@@ -256,6 +256,11 @@ _MIGRATIONS = [
     # every template written before this reads back as naming no environment, which
     # is exactly what it named.
     "ALTER TABLE service_templates ADD COLUMN environment_ids_json TEXT NOT NULL DEFAULT '[]'",
+    # What the last probe saw, beyond up or down: `app/probe.py` writes a short code here
+    # ("edge_tunnel_down:530", "tcp_failed", "edge_access:302"...) and the panel translates
+    # it. Without it every tunnel route in error printed the same "check the connector".
+    "ALTER TABLE services ADD COLUMN status_detail TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE services ADD COLUMN latency_ms REAL",
 ]
 
 
@@ -279,6 +284,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_legacy_webhook_url(conn)
     _ensure_unique_service_hostnames(conn)
     _rebuild_webhook_delivery_log_fk(conn)
+    _default_check_interval(conn)
+
+
+def _default_check_interval(conn: sqlite3.Connection) -> None:
+    """Turn the health checks on where nobody ever chose.
+
+    The cycle starts only if `check_interval` holds a positive number, and nothing ever wrote
+    the key: setup does not ask, and the settings switch reads an absent key as "off". So a
+    Vauxtra installed and left alone never probed anything, while its Monitoring page went on
+    showing the last manual result, days old, as the current state of every route. Measured
+    on a 1.6.1 instance on 2026-11-14: no row, no cycle for more than a day, 20 tunnel routes
+    still "error" from a probe of 2026-09-28.
+
+    `INSERT OR IGNORE`, so an explicit choice is never overwritten: a `0` an operator saved
+    stays off, and any other interval stays what it is.
+    """
+    conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('check_interval', '5')")
 
 
 def _rebuild_webhook_delivery_log_fk(conn: sqlite3.Connection) -> None:

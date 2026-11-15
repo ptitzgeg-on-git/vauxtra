@@ -22,7 +22,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from app import models, scheduler
+from app import models, probe, scheduler
 
 # Short on purpose. The point is to fail fast when the database is locked, not to sit
 # through the fifteen seconds a real caller would have waited before failing anyway.
@@ -105,11 +105,11 @@ class TestProbesDoNotHoldTheLock(WriteLockTestCase):
         self._seed_services(3)
         seen: list = []
 
-        def probe(ip, port):
+        def tcp(ip, port):
             _witness_can_write(f"probe:{port}", seen)
-            return "error"
+            return probe.ProbeResult("error", "tcp_failed")
 
-        with patch.object(scheduler, "_tcp_ok", side_effect=probe), \
+        with patch.object(scheduler, "_tcp_probe", side_effect=tcp), \
              patch.object(scheduler, "_fire_global_webhook"), \
              patch.object(scheduler, "_fire_service_webhooks"):
             scheduler.run_health_checks()
@@ -121,7 +121,7 @@ class TestProbesDoNotHoldTheLock(WriteLockTestCase):
         """Shortening the transaction must not lose what it was there to save."""
         self._seed_services(2)
 
-        with patch.object(scheduler, "_tcp_ok", return_value="error"), \
+        with patch.object(scheduler, "_tcp_probe", return_value=probe.ProbeResult("error", "tcp_failed")), \
              patch.object(scheduler, "_fire_global_webhook"), \
              patch.object(scheduler, "_fire_service_webhooks"):
             scheduler.run_health_checks()
@@ -133,28 +133,44 @@ class TestProbesDoNotHoldTheLock(WriteLockTestCase):
         self.assertEqual(statuses, ["error", "error"])
         self.assertEqual(events, 2)
 
-    def test_a_tunnel_service_is_still_skipped(self):
-        """Tunnels are checked through their provider's API; TCP against them always fails."""
+    def test_a_tunnel_service_is_probed_through_the_edge_not_dialled(self):
+        """Its target is the connector's localhost; what visitors reach is the Cloudflare edge.
+
+        It used to be skipped, and kept whatever status an older probe had written: on the
+        instance this was measured on, twenty working routes read "error" for seven weeks.
+        """
         conn = models.get_db()
         conn.execute(
-            """INSERT INTO services (id, subdomain, domain, target_ip, target_port, enabled, status, expose_mode)
-               VALUES (1, 'tun', 'example.com', 'x.cfargotunnel.com', 443, 1, 'ok', 'tunnel')"""
+            """INSERT INTO services (id, subdomain, domain, target_ip, target_port, enabled, status,
+                                     expose_mode, tunnel_hostname)
+               VALUES (1, 'tun', 'example.com', 'localhost', 8080, 1, 'error', 'tunnel', 'tun.example.com')"""
         )
         conn.commit()
         conn.close()
+        seen: list = []
 
-        with patch.object(scheduler, "_tcp_ok", return_value="error") as probe, \
+        def edge(hostname):
+            # Probing through the edge is network too: it must run with the lock free.
+            _witness_can_write(f"edge:{hostname}", seen)
+            return probe.ProbeResult("ok", "edge_ok", 42.0, http_status=200)
+
+        with patch.object(scheduler, "_tcp_probe") as tcp, \
+             patch.object(scheduler, "_edge_probe", side_effect=edge), \
              patch.object(scheduler, "_fire_global_webhook"), \
              patch.object(scheduler, "_fire_service_webhooks"):
             scheduler.run_health_checks()
 
-        probe.assert_not_called()
+        tcp.assert_not_called()
+        self.assertEqual(_refused(seen), [])
+        self.assertEqual([label for label, _ in seen], ["edge:tun.example.com"])
         conn = models.get_db()
-        status = conn.execute("SELECT status FROM services WHERE id=1").fetchone()["status"]
+        row = conn.execute(
+            "SELECT status, status_detail, latency_ms FROM services WHERE id=1"
+        ).fetchone()
         events = conn.execute("SELECT COUNT(*) AS n FROM uptime_events").fetchone()["n"]
         conn.close()
-        self.assertEqual(status, "ok")
-        self.assertEqual(events, 0)
+        self.assertEqual((row["status"], row["status_detail"], row["latency_ms"]), ("ok", "edge_ok:200", 42.0))
+        self.assertEqual(events, 1)
 
 
 class TestProviderHealthDoesNotHoldTheLock(WriteLockTestCase):

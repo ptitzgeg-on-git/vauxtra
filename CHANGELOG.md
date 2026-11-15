@@ -9,6 +9,84 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [1.8.0] - 2026-11-15
+
+### Fixed
+
+- **Tunnel routes read "Error, check the tunnel connector" while they answered.** Their
+  target is `localhost:<port>` as `cloudflared` sees it, and the check dialled that from the
+  Vauxtra container. A tunnel route is now requested by its public name through the
+  Cloudflare edge, like a visitor, and the answer is classified: a redirect to the Access
+  login counts as up, 530 means no connector holds the tunnel, 502 and 504 mean the
+  connector cannot reach the origin. The scheduler checks tunnel routes too, and each probe
+  stores what it saw (`status_detail`) and how long it took (`latency_ms`).
+- **Automatic checks never started on their own.** Nothing wrote `check_interval`, so a new
+  instance never checked anything. It now checks every five minutes unless the operator
+  turned checks off, and the monitoring page says when they are off, with a button to turn
+  them on.
+- **Saving a service published to the extra sync targets twice.** The create and update
+  routes already push to them; the service form pushed again afterwards and listed every
+  failure twice.
+- **The tunnel connector card showed `missing_account_id` as a raw code.**
+
+### Changed
+
+- **The monitoring page is split into tabs: Services, Tunnels, Access.** Services are tiles
+  by default, failures first, each with one line saying what the last probe saw; the table
+  stays one click away. The latency card counts the services that measured something, not
+  the checks that ran. On a phone the summary cards sit two by two.
+
+### Added
+
+- **Cloudflare Access, read through the tunnel integration.** The Access tab lists every
+  tunnel route as protected, partly protected, open or unknown, names the policies that let
+  anyone in, and protects an open route by creating an Access application with the chosen
+  policies (`GET /api/providers/tunnels/access`, `POST /api/providers/{pid}/access/apps`,
+  MCP `get_tunnel_access` and `protect_tunnel_route`). The token needs
+  "Access: Apps and Policies Read", and "Edit" to protect a route.
+
+### Security
+
+The fixes of the 2026-10-09 review, carried over to this branch.
+
+- **`/metrics` needs a `read` API key.** It told anyone who could reach the port which
+  provider types run the network and how many services are down. A Prometheus scrape now
+  sends the key as a bearer token (`authorization: credentials_file:` in the scrape config,
+  see `docs/HOWTO.md`). **An existing scrape answers 401 until it does.**
+- **A write key can no longer send a provider's stored credential elsewhere.** Changing the
+  scheme, host or port of a provider without a new password needs an `admin` key: the next
+  call would have carried the stored secret to the new address.
+- **Provider URLs on link-local and cloud metadata addresses are refused**, in every
+  spelling (`169.254.169.254`, `2852039166`, `[::ffff:169.254.169.254]`, `fe80::/10`,
+  `metadata.google.internal`). A name that resolves there is refused when the connection is
+  made, so it never receives a request either.
+- **Provider redirects are followed only on the same origin**, plus the http to https
+  upgrade of the same host. A 307 replayed the Pi-hole and Technitium login body to whatever
+  host it named.
+- **Signing out ends every copy of the session cookie**, which also signs out the other
+  devices. A session also lasts seven days from sign-in at most: the cookie's own lifetime
+  slid on every response.
+- **Changing `APP_PASSWORD` ends the open sessions at the next start.** The server keeps a
+  slow, salted fingerprint of it to notice the change, never the value.
+- **The setup wizard can no longer set a password once one was ever configured**, and the
+  write is a single conditional statement, so two concurrent calls cannot both win.
+- **Cross-site writes are refused (403).** A write whose `Origin` is neither the instance
+  itself nor a configured CORS origin, or that the browser marks cross-site, never reaches
+  the route.
+- **Creating a Docker endpoint needs an `admin` key**: a `tcp://` host or a `unix://` socket
+  makes the server connect where the caller says. The error a failed daemon connection
+  returns no longer quotes the exception; the server log has it.
+- **The container list returns routing labels only** (`vauxtra.*`, `traefik.*`, the compose
+  project and service), without the ones that carry credentials. Labels routinely hold
+  basic-auth hashes and tokens, and the list is open to read keys.
+- **One webhook takes one Apprise URL.** `discord://...,json://host` hid a generic target,
+  which needs `admin`, behind a harmless first one.
+- **A non-ASCII candidate against a plaintext `APP_PASSWORD` is a refused login**, not a 500.
+- **The generated secret key file is created 0600**, and an older readable one is
+  restricted at start.
+
+---
+
 ## [1.7.0] — 2026-10-01
 
 ### Changed
@@ -4987,7 +5065,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.2...v1.6.0

@@ -22,6 +22,7 @@ from app.models import (
     set_push_targets,
     set_tags,
 )
+from app.probe import is_tunnel, probe_many, probe_service, public_hostname
 from app.providers.base import supports_suspension
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import (
@@ -370,6 +371,23 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                 **_detail(
                     "target_no_port",
                     "No port: the service is only published in DNS, so there is nothing to reach",
+                ),
+            }
+        )
+    elif body.expose_mode == "tunnel":
+        # The connector dials the target, not us: `localhost:8080` is the localhost of the
+        # host `cloudflared` runs on. Probing it from here warned "target not reachable" on
+        # every tunnel route whose connector is on another machine, which is most of them.
+        # Once saved, the route is checked through the Cloudflare edge (`app/probe.py`).
+        checks.append(
+            {
+                "name": "target_reachable",
+                "ok": True,
+                "blocking": False,
+                **_detail(
+                    "target_tunnel_side",
+                    "The tunnel connector reaches this target, not Vauxtra: "
+                    "the route will be checked through Cloudflare once saved",
                 ),
             }
         )
@@ -2082,68 +2100,57 @@ def delete_service(sid: int, request: Request):
 def _check_one(sid: int) -> dict:
     """Probe one service, record the result, and return what the caller measured.
 
-    Shared by both verbs below. The `uptime_events` insert is the same line the scheduler
-    writes (`scheduler.py`): without it the 24 h column and the availability tile stayed
-    empty no matter how many times an operator pressed the button, and the page ended up
-    contradicting itself -- "no check in the last 24 hours" printed above a row that said
-    "OK, checked just now".
+    Shared by both verbs below, and by nothing else: the probe itself is `app/probe.py`, the
+    same one the scheduler and "check all" use, so a route cannot read "up" on one button and
+    "down" on the next. A tunnel route is probed through the Cloudflare edge; dialling its
+    target from here (the connector's `localhost:8080`) is what used to turn working routes
+    red. The `uptime_events` insert is the line the scheduler writes too: without it the
+    24 h column stayed empty however often the button was pressed.
     """
     conn = get_db()
     svc  = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    conn.close()
     if not svc:
-        conn.close()
         raise HTTPException(404, "Service not found")
 
-    status     = "unknown"
-    latency_ms = None
-    # A service without a port is a name in DNS and nothing more: there is no connection to
-    # open, and a probe of port 0 would only write "down" into its history. Its name is
-    # still resolved below, which is the one thing about it that can be checked.
-    tested     = int(svc["target_port"] or 0) != NO_PORT
-    start      = time.monotonic()
-    if tested:
-        try:
-            with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
-                status     = "ok"
-                latency_ms = round((time.monotonic() - start) * 1000, 1)
-        except OSError:
-            status = "error"
-
-    public_host = _service_public_hostname(
-        (svc["expose_mode"] or "proxy_dns").strip().lower(),
-        svc["tunnel_hostname"] or "",
-        svc["subdomain"],
-        svc["domain"],
-    )
+    # Nothing open while the network is in use: see `run_health_checks`.
+    result = probe_service(svc)
+    public_host = public_hostname(svc)
 
     dns_resolved: list | None = None
     try:
         dns_results  = socket.getaddrinfo(public_host, None, socket.AF_INET)
         dns_resolved = sorted({r[4][0] for r in dns_results})
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError):
         dns_resolved = []
 
-    if tested:
+    conn = get_db()
+    if result.tested:
         conn.execute(
-            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-            (status, sid),
+            "UPDATE services SET status=?, status_detail=?, latency_ms=?,"
+            " last_checked=datetime('now') WHERE id=?",
+            (result.status, result.stored_detail, result.latency_ms, sid),
         )
         conn.execute(
             "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-            (sid, status),
+            (sid, result.status),
         )
     else:
-        conn.execute("UPDATE services SET status='unknown' WHERE id=?", (sid,))
+        conn.execute(
+            "UPDATE services SET status='unknown', status_detail=?, latency_ms=NULL WHERE id=?",
+            (result.stored_detail, sid),
+        )
     conn.commit()
     conn.close()
-    if tested:
-        add_log("info" if status == "ok" else "error", f"Check {public_host}: {status}")
+    if result.tested:
+        add_log("info" if result.status == "ok" else "error", f"Check {public_host}: {result.status}")
     return {
         "id": sid,
-        "status": status,
-        "latency_ms": latency_ms,
+        "status": result.status,
+        "status_detail": result.stored_detail,
+        "latency_ms": result.latency_ms,
         "dns_resolved": dns_resolved,
-        "tested": tested,
+        "tested": result.tested,
     }
 
 
@@ -2174,49 +2181,49 @@ def check_all(request: Request):
     require_auth(request, scope="write")
     conn     = get_db()
     services = conn.execute(
-        "SELECT id, target_ip, target_port, subdomain, domain, expose_mode FROM services WHERE enabled=1"
+        "SELECT id, target_ip, target_port, subdomain, domain, expose_mode, tunnel_hostname"
+        " FROM services WHERE enabled=1"
     ).fetchall()
-    ok_count = error_count = 0
-    # The connection is opened either way, so the latency is already measured: throwing it
-    # away is what forced the table to tell operators to check rows one at a time to fill
-    # the LATENCY column.
-    results: list[dict] = []
-
-    skipped_tunnel = skipped_no_port = 0
-    for svc in services:
-        # Tunnels are checked through their provider, and a service without a port has
-        # nothing to connect to: neither is probed. They are counted apart because the panel
-        # says why a service was left out, and the two reasons have nothing in common.
-        if (svc["expose_mode"] or "").strip().lower() == "tunnel":
-            skipped_tunnel += 1
-            continue
-        if not svc["target_port"]:
-            skipped_no_port += 1
-            continue
-        status     = "unknown"
-        latency_ms = None
-        start      = time.monotonic()
-        try:
-            with socket.create_connection((svc["target_ip"], svc["target_port"]), timeout=3):
-                status     = "ok"
-                latency_ms = round((time.monotonic() - start) * 1000, 1)
-                ok_count  += 1
-        except OSError:
-            status = "error"
-            error_count += 1
-        conn.execute(
-            "UPDATE services SET status=?, last_checked=datetime('now') WHERE id=?",
-            (status, svc["id"]),
-        )
-        # Same row the scheduler writes, so a manual run feeds the 24 h history too.
-        conn.execute(
-            "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-            (svc["id"], status),
-        )
-        results.append({"id": svc["id"], "status": status, "latency_ms": latency_ms})
-
-    conn.commit()
     conn.close()
+
+    # A service without a port has nothing to connect to and is left out, counted apart so
+    # the panel can say why. Tunnel routes are no longer skipped: they go through the edge.
+    probed = [svc for svc in services if is_tunnel(svc) or svc["target_port"]]
+    skipped_no_port = len(services) - len(probed)
+
+    # The probes run with no connection open, and in parallel: this endpoint used to hold
+    # its write transaction across every 3 s timeout in turn, which is the "database is
+    # locked" the scheduler's own docstring describes.
+    rounds = probe_many(probed)
+
+    ok_count = error_count = 0
+    results: list[dict] = []
+    conn = get_db()
+    try:
+        for svc, result in rounds:
+            if result.status == "ok":
+                ok_count += 1
+            else:
+                error_count += 1
+            conn.execute(
+                "UPDATE services SET status=?, status_detail=?, latency_ms=?,"
+                " last_checked=datetime('now') WHERE id=?",
+                (result.status, result.stored_detail, result.latency_ms, svc["id"]),
+            )
+            # Same row the scheduler writes, so a manual run feeds the 24 h history too.
+            conn.execute(
+                "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
+                (svc["id"], result.status),
+            )
+            results.append({
+                "id": svc["id"],
+                "status": result.status,
+                "status_detail": result.stored_detail,
+                "latency_ms": result.latency_ms,
+            })
+        conn.commit()
+    finally:
+        conn.close()
     # One line for the run, not one per service: the per-service check already logs each
     # probe, and a fleet of fifty would otherwise bury everything else in "Recent activity".
     add_log(
@@ -2224,11 +2231,13 @@ def check_all(request: Request):
         f"Manual check of {plural(len(results), 'service')}: {ok_count} ok, {error_count} error",
     )
     return {
-        "checked":         len(services),
+        # What was probed, not what was read: the skipped ones are counted below.
+        "checked":         len(results),
         "ok":              ok_count,
         "error":           error_count,
-        "skipped":         skipped_tunnel + skipped_no_port,
-        "skipped_tunnel":  skipped_tunnel,
+        "skipped":         skipped_no_port,
+        # Kept for clients written against 1.7.0, which showed a line when it was non-zero.
+        "skipped_tunnel":  0,
         "skipped_no_port": skipped_no_port,
         "results":         results,
     }

@@ -23,6 +23,7 @@ CREATION_ENDPOINTS = [
     "/api/domains",
     "/api/environments",
     "/api/providers",
+    "/api/providers/{pid}/access/apps",
     "/api/providers/{pid}/dns-records",
     "/api/providers/{pid}/proxy-hosts",
     "/api/services",

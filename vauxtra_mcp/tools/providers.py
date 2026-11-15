@@ -1,5 +1,7 @@
 """MCP tools — provider management and health checks."""
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from vauxtra_mcp import client
 from vauxtra_mcp.app import mcp
@@ -84,7 +86,8 @@ def update_provider(
     Args:
         provider_id: ID of the provider to update.
         name: New display name.
-        url: New connection URL.
+        url: New connection URL. Another scheme, host or port without a new `password`
+            needs an `admin` key: the stored credential would be sent there.
         username: New username/email.
         password: New password/token (re-encrypted on save).
         enabled: Enable or disable the provider.
@@ -225,5 +228,39 @@ def get_all_providers_health() -> dict[str, Any]:
 def get_tunnel_health() -> dict[str, Any]:
     """Get the aggregate health status of all Cloudflare Tunnel providers."""
     r = client.get("/providers/tunnels/health")
+    client.check(r)
+    return r.json()
+
+
+@mcp.tool()
+def get_tunnel_access() -> dict[str, Any]:
+    """Which Cloudflare Tunnel routes Cloudflare Access protects, per tunnel provider.
+
+    Each route is `protected`, `partial`, `open` or `unknown`. `permission` says whether the
+    tunnel token may read Access at all: `unverified` means Cloudflare returned an empty
+    list, which is also what it returns to a token without the Access permission, so it is
+    not evidence that the routes are open. Policy names only, never their rules.
+    """
+    r = client.get("/providers/tunnels/access")
+    client.check(r)
+    return r.json()
+
+
+@mcp.tool()
+def protect_tunnel_route(
+    provider_id: int,
+    hostname: str,
+    policy_ids: Annotated[list[str], Field(min_length=1)],
+) -> dict[str, Any]:
+    """Create a Cloudflare Access application in front of one tunnel route.
+
+    `policy_ids` are reusable Access policies, as listed by `get_tunnel_access`. The token
+    needs "Access: Apps and Policies Edit". Refused with 409 when the route is already
+    protected and 400 when the hostname is not a route of that tunnel.
+    """
+    r = client.post(f"/providers/{provider_id}/access/apps", json={
+        "hostname": hostname,
+        "policy_ids": policy_ids,
+    })
     client.check(r)
     return r.json()
