@@ -37,6 +37,7 @@ import {
   type Provider,
   type UiExposeMode,
 } from './types';
+import { AccessPicker } from './AccessPicker';
 
 interface TargetSuggestion {
   candidates: Array<{ value: string; source: string }>;
@@ -522,6 +523,7 @@ export function ServiceForm({
                   extra_proxy_provider_ids: [],
                   tunnel_provider_id: '',
                   tunnel_hostname: '',
+                  access_policy_ids: [],
                 }))
               }
             >
@@ -549,6 +551,7 @@ export function ServiceForm({
                   tunnel_provider_id: '',
                   tunnel_hostname: '',
                   extra_proxy_provider_ids: prev.expose_mode === 'tunnel' ? [] : prev.extra_proxy_provider_ids,
+                  access_policy_ids: [],
                 }))
               }
             />
@@ -711,6 +714,9 @@ export function ServiceForm({
                           ...prev,
                           tunnel_provider_id: nextId,
                           extra_proxy_provider_ids: prev.extra_proxy_provider_ids.filter((id) => id !== nextId),
+                          // A policy id belongs to one Cloudflare account, and another tunnel
+                          // may sit in another one.
+                          access_policy_ids: nextId === prev.tunnel_provider_id ? prev.access_policy_ids : [],
                         }));
                       }}
                     >
@@ -740,6 +746,15 @@ export function ServiceForm({
                     />
                   </Field>
                 </div>
+
+                {formData.tunnel_provider_id && (
+                  <AccessPicker
+                    providerId={formData.tunnel_provider_id}
+                    hostname={formData.tunnel_hostname || fqdnOf(formData) || ''}
+                    selected={formData.access_policy_ids}
+                    onChange={(ids) => setFormData((prev) => ({ ...prev, access_policy_ids: ids }))}
+                  />
+                )}
 
                 <ExtraProviderList
                   labelOf={providerLabel}

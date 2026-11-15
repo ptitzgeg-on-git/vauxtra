@@ -11,12 +11,13 @@ import {
   RefreshCw,
   TriangleAlert,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { useProviderTypes } from '@/hooks/useProviderTypes';
 import { cn } from '@/lib/cn';
-import { translateApiError, isHttpStatus } from '@/lib/errors';
+import { getHttpStatus, translateApiError, isHttpStatus } from '@/lib/errors';
 import {
   domainProblem,
   domainProblemKey,
@@ -37,6 +38,8 @@ import {
   useConfirmDialog,
 } from '@/components/ui';
 import type {
+  AccessProtectBody,
+  AccessProtectResult,
   DryRunPlan,
   Environment,
   PreflightCheck,
@@ -50,6 +53,7 @@ import type {
   Tag,
   Template,
   TemplateIn,
+  TunnelAccessResponse,
 } from '@/types/api';
 import {
   type FormState,
@@ -62,6 +66,7 @@ import {
   preflightDetailText,
   toFormState,
 } from './types';
+import { TUNNEL_ACCESS_KEY } from '@/components/features/monitoring/useTunnelAccess';
 import { ServiceForm } from './ServiceForm';
 import { ServicePreview } from './ServicePreview';
 
@@ -187,6 +192,12 @@ export function withHostHighlighted(sentence: string, host: string): ReactNode[]
   );
 }
 
+/**
+ * What became of the Access policies picked for a tunnel route: `null` when none were, a count
+ * when the application was created, and the sentence to show when it was not.
+ */
+type AccessOutcome = { ok: true; count: number } | { ok: false; message: string } | null;
+
 const isRecordWithErrors = (value: unknown): value is { errors: string[] } =>
   Boolean(value) && typeof value === 'object' && Array.isArray((value as { errors?: unknown }).errors);
 
@@ -253,9 +264,13 @@ export function ExposeModal({
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [dryRun, setDryRun] = useState<DryRunPlan | null>(null);
   // `labelsOnly`: the save went through `PATCH`, and the last step says no provider was asked.
-  const [saveOutcome, setSaveOutcome] = useState<{ host: string; errors: string[]; labelsOnly?: boolean } | null>(
-    null,
-  );
+  // `access`: the Access application asked for a tunnel route, see `protectRoute`.
+  const [saveOutcome, setSaveOutcome] = useState<{
+    host: string;
+    errors: string[];
+    labelsOnly?: boolean;
+    access?: AccessOutcome;
+  } | null>(null);
   const [templateDraftName, setTemplateDraftName] = useState('');
   const { confirm, ConfirmDialogElement } = useConfirmDialog();
 
@@ -492,23 +507,56 @@ export function ExposeModal({
     },
   });
 
+  /**
+   * The Access application for a tunnel route, created once the save has published it: the
+   * API refuses a hostname the tunnel does not route yet. Its failure is not the save's. The
+   * route is published either way, so what went wrong is shown next to it, instead of turning
+   * a published service into a failed save that invites a second one.
+   */
+  const protectRoute = async (payload: ServicePayload, policyIds: string[]): Promise<AccessOutcome> => {
+    if (payload.expose_mode !== 'tunnel' || !payload.tunnel_provider_id || policyIds.length === 0) return null;
+    const providerId = payload.tunnel_provider_id;
+    const body: AccessProtectBody = { hostname: payload.tunnel_hostname, policy_ids: policyIds };
+    try {
+      await api.post<AccessProtectResult>(`/providers/${providerId}/access/apps`, body);
+      return { ok: true, count: policyIds.length };
+    } catch (err) {
+      if (getHttpStatus(err) === 403) {
+        // The token's own words for the missing permission, as the Access tab names it.
+        const item = queryClient
+          .getQueryData<TunnelAccessResponse>(TUNNEL_ACCESS_KEY)
+          ?.items?.find((entry) => entry.id === providerId);
+        return {
+          ok: false,
+          message: t('monitoring.access.edit_needed', {
+            name: item?.edit_permission || 'Access: Apps and Policies Edit',
+          }),
+        };
+      }
+      return { ok: false, message: translateApiError(err, t, t('monitoring.access.toast.failed')) };
+    }
+  };
+
   const saveService = useMutation({
-    mutationFn: async (payload: ServicePayload) => {
+    mutationFn: async ({ payload, accessPolicyIds }: { payload: ServicePayload; accessPolicyIds: string[] }) => {
       // Both routes publish on the multi-sync targets themselves (`push_extra_targets`) and
       // answer what failed in `errors`. A `POST /push` after them published everything a
       // second time, and reported every failure twice.
       const persisted = isEditMode
         ? await api.put<Record<string, unknown>>(`/services/${serviceId}`, payload)
         : await api.post<Record<string, unknown>>('/services', payload);
-      return { persisted, payload };
+      const access = await protectRoute(payload, accessPolicyIds);
+      return { persisted, payload, access };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
+      if (result.access) queryClient.invalidateQueries({ queryKey: TUNNEL_ACCESS_KEY });
 
       const allErrors = (isRecordWithErrors(result.persisted) ? result.persisted.errors : []).map(String);
       const host = publicHostOf(result.payload);
+      if (result.access && !result.access.ok) toast.error(result.access.message, { duration: 8000 });
 
       if (allErrors.length === 0) {
         toast.success(
@@ -525,7 +573,7 @@ export function ExposeModal({
           { icon: <TriangleAlert className="h-4 w-4 text-warning" aria-hidden="true" />, duration: 8000 },
         );
       }
-      setSaveOutcome({ host, errors: allErrors });
+      setSaveOutcome({ host, errors: allErrors, access: result.access });
       setStep('done');
     },
     onError: (err: unknown) => {
@@ -628,7 +676,7 @@ export function ExposeModal({
 
   const handleSave = () => {
     if (preflight && preflight.summary.blocking_failures > 0) return;
-    saveService.mutate(buildPayload());
+    saveService.mutate({ payload: buildPayload(), accessPolicyIds: formData.access_policy_ids });
   };
 
   const handleSaveTemplate = () => {
@@ -700,6 +748,11 @@ export function ExposeModal({
 
   const blockingFailures = preflight?.summary.blocking_failures ?? 0;
   const warningCount = preflight?.summary.warnings ?? 0;
+  // Only what the save acts on: policies ticked on a tunnel, then left behind by a switch to
+  // another mode, are not sent.
+  const pendingAccess =
+    formData.expose_mode === 'tunnel' && formData.tunnel_provider_id ? formData.access_policy_ids.length : 0;
+  const doneWithWarnings = Boolean(saveOutcome && (saveOutcome.errors.length > 0 || saveOutcome.access?.ok === false));
 
   const stepLabels: Record<Step, string> = {
     configure: t('expose.steps.configure'),
@@ -887,6 +940,14 @@ export function ExposeModal({
           ) : (
             <InlineAlert tone="success" title={t('expose.preflight.passed_title')}>
               {t('expose.preflight.passed_body')}
+            </InlineAlert>
+          )}
+          {pendingAccess > 0 && (
+            <InlineAlert tone="info">
+              {t('expose.access.review', {
+                count: pendingAccess,
+                host: (formData.tunnel_hostname.trim() || fqdnPreview).toLowerCase(),
+              })}
             </InlineAlert>
           )}
 
@@ -1096,10 +1157,10 @@ export function ExposeModal({
             aria-hidden="true"
             className={cn(
               'mx-auto inline-flex h-14 w-14 items-center justify-center rounded-2xl',
-              saveOutcome.errors.length > 0 ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success',
+              doneWithWarnings ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success',
             )}
           >
-            {saveOutcome.errors.length > 0 ? <TriangleAlert className="h-7 w-7" /> : <CircleCheck className="h-7 w-7" />}
+            {doneWithWarnings ? <TriangleAlert className="h-7 w-7" /> : <CircleCheck className="h-7 w-7" />}
           </span>
           <div className="space-y-1">
             <h3 className="text-lg font-semibold text-foreground">
@@ -1118,6 +1179,23 @@ export function ExposeModal({
               )}
             </p>
           </div>
+          {saveOutcome.access?.ok && (
+            <InlineAlert tone="success" className="text-left">
+              {t('expose.access.done', { count: saveOutcome.access.count, host: saveOutcome.host })}
+            </InlineAlert>
+          )}
+          {saveOutcome.access && !saveOutcome.access.ok && (
+            <InlineAlert tone="warning" title={t('expose.access.done_failed')} className="text-left">
+              <p>{saveOutcome.access.message}</p>
+              <Link
+                to="/monitoring?tab=access"
+                onClick={handleClose}
+                className="mt-1 inline-block font-medium text-primary hover:underline"
+              >
+                {t('expose.access.open_tab')}
+              </Link>
+            </InlineAlert>
+          )}
           {saveOutcome.errors.length > 0 && (
             <InlineAlert tone="warning" title={t('expose.done.warnings_title')} className="text-left">
               <ul className="list-disc space-y-0.5 pl-4">
