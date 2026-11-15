@@ -50,7 +50,8 @@ and it does not replace them.
 - **Preflight and dry-run.** See what a push will change before it changes anything.
 - **Drift detection.** Vauxtra compares each provider with what it expects and can
   reconcile on a schedule.
-- **Monitoring.** Health checks per service, certificate expiry for NPM and Zoraxy, and
+- **Monitoring.** Health checks per service, tunnel routes probed the way Cloudflare reaches
+  them, which routes Cloudflare Access protects, certificate expiry for NPM and Zoraxy, and
   alerts through [Apprise](https://github.com/caronc/apprise) (Discord, Telegram, ntfy and
   others), retried with backoff.
 - **Docker discovery.** Lists running containers and reads their Traefik labels to suggest
@@ -251,7 +252,9 @@ add a `cloudflare` provider with it.
 **Cloudflare Tunnel.** Create a tunnel in the Cloudflare dashboard and note its ID. Create a
 token with *Account > Cloudflare Tunnel > Edit* and *Zone > DNS > Edit*. Add a
 `cloudflare_tunnel` provider with your account ID, the token and the tunnel ID, then pick
-**Tunnel** as the exposure mode when you create a service.
+**Tunnel** as the exposure mode when you create a service. Add *Account > Access: Apps and
+Policies > Read* to the same token and the **Access** tab of the Monitoring page shows which
+tunnel routes Cloudflare Access protects; without it they read as unverified, never as open.
 
 **Pi-hole and AdGuard Home.** Add the provider with its base URL (for Pi-hole,
 `http://pihole`, not `/admin`) and its credentials: the API token or an app password for

@@ -18,12 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   The start-up migration took any password it could not decrypt for plaintext and encrypted
   it again, so restoring the right key afterwards no longer helped. A value that is already
   a Fernet token is now left alone, whichever key wrote it.
-- **A `write` key could send a provider's stored secret to another host.** Changing only the
-  URL of a provider kept its password or token, and the next test or health check sent it to
-  the new address. Moving a provider to another host, port or scheme now needs the secret
-  again, or an `admin` key.
-- **The setup route could claim an instance whose password hash had disappeared.** Every
-  other route refuses in that state, and `POST /api/auth/setup-password` now does too.
+- **The setup route says what happened when a password hash has disappeared.**
+  `POST /api/auth/setup-password` answers 409 with the way back (restore the database, or set
+  `APP_PASSWORD` to a `pbkdf2:` hash) instead of the 400 meant for an instance that still has
+  its password.
 - A `SECRET_KEY` shorter than 32 characters is named in a warning at startup.
 - **`POST /api/services/import` stored what the request said.** A route is now refused when
   it forwards over anything but `http` or `https`, when its target would rewrite the origin
@@ -42,7 +40,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   reads a session before a key, so the login is now refused when `VAUXTRA_API_KEY` is set.
 - The notification test routes no longer return the text of a send exception, which could
   quote the stored URL and the token inside it.
-- `data/.secret_key` is created with mode 600 instead of being narrowed after the write.
 - In the image, only `/app/data` belongs to the user the server runs as, not the code.
 - **Notification URLs are encrypted at rest**, like provider secrets: an Apprise URL is its own
   credential. Existing rows, and queued retries, are encrypted at the next start.
@@ -50,16 +47,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   arbitrary text into the proxy's nginx configuration.
 - Auto-reconcile reads each service again before checking and before pushing, so a service
   disabled or deleted during the round is not published again.
-- `X-API-Key`, `X-FTL-SID` and `X-FTL-CSRF` are dropped when a redirect leaves the host, as
-  `Authorization` already was, and deSEC pagination stays on the deSEC host.
+- `X-API-Key`, `X-FTL-SID` and `X-FTL-CSRF` are dropped if a redirect ever leaves the host,
+  as `Authorization` already was, and deSEC pagination stays on the deSEC host.
 - The import checks its DNS records too: a configured DNS integration, and an answer that is
   an address or a host name.
 - A bulk delete commits service by service and takes at most 500 ids.
 - A version tag only publishes when it points at a commit on `main`. Branch protection does
   not cover tags, so any pushed commit could be tagged, signed and shipped as `latest`.
 - The tunnel check of the preflight masks a token quoted in a provider's error.
-- `POST /api/services/check-all` probes before it writes, instead of holding the database
-  write lock across every three-second probe.
+- A service deleted while `POST /api/services/check-all` probes gets no uptime event.
 - `GET /api/services/public-target/suggest` reuses a WAN address younger than 60 seconds
   instead of querying the resolvers on every call.
 
