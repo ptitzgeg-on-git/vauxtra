@@ -183,6 +183,15 @@ class TheHashDisappearingIsRefusedTests(AuthModeTestCase):
             auth.require_auth_or_setup(_request(), scope="admin")
         self.assertEqual(ctx.exception.status_code, 401)
 
+    def test_the_setup_password_route_refuses_too(self):
+        """The route is anonymous by design, so it must not claim an instance that had a password."""
+        self._lose_the_hash()
+        with self.assertRaises(HTTPException) as ctx:
+            self._set_password("someone-elses-password")
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse(auth.has_password_configured())
+        self.assertTrue(auth.auth_is_downgraded())
+
     def test_an_env_password_still_gets_in(self):
         """The documented recovery path from the error message has to actually work."""
         self._lose_the_hash()

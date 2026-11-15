@@ -3,7 +3,7 @@ import sqlite3
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.sync import (
     _dns_record_kept,
@@ -470,6 +470,9 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         }
                     )
             except Exception as e:
+                # Any integration can be named here, including the two that authenticate in
+                # the query string, and their exceptions quote the URL they called.
+                error = redact_query_secrets(str(e))
                 checks.append(
                     {
                         "name": "tunnel_health",
@@ -477,8 +480,8 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
                         "blocking": False,
                         **_detail(
                             "tunnel_check_failed",
-                            f"Tunnel health check failed: {e}",
-                            error=str(e),
+                            f"Tunnel health check failed: {error}",
+                            error=error,
                         ),
                     }
                 )
@@ -852,7 +855,8 @@ def suggest_public_target(
     require_auth(request)
     conn = get_db()
     try:
-        return suggest_public_targets(conn, proxy_provider_id=proxy_provider_id)
+        # Any `read` key reaches this, and an uncached call costs up to three outbound lookups.
+        return suggest_public_targets(conn, proxy_provider_id=proxy_provider_id, wan_ip_max_age=60.0)
     finally:
         conn.close()
 
@@ -2210,10 +2214,12 @@ def check_all(request: Request):
                 " last_checked=datetime('now') WHERE id=?",
                 (result.status, result.stored_detail, result.latency_ms, svc["id"]),
             )
-            # Same row the scheduler writes, so a manual run feeds the 24 h history too.
+            # Same row the scheduler writes, so a manual run feeds the 24 h history too. A
+            # service deleted while the probes ran gets no event.
             conn.execute(
-                "INSERT INTO uptime_events (service_id, status) VALUES (?,?)",
-                (svc["id"], result.status),
+                "INSERT INTO uptime_events (service_id, status) "
+                "SELECT ?, ? WHERE EXISTS (SELECT 1 FROM services WHERE id=?)",
+                (svc["id"], result.status, svc["id"]),
             )
             results.append({
                 "id": svc["id"],
@@ -2244,7 +2250,8 @@ def check_all(request: Request):
 
 
 class _BulkActionBody(BaseModel):
-    ids:    list[int]
+    # Bounded: each id costs up to three provider calls, and SQLite caps bound parameters.
+    ids:    list[int] = Field(max_length=500)
     action: str  # "enable" | "disable" | "delete"
 
 
@@ -2287,6 +2294,9 @@ def bulk_action(body: _BulkActionBody, request: Request):
 
         # Generalized enable/disable: manage each provider
         for svc in services:
+            # The `continue` branches below skip the commit at the end of the body, and the
+            # next service's provider calls must not run with this one's log lines uncommitted.
+            conn.commit()
             sid_b = svc["id"]
             mode = (svc["expose_mode"] or "proxy_dns").strip().lower()
             pub = _service_public_hostname(
@@ -2459,6 +2469,8 @@ def bulk_action(body: _BulkActionBody, request: Request):
             )
             conn.execute("DELETE FROM services WHERE id=?", (sid,))
             affected += 1
+            # Before the next service's provider calls, which must not hold the writer lock.
+            conn.commit()
 
         conn.commit()
         add_log("info", f"Bulk delete: {plural(affected, 'service')}")

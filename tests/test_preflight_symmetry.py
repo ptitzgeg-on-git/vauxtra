@@ -1137,5 +1137,21 @@ class ThePreflightNamesTheKindOfAddressTheFormAsksForTests(_SymmetryTestCase):
         self.assertEqual(check["detail_params"], {"target": "10.0.0.99", "source": "manual"})
 
 
+class _LeakyIntegration(_FakeProvider):
+    def health_status(self) -> dict:
+        raise RuntimeError("refused for url: http://dns.lan/api/zones/list?token=s3cr3t-value")
+
+
+class ATunnelCheckNeverQuotesACredentialTests(_SymmetryTestCase):
+    def test_a_query_string_token_is_masked(self) -> None:
+        self._add_provider(2, "Technitium", "technitium", _LeakyIntegration())
+        result = self._preflight(
+            expose_mode="tunnel", tunnel_provider_id=2, tunnel_hostname="vault.example.com"
+        )
+        check = next(c for c in result["checks"] if c["name"] == "tunnel_health")
+        self.assertNotIn("s3cr3t-value", json.dumps(check))
+        self.assertIn("token=***", check["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

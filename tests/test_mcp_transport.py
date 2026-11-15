@@ -317,5 +317,43 @@ class TheGateWatchesTheBridgeTests(unittest.TestCase):
         self.assertEqual(sorted(stale), [])
 
 
+class ACredentialStaysOutOfTheConversationTests(_CleanJar):
+    def test_a_password_login_cannot_override_a_configured_key(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        with patch.object(client, "_API_KEY", "vx_read_only"), _served_by(handler):
+            with self.assertRaises(ValueError):
+                admin_tools.auth_login("correct horse battery staple")
+        self.assertEqual(seen, [])
+        self.assertEqual(client.session_cookie_count(), 0)
+
+    def test_a_secure_backup_is_written_to_a_file_and_not_returned(self) -> None:
+        import os
+        import stat
+        import tempfile
+
+        backup = {"version": 8, "salt": "c2FsdA==", "providers": [{"password": "gAAAAAsecret"}]}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=backup)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {"VAUXTRA_MCP_BACKUP_DIR": directory}), \
+             _served_by(handler):
+            result = admin_tools.create_secure_backup("a passphrase")
+            written = Path(result["path"])
+            self.assertEqual(json.loads(written.read_text(encoding="utf-8")), backup)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(written.stat().st_mode), 0o600)
+
+        self.assertEqual(result["counts"], {"providers": 1})
+        self.assertNotIn("gAAAAAsecret", json.dumps(result))
+        self.assertNotIn("c2FsdA==", json.dumps(result))
+
+
 if __name__ == "__main__":
     unittest.main()

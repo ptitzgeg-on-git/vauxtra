@@ -140,7 +140,7 @@ class S2SetupPasswordCannotBeReplayedTests(_IsolatedDB):
         self._exec("DELETE FROM settings WHERE key='app_password_hash'")
         with self.assertRaises(HTTPException) as ctx:
             self._setup("an attacker's choice")
-        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(self._setting("app_password_hash"), "")
 
     def test_an_unreadable_database_does_not_open_the_route(self):
@@ -148,7 +148,7 @@ class S2SetupPasswordCannotBeReplayedTests(_IsolatedDB):
         with patch.object(auth, "_read_auth_settings", side_effect=boom):
             with self.assertRaises(HTTPException) as ctx:
                 self._setup()
-        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.status_code, 409)
 
     def test_the_write_rechecks_under_the_lock(self):
         """A concurrent call that won the race must not be overwritten."""

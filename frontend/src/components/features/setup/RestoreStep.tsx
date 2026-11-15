@@ -2,7 +2,7 @@
  * Restore branch of the wizard: read a backup file in the browser, then hand it to
  * `POST /api/restore` (admin only, rate limited 3/minute) with the export passphrase.
  *
- * The failure path used to print `err.message` — for an axios error that is
+ * * The failure path used to print `err.message` — for a failed call that is
  * "Request failed with status code 400", never the reason the backend gave. It now goes
  * through `translateApiError`, which answers in the reader's language.
  */

@@ -4,7 +4,7 @@ import { ArrowRightLeft, Globe, RefreshCw, Server, Waypoints } from 'lucide-reac
 import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
-import { labelColor } from '@/lib/labels';
+import { labelDotStyle } from '@/lib/labels';
 import {
   domainProblem,
   domainProblemKey,
@@ -37,6 +37,7 @@ import {
   type Provider,
   type UiExposeMode,
 } from './types';
+import { AccessPicker } from './AccessPicker';
 
 interface TargetSuggestion {
   candidates: Array<{ value: string; source: string }>;
@@ -177,7 +178,7 @@ function ExtraProviderList({
 }
 
 /** Tags or environments as toggle chips; `color` comes from the record and paints the dot. */
-function TaxonomyChips({
+function TaxonomyToggleGroup({
   label,
   items,
   selected,
@@ -214,7 +215,7 @@ function TaxonomyChips({
               onClick={() => onToggle(item.id)}
               icon={
                 item.color ? (
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: labelColor(item.color) }} />
+                  <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={labelDotStyle(item.color)} />
                 ) : undefined
               }
             >
@@ -522,6 +523,7 @@ export function ServiceForm({
                   extra_proxy_provider_ids: [],
                   tunnel_provider_id: '',
                   tunnel_hostname: '',
+                  access_policy_ids: [],
                 }))
               }
             >
@@ -549,6 +551,7 @@ export function ServiceForm({
                   tunnel_provider_id: '',
                   tunnel_hostname: '',
                   extra_proxy_provider_ids: prev.expose_mode === 'tunnel' ? [] : prev.extra_proxy_provider_ids,
+                  access_policy_ids: [],
                 }))
               }
             />
@@ -711,6 +714,9 @@ export function ServiceForm({
                           ...prev,
                           tunnel_provider_id: nextId,
                           extra_proxy_provider_ids: prev.extra_proxy_provider_ids.filter((id) => id !== nextId),
+                          // A policy id belongs to one Cloudflare account, and another tunnel
+                          // may sit in another one.
+                          access_policy_ids: nextId === prev.tunnel_provider_id ? prev.access_policy_ids : [],
                         }));
                       }}
                     >
@@ -740,6 +746,15 @@ export function ServiceForm({
                     />
                   </Field>
                 </div>
+
+                {formData.tunnel_provider_id && (
+                  <AccessPicker
+                    providerId={formData.tunnel_provider_id}
+                    hostname={formData.tunnel_hostname || fqdnOf(formData) || ''}
+                    selected={formData.access_policy_ids}
+                    onChange={(ids) => setFormData((prev) => ({ ...prev, access_policy_ids: ids }))}
+                  />
+                )}
 
                 <ExtraProviderList
                   labelOf={providerLabel}
@@ -972,7 +987,7 @@ export function ServiceForm({
           description={t('expose.section.organize.description')}
         />
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-          <TaxonomyChips
+          <TaxonomyToggleGroup
             label={t('expose.field.tags')}
             items={tags}
             selected={formData.tag_ids}
@@ -991,7 +1006,7 @@ export function ServiceForm({
               )
             }
           />
-          <TaxonomyChips
+          <TaxonomyToggleGroup
             label={t('expose.field.environments')}
             items={environments}
             selected={formData.environment_ids}

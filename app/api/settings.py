@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import is_authorized, require_auth
+from app.config import decrypt_secret
 from app.models import add_log, ensure_default_docker_endpoint, get_db, normalise_log_level
 from app.security import mask_secret_url
 from app.text import name_list, plural, verb
@@ -452,7 +453,7 @@ def test_webhook(request: Request):
         entry = {"id": row["id"], "name": row["name"], "ok": False, "error": ""}
         try:
             a = apprise.Apprise()
-            if not a.add(row["url"]):
+            if not a.add(decrypt_secret(row["url"])):
                 entry["error"] = "invalid or unrecognized Apprise URL"
             elif a.notify(
                 title="Vauxtra — Test",
@@ -462,7 +463,9 @@ def test_webhook(request: Request):
             else:
                 entry["error"] = "send failed (service unavailable, or the URL is wrong)"
         except Exception as e:  # one bad target must not hide the state of the others
-            entry["error"] = str(e)
+            # The class only: an Apprise URL is its own credential, and an exception raised
+            # while sending to it may quote it back to a key that is not allowed to read it.
+            entry["error"] = f"the send raised {type(e).__name__}"
         results.append(entry)
 
     # 200 either way: a per-target report says more than a single failed status, and the

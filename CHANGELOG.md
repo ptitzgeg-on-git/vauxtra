@@ -9,6 +9,78 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ---
 
+## [1.9.0] - 2026-11-15
+
+### Added
+
+- **A tunnel route can be put behind Cloudflare Access from the service form.** Under the
+  tunnel hostname, the form lists the reusable Access policies of the tunnel's account; the
+  ones ticked become an Access application for that hostname once the route is published,
+  through `POST /api/providers/{pid}/access/apps`. Nothing ticked publishes the route as
+  before, and a hostname Access already covers offers nothing and points to the Access tab.
+  An application Cloudflare refuses leaves the route published, and the last step says what
+  is missing. Needs *Access: Apps and Policies Edit* on the tunnel token.
+
+### Security
+
+- **The image installs its Python dependencies from a hashed lock.** `requirements.txt` now
+  pins every package, with the hash of each published file, and the build uses
+  `--require-hashes`: a release replaced on PyPI under a version already reviewed stops the
+  build. The ranges moved to `requirements.in`, and the tests run against the locked
+  versions.
+- **One start with the wrong `SECRET_KEY` made every provider password unreadable for good.**
+  The start-up migration took any password it could not decrypt for plaintext and encrypted
+  it again, so restoring the right key afterwards no longer helped. A value that is already
+  a Fernet token is now left alone, whichever key wrote it.
+- **The setup route says what happened when a password hash has disappeared.**
+  `POST /api/auth/setup-password` answers 409 with the way back (restore the database, or set
+  `APP_PASSWORD` to a `pbkdf2:` hash) instead of the 400 meant for an instance that still has
+  its password.
+- A `SECRET_KEY` shorter than 32 characters is named in a warning at startup.
+- **`POST /api/services/import` stored what the request said.** A route is now refused when
+  it forwards over anything but `http` or `https`, when its target would rewrite the origin
+  URL, or when its port is out of range, and the publishing mode follows the stored
+  integration rather than the request. A tunnel rule with an `ssh://` or `unix:` origin, or
+  a proxy rule with no origin, is now named in `errors` instead of becoming a service with
+  no usable target.
+- **The MCP bridge's HTTP transport refused nothing on the loopback.** A page open in the
+  operator's browser could reach it through DNS rebinding and call every tool with the
+  bridge's key. A `Host` or `Origin` other than the loopback address is now refused, which
+  takes `fastmcp` 4.0 or later.
+- **`create_secure_backup` returned the encrypted backup into the conversation**, next to the
+  passphrase that decrypts it. The bridge now writes it to a file on its own machine
+  (`VAUXTRA_MCP_BACKUP_DIR`, mode 600) and returns the path.
+- **`auth_login` could turn a bridge limited to a `read` key into an admin one.** The server
+  reads a session before a key, so the login is now refused when `VAUXTRA_API_KEY` is set.
+- The notification test routes no longer return the text of a send exception, which could
+  quote the stored URL and the token inside it.
+- In the image, only `/app/data` belongs to the user the server runs as, not the code.
+- **Notification URLs are encrypted at rest**, like provider secrets: an Apprise URL is its own
+  credential. Existing rows, and queued retries, are encrypted at the next start.
+- A service target can no longer be an IPv6 address with a scope id, which could carry
+  arbitrary text into the proxy's nginx configuration.
+- Auto-reconcile reads each service again before checking and before pushing, so a service
+  disabled or deleted during the round is not published again.
+- `X-API-Key`, `X-FTL-SID` and `X-FTL-CSRF` are dropped if a redirect ever leaves the host,
+  as `Authorization` already was, and deSEC pagination stays on the deSEC host.
+- The import checks its DNS records too: a configured DNS integration, and an answer that is
+  an address or a host name.
+- A bulk delete commits service by service and takes at most 500 ids.
+- A version tag only publishes when it points at a commit on `main`. Branch protection does
+  not cover tags, so any pushed commit could be tagged, signed and shipped as `latest`.
+- The tunnel check of the preflight masks a token quoted in a provider's error.
+- A service deleted while `POST /api/services/check-all` probes gets no uptime event.
+- `GET /api/services/public-target/suggest` reuses a WAN address younger than 60 seconds
+  instead of querying the resolvers on every call.
+
+### Documentation
+
+- `docs/THREAT_MODEL.md`: what Vauxtra stores, what each API scope can reach, the narrowest
+  credential for each provider, and how to verify the image signature.
+- `SECURITY.md` no longer describes the CORS default that was removed.
+
+---
+
 ## [1.8.0] - 2026-11-15
 
 ### Fixed
@@ -91,6 +163,9 @@ The fixes of the 2026-10-09 review, carried over to this branch.
 
 ### Changed
 
+- **The interface talks to the API with `fetch`.** axios and the packages it pulled in are
+  gone from the bundle. Calls, errors, the expired-session redirect and backup downloads
+  behave as before.
 - **A new visual identity.** A petrol-teal palette, flat surfaces and a new logo replace the
   neon-on-black look. The README shows the interface with a banner and screenshots taken on
   a fresh demo instance.
@@ -113,6 +188,9 @@ The fixes of the 2026-10-09 review, carried over to this branch.
 
 ### Fixed
 
+- **Dark mode still flashed white on every load.** The script that applies it before the
+  first paint was inline, and the Content-Security-Policy refuses inline scripts, so it never
+  ran. It is now served as a file.
 - **Setting a password in the setup wizard ended the wizard.** The server stops answering
   "setup required" as soon as a password is set, and the application showed the wizard only
   while it did: the recommended path landed on an empty dashboard after the second screen,
@@ -5065,7 +5143,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.0...v1.6.1
