@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+---
+
+## [1.8.0] - 2026-11-15
+
 ### Fixed
 
 - **Tunnel routes read "Error, check the tunnel connector" while they answered.** Their
@@ -5061,7 +5065,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.5.2...v1.6.0
