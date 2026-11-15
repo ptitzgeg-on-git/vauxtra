@@ -6,4 +6,4 @@ instance over HTTP). tests/test_version_declarations.py keeps it equal to
 frontend/package.json.
 """
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
