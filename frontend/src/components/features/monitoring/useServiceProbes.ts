@@ -1,30 +1,28 @@
 /**
- * On-demand checks — `POST /api/services/{sid}/check`, plus whatever a fleet run measured.
+ * On-demand checks: `POST /api/services/{sid}/check`, plus whatever a fleet run measured.
  *
- * Latency has no column in `uptime_events`, so it only exists for as long as the page is
- * open. Two routes produce it and both land here: the per-row check, which also resolves
- * the public hostname, and `POST /api/services/check-all`, which opens the same connection
- * for every service and reports what it measured — fed in through `record()`. Both routes
- * write `status` and `last_checked`, hence the invalidation of `['services']` and
- * `['logs']` after a probe.
+ * The service row keeps the latency of its last probe; this store holds what was measured
+ * since the page was opened, which is fresher and, for a per-row check, also carries the DNS
+ * answer. Two routes produce it and both land here: the per-row check, and
+ * `POST /api/services/check-all`, which reports what it measured through `record()`. Both
+ * routes write `status`, `status_detail`, `latency_ms` and `last_checked`, hence the
+ * invalidation of `['services']` and `['logs']` after a probe.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { api } from '@/api/client';
 import { useT } from '@/i18n';
 import { translateApiError } from '@/lib/errors';
 import type { CheckAllEntry, ServiceCheckResult } from '@/types/api';
-import { averageLatency, type LatencyProbes } from './uptime';
+import type { LatencyProbes } from './uptime';
 
 export interface ServiceProbes {
   /** Everything measured since the page was opened, keyed by service id. */
   probes: LatencyProbes;
   /** The service being checked right now, `null` when idle. */
   checkingId: number | null;
-  /** Mean of every latency measured this session, `null` while none has been. */
-  average: number | null;
   check: (serviceId: number) => void;
   /**
    * Fold the per-service results of a fleet check into the same store. It carries no DNS
@@ -87,7 +85,5 @@ export function useServiceProbes(): ServiceProbes {
     });
   }, []);
 
-  const average = useMemo(() => averageLatency(probes), [probes]);
-
-  return { probes, checkingId, average, check, record };
+  return { probes, checkingId, check, record };
 }

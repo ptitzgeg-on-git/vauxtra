@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 import app.auth as auth
 import app.db as db
 import app.main as app_main
+import app.probe as probe
 import app.scheduler as scheduler
 from app import models
 
@@ -54,7 +55,12 @@ def _free_port() -> int:
 class ManualCheckHistoryTests(unittest.TestCase):
     HEADERS = {"Authorization": "Bearer key-rw"}
 
+    def _edge(self, hostname):
+        self.edge_calls.append(hostname)
+        return probe.ProbeResult("ok", "edge_access", 12.5, http_status=302)
+
     def setUp(self) -> None:
+        self.edge_calls: list[str] = []
         self._tmpdir = tempfile.TemporaryDirectory()
         self._orig = (models.DB_PATH, models.DATA_DIR, db.DB_PATH, db.DATA_DIR)
 
@@ -75,6 +81,8 @@ class ManualCheckHistoryTests(unittest.TestCase):
             patch.object(scheduler, "configure", lambda interval_minutes=0: None),
             patch.object(auth, "APP_PASSWORD", "test-password"),
             patch.object(socket, "getaddrinfo", _offline_getaddrinfo),
+            # The tunnel route goes through the Cloudflare edge. The suite never does.
+            patch.object(probe, "edge_probe", self._edge),
         ]
         for p in self._patchers:
             p.start()
@@ -163,14 +171,31 @@ class ManualCheckHistoryTests(unittest.TestCase):
     def test_the_fleet_check_writes_one_row_per_probed_service(self):
         resp = self.client.post("/api/services/check-all", headers=self.HEADERS)
         self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertEqual(self._history(), [(1, "ok"), (2, "error")])
+        self.assertEqual(self._history(), [(1, "ok"), (2, "error"), (3, "ok")])
 
-    def test_a_tunnel_service_is_neither_probed_nor_recorded(self):
-        """Its target is the live port, so a row for id 3 would mean it had been probed."""
+    def test_a_tunnel_service_is_probed_through_the_edge_by_its_public_name(self):
+        """Its target is the connector's localhost: what is probed is the name visitors use.
+
+        Until 1.7.0 the fleet check skipped it and the row kept whatever an older probe had
+        written, which is how working tunnel routes read "error" for weeks.
+        """
         body = self.client.post("/api/services/check-all", headers=self.HEADERS).json()
-        self.assertNotIn(3, [entry["id"] for entry in body["results"]])
-        self.assertNotIn(3, [service_id for service_id, _ in self._history()])
-        self.assertEqual((body["ok"], body["error"]), (1, 1))
+        self.assertEqual(self.edge_calls, ["tunnel.example.com"])
+        measured = {entry["id"]: entry for entry in body["results"]}
+        self.assertEqual(measured[3]["status"], "ok")
+        self.assertEqual(measured[3]["status_detail"], "edge_access:302")
+        self.assertEqual((body["ok"], body["error"], body["skipped_tunnel"]), (2, 1, 0))
+
+    def test_the_single_check_of_a_tunnel_route_goes_through_the_edge_too(self):
+        """The per-row button used to dial `localhost:<port>` from the container."""
+        resp = self.client.post("/api/services/3/check", headers=self.HEADERS)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self.edge_calls, ["tunnel.example.com"])
+        self.assertEqual(resp.json()["status_detail"], "edge_access:302")
+        conn = models.get_db()
+        row = conn.execute("SELECT status, status_detail, latency_ms FROM services WHERE id=3").fetchone()
+        conn.close()
+        self.assertEqual((row["status"], row["status_detail"], row["latency_ms"]), ("ok", "edge_access:302", 12.5))
 
     def test_the_fleet_check_reports_the_latency_it_measured(self):
         body = self.client.post("/api/services/check-all", headers=self.HEADERS).json()
@@ -189,15 +214,15 @@ class ManualCheckHistoryTests(unittest.TestCase):
         logs = self._logs()
         self.assertEqual(len(logs), 1, logs)
         self.assertEqual(logs[0][0], "error")  # one service was down during the run
-        self.assertIn("2 services", logs[0][1])
-        self.assertIn("1 ok", logs[0][1])
+        self.assertIn("3 services", logs[0][1])
+        self.assertIn("2 ok", logs[0][1])
         self.assertIn("1 error", logs[0][1])
 
-    def test_every_result_carries_the_three_fields_the_client_reads(self):
+    def test_every_result_carries_the_fields_the_client_reads(self):
         """The front end folds `results` straight into its latency store, keyed by id."""
         body = self.client.post("/api/services/check-all", headers=self.HEADERS).json()
         for entry in json.loads(json.dumps(body["results"])):
-            self.assertEqual(sorted(entry.keys()), ["id", "latency_ms", "status"])
+            self.assertEqual(sorted(entry.keys()), ["id", "latency_ms", "status", "status_detail"])
 
 
 if __name__ == "__main__":

@@ -224,6 +224,64 @@ export interface TunnelHealthResponse {
   items?: TunnelHealthItem[];
 }
 
+/** What a tunnel token may read of Cloudflare Access. `unverified`: an empty listing. */
+export type AccessPermission = 'ok' | 'unverified' | 'missing' | 'error';
+export type AccessHostState = 'protected' | 'partial' | 'open' | 'unknown';
+
+export interface AccessPolicySummary {
+  id: string;
+  name: string;
+  decision: string;
+  /** The include rule is `everyone`. */
+  everyone: boolean;
+  app_count: number;
+}
+
+export interface AccessHost {
+  hostname: string;
+  state: AccessHostState;
+  /** Why it is not `protected`, or why it is `unknown`. */
+  reason: string;
+  /** A route Vauxtra manages, as opposed to one only present in the tunnel. */
+  managed: boolean;
+  /** The last probe's `status_detail`, empty when Vauxtra does not probe it. */
+  observed: string;
+  apps: { id: string; name: string }[];
+  policies: string[];
+}
+
+export interface TunnelAccessItem {
+  id: number;
+  name: string;
+  permission: AccessPermission;
+  reason: string;
+  read_permission: string;
+  edit_permission: string;
+  application_count: number;
+  policies: AccessPolicySummary[];
+  counts: Record<AccessHostState, number>;
+  hosts: AccessHost[];
+}
+
+/** `GET /api/providers/tunnels/access`. */
+export interface TunnelAccessResponse {
+  total: number;
+  items: TunnelAccessItem[];
+}
+
+/** Body of `POST /api/providers/{pid}/access/apps`. */
+export interface AccessProtectBody {
+  hostname: string;
+  policy_ids: string[];
+}
+
+export interface AccessProtectResult {
+  ok: boolean;
+  hostname: string;
+  application_id: string;
+  policy_ids: string[];
+}
+
 /** Body of `POST /api/providers`; answers with `ProviderCreated`. */
 export interface ProviderIn {
   name: string;
@@ -421,6 +479,14 @@ export interface Service {
   tunnel_provider_id: number | null;
   enabled: boolean | number;
   status: ServiceStatus;
+  /**
+   * What the last probe saw, as a short code and, through the edge, the HTTP status:
+   * `edge_access:302`, `edge_tunnel_down:530`, `tcp_failed`. Empty until the first probe,
+   * absent on 1.7.0 and earlier. Translated under `monitoring.detail.<code>`.
+   */
+  status_detail?: string;
+  /** Latency of the last probe that answered, null when it did not. */
+  latency_ms?: number | null;
   last_checked: string | null;
   created_at: string;
   tags: Tag[];
@@ -549,6 +615,8 @@ export interface ServiceCheckResult {
   /** Null when the target never answered. */
   latency_ms: number | null;
   dns_resolved: string[] | null;
+  /** See `Service.status_detail`. Absent on 1.7.0 and earlier. */
+  status_detail?: string;
   /**
    * False for a service without a port: nothing was probed, `status` stays `unknown` and only
    * the name was resolved. Absent on older instances, which probed port 0 and reported it down.
@@ -562,6 +630,8 @@ export interface CheckAllEntry {
   status: ServiceStatus;
   /** Null when the target never answered. */
   latency_ms: number | null;
+  /** See `Service.status_detail`. Absent on 1.7.0 and earlier. */
+  status_detail?: string;
 }
 
 /** `POST /api/services/check-all`. */
@@ -570,9 +640,10 @@ export interface CheckAllResult {
   ok: number;
   error: number;
   /**
-   * The services left out, never probed: tunnels, reached through their connector, and
-   * services without a port, which have nothing to connect to. `skipped` is the sum of the
-   * two. All three are absent on older instances, which skipped the tunnels alone.
+   * The services left out, never probed. After 1.7.0 that is only the services without a
+   * port, which have nothing to connect to: tunnel routes are probed through the Cloudflare
+   * edge and `skipped_tunnel` stays 0. Older instances skipped the tunnels too, and the
+   * oldest ones said nothing about it.
    */
   skipped?: number;
   skipped_tunnel?: number;

@@ -19,14 +19,16 @@ import {
   type Tone,
 } from '@/components/ui';
 import type { ProviderHealthStatus, TunnelHealthResponse } from '@/types/api';
+import { tunnelReasonLabel } from '@/components/features/providers/providerHealth';
 
 /**
- * Cloudflare Tunnel connectors — `GET /api/providers/tunnels/health`.
+ * Cloudflare Tunnel connectors, from `GET /api/providers/tunnels/health`.
  *
- * A tunnel is the one thing on this page the TCP prober cannot see: services exposed
- * through it are skipped by the scheduler, so the connector's own health *is* their
- * status. The route reports `{ok, status, connections, clients, reason}` per provider,
- * where `status` is free text from Cloudflare (`healthy`, `degraded`, `inactive`, `down`).
+ * Each route is checked by its public name through the Cloudflare edge (`app/probe.py`), so a
+ * row of the services tab already says whether it answers. This card says why one does not:
+ * a connector that holds no connection takes every route of its tunnel down with it. The route
+ * reports `{ok, status, connections, clients, reason}` per provider, where `status` is free
+ * text from Cloudflare (`healthy`, `degraded`, `inactive`, `down`).
  */
 
 const HEALTH_TONE: Record<string, Tone> = {
@@ -144,7 +146,7 @@ export function TunnelsCard({ data, loading, isError, refreshing, onRefresh }: T
                       </p>
                       {health?.error && <p className="mt-0.5 text-[11px] text-destructive">{health.error}</p>}
                       {!health?.error && health?.reason && (
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">{health.reason}</p>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">{tunnelReasonLabel(health.reason, t)}</p>
                       )}
                     </div>
                   </div>

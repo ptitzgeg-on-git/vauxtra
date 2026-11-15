@@ -7,6 +7,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tunnel routes read "Error, check the tunnel connector" while they answered.** Their
+  target is `localhost:<port>` as `cloudflared` sees it, and the check dialled that from the
+  Vauxtra container. A tunnel route is now requested by its public name through the
+  Cloudflare edge, like a visitor, and the answer is classified: a redirect to the Access
+  login counts as up, 530 means no connector holds the tunnel, 502 and 504 mean the
+  connector cannot reach the origin. The scheduler checks tunnel routes too, and each probe
+  stores what it saw (`status_detail`) and how long it took (`latency_ms`).
+- **Automatic checks never started on their own.** Nothing wrote `check_interval`, so a new
+  instance never checked anything. It now checks every five minutes unless the operator
+  turned checks off, and the monitoring page says when they are off, with a button to turn
+  them on.
+- **Saving a service published to the extra sync targets twice.** The create and update
+  routes already push to them; the service form pushed again afterwards and listed every
+  failure twice.
+- **The tunnel connector card showed `missing_account_id` as a raw code.**
+
+### Changed
+
+- **The monitoring page is split into tabs: Services, Tunnels, Access.** Services are tiles
+  by default, failures first, each with one line saying what the last probe saw; the table
+  stays one click away. The latency card counts the services that measured something, not
+  the checks that ran. On a phone the summary cards sit two by two.
+
+### Added
+
+- **Cloudflare Access, read through the tunnel integration.** The Access tab lists every
+  tunnel route as protected, partly protected, open or unknown, names the policies that let
+  anyone in, and protects an open route by creating an Access application with the chosen
+  policies (`GET /api/providers/tunnels/access`, `POST /api/providers/{pid}/access/apps`,
+  MCP `get_tunnel_access` and `protect_tunnel_route`). The token needs
+  "Access: Apps and Policies Read", and "Edit" to protect a route.
+
 ---
 
 ## [1.7.0] — 2026-10-01
