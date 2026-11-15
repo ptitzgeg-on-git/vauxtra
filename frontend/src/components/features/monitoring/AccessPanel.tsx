@@ -392,7 +392,12 @@ function ProtectModal({
     onSuccess: async (result, { body }) => {
       toast.success(t('monitoring.access.toast.protected', { host: result?.hostname || body.hostname }));
       onClose();
-      await queryClient.invalidateQueries({ queryKey: TUNNEL_ACCESS_KEY });
+      // The services too: the route now carries the application's id, and the delete dialog
+      // of the routes page reads it there to say the login goes with the service.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: TUNNEL_ACCESS_KEY }),
+        queryClient.invalidateQueries({ queryKey: ['services'] }),
+      ]);
     },
     onError: (err: unknown) => {
       if (getHttpStatus(err) === 403 && target) {

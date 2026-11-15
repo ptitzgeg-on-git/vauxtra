@@ -280,6 +280,11 @@ export interface AccessProtectResult {
   hostname: string;
   application_id: string;
   policy_ids: string[];
+  /**
+   * How many services now carry `application_id` as their `access_app_id`, and so delete it
+   * with them. 0 for a route of the tunnel that no service of this instance owns.
+   */
+  recorded_on?: number;
 }
 
 /** Body of `POST /api/providers`; answers with `ProviderCreated`. */
@@ -487,6 +492,12 @@ export interface Service {
   status_detail?: string;
   /** Latency of the last probe that answered, null when it did not. */
   latency_ms?: number | null;
+  /**
+   * The Cloudflare Access application Vauxtra created in front of this route, deleted with
+   * the service. Empty when Vauxtra did not create one (a protection written in the
+   * dashboard is never recorded here), absent on 1.9.0 and earlier.
+   */
+  access_app_id?: string;
   last_checked: string | null;
   created_at: string;
   tags: Tag[];

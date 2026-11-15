@@ -7,6 +7,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Changed
+
+- **Deleting a service deletes the Access application Vauxtra created for it.** Protecting
+  a route from the service form now records the application's id on the service (schema
+  14, column `access_app_id`), and deleting the service, alone or in bulk, deletes that
+  application once the route is withdrawn. The delete dialog says so beforehand. The
+  application is left in place, and the deletion names it, when the route is still served,
+  when it was edited in Cloudflare to cover more than this route, or when the token may not
+  delete it (*Access: Apps and Policies Edit*). An application written by hand in Cloudflare
+  carries no id in Vauxtra and is never touched. A backup restored from 1.9.0 or earlier
+  restores no id, so nothing is deleted for it.
+
 ---
 
 ## [1.9.0] - 2026-11-15
