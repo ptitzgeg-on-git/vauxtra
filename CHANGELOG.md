@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+---
+
+## [1.10.0] - 2026-11-15
+
 ### Changed
 
 - **Deleting a service deletes the Access application Vauxtra created for it.** Protecting
@@ -5155,7 +5159,8 @@ The test suite went from 284 tests to 738.
 
 ---
 
-[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/ptitzgeg-on-git/vauxtra/compare/v1.6.1...v1.7.0
