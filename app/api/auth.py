@@ -1,9 +1,13 @@
 """Authentication endpoints — login, logout, session check, password setup."""
 
+import time
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import (
+    AUTH_MODE_KEY,
+    AUTH_MODE_PASSWORD,
     bump_session_epoch,
     check_password,
     current_session_epoch,
@@ -13,6 +17,7 @@ from app.auth import (
     is_authenticated,
     mark_password_configured,
     password_is_env_managed,
+    password_was_configured_once,
     require_auth,
     require_auth_or_setup,
 )
@@ -87,8 +92,6 @@ def auth_login(request: Request, body: LoginBody):
     Rate limited to 5 attempts per minute, 20 per hour.
     Failed attempts include a small delay to slow down brute-force attacks.
     """
-    import time
-
     if not has_password_configured():
         raise HTTPException(400, "Authentication is disabled — no password configured")
 
@@ -110,14 +113,28 @@ def auth_login(request: Request, body: LoginBody):
     session = get_session(request)
     session["authenticated"] = True
     session["epoch"] = current_session_epoch()
+    session["issued_at"] = int(time.time())
     add_log("info", "Signed in")
     return {"ok": True}
 
 
 @router.post("/api/auth/logout")
 def auth_logout(request: Request):
-    """Clear the authenticated session."""
+    """End the session, and every copy of its cookie with it.
+
+    Clearing the cookie in this browser left a copy taken elsewhere fully valid: the cookie
+    is self-contained and signed. Bumping the epoch revokes it, at the cost of also ending
+    the operator's sessions on other devices. Only a live session may do it, so an anonymous
+    POST cannot sign everybody out.
+    """
     session = get_session(request)
+    if session.get("authenticated") is True and is_authenticated(request):
+        conn = get_db()
+        try:
+            bump_session_epoch(conn)
+            conn.commit()
+        finally:
+            conn.close()
     session.clear()
     return {"ok": True}
 
@@ -125,8 +142,12 @@ def auth_logout(request: Request):
 @router.post("/api/auth/setup-password")
 @limiter.limit("3/minute")
 def setup_password(request: Request, body: SetPasswordBody):
-    """Set the admin password during initial setup (only when no password exists)."""
-    if has_password_configured():
+    """Set the admin password during initial setup (only when no password ever existed)."""
+    # "Has a password now" is not the question. An instance whose hash row went missing
+    # (an old database restored, a hand edit) reads as passwordless, and this route used
+    # to let the first caller pick the new admin password. `password_was_configured_once`
+    # remembers, and answers yes on a database it cannot read.
+    if has_password_configured() or password_was_configured_once():
         raise HTTPException(400, "Password is already configured")
 
     password = body.password.strip()
@@ -137,16 +158,31 @@ def setup_password(request: Request, body: SetPasswordBody):
     password_hash = hash_password(password)
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_password_hash', ?)",
-            (password_hash,),
+        # The check above and this write are two moments: two requests can both pass the
+        # first. The condition is therefore asked again inside the write, as one statement,
+        # which SQLite runs atomically, and the loser writes nothing.
+        cur = conn.execute(
+            """INSERT OR REPLACE INTO settings (key, value)
+               SELECT 'app_password_hash', ?
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM settings
+                    WHERE (key = 'app_password_hash' AND value <> '')
+                       OR (key = ? AND value = ?)
+               )""",
+            (password_hash, AUTH_MODE_KEY, AUTH_MODE_PASSWORD),
         )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise HTTPException(400, "Password is already configured")
         # Close the setup bypass here, not at the final click of the wizard: an abandoned
         # wizard must never leave the API anonymous.
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', '1')"
         )
         mark_password_configured(conn)
+        # A cookie signed before the password existed must not survive it: whatever was
+        # opened while the instance was anonymous ends here, this session excepted below.
+        bump_session_epoch(conn)
         add_log("info", "Admin password set from the setup wizard", conn)
         conn.commit()
     finally:
@@ -156,6 +192,7 @@ def setup_password(request: Request, body: SetPasswordBody):
     session = get_session(request)
     session["authenticated"] = True
     session["epoch"] = current_session_epoch()
+    session["issued_at"] = int(time.time())
     return {"ok": True}
 
 

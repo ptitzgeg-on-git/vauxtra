@@ -101,6 +101,7 @@ ALLOWED_ADDRESS_PREFIXES = (
     "0.0.0.0",          # bind-any
     "127.",             # loopback
     "169.254.169.254",  # cloud instance metadata endpoint
+    "169.254.0.0",      # the link-local network providers may not target (app/providers/base.py)
     "192.168.1.",       # the placeholder subnet used across docs, locales and screenshots
     "10.0.0.",          # the lab compose network (lab/providers/docker-compose.yml)
     "172.16.",          # docker-assigned bridge networks

@@ -21,18 +21,37 @@ def _get_or_generate_secret() -> str:
     key_file = os.path.join(DATA_DIR, ".secret_key")
     os.makedirs(DATA_DIR, exist_ok=True)
     if os.path.exists(key_file):
+        _restrict_key_file(key_file)
         with open(key_file) as fh:
             stored = fh.read().strip()
         if stored:
             return stored
+        os.remove(key_file)
     generated = secrets.token_hex(32)
-    with open(key_file, "w") as f:
-        f.write(generated)
+    # Created 0600 rather than chmod-ed after the write: `open(..., "w")` made the file under
+    # the umask, readable by every local user for as long as the write took, and the chmod
+    # that followed failed silently on some volumes, which left it that way for good.
     try:
-        os.chmod(key_file, 0o600)
+        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another process wrote it in between: its key is the one already in use.
+        with open(key_file) as fh:
+            return fh.read().strip() or generated
+    with os.fdopen(fd, "w") as f:
+        f.write(generated)
+    _restrict_key_file(key_file)
+    return generated
+
+
+def _restrict_key_file(path: str) -> None:
+    """Take group and other access off a key file, one written before 0600 included."""
+    if os.name != "posix":
+        return
+    try:
+        if os.stat(path).st_mode & 0o077:
+            os.chmod(path, 0o600)
     except OSError:
         pass
-    return generated
 
 
 SECRET_KEY   = _get_or_generate_secret()

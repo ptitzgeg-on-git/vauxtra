@@ -714,7 +714,7 @@ apply_template(id, ...) → apply defaults + create the service
 
 ## 13) Prometheus Metrics
 
-Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication required — designed to be scraped directly by a Prometheus server.
+Vauxtra exposes a Prometheus-compatible metrics endpoint, designed to be scraped directly by a Prometheus server with a `read` API key.
 
 ### Endpoint
 
@@ -722,7 +722,7 @@ Vauxtra exposes a Prometheus-compatible metrics endpoint with no authentication 
 GET /metrics
 ```
 
-No `Authorization` header required. Response is `text/plain` in Prometheus text exposition format.
+Send a `read` API key as `Authorization: Bearer <api_key>`; without one the answer is `401`. The endpoint used to be open, and told anyone who could reach the port which provider types run the network and how many services are down. Response is `text/plain` in Prometheus text exposition format.
 
 ### Available metrics
 
@@ -805,6 +805,8 @@ scrape_configs:
       - targets: ['vauxtra:8888']
     metrics_path: /metrics
     scrape_interval: 60s
+    authorization:
+      credentials_file: /etc/prometheus/vauxtra_read_key   # a `read` API key
 ```
 
 ### Alerting examples
@@ -975,7 +977,7 @@ no such capability, and 502 when the provider itself refuses.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/metrics` | Prometheus metrics (no auth required) |
+| `GET` | `/metrics` | Prometheus metrics (`read` API key) |
 
 ### Tags & Environments
 

@@ -199,14 +199,21 @@ def _validate_apprise_url(url: str, request: Request | None = None) -> str:
             "Notification URLs are never readable back -- retype the full URL, "
             "or omit the field to keep the one already stored.",
         )
-    if request is not None and value.lower().startswith(_GENERIC_HTTP_SCHEMES):
+    # The scheme check reads the whole text, not its start: apprise splits its input on
+    # whitespace and commas, so `discord://id/token,json://host` hid a generic target behind
+    # a harmless first one and a prefix check only ever saw the first.
+    if request is not None and any(s in value.lower() for s in _GENERIC_HTTP_SCHEMES):
         require_auth(request, scope="admin")
+    if any(ch.isspace() for ch in value):
+        raise HTTPException(400, "One webhook takes one URL: remove the spaces")
 
     try:
         import apprise
         a = apprise.Apprise()
         if not a.add(value):
             raise HTTPException(400, "Invalid or unrecognized Apprise URL")
+        if len(a) != 1:
+            raise HTTPException(400, "One webhook takes one URL: add each target separately")
     except ImportError:
         raise HTTPException(500, "Package 'apprise' not installed")
     except HTTPException:
