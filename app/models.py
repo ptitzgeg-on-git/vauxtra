@@ -10,7 +10,7 @@ from app.security import redact_query_secrets
 # settings table, and it is the only thing that tells two schemas apart after the fact:
 # leave it behind and a 1.4.0 database and a 1.5.0 one both answer 11, which is what
 # happened to 1.5.0. `tests/test_regressions_v2.py` pins the pair so it cannot happen twice.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def get_db():
@@ -261,6 +261,13 @@ _MIGRATIONS = [
     # it. Without it every tunnel route in error printed the same "check the connector".
     "ALTER TABLE services ADD COLUMN status_detail TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE services ADD COLUMN latency_ms REAL",
+    # The Cloudflare Access application Vauxtra created in front of this route, so deleting
+    # the service can delete it too. Without it the application outlived the route: measured
+    # on 2026-11-15, a test route created with a policy and then deleted left its application
+    # in the account, out of the Access tab (which lists routes) and out of anything Vauxtra
+    # could name. Empty for every route Vauxtra did not protect itself, which is the point:
+    # an application written by hand in the dashboard is never Vauxtra's to remove.
+    "ALTER TABLE services ADD COLUMN access_app_id TEXT NOT NULL DEFAULT ''",
 ]
 
 

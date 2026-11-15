@@ -18,6 +18,8 @@ from starlette.requests import Request
 import app.db as db
 from app import models
 from app.api import providers as providers_api
+from app.api import services as services_api
+from app.api import sync as sync_api
 from app.providers import cloudflare_access as access
 from app.providers.base import ProviderListingRefused
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
@@ -75,6 +77,24 @@ class ClassifyHostTests(unittest.TestCase):
         self.assertEqual(access.classify_host("second.example.com", [app])["state"], "protected")
 
 
+class CoversOnlyTests(unittest.TestCase):
+    """The one shape Vauxtra may delete: the application it wrote, unchanged."""
+
+    def test_the_application_vauxtra_creates_covers_its_host_alone(self):
+        app = access.new_application_body("listo.example.com", ["p-ip"])
+        self.assertTrue(access.covers_only(app, "Listo.Example.com."))
+        self.assertFalse(access.covers_only(app, "board.example.com"))
+
+    def test_a_second_destination_added_in_the_dashboard_is_not_alone(self):
+        app = access.new_application_body("listo.example.com", ["p-ip"])
+        app["destinations"].append({"type": "public", "uri": "board.example.com"})
+        self.assertFalse(access.covers_only(app, "listo.example.com"))
+
+    def test_a_wildcard_or_a_path_is_not_the_host(self):
+        self.assertFalse(access.covers_only(_app("*.example.com"), "listo.example.com"))
+        self.assertFalse(access.covers_only(_app("listo.example.com/admin"), "listo.example.com"))
+
+
 class PolicySummaryTests(unittest.TestCase):
     def test_a_policy_is_shown_by_name_and_decision_never_by_its_rules(self):
         summary = access.summarize_policy({**BYPASS_IPS, "app_count": 18})
@@ -130,6 +150,33 @@ class AccessOverviewTests(unittest.TestCase):
         self.assertEqual((overview["permission"], len(overview["apps"])), ("ok", 51))
         self.assertEqual([p["name"] for p in overview["policies"]], ["IP OK"])
 
+    def test_reading_an_application_that_was_deleted_says_it_is_gone(self):
+        """Measured on 2026-11-15: 404, code 11021, on an id deleted the minute before."""
+        gone = {"ok": False, "status": 404, "result": None,
+                "errors": [{"code": 11021, "message": "access.api.error.unknown_application"}]}
+        provider = self._provider({"/accounts/acc/access/apps/app-1": gone})
+        found = provider.get_access_app("app-1")
+        self.assertEqual((found["ok"], found["gone"], found["refused"]), (False, True, False))
+
+    def test_deleting_an_application_sends_one_delete_on_its_id(self):
+        provider = self._provider({"/accounts/acc/access/apps/app-1": _ok({"id": "app-1"})})
+        deleted = provider.delete_access_app("app-1")
+        self.assertEqual([c[:2] for c in provider._request_detailed.calls],
+                         [("DELETE", "/accounts/acc/access/apps/app-1")])
+        self.assertTrue(deleted["ok"])
+
+    def test_a_refusal_to_delete_is_not_read_as_gone(self):
+        provider = self._provider({"/accounts/acc/access/apps/app-1": REFUSED})
+        deleted = provider.delete_access_app("app-1")
+        self.assertEqual((deleted["ok"], deleted["gone"], deleted["refused"]), (False, False, True))
+
+    def test_a_stored_id_that_is_not_an_id_never_reaches_the_api(self):
+        """The column comes back from a backup: a path there would aim the token elsewhere."""
+        provider = self._provider({})
+        self.assertFalse(provider.get_access_app("../../zones/z1/dns_records")["ok"])
+        self.assertFalse(provider.delete_access_app("x/y")["ok"])
+        self.assertEqual(provider._request_detailed.calls, [])
+
     def test_creating_an_application_sends_one_host_and_the_chosen_policies(self):
         provider = self._provider({"/accounts/acc/access/apps": _ok({"id": "new-app"})})
         created = provider.create_access_app("Listo.Example.com", ["p-ip", "p-me"])
@@ -141,11 +188,20 @@ class AccessOverviewTests(unittest.TestCase):
 
 
 class _FakeTunnel:
-    def __init__(self, overview, hosts=("board.example.com", "listo.example.com"), create=None):
+    HOST_ID_IS_HOSTNAME = True
+
+    def __init__(self, overview, hosts=("board.example.com", "listo.example.com"), create=None,
+                 apps=None, delete=None, withdraw=True):
         self.overview = overview
         self.hosts = hosts
         self.create = create or {"ok": True, "refused": False, "status": 200, "id": "app-9", "errors": []}
         self.created = []
+        # Access applications by id: an app body, or a whole answer of `get_access_app`.
+        self.apps = apps or {}
+        self.delete = delete or {"ok": True, "gone": False, "refused": False, "status": 200, "errors": []}
+        self.withdraw = withdraw
+        self.read = []
+        self.deleted = []
 
     def access_overview(self):
         return dict(self.overview)
@@ -158,6 +214,25 @@ class _FakeTunnel:
     def create_access_app(self, hostname, policy_ids):
         self.created.append((hostname, policy_ids))
         return self.create
+
+    def delete_host(self, host_id):
+        if not self.withdraw:
+            return False
+        self.hosts = tuple(h for h in self.hosts if h != host_id)
+        return True
+
+    def get_access_app(self, app_id):
+        self.read.append(app_id)
+        answer = self.apps.get(app_id)
+        if answer is None:
+            return {"ok": False, "gone": True, "refused": False, "status": 404, "app": {}}
+        if "gone" in answer:
+            return answer
+        return {"ok": True, "gone": False, "refused": False, "status": 200, "app": answer}
+
+    def delete_access_app(self, app_id):
+        self.deleted.append(app_id)
+        return self.delete
 
 
 def _request(method="GET", path="/"):
@@ -255,6 +330,125 @@ class AccessRouteTests(unittest.TestCase):
             self._protect(fake)
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertIn(access.EDIT_PERMISSION, ctx.exception.detail)
+
+
+def _created_app(hostname, app_id="app-9"):
+    return {**access.new_application_body(hostname, ["p-ip"]), "id": app_id}
+
+
+class AccessFollowsTheRouteTests(AccessRouteTests):
+    """Deleting a service deletes the Access application Vauxtra created for it, and only that.
+
+    Measured on 2026-11-15 in prod: a route created with a policy and then deleted left its
+    application in the account, listed nowhere in the panel.
+    """
+
+    OVERVIEW = {"permission": "ok", "reason": "", "apps": [], "policies": []}
+
+    def setUp(self):
+        super().setUp()
+        self._svc_auth = patch.object(services_api, "require_auth", lambda _req, scope=None: None)
+        self._svc_auth.start()
+
+    def tearDown(self):
+        self._svc_auth.stop()
+        super().tearDown()
+
+    def _column(self, subdomain, column):
+        conn = models.get_db()
+        try:
+            return conn.execute(f"SELECT {column} FROM services WHERE subdomain=?",  # noqa: S608
+                                (subdomain,)).fetchone()[column]
+        finally:
+            conn.close()
+
+    def _with(self, fake):
+        return (patch.object(services_api, "create_provider", lambda _row: fake),
+                patch.object(sync_api, "create_provider", lambda _row: fake))
+
+    def _delete(self, fake, subdomain="listo"):
+        a, b = self._with(fake)
+        with a, b:
+            return services_api.delete_service(self._column(subdomain, "id"), _request("DELETE"))
+
+    def _bulk_delete(self, fake, *subdomains):
+        ids = [self._column(s, "id") for s in subdomains]
+        a, b = self._with(fake)
+        with a, b:
+            return services_api.bulk_action(
+                services_api._BulkActionBody(ids=ids, action="delete"), _request("POST"),
+            )
+
+    def _protected(self, **kwargs):
+        fake = _FakeTunnel(dict(self.OVERVIEW), **kwargs)
+        self._protect(fake)
+        return fake
+
+    def test_protecting_a_route_records_the_application_on_its_service(self):
+        out = self._protect(_FakeTunnel(dict(self.OVERVIEW)))
+        self.assertEqual(out["recorded_on"], 1)
+        self.assertEqual((self._column("listo", "access_app_id"), self._column("board", "access_app_id")),
+                         ("app-9", ""))
+
+    def test_deleting_the_service_deletes_its_application(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")})
+        self.assertEqual(self._delete(fake), {"ok": True, "errors": []})
+        self.assertEqual(fake.deleted, ["app-9"])
+        self.assertNotIn("listo.example.com", fake.hosts)
+
+    def test_a_route_still_served_keeps_its_application(self):
+        """The login goes last: never off a route that still answers."""
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")}, withdraw=False)
+        errors = self._delete(fake)["errors"]
+        self.assertEqual(fake.deleted, [])
+        self.assertIn("Access application left in place: the route is still served", errors)
+
+    def test_an_application_edited_to_cover_more_is_left_in_place(self):
+        app = _created_app("listo.example.com")
+        app["destinations"].append({"type": "public", "uri": "board.example.com"})
+        fake = self._protected(apps={"app-9": app})
+        errors = self._delete(fake)["errors"]
+        self.assertEqual(fake.deleted, [])
+        self.assertEqual(errors, ["Access application left in place: "
+                                  "listo.example.com no longer covers this route alone"])
+
+    def test_an_application_already_gone_is_not_a_failure(self):
+        fake = self._protected(apps={})
+        self.assertEqual(self._delete(fake), {"ok": True, "errors": []})
+        self.assertEqual((fake.read, fake.deleted), (["app-9"], []))
+
+    def test_a_token_that_may_not_delete_says_which_permission_to_add(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")},
+                               delete={"ok": False, "gone": False, "refused": True, "status": 403, "errors": []})
+        errors = self._delete(fake)["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn(access.EDIT_PERMISSION, errors[0])
+
+    def test_a_route_protected_by_hand_is_never_touched(self):
+        """No id recorded, no call: what the dashboard holds is the operator's."""
+        fake = _FakeTunnel(dict(self.OVERVIEW), apps={"hand": _created_app("board.example.com", "hand")})
+        self.assertEqual(self._delete(fake, "board"), {"ok": True, "errors": []})
+        self.assertEqual((fake.read, fake.deleted), ([], []))
+
+    def test_an_id_another_service_still_carries_stays(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")})
+        conn = models.get_db()
+        conn.execute("UPDATE services SET access_app_id='app-9' WHERE subdomain='board'")
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._delete(fake), {"ok": True, "errors": []})
+        self.assertEqual(fake.deleted, [])
+
+    def test_a_bulk_delete_removes_it_as_one_delete_would(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")})
+        result = self._bulk_delete(fake, "board", "listo")
+        self.assertEqual((result["affected"], result["errors"]), (2, []))
+        self.assertEqual(fake.deleted, ["app-9"])
+
+    def test_a_bulk_delete_names_the_route_it_left_protected(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")}, withdraw=False)
+        errors = self._bulk_delete(fake, "listo")["errors"]
+        self.assertIn("listo.example.com: Access application left in place: the route is still served", errors)
 
 
 if __name__ == "__main__":

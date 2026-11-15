@@ -16,7 +16,9 @@ from urllib.parse import urlparse
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import ProviderListingRefused, ProxyProvider, TimeoutSession
 from app.providers.cloudflare_access import (
+    is_access_app_id,
     is_permission_refusal,
+    is_unknown_application,
     new_application_body,
     summarize_policy,
 )
@@ -701,5 +703,40 @@ class CloudflareTunnelProvider(ProxyProvider):
             "refused": is_permission_refusal(resp),
             "status": resp["status"],
             "id": str(result.get("id") or ""),
+            "errors": [str(e.get("message") or "") for e in resp["errors"] if isinstance(e, dict)],
+        }
+
+    def get_access_app(self, app_id: str) -> dict:
+        """One Access application by id. `gone` when Cloudflare no longer knows it.
+
+        `app` is raw and carries policy rules, like `access_overview`: it is read to decide,
+        never returned to a client.
+        """
+        if not self.account_id or not is_access_app_id(app_id):
+            return {"ok": False, "gone": False, "refused": False, "status": None, "app": {}}
+        resp = self._request_detailed("GET", f"/accounts/{self.account_id}/access/apps/{app_id}")
+        result = resp["result"] if isinstance(resp["result"], dict) else {}
+        gone = not resp["ok"] and is_unknown_application(resp)
+        return {
+            "ok": bool(resp["ok"] and result),
+            "gone": gone,
+            "refused": not gone and is_permission_refusal(resp),
+            "status": resp["status"],
+            "app": result,
+        }
+
+    def delete_access_app(self, app_id: str) -> dict:
+        """Delete one Access application. An application already gone counts as `gone`, not
+        as a failure: the outcome the caller wanted is there either way."""
+        if not self.account_id or not is_access_app_id(app_id):
+            return {"ok": False, "gone": False, "refused": False, "status": None,
+                    "errors": ["missing_account_id" if not self.account_id else "invalid_app_id"]}
+        resp = self._request_detailed("DELETE", f"/accounts/{self.account_id}/access/apps/{app_id}")
+        gone = not resp["ok"] and is_unknown_application(resp)
+        return {
+            "ok": bool(resp["ok"]),
+            "gone": gone,
+            "refused": not gone and is_permission_refusal(resp),
+            "status": resp["status"],
             "errors": [str(e.get("message") or "") for e in resp["errors"] if isinstance(e, dict)],
         }

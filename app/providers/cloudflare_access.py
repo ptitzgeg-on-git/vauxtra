@@ -26,6 +26,7 @@ without a network.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from fnmatch import fnmatchcase
 from typing import Any
@@ -44,6 +45,34 @@ def is_permission_refusal(resp: Mapping[str, Any]) -> bool:
         return True
     return any(
         isinstance(e, Mapping) and e.get("code") in (10000, 9109, 12006)
+        for e in resp.get("errors") or []
+    )
+
+
+_APP_ID = re.compile(r"[0-9A-Za-z-]{1,64}")
+
+
+def is_access_app_id(value: str) -> bool:
+    """True for what Cloudflare hands back as an application id (a UUID).
+
+    The id is read back from the database and lands in a URL path. A restored backup can
+    carry anything in that column, and `../` there would aim the tunnel token at another
+    endpoint of the account.
+    """
+    return bool(_APP_ID.fullmatch(value or ""))
+
+
+def is_unknown_application(resp: Mapping[str, Any]) -> bool:
+    """True when Cloudflare says the application does not exist (any more).
+
+    Measured on 2026-11-15: a `GET /accounts/{id}/access/apps/{id}` on an id that was deleted
+    answers 404 with code 11021, `access.api.error.unknown_application`. For a deletion that
+    is the outcome wanted, not a failure.
+    """
+    if resp.get("status") == 404:
+        return True
+    return any(
+        isinstance(e, Mapping) and e.get("code") == 11021
         for e in resp.get("errors") or []
     )
 
@@ -72,6 +101,18 @@ def app_patterns(app: Mapping[str, Any]) -> list[tuple[str, str]]:
         if pattern[0] and pattern not in seen:
             seen.append(pattern)
     return seen
+
+
+def covers_only(app: Mapping[str, Any], hostname: str) -> bool:
+    """True when the application stands in front of this one hostname, whole, and nothing else.
+
+    It is the shape `new_application_body` creates. Deleting an application is only safe in
+    that shape: one that also covers a path elsewhere, another name or a wildcard was changed
+    in the dashboard after Vauxtra wrote it, and removing it would open routes Vauxtra does
+    not own.
+    """
+    host = (hostname or "").strip().strip(".").lower()
+    return bool(host) and app_patterns(app) == [(host, "")]
 
 
 def _includes_everyone(policy: Mapping[str, Any]) -> bool:
