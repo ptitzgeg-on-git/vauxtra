@@ -339,7 +339,7 @@ function HostTile({
   );
 }
 
-function PolicyOption({
+export function PolicyOption({
   policy,
   checked,
   onChange,

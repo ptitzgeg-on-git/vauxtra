@@ -43,6 +43,12 @@ export type FormState = {
   environment_ids: number[];
   /** Kept verbatim from the record (or a template) -- the form has no icon picker. */
   icon_url: string;
+  /**
+   * Reusable Cloudflare Access policies to put in front of a tunnel route once it is saved.
+   * Not part of the service: the save writes the route, then `POST /providers/{id}/access/apps`
+   * creates the Access application. Empty means the route stays as Access already has it.
+   */
+  access_policy_ids: string[];
 };
 
 export const initialForm: FormState = {
@@ -66,6 +72,7 @@ export const initialForm: FormState = {
   tag_ids: [],
   environment_ids: [],
   icon_url: '',
+  access_policy_ids: [],
 };
 
 /** Numeric ids out of `[{id}]` rows or a plain `[1, 2]` list, anything else dropped. */
@@ -118,6 +125,7 @@ export const toFormState = (service?: Service | null): FormState => {
     tag_ids: toIdList(service.tags),
     environment_ids: toIdList(service.environments),
     icon_url: String(service.icon_url || ''),
+    access_policy_ids: [],
   };
 };
 

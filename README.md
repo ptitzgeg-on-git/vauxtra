@@ -255,6 +255,8 @@ token with *Account > Cloudflare Tunnel > Edit* and *Zone > DNS > Edit*. Add a
 **Tunnel** as the exposure mode when you create a service. Add *Account > Access: Apps and
 Policies > Read* to the same token and the **Access** tab of the Monitoring page shows which
 tunnel routes Cloudflare Access protects; without it they read as unverified, never as open.
+With *Edit* instead of *Read*, the service form also offers the account's reusable Access
+policies for a tunnel route, and Vauxtra puts the route behind them once it is published.
 
 **Pi-hole and AdGuard Home.** Add the provider with its base URL (for Pi-hole,
 `http://pihole`, not `/admin`) and its credentials: the API token or an app password for
