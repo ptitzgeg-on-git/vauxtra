@@ -59,3 +59,24 @@ def operator_database_is_left_alone():
     if after is None:
         pytest.fail(f"The suite deleted {_DB}.\n\n{_ADVICE}")
     pytest.fail(f"The suite modified {_DB}.\n\n{_ADVICE}")
+
+
+@pytest.fixture(autouse=True)
+def the_cloudflare_edge_is_never_reached():
+    """A tunnel route is probed through the public Cloudflare edge (`app/probe.py`).
+
+    Any test that runs a health cycle or "check all" over a tunnel service would otherwise
+    ask 1.1.1.1 about its name and open an HTTPS connection to whatever that returned. The
+    two network calls are cut here, for every test; a test that exercises them patches them
+    again itself, which takes precedence for its own duration.
+    """
+    from unittest.mock import patch
+
+    import app.probe as probe
+
+    def _no_edge(*_args, **_kwargs):
+        raise OSError("the Cloudflare edge is out of reach in tests")
+
+    with patch.object(probe, "_resolve_public", lambda _host: []), \
+         patch.object(probe, "_https_head_of", _no_edge):
+        yield

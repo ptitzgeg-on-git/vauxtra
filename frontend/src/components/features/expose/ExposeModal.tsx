@@ -44,7 +44,6 @@ import type {
   PreflightResult,
   PushPlanDnsAction,
   PushPlanProxyAction,
-  PushResult,
   Service,
   ServiceLabelsPayload,
   ServicePayload,
@@ -495,27 +494,20 @@ export function ExposeModal({
 
   const saveService = useMutation({
     mutationFn: async (payload: ServicePayload) => {
+      // Both routes publish on the multi-sync targets themselves (`push_extra_targets`) and
+      // answer what failed in `errors`. A `POST /push` after them published everything a
+      // second time, and reported every failure twice.
       const persisted = isEditMode
         ? await api.put<Record<string, unknown>>(`/services/${serviceId}`, payload)
         : await api.post<Record<string, unknown>>('/services', payload);
-
-      const needFanoutPush = payload.extra_proxy_provider_ids.length > 0 || payload.extra_dns_provider_ids.length > 0;
-      const persistedId = Number(persisted?.id || serviceId || 0);
-
-      if (needFanoutPush && persistedId) {
-        const pushResult = await api.post<PushResult>(`/services/${persistedId}/push`);
-        return { persisted, pushResult, payload };
-      }
-      return { persisted, pushResult: null, payload };
+      return { persisted, payload };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
 
-      const serviceErrors = isRecordWithErrors(result.persisted) ? result.persisted.errors : [];
-      const pushErrors = result.pushResult && Array.isArray(result.pushResult.errors) ? result.pushResult.errors : [];
-      const allErrors = [...serviceErrors, ...pushErrors].map(String);
+      const allErrors = (isRecordWithErrors(result.persisted) ? result.persisted.errors : []).map(String);
       const host = publicHostOf(result.payload);
 
       if (allErrors.length === 0) {

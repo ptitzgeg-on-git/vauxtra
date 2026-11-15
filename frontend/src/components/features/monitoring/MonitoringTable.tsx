@@ -12,8 +12,10 @@ import {
   STATUS_TONE,
   isTunnelService,
   serviceHost,
+  serviceLatency,
   serviceStatus,
   serviceTarget,
+  statusCaption,
   summarizeUptime,
   type LatencyProbes,
 } from './uptime';
@@ -21,11 +23,12 @@ import {
 /**
  * The uptime table. One row per service: status, 24 h strip, latency, last check.
  *
- * Latency has no column in `uptime_events`, so the cell shows what the session measured —
- * by a per-row check or by a fleet run, both of which report it — and an em dash until
- * then, never a zero pretending to be a measurement. Tunnel services and services without a
- * port are marked instead of being shown as stale: neither the scheduler nor `check-all`
- * ever probes them.
+ * Under the status badge, one line says what the last probe saw (`status_detail`): a tunnel
+ * route answering through Cloudflare, an Access login in front of it, a connector that does
+ * not hold the tunnel. The latency cell shows this session's check, else the latency stored
+ * by the last probe, and a dash when neither exists, never a zero pretending to be a
+ * measurement. Services without a port are marked instead of shown as stale: nothing probes
+ * them.
  */
 
 export interface MonitoringTableProps {
@@ -121,7 +124,8 @@ export function MonitoringTable({
             const tunnel = isTunnelService(service);
             const noPort = hasNoPort(service);
             const summary = summarizeUptime(history?.[String(service.id)], now);
-            const probe = probes[service.id];
+            const latency = serviceLatency(service, probes[service.id]);
+            const caption = statusCaption(service, t);
             const selected = selectedId === service.id;
             const availability =
               summary.availability === null ? null : formatPercent(summary.availability * 100, 1);
@@ -164,11 +168,11 @@ export function MonitoringTable({
                     <Badge tone={STATUS_TONE[status]} dot size="sm">
                       {t(STATUS_LABEL_KEY[status])}
                     </Badge>
-                    {status === 'error' && !noPort && (
-                      <span className="text-[11px] text-destructive">
-                        {tunnel
-                          ? t('monitoring.error.check_tunnel')
-                          : t('monitoring.error.tcp_unreachable', { target: serviceTarget(service) })}
+                    {caption && (
+                      <span
+                        className={cn('text-[11px]', caption.failed ? 'text-destructive' : 'text-muted-foreground')}
+                      >
+                        {caption.text}
                       </span>
                     )}
                     {status === 'disabled' && (
@@ -181,22 +185,15 @@ export function MonitoringTable({
                 </td>
 
                 <td className="px-3 py-2.5">
-                  {(tunnel || noPort) && summary.total === 0 ? (
+                  {noPort && summary.total === 0 ? (
                     // The tooltip opens on hover only -- these spans are not focusable and must not
                     // become tab stops in a table -- so everything it says is also written out for
                     // screen readers, and the bubble stays pure redundancy.
-                    <Tooltip
-                      content={
-                        tunnel ? t('monitoring.tunnel_not_probed_hint') : t('monitoring.no_port_not_probed_hint')
-                      }
-                    >
+                    <Tooltip content={t('monitoring.no_port_not_probed_hint')}>
                       <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                        {tunnel ? <Waypoints className="h-3 w-3" aria-hidden /> : <Unplug className="h-3 w-3" aria-hidden />}
+                        <Unplug className="h-3 w-3" aria-hidden />
                         {t('monitoring.tunnel_not_probed')}
-                        <span className="sr-only">
-                          {' — '}
-                          {tunnel ? t('monitoring.tunnel_not_probed_hint') : t('monitoring.no_port_not_probed_hint')}
-                        </span>
+                        <span className="sr-only">: {t('monitoring.no_port_not_probed_hint')}</span>
                       </span>
                     </Tooltip>
                   ) : (
@@ -223,21 +220,22 @@ export function MonitoringTable({
                 </td>
 
                 <td className="px-3 py-2.5 text-right">
-                  {probe ? (
-                    <Tooltip content={t('monitoring.latency.measured_at', { when: formatDateTime(new Date(probe.at)) })}>
+                  {latency && latency.at !== null ? (
+                    <Tooltip content={t('monitoring.latency.measured_at', { when: formatDateTime(new Date(latency.at)) })}>
                       <span
-                        className={cn(
-                          'tabular-nums',
-                          probe.latencyMs === null ? 'text-muted-foreground' : 'text-foreground',
-                        )}
+                        className={cn('tabular-nums', latency.ms === null ? 'text-muted-foreground' : 'text-foreground')}
                       >
-                        {formatLatency(probe.latencyMs)}
+                        {formatLatency(latency.ms)}
                         <span className="sr-only">
-                          {' — '}
-                          {t('monitoring.latency.measured_at', { when: formatDateTime(new Date(probe.at)) })}
+                          {', '}
+                          {t('monitoring.latency.measured_at', { when: formatDateTime(new Date(latency.at)) })}
                         </span>
                       </span>
                     </Tooltip>
+                  ) : latency ? (
+                    <span className={cn('tabular-nums', latency.ms === null ? 'text-muted-foreground' : 'text-foreground')}>
+                      {formatLatency(latency.ms)}
+                    </span>
                   ) : (
                     <span className="tabular-nums text-muted-foreground">{EM_DASH}</span>
                   )}
@@ -284,7 +282,7 @@ export function MonitoringTable({
 
       {/* Only while the column is empty. Once a check has filled it the sentence is noise,
           telling operators to do the thing they just did. */}
-      {Object.keys(probes).length === 0 && (
+      {services.every((service) => serviceLatency(service, probes[service.id]) === null) && (
         <p className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
           <Activity className="h-3 w-3 shrink-0" aria-hidden />
           {t('monitoring.latency.column_hint')}

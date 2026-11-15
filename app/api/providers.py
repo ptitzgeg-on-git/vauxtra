@@ -9,6 +9,15 @@ from app.api.sync import withdraw_service_routes
 from app.auth import require_auth, require_auth_or_setup
 from app.config import encrypt_secret
 from app.models import add_log, get_db, get_db_ctx
+from app.probe import public_hostname
+from app.providers.base import ProviderListingRefused
+from app.providers.cloudflare_access import (
+    EDIT_PERMISSION,
+    HOST_STATES,
+    READ_PERMISSION,
+    classify_host,
+    unknown_host,
+)
 from app.providers.factory import PROVIDER_TYPES, create_provider
 from app.text import plural, verb
 from app.validators import is_valid_url
@@ -349,6 +358,136 @@ def list_tunnel_health(request: Request):
         "down": len(items) - healthy,
         "items": items,
     }
+
+
+def _tunnel_routes(conn, provider_row) -> dict[str, str]:
+    """{hostname: last probe detail} for the services Vauxtra routes through this tunnel."""
+    rows = conn.execute(
+        "SELECT expose_mode, tunnel_hostname, subdomain, domain, status_detail "
+        "FROM services WHERE expose_mode='tunnel' AND tunnel_provider_id=?",
+        (provider_row["id"],),
+    ).fetchall()
+    return {public_hostname(r): str(r["status_detail"] or "") for r in rows}
+
+
+def _access_report(provider_row, routes: dict[str, str]) -> dict[str, Any]:
+    """One tunnel's Access picture: what the token may read, and each route's state."""
+    provider = create_provider(provider_row)
+    overview = provider.access_overview()
+    try:
+        hostnames = sorted({h["id"] for h in provider.list_hosts()} | set(routes))
+    except ProviderListingRefused:
+        hostnames = sorted(routes)
+
+    permission, reason = overview["permission"], overview["reason"]
+    if permission == "unverified" and any(d.startswith("edge_access") for d in routes.values()):
+        # The edge redirected a probe to an Access login, and the listing said there is no
+        # application. The listing is the one that is wrong: the token is blind to Access.
+        permission, reason = "missing", "access_observed"
+
+    hosts = []
+    for hostname in hostnames:
+        observed = routes.get(hostname, "")
+        if permission == "ok":
+            info = classify_host(hostname, overview["apps"])
+            if info["state"] == "open" and observed.startswith("edge_access"):
+                # Seen at the edge, absent from the account: a zone-level application.
+                info = {**info, "state": "protected", "reason": "seen_at_edge"}
+        else:
+            info = unknown_host(reason)
+        hosts.append({"hostname": hostname, "managed": hostname in routes, "observed": observed, **info})
+
+    counts = dict.fromkeys(HOST_STATES, 0)
+    for host in hosts:
+        counts[host["state"]] += 1
+    return {
+        "permission": permission,
+        "reason": reason,
+        "read_permission": READ_PERMISSION,
+        "edit_permission": EDIT_PERMISSION,
+        "application_count": len(overview["apps"]),
+        "policies": overview["policies"],
+        "counts": counts,
+        "hosts": hosts,
+    }
+
+
+@router.get("/api/providers/tunnels/access")
+def list_tunnel_access(request: Request):
+    """Which tunnel routes Cloudflare Access protects, per tunnel provider.
+
+    Policy rules (e-mail addresses, IP lists) are never part of the answer: names and
+    decisions only. See `app/providers/cloudflare_access.py`.
+    """
+    require_auth(request)
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM providers WHERE type='cloudflare_tunnel' AND enabled=1 ORDER BY id"
+    ).fetchall()
+    routes = {row["id"]: _tunnel_routes(conn, row) for row in rows}
+    conn.close()
+
+    items = []
+    for row in rows:
+        try:
+            report = _access_report(row, routes[row["id"]])
+        except Exception:
+            report = {
+                "permission": "error", "reason": "unreachable",
+                "read_permission": READ_PERMISSION, "edit_permission": EDIT_PERMISSION,
+                "application_count": 0, "policies": [],
+                "counts": dict.fromkeys(HOST_STATES, 0), "hosts": [],
+            }
+        items.append({"id": row["id"], "name": row["name"], **report})
+    return {"total": len(items), "items": items}
+
+
+class AccessProtectIn(BaseModel):
+    hostname: str
+    policy_ids: list[str] = Field(min_length=1)
+
+
+@router.post("/api/providers/{pid}/access/apps", status_code=201)
+def protect_tunnel_route(pid: int, request: Request, body: AccessProtectIn):
+    """Create the Access application that puts a login in front of one tunnel route."""
+    require_auth(request, scope="write")
+    hostname = body.hostname.strip().strip(".").lower()
+    policy_ids = [p.strip() for p in body.policy_ids if p.strip()]
+    if not hostname or not policy_ids:
+        raise HTTPException(422, "A hostname and at least one policy are required")
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    if not row or row["type"] != "cloudflare_tunnel":
+        raise HTTPException(404, "Cloudflare Tunnel provider not found")
+
+    provider = create_provider(row)
+    try:
+        served = {h["id"] for h in provider.list_hosts()}
+    except ProviderListingRefused:
+        raise HTTPException(502, "Cloudflare would not return the tunnel configuration") from None
+    if hostname not in served:
+        raise HTTPException(400, f"{hostname} is not a route of this tunnel")
+
+    overview = provider.access_overview()
+    if overview["permission"] == "ok":
+        if classify_host(hostname, overview["apps"])["state"] == "protected":
+            raise HTTPException(409, f"{hostname} is already protected by Access")
+        known = {p["id"] for p in overview["policies"]}
+        unknown = [p for p in policy_ids if p not in known]
+        if known and unknown:
+            raise HTTPException(400, "Unknown Access policy: " + ", ".join(unknown))
+
+    created = provider.create_access_app(hostname, policy_ids)
+    if not created["ok"]:
+        if created["refused"]:
+            raise HTTPException(
+                403, f"The tunnel token may not create Access applications: add {EDIT_PERMISSION}",
+            )
+        raise HTTPException(502, "Cloudflare did not create the Access application")
+    add_log("info", f"Access: application created for {hostname} ({len(policy_ids)} policies)")
+    return {"ok": True, "hostname": hostname, "application_id": created["id"], "policy_ids": policy_ids}
 
 
 @router.post("/api/providers", status_code=201)

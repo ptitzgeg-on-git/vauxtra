@@ -583,6 +583,8 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_provider_health` | Get provider health |
 | `get_all_providers_health` | Get all providers health (batch) |
 | `get_tunnel_health` | Aggregate tunnel health |
+| `get_tunnel_access` | Access state of every tunnel route |
+| `protect_tunnel_route` | Put Access in front of one tunnel route |
 | `create_provider` | Create a new provider |
 | `update_provider` | Update an existing provider |
 | `delete_provider` | Delete a provider (409 while services use it; `force=True` unlinks them) |
@@ -891,12 +893,14 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/types` | Supported provider types |
 | `GET` | `/api/providers/health` | All providers health (batch) |
 | `GET` | `/api/providers/tunnels/health` | Tunnel providers health |
+| `GET` | `/api/providers/tunnels/access` | Which tunnel routes Cloudflare Access protects (`protected`, `partial`, `open`, `unknown`), and whether the token may read Access. An empty listing reads as `unverified`, never as open: Cloudflare returns the same empty list to a token without "Access: Apps and Policies Read" |
 | `POST` | `/api/providers/validate-draft` | Validate before saving |
 | `PUT` | `/api/providers/{pid}` | Update a provider |
 | `DELETE` | `/api/providers/{pid}` | Delete a provider. `?force=true` unlinks the services still using it; add `?withdraw=true` to take its proxy hosts and DNS records down first, without it they stay published on a provider Vauxtra no longer knows about |
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |
+| `POST` | `/api/providers/{pid}/access/apps` | Protect one tunnel route with a new Access application built from reusable policies (`{hostname, policy_ids}`). Needs the `write` scope and a token with "Access: Apps and Policies Edit" |
 
 #### Direct provider access
 

@@ -29,8 +29,10 @@ import {
   STATUS_TONE,
   isTunnelService,
   serviceHost,
+  serviceLatency,
   serviceStatus,
   serviceTarget,
+  statusCaption,
   summarizeUptime,
   type LatencyProbe,
 } from './uptime';
@@ -133,6 +135,8 @@ export function ServiceDrawer({
   const tunnel = isTunnelService(service);
   const noPort = hasNoPort(service);
   const summary = summarizeUptime(history, now);
+  const latency = serviceLatency(service, probe);
+  const caption = statusCaption(service, t);
   const runs = collapse(history);
   const availability = summary.availability === null ? null : formatPercent(summary.availability * 100, 1);
 
@@ -182,6 +186,10 @@ export function ServiceDrawer({
           </span>
         </div>
 
+        {caption && (
+          <p className={cn('text-sm', caption.failed ? 'text-destructive' : 'text-muted-foreground')}>{caption.text}</p>
+        )}
+
         <div className="grid gap-3 rounded-xl border border-border bg-muted/30 p-3 sm:grid-cols-3">
           <div>
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -194,7 +202,7 @@ export function ServiceDrawer({
               {t('monitoring.table.latency')}
             </p>
             <p className="text-lg font-semibold tabular-nums text-foreground">
-              {probe ? formatLatency(probe.latencyMs) : EM_DASH}
+              {latency ? formatLatency(latency.ms) : EM_DASH}
             </p>
           </div>
           <div>
@@ -258,7 +266,7 @@ export function ServiceDrawer({
                 <Skeleton className="h-10 w-full" />
                 <Skeleton className="h-10 w-full" />
               </div>
-            ) : runs.length === 0 && historyError && !tunnel && !noPort ? (
+            ) : runs.length === 0 && historyError && !noPort ? (
               <InlineAlert tone="warning" title={t('monitoring.history.load_failed')}>
                 {t('monitoring.history.load_failed_hint')}
               </InlineAlert>
@@ -268,11 +276,7 @@ export function ServiceDrawer({
                 icon={<History />}
                 title={t('monitoring.timeline_empty')}
                 description={
-                  tunnel
-                    ? t('monitoring.tunnel_not_probed_hint')
-                    : noPort
-                      ? t('monitoring.no_port_not_probed_hint')
-                      : t('monitoring.drawer.timeline_empty_hint')
+                  noPort ? t('monitoring.no_port_not_probed_hint') : t('monitoring.drawer.timeline_empty_hint')
                 }
               />
             ) : (
