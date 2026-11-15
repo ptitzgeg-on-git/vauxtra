@@ -468,8 +468,9 @@ def import_backup(request: Request, body: RestoreRequest):
                    (id, subdomain, domain, target_ip, target_port, forward_scheme,
                     websocket, dns_provider_id, proxy_provider_id, tunnel_provider_id,
                     expose_mode, public_target_mode, auto_update_dns, tunnel_hostname,
-                    dns_ip, npm_host_id, enabled, status, last_checked, created_at, icon_url)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    dns_ip, npm_host_id, enabled, status, last_checked, created_at, icon_url,
+                    access_app_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     svc.get("id"),
                     svc.get("subdomain"),
@@ -492,6 +493,9 @@ def import_backup(request: Request, body: RestoreRequest):
                     svc.get("last_checked"),
                     svc.get("created_at"),
                     svc.get("icon_url", ""),
+                    # Without it a restored instance forgot which Access applications it
+                    # created, and deleting a restored service left its own one behind.
+                    str(svc.get("access_app_id") or ""),
                 ),
             )
 

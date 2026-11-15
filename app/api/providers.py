@@ -490,8 +490,33 @@ def protect_tunnel_route(pid: int, request: Request, body: AccessProtectIn):
                 403, f"The tunnel token may not create Access applications: add {EDIT_PERMISSION}",
             )
         raise HTTPException(502, "Cloudflare did not create the Access application")
+    recorded = _record_access_app(row, hostname, created["id"])
     add_log("info", f"Access: application created for {hostname} ({len(policy_ids)} policies)")
-    return {"ok": True, "hostname": hostname, "application_id": created["id"], "policy_ids": policy_ids}
+    return {
+        "ok": True, "hostname": hostname, "application_id": created["id"],
+        "policy_ids": policy_ids, "recorded_on": recorded,
+    }
+
+
+def _record_access_app(provider_row, hostname: str, app_id: str) -> int:
+    """Keep the id on the services this route belongs to, so their deletion can remove it.
+
+    Only an application Vauxtra created is recorded: that is what makes it Vauxtra's to
+    delete later. A route protected by hand in the dashboard keeps an empty column and is
+    never touched. Returns how many services now carry the id (0 for a route of the tunnel
+    that no service of this instance owns).
+    """
+    with get_db_ctx() as conn:
+        rows = conn.execute(
+            "SELECT id, expose_mode, tunnel_hostname, subdomain, domain "
+            "FROM services WHERE expose_mode='tunnel' AND tunnel_provider_id=?",
+            (provider_row["id"],),
+        ).fetchall()
+        ids = [r["id"] for r in rows if public_hostname(r) == hostname]
+        if ids:
+            conn.executemany("UPDATE services SET access_app_id=? WHERE id=?", [(app_id, i) for i in ids])
+            conn.commit()
+    return len(ids)
 
 
 @router.post("/api/providers", status_code=201)
