@@ -23,7 +23,8 @@ from app.models import (
     set_tags,
 )
 from app.probe import is_tunnel, probe_many, probe_service, public_hostname
-from app.providers.base import supports_suspension
+from app.providers.base import ProviderListingRefused, supports_suspension
+from app.providers.cloudflare_access import EDIT_PERMISSION, READ_PERMISSION, covers_only
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import (
     describe_public_target_failure,
@@ -2060,6 +2061,78 @@ def _log_orphaned_webhooks(hooks: list[dict], what: str, conn=None) -> None:
     )
 
 
+def _withdraw_access_app(conn, svc, sid: int, public_host: str) -> list[str]:
+    """Delete the Access application Vauxtra created in front of this route, once it is gone.
+
+    Measured on 2026-11-15: a route protected from the panel and then deleted left its
+    application in the account. Nothing listed it any more (the Access tab reads tunnel
+    routes), and a new route on the same name would have been behind a login nobody chose.
+
+    Only what this instance created is in reach: the id recorded by `protect_tunnel_route`,
+    never an application found by name. Even that one is kept, and the deletion reported,
+    whenever removing it could open something:
+
+      * the route is still served, because its withdrawal failed or could not be confirmed;
+      * the application no longer covers this one hostname alone: it was edited in the
+        dashboard, or the service was renamed after it was protected;
+      * another service still carries the same id. That one is not reported: the application
+        still protects a live route, and it goes with the last service that carries it.
+
+    Returns one message per thing left behind, in the shape of `withdraw_service_routes`.
+    """
+    app_id = str(svc["access_app_id"] or "").strip()
+    if not app_id:
+        return []
+    shared = conn.execute(
+        "SELECT COUNT(*) FROM services WHERE access_app_id=? AND id<>?", (app_id, sid),
+    ).fetchone()[0]
+    if shared:
+        return []
+
+    row = None
+    if svc["tunnel_provider_id"]:
+        row = conn.execute("SELECT * FROM providers WHERE id=?", (svc["tunnel_provider_id"],)).fetchone()
+    if not row or row["type"] != "cloudflare_tunnel":
+        return ["Access application left in place: no Cloudflare Tunnel provider left to remove it with"]
+
+    kept = "Access application left in place"
+    try:
+        provider = create_provider(row)
+        try:
+            served = {h["id"] for h in provider.list_hosts()}
+        except ProviderListingRefused:
+            return [f"{kept}: Cloudflare would not confirm the route is gone"]
+        if public_host in served:
+            return [f"{kept}: the route is still served"]
+
+        found = provider.get_access_app(app_id)
+        if found["gone"]:
+            return []  # already deleted, in the dashboard or by an earlier attempt
+        if not found["ok"]:
+            if found["refused"]:
+                return [f"{kept}: the tunnel token may not read it, add {READ_PERMISSION}"]
+            return [f"{kept}: Cloudflare did not return it"]
+        if not covers_only(found["app"], public_host):
+            name = str(found["app"].get("name") or app_id)
+            add_log(
+                "warn",
+                f"[Delete] Access application kept on {row['name']}: {name} no longer "
+                f"covers {public_host} alone",
+                conn,
+            )
+            return [f"{kept}: {name} no longer covers this route alone"]
+
+        deleted = provider.delete_access_app(app_id)
+        if deleted["ok"] or deleted["gone"]:
+            add_log("info", f"[Delete] Access application removed on {row['name']}: {public_host}", conn)
+            return []
+        if deleted["refused"]:
+            return [f"{kept}: the tunnel token may not delete it, add {EDIT_PERMISSION}"]
+        return [f"Failed to delete the Access application on {row['name']}"]
+    except Exception as e:
+        return [f"Access ({row['name']}): {redact_query_secrets(str(e))}"]
+
+
 @router.delete("/api/services/{sid}")
 def delete_service(sid: int, request: Request):
     require_auth(request, scope="write")
@@ -2076,6 +2149,9 @@ def delete_service(sid: int, request: Request):
     # the extra proxies and DNS servers listed in `service_push_targets` went on serving a
     # deleted service, and nothing in Vauxtra was left to point at them.
     errors = withdraw_service_routes(conn, svc, sid)
+    # After the routes, never before: the application is what keeps strangers out, and it
+    # only goes once the tunnel confirms there is nothing left behind it.
+    errors.extend(_withdraw_access_app(conn, svc, sid, public_host))
 
     # Read before the row goes: nothing here cascades, so these webhooks survive the service
     # with its id still written in their scope, and this is the last moment anything can name
@@ -2456,6 +2532,7 @@ def bulk_action(body: _BulkActionBody, request: Request):
             # ten services in the table has to withdraw exactly what deleting them one by
             # one would.
             errors.extend(f"{public_host}: {e}" for e in withdraw_service_routes(conn, svc, sid))
+            errors.extend(f"{public_host}: {e}" for e in _withdraw_access_app(conn, svc, sid, public_host))
 
             # Same question as the single delete, asked per service: selecting ten rows in
             # the table has to leave the same trace as deleting them one by one.

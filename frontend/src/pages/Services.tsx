@@ -650,9 +650,14 @@ export function Services() {
   const handleDelete = useCallback(
     async (service: Service) => {
       const host = publicHostOf(service);
+      // Said before the click, not after: the login in front of this route goes with it.
+      // Two paragraphs rather than one joined sentence, which Japanese and Chinese would
+      // not want separated by a space.
+      const lines = [t('services.confirm.delete_body', { host })];
+      if (service.access_app_id) lines.push(t('services.confirm.delete_body_access'));
       const ok = await confirm({
         title: t('services.confirm.delete_title'),
-        message: t('services.confirm.delete_body', { host }),
+        message: lines.join('\n\n'),
         confirmLabel: t('common.delete'),
         variant: 'danger',
       });
@@ -679,9 +684,14 @@ export function Services() {
         return;
       }
       if (action === 'delete') {
+        const lines = [t('services.confirm.bulk_delete_body', { count })];
+        const protectedCount = selectedServices.filter((s) => s.access_app_id).length;
+        if (protectedCount > 0) {
+          lines.push(t('services.confirm.bulk_delete_body_access', { count: protectedCount }));
+        }
         const ok = await confirm({
           title: t('services.confirm.bulk_delete_title', { count }),
-          message: t('services.confirm.bulk_delete_body', { count }),
+          message: lines.join('\n\n'),
           confirmLabel: t('common.delete'),
           variant: 'danger',
           requireText: count > 3 ? String(count) : undefined,

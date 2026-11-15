@@ -267,7 +267,12 @@ Limitations:
 5. Optional: add **Account → Access: Apps and Policies → Read** to see which routes Access
    protects (Monitoring → Access), or **Edit** to also pick reusable Access policies on the
    service form when a route uses this tunnel. Vauxtra creates an Access application from
-   policies that already exist; it never changes or removes one.
+   policies that already exist and never changes a policy. It records the application it
+   created on the service, and deleting that service deletes the application too, once the
+   route is gone. It is left in place, and the deletion says why, when the route is still
+   served or when the application was edited in Cloudflare to cover more than this route.
+   It also stays, silently, while another service still carries it. An application written
+   by hand in Cloudflare is never touched.
 
 **Note on the checks that are not run:** a routine test leaves two of them out, and the card
 says so ("Passed, 2 checks not run") and lists them in grey. Neither is a warning, and
@@ -885,7 +890,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
 | `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
 | `PATCH` | `/api/services/{sid}` | Set `tag_ids`, `environment_ids` or `icon_url` and nothing else. No provider is called, a key left out keeps its value, any other key is a 422 |
-| `DELETE` | `/api/services/{sid}` | Delete a service |
+| `DELETE` | `/api/services/{sid}` | Delete a service and withdraw its routes. The Access application Vauxtra created for it goes too, once the route is gone; one it kept is named in `errors[]` |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |
 | `GET` | `/api/services/{sid}/drift` | Check for drift |
@@ -908,7 +913,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |
-| `POST` | `/api/providers/{pid}/access/apps` | Protect one tunnel route with a new Access application built from reusable policies (`{hostname, policy_ids}`). Needs the `write` scope and a token with "Access: Apps and Policies Edit" |
+| `POST` | `/api/providers/{pid}/access/apps` | Protect one tunnel route with a new Access application built from reusable policies (`{hostname, policy_ids}`). The application id is recorded on the services that publish this hostname (`recorded_on` counts them), so deleting the service deletes it. Needs the `write` scope and a token with "Access: Apps and Policies Edit" |
 
 #### Direct provider access
 
