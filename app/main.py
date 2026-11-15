@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.auth import SESSION_MAX_AGE_SECONDS
 from app.config import DEBUG, HTTPS_ONLY, SECRET_KEY
 from app.limiter import limiter
 from app.models import init_db
@@ -38,9 +40,19 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
-    from app.auth import auth_is_downgraded, has_password_configured
+    from app.auth import (
+        auth_is_downgraded,
+        has_password_configured,
+        revoke_sessions_if_env_password_changed,
+    )
     from app.models import get_db
     from app.scheduler import start
+
+    try:
+        if revoke_sessions_if_env_password_changed():
+            _logger.info("APP_PASSWORD changed since the last start: every open session was ended.")
+    except Exception as e:  # noqa: BLE001 -- a boot is not refused over a fingerprint
+        _logger.error("Could not compare APP_PASSWORD with the last start: %s", e)
 
     # Both of these are states an operator reaches without ever being told. The wizard has a
     # *Skip* button on the password step, and a database restored from the wrong file can
@@ -128,7 +140,7 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
     session_cookie="vauxtra_session",
-    max_age=7 * 24 * 60 * 60,
+    max_age=SESSION_MAX_AGE_SECONDS,  # slides; `_session_is_fresh` holds the absolute limit
     https_only=HTTPS_ONLY,
     same_site="strict",
 )
@@ -158,6 +170,67 @@ _CSP_EXEMPT_PATHS = frozenset({"/api/docs", "/openapi.json"})
 
 _warned_about_forwarded_headers = False
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+_warned_about_origin_mismatch = False
+
+
+def _own_hosts(request: Request) -> set[str]:
+    """Every `host[:port]` this request may legitimately have been addressed to.
+
+    `Host` first. Behind a reverse proxy that rewrites it (`proxy_pass http://vauxtra:8888;`
+    without `proxy_set_header Host $host;`), the browser's origin is the public name and
+    `Host` the upstream one, so every write of the interface would be refused, the login
+    included. `X-Forwarded-Host` is accepted when `FORWARDED_ALLOW_IPS` says a proxy is in
+    front: a browser cannot attach it to a cross-site request without a CORS preflight,
+    which this application never grants for that header.
+    """
+    hosts = {request.headers.get("host", "").strip().lower()}
+    if os.environ.get("FORWARDED_ALLOW_IPS", "").strip():
+        forwarded = request.headers.get("x-forwarded-host", "")
+        hosts.update(h.strip().lower() for h in forwarded.split(",") if h.strip())
+    hosts.discard("")
+    return hosts
+
+
+def _is_cross_site_write(request: Request) -> bool:
+    """A state-changing request a browser sent on behalf of another site.
+
+    `SameSite=Strict` keeps the session cookie off those, but an open instance grants
+    `admin` with no cookie at all, so a plain HTML form on any page could reach
+    `/api/reset`. Callers without `Origin` (curl, the MCP bridge, scripts holding a Bearer
+    key) are not browsers acting for a page, and pass.
+
+    The scheme of the origin is not compared, only its host: behind a proxy that ends TLS,
+    the browser says `https://` and this process sees plain HTTP.
+    """
+    global _warned_about_origin_mismatch
+    if request.method.upper() in _SAFE_METHODS:
+        return False
+    origin = request.headers.get("origin", "").strip()
+    if origin:
+        if origin in _cors_origins:
+            return False
+        parsed = urlsplit(origin)
+        if parsed.netloc and parsed.netloc.lower() in _own_hosts(request):
+            return False
+        if not _warned_about_origin_mismatch:
+            # Said once: behind a misconfigured proxy every write fails the same way, and a
+            # bare 403 in the browser does not point at the proxy.
+            _warned_about_origin_mismatch = True
+            _logger.warning(
+                "Refused a write whose Origin (%s) does not match the Host header (%s). Behind "
+                "a reverse proxy, forward the original host (nginx: `proxy_set_header Host "
+                "$host;`), or list the public origin in CORS_ORIGINS.",
+                origin, request.headers.get("host", ""),
+            )
+        return True
+    # A browser always sends `Origin` on a cross-origin write, so this is the rare case of
+    # one that sent only the fetch metadata. `same-site` is refused too: a sibling
+    # subdomain is another application, and `SameSite=Strict` would hand it the cookie.
+    fetch_site = request.headers.get("sec-fetch-site", "").strip().lower()
+    return fetch_site in ("cross-site", "same-site")
+
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -177,6 +250,9 @@ async def security_headers(request: Request, call_next):
             "limit is shared by every visitor and one attacker can lock you out. Set "
             "FORWARDED_ALLOW_IPS to the address of your reverse proxy."
         )
+
+    if _is_cross_site_write(request):
+        return JSONResponse({"detail": "Cross-site request refused"}, status_code=403)
 
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"

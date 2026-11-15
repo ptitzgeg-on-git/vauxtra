@@ -7,7 +7,7 @@ Exposes Vauxtra's full DNS & proxy management API as [MCP](https://modelcontextp
 ## Prerequisites
 
 1. A running Vauxtra instance (`http://localhost:8888` or remote)
-2. An API key — create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `get_logs`, `clear_logs`, `stream_logs_snapshot`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, and `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches.
+2. An API key: create one in **Vauxtra → Settings → API Keys**. Scopes are `read`, `write` and `admin`. `write` covers every tool except these, which need `admin`: `change_password`, `get_logs`, `clear_logs`, `stream_logs_snapshot`, `mark_setup_complete`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `create_backup`, `create_secure_backup`, `restore_backup`, `reset_all_data`, `add_docker_endpoint`, `save_settings` when the body carries `public_target_sources`, the one setting that chooses a URL the server goes and fetches, and `update_provider` when it moves the URL to another scheme, host or port without a new `password`, since the stored credential would follow it there.
 3. Python 3.12+ with dependencies installed:
 
 ```bash

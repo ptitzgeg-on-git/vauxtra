@@ -445,7 +445,11 @@ def bulk_service_action(
 
 @mcp.tool()
 def add_docker_endpoint(name: str, docker_host: str, enabled: bool = True) -> dict[str, Any]:
-    """Create a Docker endpoint for container discovery."""
+    """Create a Docker endpoint for container discovery. Needs an `admin` key.
+
+    A `tcp://` host or a `unix://` socket makes the server connect where you say, which is
+    a grant over its machine and network rather than a configuration edit.
+    """
     r = client.post(
         "/docker/endpoints",
         json={

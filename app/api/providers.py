@@ -10,7 +10,7 @@ from app.auth import require_auth, require_auth_or_setup
 from app.config import encrypt_secret
 from app.models import add_log, get_db, get_db_ctx
 from app.probe import public_hostname
-from app.providers.base import ProviderListingRefused
+from app.providers.base import ProviderListingRefused, url_origin, validate_provider_url
 from app.providers.cloudflare_access import (
     EDIT_PERMISSION,
     HOST_STATES,
@@ -43,7 +43,11 @@ def _normalize_provider_url(provider_type: str, url_value: str) -> str:
         return _DEFAULT_PROVIDER_URLS[provider_type]
     if not is_valid_url(val):
         raise ValueError("Invalid URL (must start with http:// or https://)")
-    return val.rstrip("/")
+    # Link-local and cloud metadata hosts (169.254.169.254 in any spelling, fe80::/10,
+    # `metadata.google.internal`): a provider test sends the stored credentials to whatever
+    # the URL names. A name that only resolves there is refused at connection time by
+    # `TimeoutSession`.
+    return validate_provider_url(val).rstrip("/")
 
 
 def _safe_json_load(raw: str | None) -> dict[str, Any]:
@@ -535,6 +539,23 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
     except ValueError as e:
         conn.close()
         raise HTTPException(400, str(e)) from e
+    # A `write` key never reads the stored secret back, but it could send it elsewhere:
+    # point the URL at a host it controls and the next scheduler pass hands the password
+    # over. Moving the secret is therefore an `admin` act, unless the caller brings a new
+    # secret of its own, which it already knows. Scheme counts too: https to http sends
+    # the same secret in clear.
+    if not body.password and url_origin(url_val) != url_origin(row["url"]):
+        try:
+            require_auth(request, scope="admin")
+        except HTTPException as e:
+            conn.close()
+            if e.status_code == 403:
+                raise HTTPException(
+                    403,
+                    "Changing the scheme, host or port of a provider sends its stored "
+                    "credential there: it needs an admin key, or a new password with it.",
+                ) from e
+            raise
     username = body.username if body.username is not None else row["username"]
     # The stored value is read through `bool` as well, so a row left holding a number
     # that is neither 0 nor 1 by an earlier version is put back in range by the next
