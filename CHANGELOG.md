@@ -41,6 +41,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   MCP `get_tunnel_access` and `protect_tunnel_route`). The token needs
   "Access: Apps and Policies Read", and "Edit" to protect a route.
 
+### Security
+
+The fixes of the 2026-10-09 review, carried over to this branch.
+
+- **`/metrics` needs a `read` API key.** It told anyone who could reach the port which
+  provider types run the network and how many services are down. A Prometheus scrape now
+  sends the key as a bearer token (`authorization: credentials_file:` in the scrape config,
+  see `docs/HOWTO.md`). **An existing scrape answers 401 until it does.**
+- **A write key can no longer send a provider's stored credential elsewhere.** Changing the
+  scheme, host or port of a provider without a new password needs an `admin` key: the next
+  call would have carried the stored secret to the new address.
+- **Provider URLs on link-local and cloud metadata addresses are refused**, in every
+  spelling (`169.254.169.254`, `2852039166`, `[::ffff:169.254.169.254]`, `fe80::/10`,
+  `metadata.google.internal`). A name that resolves there is refused when the connection is
+  made, so it never receives a request either.
+- **Provider redirects are followed only on the same origin**, plus the http to https
+  upgrade of the same host. A 307 replayed the Pi-hole and Technitium login body to whatever
+  host it named.
+- **Signing out ends every copy of the session cookie**, which also signs out the other
+  devices. A session also lasts seven days from sign-in at most: the cookie's own lifetime
+  slid on every response.
+- **Changing `APP_PASSWORD` ends the open sessions at the next start.** The server keeps a
+  slow, salted fingerprint of it to notice the change, never the value.
+- **The setup wizard can no longer set a password once one was ever configured**, and the
+  write is a single conditional statement, so two concurrent calls cannot both win.
+- **Cross-site writes are refused (403).** A write whose `Origin` is neither the instance
+  itself nor a configured CORS origin, or that the browser marks cross-site, never reaches
+  the route.
+- **Creating a Docker endpoint needs an `admin` key**: a `tcp://` host or a `unix://` socket
+  makes the server connect where the caller says. The error a failed daemon connection
+  returns no longer quotes the exception; the server log has it.
+- **The container list returns routing labels only** (`vauxtra.*`, `traefik.*`, the compose
+  project and service), without the ones that carry credentials. Labels routinely hold
+  basic-auth hashes and tokens, and the list is open to read keys.
+- **One webhook takes one Apprise URL.** `discord://...,json://host` hid a generic target,
+  which needs `admin`, behind a harmless first one.
+- **A non-ASCII candidate against a plaintext `APP_PASSWORD` is a refused login**, not a 500.
+- **The generated secret key file is created 0600**, and an older readable one is
+  restricted at start.
+
 ---
 
 ## [1.7.0] — 2026-10-01

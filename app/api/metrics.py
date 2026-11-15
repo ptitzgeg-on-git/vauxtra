@@ -6,9 +6,10 @@ HELP text says so, because `sum()` over either family answers with twice the tru
 the `all` series on its own, or add up the parts, but never the whole family at once.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 
+from app.auth import require_auth
 from app.models import (
     LOG_LEVELS,
     WEBHOOK_DELIVERY_STATUSES,
@@ -40,12 +41,16 @@ def _gauge(name: str, value, labels: dict | None = None) -> str:
 
 
 @router.get("/metrics", response_class=PlainTextResponse)
-def prometheus_metrics() -> str:
+def prometheus_metrics(request: Request) -> str:
     """
     Expose Vauxtra operational metrics in Prometheus text exposition format.
     Intended to be scraped by a Prometheus instance.
-    No authentication required (standard Prometheus scrape path).
+
+    Requires a `read` API key, sent as a bearer token (`authorization: credentials` in the
+    scrape config). It used to be open: anyone who could reach the port learned which
+    provider types run the network, how many services are down and the schema version.
     """
+    require_auth(request)
     conn = get_db()
     lines: list[str] = []
     try:
