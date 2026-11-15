@@ -264,6 +264,10 @@ Limitations:
    - **Account → Cloudflare Tunnel → Edit** (required for route management)
    - **Zone → DNS → Edit** (required for DNS records)
 4. In Vauxtra: Add provider → Cloudflare Tunnel → enter tunnel ID, account ID, and token
+5. Optional: add **Account → Access: Apps and Policies → Read** to see which routes Access
+   protects (Monitoring → Access), or **Edit** to also pick reusable Access policies on the
+   service form when a route uses this tunnel. Vauxtra creates an Access application from
+   policies that already exist; it never changes or removes one.
 
 **Note on the checks that are not run:** a routine test leaves two of them out, and the card
 says so ("Passed, 2 checks not run") and lists them in grey. Neither is a warning, and

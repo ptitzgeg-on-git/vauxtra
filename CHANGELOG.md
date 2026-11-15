@@ -7,6 +7,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Added
+
+- **A tunnel route can be put behind Cloudflare Access from the service form.** Under the
+  tunnel hostname, the form lists the reusable Access policies of the tunnel's account; the
+  ones ticked become an Access application for that hostname once the route is published,
+  through `POST /api/providers/{pid}/access/apps`. Nothing ticked publishes the route as
+  before, and a hostname Access already covers offers nothing and points to the Access tab.
+  An application Cloudflare refuses leaves the route published, and the last step says what
+  is missing. Needs *Access: Apps and Policies Edit* on the tunnel token.
+
 ### Security
 
 - **The image installs its Python dependencies from a hashed lock.** `requirements.txt` now
