@@ -45,9 +45,18 @@ updates:
     # published no major above 8. Reopening that PR every week produces a red build with no
     # decision attached to it. Remove this entry as soon as typescript-eslint ships a release
     # whose peer range admits 7.x -- the bump is wanted, only its blocker is upstream.
+    #
+    # ESLint 10 is in the same position. `eslint-plugin-jsx-a11y` 6.10.2, still its latest
+    # release, declares `eslint@"^3 || ... || ^9"` as a peer, so the PR for it (#113) never
+    # got past `npm ci` either. typescript-eslint and react-hooks already admit 10.x; drop
+    # these two entries once jsx-a11y does.
     ignore:
       - dependency-name: typescript
         versions: ["7.x"]
+      - dependency-name: eslint
+        versions: ["10.x"]
+      - dependency-name: "@eslint/js"
+        versions: ["10.x"]
 
   - package-ecosystem: github-actions
     directory: /
