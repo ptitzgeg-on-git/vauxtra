@@ -247,3 +247,28 @@ def is_valid_url(value: str) -> bool:
 
 def is_valid_tag_color(value: str) -> bool:
     return value in _COLOR_VALID
+
+
+# The shapes Cloudflare gives the ids Vauxtra stores for it. Each one is written into an API
+# path (`/accounts/{account}/cfd_tunnel/{tunnel}/...`, `/zones/{zone}`), so a value of any
+# other shape never gets there: `../` in one aimed the stored token at another endpoint.
+# The ids read back from Cloudflare's own answers (a zone found by name, a DNS record) go
+# through the same gate before they reach a path.
+_CLOUDFLARE_IDS = {
+    "account": re.compile(r"[0-9a-f]{32}"),
+    "zone": re.compile(r"[0-9a-f]{32}"),
+    "tunnel": re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+    "record": re.compile(r"[0-9a-f]{32}"),
+}
+CLOUDFLARE_ID_SHAPES = {
+    "account": "32 hexadecimal characters",
+    "zone": "32 hexadecimal characters",
+    "tunnel": "a UUID",
+    "record": "32 hexadecimal characters",
+}
+
+
+def cloudflare_id(value, kind: str) -> str:
+    """`value` stripped and lowercased when it has the shape of a Cloudflare `kind` id, else ""."""
+    text = str(value or "").strip().lower()
+    return text if _CLOUDFLARE_IDS[kind].fullmatch(text) else ""

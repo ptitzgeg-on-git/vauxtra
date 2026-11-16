@@ -24,7 +24,20 @@ from app.models import (
 )
 from app.probe import is_tunnel, probe_many, probe_service, public_hostname
 from app.providers.base import ProviderListingRefused, supports_suspension
-from app.providers.cloudflare_access import EDIT_PERMISSION, READ_PERMISSION, covers_only
+from app.providers.cloudflare_access import (
+    EDIT_PERMISSION,
+    READ_PERMISSION,
+    STRENGTH_RANK,
+    already_has_application,
+    app_label,
+    app_strength,
+    classify_host,
+    covers_only,
+    covers_whole,
+    deciding_application,
+    exact_application,
+    is_access_app_id,
+)
 from app.providers.factory import PROVIDER_TYPES, create_provider, host_id_is_hostname
 from app.public_target import (
     describe_public_target_failure,
@@ -683,6 +696,11 @@ def _run_preflight(conn, body, service_id: int | None = None) -> dict:
     }
 
 
+# A person picks a handful of policies for one service. The bound keeps the request body
+# Vauxtra sends Cloudflare on the token's behalf the size of such a choice.
+MAX_ACCESS_POLICIES = 25
+
+
 class ServiceIn(BaseModel):
     # Unknown keys are rejected rather than ignored. A client that reads a service back and
     # PUTs it again sends `tags`/`environments` (the serialized relations), not the
@@ -711,6 +729,10 @@ class ServiceIn(BaseModel):
     icon_url:          str       = ""
     extra_proxy_provider_ids: list[int] = []
     extra_dns_provider_ids: list[int] = []
+    # Sent with the service so that its route is never published before its login: the
+    # application is created first, and a refusal stops the save before any provider is
+    # written to. Tunnel mode only.
+    access_policy_ids: list[str] = []
 
     @field_validator("subdomain")
     @classmethod
@@ -787,6 +809,22 @@ class ServiceIn(BaseModel):
             raise ValueError("Invalid tunnel hostname")
         return val
 
+    @field_validator("access_policy_ids")
+    @classmethod
+    def val_access_policy_ids(cls, v):
+        # Cleaned as `protect_tunnel_route` cleans them, duplicates dropped too: the same
+        # policy sent twice would be written into the application at two precedences.
+        cleaned = list(dict.fromkeys(p.strip() for p in v if p.strip()))
+        if len(cleaned) > MAX_ACCESS_POLICIES:
+            raise ValueError(f"At most {MAX_ACCESS_POLICIES} Access policies per service")
+        # Each id is written into a request to Cloudflare, so it must have the shape Cloudflare
+        # gives a policy id, which is the shape of an application id.
+        if not all(is_access_app_id(p) for p in cleaned):
+            raise ValueError(
+                "Invalid Access policy id (letters, digits and hyphens, as Cloudflare gives them)"
+            )
+        return cleaned
+
     @model_validator(mode="after")
     def validate_mode_dependencies(self):
         if self.expose_mode == "tunnel" and not self.tunnel_provider_id:
@@ -819,6 +857,15 @@ class ServiceIn(BaseModel):
         problem = fqdn_problem(self.subdomain, self.domain)
         if problem:
             raise ValueError(f"Invalid hostname: {FQDN_REASONS[problem]}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_access_needs_a_tunnel(self):
+        # Vauxtra reaches Access through the tunnel provider's token, and nothing else here
+        # puts an application in front of a route. Sent in another mode, the ids would be
+        # accepted and then do nothing, which reads as a protection that is not there.
+        if self.access_policy_ids and self.expose_mode != "tunnel":
+            raise ValueError("Access policies apply to tunnel mode only")
         return self
 
 
@@ -1188,6 +1235,330 @@ def _unknown_references(conn, body: ServiceIn) -> list[str]:
     )
 
 
+def _tunnel_row(conn, provider_id):
+    """The provider Access is reached through, or None when it is not a Cloudflare Tunnel."""
+    if not provider_id:
+        return None
+    row = conn.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
+    return row if row and row["type"] == "cloudflare_tunnel" else None
+
+
+def _access_provider(conn, provider_id, nothing: str):
+    """The tunnel provider Access is reached through, and the account as its token reads it.
+
+    Read before anything is created, because what already stands in front of a name is
+    only known from the account. A token Cloudflare refuses, and a listing that failed or
+    was cut short, stop the save here, before any write. An empty listing does not: it is
+    also what an account without a single application answers, and the creation then says
+    for itself whether the token may write. A refusal closes `conn`; `nothing` opens it.
+
+    Returns (provider, overview).
+    """
+    row = _tunnel_row(conn, provider_id)
+    if row is None:
+        conn.close()
+        raise HTTPException(400, f"{nothing} -- Access policies need a Cloudflare Tunnel provider")
+    try:
+        provider = create_provider(row)
+        overview = provider.access_overview()
+    except Exception as e:
+        conn.close()
+        raise HTTPException(502, f"{nothing} -- {redact_query_secrets(str(e))}") from None
+    if overview["permission"] == "missing":
+        conn.close()
+        raise HTTPException(
+            403,
+            f"{nothing} -- the tunnel token may not read Access applications: "
+            f"add {READ_PERMISSION}",
+        )
+    if overview["permission"] == "error":
+        conn.close()
+        raise HTTPException(502, f"{nothing} -- Cloudflare did not return the Access applications")
+    return provider, overview
+
+
+def _access_before_publishing(
+    conn, provider_id, hostname: str, policy_ids: list[str], nothing: str,
+) -> tuple[str, dict]:
+    """Create the Access application of `hostname` before its route is published.
+
+    The panel used to publish the route and protect it in a second request, so the name
+    answered without a login in between, and for good when that request failed. Created
+    first, the login is in place by the time the name answers, and every refusal comes
+    before any provider is written to. A refusal closes `conn`, as the route's own refusals
+    do; `nothing` is the sentence it opens with.
+
+    The account is read first, as `protect_tunnel_route` reads it: a name that has an
+    application of its own never gets a second one, a name something else already protects
+    is refused rather than covered twice, and a policy the account does not hold is named.
+
+    Returns the new id and the `access` block of the answer.
+    """
+    provider, overview = _access_provider(conn, provider_id, nothing)
+    if overview["permission"] == "ok":
+        refusal = ""
+        exact = exact_application(hostname, overview["apps"])
+        if exact is not None:
+            refusal = already_has_application(hostname, exact)
+        elif classify_host(hostname, overview["apps"])["state"] == "protected":
+            refusal = f"{hostname} is already protected by Access"
+        if refusal:
+            conn.close()
+            raise HTTPException(409, f"{nothing} -- {refusal}")
+        known = {p["id"] for p in overview["policies"]}
+        unknown = [p for p in policy_ids if p not in known]
+        if known and unknown:
+            conn.close()
+            raise HTTPException(400, f"{nothing} -- unknown Access policy: {', '.join(unknown)}")
+    return _create_access_app(conn, provider, hostname, policy_ids, nothing)
+
+
+def _create_access_app(
+    conn, provider, hostname: str, policy_ids: list[str], nothing: str,
+    session_duration: str = "24h",
+) -> tuple[str, dict]:
+    """The creation itself, once the account has been read. A refusal closes `conn`."""
+    try:
+        created = provider.create_access_app(
+            hostname, policy_ids, session_duration=session_duration,
+        )
+    except Exception as e:
+        conn.close()
+        raise HTTPException(502, f"{nothing} -- {redact_query_secrets(str(e))}") from None
+    # An id without the shape of one is never recorded, since it lands in the paths of later
+    # calls. The provider already counts it as a failed creation; this does not rely on it.
+    if not created["ok"] or not is_access_app_id(created["id"]):
+        conn.close()
+        if created["refused"]:
+            raise HTTPException(
+                403,
+                f"{nothing} -- the tunnel token may not create Access applications: "
+                f"add {EDIT_PERMISSION}",
+            )
+        raise HTTPException(502, f"{nothing} -- Cloudflare did not create the Access application")
+    add_log(
+        "info",
+        f"Access: application created for {hostname} "
+        f"({plural(len(policy_ids), 'policy', 'policies')})",
+    )
+    access = {
+        "application_id": created["id"], "hostname": hostname, "policy_ids": list(policy_ids),
+    }
+    return created["id"], access
+
+
+def _recorded_app(conn, old, recorded: str) -> dict | None:
+    """The application a service recorded, read through the tunnel it was created on.
+
+    None when there is nothing to ask: an id that does not have the shape of one, or a tunnel
+    provider that is no longer there. The caller treats that as an application it cannot
+    read, never as one that is gone.
+    """
+    row = _tunnel_row(conn, old["tunnel_provider_id"]) if is_access_app_id(recorded) else None
+    if row is None:
+        return None
+    try:
+        return create_provider(row).get_access_app(recorded)
+    except Exception as e:
+        conn.close()
+        raise HTTPException(502, f"Nothing was changed -- {redact_query_secrets(str(e))}") from None
+
+
+def _unreadable(found: dict, old_host: str) -> HTTPException:
+    """The refusal for a recorded application that Cloudflare would not return."""
+    if found["refused"]:
+        return HTTPException(
+            403,
+            "Nothing was changed -- the tunnel token may not read the Access application of "
+            f"{old_host}: add {READ_PERMISSION}",
+        )
+    return HTTPException(
+        502,
+        f"Nothing was changed -- Cloudflare did not return the Access application of {old_host}",
+    )
+
+
+def _policies_to_carry(app, old_host: str) -> tuple[list[str], str]:
+    """The policies an application hands on to the one replacing it, or why it cannot.
+
+    Only the shape Vauxtra creates is moved: in front of the old name alone, made of
+    reusable policies, which a new application can name by id. Anything else was arranged
+    in the dashboard, and copying part of it could protect the new name less than the old
+    one was. An application without a policy is carried as it is: Access refuses whoever no
+    policy lets in, so it stays closed on the new name too.
+    """
+    if not app:
+        return [], "Vauxtra cannot read it"
+    if not covers_only(app, old_host):
+        return [], "it was changed in the Cloudflare dashboard"
+    policies = app.get("policies") or []
+    if not isinstance(policies, list):
+        return [], "Vauxtra cannot read its policies"
+    ordered = []
+    for index, policy in enumerate(policies):
+        pid = str(policy.get("id") or "").strip() if isinstance(policy, dict) else ""
+        if not is_access_app_id(pid):
+            return [], "Vauxtra cannot read its policies"
+        if policy.get("reusable") is False:
+            return [], "it uses policies that are not reusable"
+        precedence = policy.get("precedence")
+        ordered.append((precedence if isinstance(precedence, int) else 0, index, pid))
+    return [pid for _, _, pid in sorted(ordered)], ""
+
+
+def _protected_elsewhere(conn, provider_id, new_host: str, old_host: str, why: str) -> None:
+    """Let a rename through only when its new name is already behind a login.
+
+    The recorded application cannot follow, for the reason `why` gives, and it is left as it
+    is. Another application may still protect the new name, a wildcard for instance, and the
+    rename then goes ahead. Otherwise publishing the name is what would open it, so the
+    rename is refused, and the refusal says how to unblock it.
+    """
+    refusal = (
+        f"Nothing was changed -- {new_host} would be published without Access: the Access "
+        f"application recorded for {old_host} cannot follow the rename ({why}). Protect "
+        f"{new_host} in Cloudflare first, or send access_policy_ids for it."
+    )
+    if _tunnel_row(conn, provider_id) is None:
+        conn.close()
+        raise HTTPException(409, refusal)
+    _, overview = _access_provider(conn, provider_id, "Nothing was changed")
+    if classify_host(new_host, overview["apps"])["state"] != "protected":
+        conn.close()
+        raise HTTPException(409, refusal)
+
+
+def _what_protects(hostname: str, apps) -> str:
+    """How a refusal or the journal names what stands in front of `hostname`."""
+    deciding = deciding_application(hostname, apps)
+    if deciding is not None:
+        return app_label(deciding)
+    return ", ".join(app_label(a) for a in classify_host(hostname, apps)["apps"])
+
+
+def _protection_in_place(conn, apps, carried_app, new_host: str, old_host: str) -> str:
+    """What already protects `new_host` at least as well as the application a rename carries.
+
+    '' when nothing does, and the carried application is then created for the new name.
+    Something stronger stays in charge, a strict wildcard for instance: an exact application
+    would win over it and let in more. An application of the name's own is never doubled:
+    as strong or stronger it is kept, weaker it refuses the rename, which would publish the
+    name less protected than the old one was. At equal strength the service keeps its own
+    policies, so a route behind Ops stays behind Ops under a Team wildcard.
+
+    A refusal closes `conn`.
+    """
+    carried = STRENGTH_RANK[app_strength(carried_app)]
+    exact = exact_application(new_host, apps)
+    if exact is not None:
+        label = app_label(exact)
+        if STRENGTH_RANK[app_strength(exact)] < carried:
+            conn.close()
+            raise HTTPException(
+                409,
+                f"Nothing was changed -- {new_host} would be published less protected than "
+                f"{old_host}: it already has an Access application of its own ({label}) that "
+                f"lets in more than the one recorded for {old_host}. Tighten or delete {label} "
+                "in Cloudflare first.",
+            )
+        return label
+    if carried < STRENGTH_RANK[classify_host(new_host, apps)["state"]]:
+        return _what_protects(new_host, apps)
+    return ""
+
+
+def _readable_apps(conn, provider_id) -> list | None:
+    """The Access applications a tunnel's token reads, or None when they cannot be read.
+
+    Unlike `_access_provider`, nothing is refused: the caller goes on as if Access were not
+    in use, which is all an unreadable account allows it to know.
+    """
+    row = _tunnel_row(conn, provider_id)
+    if row is None:
+        return None
+    try:
+        overview = create_provider(row).access_overview()
+    except Exception:
+        return None
+    return overview["apps"] if overview["permission"] == "ok" else None
+
+
+def _protection_kept(
+    conn, old_provider_id, new_provider_id, old_host: str, new_host: str, stale: str = "",
+) -> tuple[str, str] | None:
+    """Refuse a rename that would publish its new name less protected than the old one.
+
+    Nothing is carried: the service records no application, or the one it recorded is gone.
+    The old name may still be behind a login written by hand in the dashboard, and the new
+    one would be the same route without it. Only an account that reads can tell. Without
+    the permission, after a failed listing or on an empty one, nothing says Access is in
+    use, and the rename goes ahead as it always did: a Vauxtra that was given no Access
+    permission must still be able to rename.
+
+    `stale` is the id a service kept while it was out of the tunnel: when that application
+    is what protects the old name, the refusal says so rather than call it a stranger's.
+
+    Returns the state of the new name and what covers it, or None when the account could
+    not be read. A refusal closes `conn`.
+    """
+    before_apps = _readable_apps(conn, old_provider_id)
+    if before_apps is None:
+        return None
+    after_apps = (
+        before_apps if new_provider_id == old_provider_id
+        else _readable_apps(conn, new_provider_id)
+    )
+    if after_apps is None:
+        return None
+    before = classify_host(old_host, before_apps)["state"]
+    after = classify_host(new_host, after_apps)["state"]
+    if STRENGTH_RANK[after] >= STRENGTH_RANK[before]:
+        return after, _what_protects(new_host, after_apps)
+    head = (
+        f"{new_host} would be published without Access" if after == "open"
+        else f"{new_host} would be published less protected than {old_host}"
+    )
+    how = "protected" if before == "protected" else "partly protected"
+    deciding = deciding_application(old_host, before_apps)
+    whose = (
+        "the Access application this service recorded before it left the tunnel"
+        if stale and deciding is not None and str(deciding.get("id") or "").strip() == stale
+        else "an Access application Vauxtra did not create"
+    )
+    conn.close()
+    raise HTTPException(
+        409,
+        f"Nothing was changed -- {head}: {old_host} is {how} by {whose} "
+        f"({_what_protects(old_host, before_apps)}). Protect {new_host} in Cloudflare "
+        "first, or send access_policy_ids for it.",
+    )
+
+
+def _forget_access_app(app_id: str, provider_id, hostname: str, sid: int) -> None:
+    """Remove the application created for a save the database then refused, where it is safe.
+
+    The save lost a race on the hostname, so no row will record the id. The application goes
+    only while its name is not served: the service that won may have published that same name
+    on the same tunnel, and the application is then the login in front of it. Whatever stays
+    is journalled, since nothing in Vauxtra will list it again.
+    """
+    aux = get_db()
+    try:
+        svc = {"access_app_id": app_id, "tunnel_provider_id": provider_id}
+        left = _withdraw_access_app(aux, svc, sid, hostname, occasion="Refused")
+        aux.commit()
+    except Exception as e:
+        left = [redact_query_secrets(str(e))]
+    finally:
+        aux.close()
+    if left:
+        add_log(
+            "warn",
+            f"The Access application created for {hostname} belongs to no service now that "
+            f"the save was refused: {'; '.join(left)}",
+        )
+
+
 @router.post("/api/services", status_code=201)
 def add_service(request: Request, body: ServiceIn):
     require_auth(request, scope="write")
@@ -1230,6 +1601,17 @@ def add_service(request: Request, body: ServiceIn):
             raise HTTPException(400, refusal)
 
     errors = []
+
+    # Before any provider is written to: see `_access_before_publishing`. A service created
+    # disabled gets its application too, so that enabling it publishes a name that is
+    # already behind a login.
+    access = None
+    access_app_id = ""
+    if body.access_policy_ids:
+        access_app_id, access = _access_before_publishing(
+            conn, body.tunnel_provider_id, public_host, body.access_policy_ids,
+            "Nothing was created",
+        )
 
     # Named as each push succeeds, and read only if the write below is refused. What was
     # published is the one thing the operator cannot recover from Vauxtra in that case:
@@ -1346,14 +1728,14 @@ def add_service(request: Request, body: ServiceIn):
                (subdomain, domain, target_ip, target_port, forward_scheme,
                     websocket, enabled, dns_provider_id, proxy_provider_id, tunnel_provider_id,
                     expose_mode, public_target_mode, auto_update_dns, tunnel_hostname,
-                    dns_ip, npm_host_id, icon_url)
-                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    dns_ip, npm_host_id, icon_url, access_app_id)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (body.subdomain, body.domain, body.target_ip, body.target_port,
                 body.forward_scheme, int(body.websocket), int(body.enabled),
              stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
              body.expose_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
              stored_dns_target, npm_host_id,
-             body.icon_url),
+             body.icon_url, access_app_id),
         )
     except sqlite3.IntegrityError:
         refusal = _hostname_taken(conn, public_host)
@@ -1369,6 +1751,8 @@ def add_service(request: Request, body: ServiceIn):
                 "another service claimed that hostname first. No service row describes those "
                 "records, so Vauxtra cannot list or remove them -- check those providers.",
             )
+        if access_app_id:
+            _forget_access_app(access_app_id, body.tunnel_provider_id, public_host, 0)
         raise HTTPException(409, refusal)
     sid = cur.lastrowid
 
@@ -1403,7 +1787,14 @@ def add_service(request: Request, body: ServiceIn):
     conn.close()
 
     from fastapi.responses import JSONResponse
-    return JSONResponse({"id": sid, "fqdn": public_host, "errors": errors}, status_code=201 if not errors else 207)
+    # `access` only when an application was created: what went wrong is in `errors` alone.
+    return JSONResponse(
+        {
+            "id": sid, "fqdn": public_host, "errors": errors,
+            **({"access": access} if access else {}),
+        },
+        status_code=201 if not errors else 207,
+    )
 
 
 def _proxy_host_kept(proxy, host: str) -> bool:
@@ -1524,6 +1915,146 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             raise HTTPException(400, refusal)
 
     errors = []
+
+    # Access is settled here, before any provider is written to, so that a name the tunnel
+    # serves never loses the application in front of it, even when a step below fails. A
+    # rename used to move the route and leave the application on the name the service left:
+    # the new name answered without a login, and nothing said so.
+    #
+    # Ids sent with the body win, and create an application for the name the service will
+    # have. Without them, a renamed route takes its recorded application along: a new one
+    # for the new name, with the same policies, created now, unless the account shows the
+    # new name already at least as protected. The old one goes last, at the end of this
+    # route, once the tunnel no longer serves its name. An application that cannot follow
+    # refuses the rename, unless something else already protects the new name, and so does
+    # a login written by hand in the dashboard, which no row records. Whatever happens, a
+    # row never keeps the id of an application that does not cover its name.
+    name_moves = (
+        old_mode == "tunnel" and new_mode == "tunnel" and old_public_host != new_public_host
+    )
+    recorded = str(old["access_app_id"] or "").strip() if old_mode == "tunnel" else ""
+    # An id kept while the service was out of the tunnel. What its application covers was
+    # not followed in between, so it is neither carried nor kept: see the last branch.
+    stale = (
+        str(old["access_app_id"] or "").strip()
+        if old_mode != "tunnel" and new_mode == "tunnel" else ""
+    )
+    next_access_app_id = old["access_app_id"] or ""
+    access = None
+    created_app_id = ""
+    replaced = False
+    untracked = ""  # a recorded application the row lets go of, left in Cloudflare
+    if body.access_policy_ids:
+        if recorded and not name_moves:
+            found = _recorded_app(conn, old, recorded)
+            if found is not None and not found["gone"]:
+                if not found["ok"]:
+                    conn.close()
+                    raise _unreadable(found, old_public_host)
+                # Counted only when it covers the name: an application edited in the
+                # dashboard can stand in front of another one, and this name is then open.
+                if covers_whole(found["app"], new_public_host):
+                    conn.close()
+                    raise HTTPException(
+                        409,
+                        f"Nothing was changed -- {new_public_host} is already protected by "
+                        f"Access ({app_label(found['app'])})",
+                    )
+                untracked = recorded
+        created_app_id, access = _access_before_publishing(
+            conn, body.tunnel_provider_id, new_public_host, body.access_policy_ids,
+            "Nothing was changed",
+        )
+        next_access_app_id = created_app_id
+        replaced = bool(recorded) and name_moves
+        untracked = untracked or stale
+    elif name_moves and recorded:
+        found = _recorded_app(conn, old, recorded)
+        if found is not None and found["gone"]:
+            # Deleted in the dashboard: there is nothing left to carry, and whatever else
+            # protects the old name has to protect the new one too. Said in the answer and
+            # in the journal when the new name will answer without a login.
+            kept = _protection_kept(
+                conn, old["tunnel_provider_id"], body.tunnel_provider_id,
+                old_public_host, new_public_host,
+            )
+            next_access_app_id = ""
+            gone = (
+                f"the Access application recorded for {old_public_host} no longer exists in "
+                "Cloudflare"
+            )
+            if kept is not None and kept[0] != "open":
+                add_log("info", f"Access: {gone}; {new_public_host} is covered by {kept[1]}")
+            else:
+                head = (
+                    f"{new_public_host} is published without Access" if body.enabled
+                    else f"{new_public_host} will be published without Access once enabled"
+                )
+                message = f"{head}: {gone}"
+                errors.append(message)
+                add_log("warn", message)
+        else:
+            if found is not None and not found["ok"]:
+                conn.close()
+                raise _unreadable(found, old_public_host)
+            recorded_app = found["app"] if found is not None else None
+            carried, why = _policies_to_carry(recorded_app, old_public_host)
+            if why:
+                _protected_elsewhere(
+                    conn, body.tunnel_provider_id, new_public_host, old_public_host, why,
+                )
+                # Another application protects the new name. The recorded one stays where it
+                # is, and the row keeps its id only while it still covers the new name.
+                if not (recorded_app and covers_whole(recorded_app, new_public_host)):
+                    next_access_app_id = ""
+                    untracked = recorded
+            else:
+                # Read as for any creation, so that the move never covers a name twice nor
+                # puts a weaker login in front of a stronger one (see `_protection_in_place`).
+                # Unknown policies are not looked for: these come from an application
+                # Cloudflare has just returned.
+                provider, overview = _access_provider(
+                    conn, body.tunnel_provider_id, "Nothing was changed",
+                )
+                keeper = ""
+                if overview["permission"] == "ok":
+                    keeper = _protection_in_place(
+                        conn, overview["apps"], recorded_app, new_public_host, old_public_host,
+                    )
+                if keeper:
+                    # Nothing failed, so nothing goes to `errors`.
+                    next_access_app_id = ""
+                    add_log(
+                        "info",
+                        f"Access: no application created for {new_public_host}: {keeper} "
+                        "already protects it at least as well as the one recorded for "
+                        f"{old_public_host}",
+                    )
+                else:
+                    session = str(recorded_app.get("session_duration") or "").strip() or "24h"
+                    created_app_id, access = _create_access_app(
+                        conn, provider, new_public_host, carried, "Nothing was changed",
+                        session_duration=session,
+                    )
+                    next_access_app_id = created_app_id
+                replaced = True
+    elif name_moves:
+        # No application recorded, so nothing to carry; a login written by hand in the
+        # dashboard must still not stay behind on the old name alone.
+        _protection_kept(
+            conn, old["tunnel_provider_id"], body.tunnel_provider_id,
+            old_public_host, new_public_host,
+        )
+    elif stale:
+        # Back in the tunnel: the row lets the old id go rather than claim a login it may
+        # not have. A new name is still held to what protected the one it replaces.
+        if old_public_host != new_public_host:
+            _protection_kept(
+                conn, body.tunnel_provider_id, body.tunnel_provider_id,
+                old_public_host, new_public_host, stale=stale,
+            )
+        next_access_app_id = ""
+        untracked = stale
 
     next_npm_host_id = None
     if new_mode == "proxy_dns" and old_mode == "proxy_dns" and old["proxy_provider_id"] == body.proxy_provider_id:
@@ -1802,13 +2333,13 @@ def update_service(sid: int, request: Request, body: ServiceIn):
                    forward_scheme=?, websocket=?, enabled=?,
                    dns_provider_id=?, proxy_provider_id=?, tunnel_provider_id=?,
                    expose_mode=?, public_target_mode=?, auto_update_dns=?, tunnel_hostname=?,
-                   dns_ip=?, npm_host_id=?, icon_url=?
+                   dns_ip=?, npm_host_id=?, icon_url=?, access_app_id=?
                WHERE id=?""",
             (body.subdomain, body.domain, body.target_ip, body.target_port,
              body.forward_scheme, int(body.websocket), int(body.enabled),
              stored_dns_provider_id, stored_proxy_provider_id, stored_tunnel_provider_id,
              new_mode, stored_public_target_mode, int(stored_auto_update_dns), stored_tunnel_hostname,
-             stored_dns_ip, next_npm_host_id, body.icon_url, sid),
+             stored_dns_ip, next_npm_host_id, body.icon_url, next_access_app_id, sid),
         )
         # The last probe of a service that no longer has a port measured a port it no
         # longer names. Nothing probes it from now on, so an "error" left standing would
@@ -1825,7 +2356,18 @@ def update_service(sid: int, request: Request, body: ServiceIn):
             f"refused: another service claimed that hostname first. The service still records "
             f"{old_public_host}, which its providers no longer serve -- run a drift check.",
         )
+        if created_app_id:
+            _forget_access_app(created_app_id, body.tunnel_provider_id, new_public_host, sid)
         raise HTTPException(409, refusal)
+    if untracked and is_access_app_id(untracked):
+        # On `conn`, inside the transaction of the UPDATE: said only once the row has let
+        # the id go, and nothing in Vauxtra will list that application again.
+        add_log(
+            "warn",
+            f"Access: the application {untracked}, recorded for {old_public_host}, is no "
+            "longer tracked by this service and stays in Cloudflare",
+            conn,
+        )
 
     # Same call the preflight makes, so the two agree on which ids are extras.
     primary_proxy_provider_id, primary_dns_provider_id = _primary_push_targets(body)
@@ -2010,10 +2552,18 @@ def update_service(sid: int, request: Request, body: ServiceIn):
     # said nothing about it -- the one place an operator looks to find out what Vauxtra did.
     conn.commit()
 
+    # The application the service left behind goes last: once the new one is recorded, and
+    # only if the tunnel no longer serves the old name. Until it confirms that, the old
+    # application is the login in front of a live route, and it stays.
+    if replaced:
+        for message in _withdraw_access_app(conn, old, sid, old_public_host, occasion="Rename"):
+            errors.append(f"{old_public_host}: {message}")
+        conn.commit()
+
     service = _service_detail(conn, sid)
     conn.close()
 
-    return {**service, "errors": errors}
+    return {**service, "errors": errors, **({"access": access} if access else {})}
 
 
 def _webhooks_scoped_to(conn, sids: list[int]) -> list[dict]:
@@ -2061,24 +2611,28 @@ def _log_orphaned_webhooks(hooks: list[dict], what: str, conn=None) -> None:
     )
 
 
-def _withdraw_access_app(conn, svc, sid: int, public_host: str) -> list[str]:
+def _withdraw_access_app(
+    conn, svc, sid: int, public_host: str, occasion: str = "Delete",
+) -> list[str]:
     """Delete the Access application Vauxtra created in front of this route, once it is gone.
 
     Measured on 2026-11-15: a route protected from the panel and then deleted left its
     application in the account. Nothing listed it any more (the Access tab reads tunnel
     routes), and a new route on the same name would have been behind a login nobody chose.
 
-    Only what this instance created is in reach: the id recorded by `protect_tunnel_route`,
-    never an application found by name. Even that one is kept, and the deletion reported,
-    whenever removing it could open something:
+    Only what this instance created is in reach: the id recorded by `protect_tunnel_route`
+    or by the save that created it, never an application found by name. Even that one is
+    kept, and the deletion reported, whenever removing it could open something:
 
-      * the route is still served, because its withdrawal failed or could not be confirmed;
+      * the route is still served, because its withdrawal failed or could not be confirmed,
+        or the tunnel still answers for the name through a wildcard rule or its catch-all;
       * the application no longer covers this one hostname alone: it was edited in the
         dashboard, or the service was renamed after it was protected;
       * another service still carries the same id. That one is not reported: the application
         still protects a live route, and it goes with the last service that carries it.
 
     Returns one message per thing left behind, in the shape of `withdraw_service_routes`.
+    A rename calls it too, on the name it left: `occasion` only says which in the journal.
     """
     app_id = str(svc["access_app_id"] or "").strip()
     if not app_id:
@@ -2099,11 +2653,16 @@ def _withdraw_access_app(conn, svc, sid: int, public_host: str) -> list[str]:
     try:
         provider = create_provider(row)
         try:
-            served = {h["id"] for h in provider.list_hosts()}
+            rule = provider.serving_rule(public_host)
         except ProviderListingRefused:
             return [f"{kept}: Cloudflare would not confirm the route is gone"]
-        if public_host in served:
-            return [f"{kept}: the route is still served"]
+        if rule is not None:
+            pattern = rule["hostname"]
+            if pattern == public_host.strip().strip(".").lower():
+                return [f"{kept}: the route is still served"]
+            if pattern:
+                return [f"{kept}: the tunnel still answers for this name through its rule for {pattern}"]
+            return [f"{kept}: the tunnel still answers for this name through its catch-all rule"]
 
         found = provider.get_access_app(app_id)
         if found["gone"]:
@@ -2116,7 +2675,7 @@ def _withdraw_access_app(conn, svc, sid: int, public_host: str) -> list[str]:
             name = str(found["app"].get("name") or app_id)
             add_log(
                 "warn",
-                f"[Delete] Access application kept on {row['name']}: {name} no longer "
+                f"[{occasion}] Access application kept on {row['name']}: {name} no longer "
                 f"covers {public_host} alone",
                 conn,
             )
@@ -2124,7 +2683,11 @@ def _withdraw_access_app(conn, svc, sid: int, public_host: str) -> list[str]:
 
         deleted = provider.delete_access_app(app_id)
         if deleted["ok"] or deleted["gone"]:
-            add_log("info", f"[Delete] Access application removed on {row['name']}: {public_host}", conn)
+            add_log(
+                "info",
+                f"[{occasion}] Access application removed on {row['name']}: {public_host}",
+                conn,
+            )
             return []
         if deleted["refused"]:
             return [f"{kept}: the tunnel token may not delete it, add {EDIT_PERMISSION}"]

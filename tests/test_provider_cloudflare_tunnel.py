@@ -9,6 +9,10 @@ import requests
 from app.providers.base import ProviderListingRefused
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
 
+# Ids in the shape Cloudflare gives them: the provider treats any other shape as absent.
+ACCOUNT = "0123456789abcdef0123456789abcdef"
+TUNNEL = "12345678-1234-1234-1234-123456789abc"
+
 
 def _response(status_code: int = 200, json_data=None) -> MagicMock:
     r = MagicMock()
@@ -33,26 +37,26 @@ def _cf_err(msg: str = "error") -> dict:
 class TestCFTunnelInit(unittest.TestCase):
 
     def test_api_url_defaults(self):
-        p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
         self.assertIn("cloudflare.com", p.api_url)
 
     def test_api_url_appends_v4(self):
-        p = CloudflareTunnelProvider("https://api.cloudflare.com", "acc123", "tok", {})
+        p = CloudflareTunnelProvider("https://api.cloudflare.com", ACCOUNT, "tok", {})
         self.assertIn("/client/v4", p.api_url)
 
     def test_tunnel_id_loaded_from_extra(self):
-        p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tunnel-uuid"})
-        self.assertEqual(p.tunnel_id, "tunnel-uuid")
+        p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
+        self.assertEqual(p.tunnel_id, TUNNEL)
 
     def test_auth_header_set(self):
-        p = CloudflareTunnelProvider("", "acc123", "mytoken", {})
+        p = CloudflareTunnelProvider("", ACCOUNT, "mytoken", {})
         self.assertIn("Bearer mytoken", p.session.headers.get("Authorization", ""))
 
 
 class TestCFTunnelResolveId(unittest.TestCase):
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {})
 
     def _mock_request(self, result):
         """Mock the underlying _request helper."""
@@ -67,10 +71,10 @@ class TestCFTunnelResolveId(unittest.TestCase):
 
     def test_resolve_auto_detects_single_tunnel(self):
         self.p.tunnel_id = ""
-        self._mock_request([{"id": "auto-detected"}])
+        self._mock_request([{"id": TUNNEL}])
         result = self.p._resolve_tunnel_id()
-        self.assertEqual(result, "auto-detected")
-        self.assertEqual(self.p.tunnel_id, "auto-detected")
+        self.assertEqual(result, TUNNEL)
+        self.assertEqual(self.p.tunnel_id, TUNNEL)
 
     def test_resolve_returns_empty_for_multiple_tunnels(self):
         self.p.tunnel_id = ""
@@ -97,7 +101,7 @@ class TestCFTunnelResolveId(unittest.TestCase):
 class TestCFTunnelListHosts(unittest.TestCase):
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
         self.p._get_configuration = MagicMock(return_value={
             "ingress": [
                 {"hostname": "app.example.com", "service": "http://192.168.1.10:3000", "originRequest": {}},
@@ -139,7 +143,7 @@ class TestCFTunnelListHosts(unittest.TestCase):
 class TestCFTunnelCreateHost(unittest.TestCase):
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
         self.p._upsert_ingress_rule = MagicMock(return_value=True)
         self.p._ensure_dns_record = MagicMock(return_value=True)
 
@@ -169,7 +173,7 @@ class TestCFTunnelCreateHost(unittest.TestCase):
 class TestCFTunnelDeleteHost(unittest.TestCase):
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
         self.p._delete_ingress_rule = MagicMock(return_value=True)
         self.p._delete_dns_record = MagicMock(return_value=True)
 
@@ -188,7 +192,7 @@ class TestCFTunnelDeleteHost(unittest.TestCase):
 class TestCFTunnelIngressRules(unittest.TestCase):
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
 
     def test_upsert_replaces_existing_rule(self):
         existing_config = {
@@ -256,7 +260,7 @@ class TestCFTunnelRewritesTheRuleWhereItStands(unittest.TestCase):
     """
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
         self.put_calls = []
         self.p._put_configuration = MagicMock(
             side_effect=lambda c: self.put_calls.append(copy.deepcopy(c)) or True
@@ -364,7 +368,7 @@ class TestCFTunnelReadFailureNeverWrites(unittest.TestCase):
     """
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
 
     def test_get_configuration_returns_none_on_read_failure(self):
         self.p.session = MagicMock()
@@ -421,7 +425,7 @@ class TestCFTunnelChecksThatWereNotRun(unittest.TestCase):
     """
 
     def setUp(self):
-        self.p = CloudflareTunnelProvider("", "acc123", "tok", {"tunnel_id": "tid"})
+        self.p = CloudflareTunnelProvider("", ACCOUNT, "tok", {"tunnel_id": TUNNEL})
         self.p._request_detailed = MagicMock(return_value={"ok": True, "status": 200, "result": {}, "errors": []})
 
     def _by_name(self, result: dict) -> dict:

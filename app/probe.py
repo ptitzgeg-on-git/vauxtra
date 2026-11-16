@@ -32,7 +32,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 TCP_TIMEOUT_SECONDS = 3.0
 EDGE_TIMEOUT_SECONDS = 6.0
@@ -177,14 +177,38 @@ def _https_head_of(address: str, hostname: str, timeout: float) -> tuple[int, st
         conn.close()
 
 
-def _is_access_redirect(location: str) -> bool:
-    host = (urlparse(location).hostname or "").lower()
-    return host.endswith(".cloudflareaccess.com") or "/cdn-cgi/access/" in location
+def _is_access_redirect(location: str, host: str) -> bool:
+    """Whether `location`, answered for `host`, sends the visitor to a Cloudflare Access login.
+
+    Read the way a browser reads it: resolved against the page that answered, then judged on
+    its host and its path alone. A substring test passed an application's own
+    `/login?next=/cdn-cgi/access/`, and a foreign host carrying that text in its query, and the
+    Access panel then showed an open route as already protected.
+
+    The path is taken as written, so it is refused when a browser would not land where it
+    reads: `urljoin` resolves the dot segments of a relative reference only, and a
+    percent-encoded one (`%2e%2e`) is decoded after the prefix was checked. Any team domain
+    is accepted, since the one of the account is not known here.
+    """
+    host = (host or "").strip().strip(".").lower()
+    try:
+        # A browser takes a backslash for a slash in an https URL; urlparse does not.
+        target = urlparse(urljoin(f"https://{host}/", (location or "").strip().replace("\\", "/")))
+        found = (target.hostname or "").rstrip(".")
+    except ValueError:
+        # `https://[broken/` raises here, and the probe has no reason to crash on it.
+        return False
+    if found.endswith(".cloudflareaccess.com"):
+        return True
+    path = target.path
+    if "%" in path or any(segment in (".", "..") for segment in path.split("/")):
+        return False
+    return bool(host) and found == host and path.startswith("/cdn-cgi/access/")
 
 
-def classify_edge_answer(status: int, location: str = "") -> tuple[str, str]:
-    """(status, detail) for what the Cloudflare edge answered. Pure, so it is tested alone."""
-    if status in (301, 302, 303, 307, 308) and _is_access_redirect(location):
+def classify_edge_answer(status: int, location: str = "", host: str = "") -> tuple[str, str]:
+    """(status, detail) for what the edge answered for `host`. Pure, so it is tested alone."""
+    if status in (301, 302, 303, 307, 308) and _is_access_redirect(location, host):
         return "ok", "edge_access"
     if status == 530:
         return "error", "edge_tunnel_down"
@@ -210,7 +234,7 @@ def edge_probe(hostname: str, timeout: float = EDGE_TIMEOUT_SECONDS) -> ProbeRes
             code, location = _https_head_of(address, host, timeout)
         except (OSError, ssl.SSLError, http.client.HTTPException):
             continue
-        status, detail = classify_edge_answer(code, location)
+        status, detail = classify_edge_answer(code, location, host)
         latency = round((time.monotonic() - start) * 1000, 1)
         return ProbeResult(status, detail, latency, http_status=code)
     return ProbeResult("error", "edge_unreachable")

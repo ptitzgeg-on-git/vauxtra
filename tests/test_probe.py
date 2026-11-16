@@ -32,6 +32,95 @@ class ClassifyEdgeAnswerTests(unittest.TestCase):
             ("ok", "edge_access"),
         )
 
+    def test_the_access_path_on_the_probed_host_is_access(self):
+        """Relative or spelt out, the login Cloudflare serves on the route's own name."""
+        for location in ("/cdn-cgi/access/login/app.example.com",
+                         "https://App.Example.com./cdn-cgi/access/login"):
+            self.assertEqual(probe.classify_edge_answer(302, location, "app.example.com"),
+                             ("ok", "edge_access"), location)
+
+    def test_the_access_path_anywhere_else_is_not_access(self):
+        """The audit's cases: an open route the panel showed as already protected."""
+        for location in (
+            "/login?return=/cdn-cgi/access/",
+            "https://login.example.com/?next=/cdn-cgi/access/",
+            "https://login.example.com/cdn-cgi/access/login",
+            "https://team.cloudflareaccess.com.example.com/cdn-cgi/access/login",
+            "https://login.example.com\\@app.example.com/cdn-cgi/access/login",
+        ):
+            self.assertEqual(probe.classify_edge_answer(302, location, "app.example.com"),
+                             ("ok", "edge_ok"), location)
+
+    def test_without_the_probed_host_only_an_access_domain_counts(self):
+        self.assertEqual(probe.classify_edge_answer(302, "/cdn-cgi/access/login"), ("ok", "edge_ok"))
+
+    def test_a_location_that_does_not_parse_is_not_access_and_does_not_raise(self):
+        self.assertEqual(probe.classify_edge_answer(302, "https://[broken/", "app.example.com"),
+                         ("ok", "edge_ok"))
+
+    def test_the_cases_of_the_review_are_judged_as_a_browser_would(self):
+        """What the check got right, pinned: an Access domain anywhere, the login on the name."""
+        cases = (
+            ("https://team.cloudflareaccess.com/cdn-cgi/access/login/app.example.com", True),
+            ("HTTPS://TEAM.CLOUDFLAREACCESS.COM./", True),
+            ("//team.cloudflareaccess.com/x", True),
+            ("/cdn-cgi/access/login", True),
+            # A relative reference is resolved first, dot segments included: this is the login.
+            ("/cdn-cgi/access/./login", True),
+            ("https://app.example.com:8443/cdn-cgi/access/login", True),
+            ("https://xn--tam-bma.cloudflareaccess.com/", True),
+            ("https://evil.example.com\\@team.cloudflareaccess.com/", False),
+            ("https://team.cloudflareaccess.com@evil.example.com/", False),
+            ("https://team.cloudflareaccess.com%5C@evil.example.com/", False),
+            ("https://evil.example.com/?next=.cloudflareaccess.com", False),
+            ("https://evil.example.com/cdn-cgi/access/login", False),
+            ("//evil.example.com/cdn-cgi/access/login", False),
+            ("/login?next=/cdn-cgi/access/", False),
+            ("/cdn-cgi%2Faccess/login", False),
+            ("/cdn-cgi%2faccess%2flogin", False),
+            ("https://evilcloudflareaccess.com/", False),
+            ("https://cloudflareaccess.com/", False),
+            ("https://team.cloudflareaccess.com.evil.example.com/", False),
+            ("https://team.cloudflareaccess。com/", False),
+            ("/cdn-cgi/access/../../admin", False),
+            ("https://[broken/", False),
+            ("", False),
+        )
+        for location, expected in cases:
+            with self.subTest(location=location):
+                self.assertEqual(probe._is_access_redirect(location, "app.example.com"), expected)
+        # The probed name is normalized, and without one no relative path is the login.
+        self.assertTrue(probe._is_access_redirect("/cdn-cgi/access/login", "App.Example.com."))
+        self.assertFalse(probe._is_access_redirect("/cdn-cgi/access/login", ""))
+        self.assertEqual(probe.classify_edge_answer(200, "/cdn-cgi/access/login", "app.example.com"),
+                         ("ok", "edge_ok"))
+
+    def test_a_path_a_browser_would_not_follow_to_the_login_is_not_access(self):
+        """An open route used to read as protected: the prefix was checked on the raw text.
+
+        A browser decodes `%2e%2e` as `..`, and an absolute URL keeps its dot segments until
+        it is followed, so both land outside `/cdn-cgi/access/`.
+        """
+        for location in (
+            "/cdn-cgi/access/%2e%2e/%2e%2e/admin",
+            "/cdn-cgi/access/%2E%2E/admin",
+            "/cdn-cgi/access/%6Cogin",
+            "https://app.example.com/cdn-cgi/access/../../admin",
+            "https://app.example.com/cdn-cgi/access/./login",
+            "https://app.example.com/cdn-cgi/access/.%2e/admin",
+            "//app.example.com/cdn-cgi/access/../admin",
+        ):
+            with self.subTest(location=location):
+                self.assertEqual(probe.classify_edge_answer(302, location, "app.example.com"),
+                                 ("ok", "edge_ok"))
+
+    def test_any_team_domain_still_counts(self):
+        """The team domain of the account is not known here."""
+        self.assertEqual(
+            probe.classify_edge_answer(302, "https://any-team.cloudflareaccess.com/", "app.example.com"),
+            ("ok", "edge_access"),
+        )
+
     def test_530_is_the_edge_saying_no_connector_holds_the_tunnel(self):
         self.assertEqual(probe.classify_edge_answer(530), ("error", "edge_tunnel_down"))
 
@@ -75,6 +164,15 @@ class EdgeProbeTests(unittest.TestCase):
         self.assertEqual(dialled, [("188.114.96.3", "listo.example.com")])
         self.assertEqual((result.status, result.stored_detail), ("ok", "edge_access:302"))
         self.assertIsInstance(result.latency_ms, float)
+
+    def test_a_redirect_is_judged_against_the_name_that_was_probed(self):
+        answers = {"/cdn-cgi/access/login/listo.example.com": "edge_access:302",
+                   "/login?next=/cdn-cgi/access/": "edge_ok:302"}
+        for location, expected in answers.items():
+            with patch.object(probe, "_edge_addresses", lambda _h: (["10.0.0.5"], "")), \
+                 patch.object(probe, "_https_head_of", lambda _a, _h, _t, loc=location: (302, loc)):
+                result = probe.edge_probe("Listo.Example.com.")
+            self.assertEqual(result.stored_detail, expected, location)
 
     def test_a_split_horizon_answer_falls_back_to_the_public_one(self):
         """An AdGuard rewrite to a LAN address must not turn the tunnel route red."""

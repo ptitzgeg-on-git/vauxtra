@@ -15,12 +15,15 @@ from app.providers.cloudflare_access import (
     EDIT_PERMISSION,
     HOST_STATES,
     READ_PERMISSION,
+    already_has_application,
     classify_host,
+    exact_application,
+    is_access_app_id,
     unknown_host,
 )
 from app.providers.factory import PROVIDER_TYPES, create_provider
 from app.text import plural, verb
-from app.validators import is_valid_url
+from app.validators import CLOUDFLARE_ID_SHAPES, cloudflare_id, is_valid_url
 
 router = APIRouter()
 
@@ -126,6 +129,30 @@ def _provider_diagnostics(provider, provider_type: str, hostname_hint: str = "",
     }
 
 
+# What `username` holds for the types that store a Cloudflare id there.
+_USERNAME_IS_CLOUDFLARE_ID = {"cloudflare_tunnel": "account", "cloudflare": "zone"}
+
+
+def _cloudflare_id_problem(
+    ptype: str, username: str | None = None, extra: dict | None = None,
+) -> str | None:
+    """Why a Cloudflare id about to be stored is refused, or None. Empty still means unset.
+
+    Those ids end up in API paths, and a `write` key may change them without bringing a new
+    token. The provider treats a malformed one as absent; refusing it here says so to whoever
+    typed it, instead of a provider that quietly stops finding its account.
+    """
+    wanted = []
+    if username is not None and ptype in _USERNAME_IS_CLOUDFLARE_ID:
+        wanted.append((_USERNAME_IS_CLOUDFLARE_ID[ptype], username))
+    if extra is not None and ptype == "cloudflare_tunnel":
+        wanted.append(("tunnel", extra.get("tunnel_id")))
+    for kind, value in wanted:
+        if str(value or "").strip() and not cloudflare_id(value, kind):
+            return f"The Cloudflare {kind} ID must be {CLOUDFLARE_ID_SHAPES[kind]}"
+    return None
+
+
 class ProviderIn(BaseModel):
     name:     str
     type:     str
@@ -151,6 +178,23 @@ class ProviderIn(BaseModel):
     @classmethod
     def extra_valid(cls, v):
         return v if isinstance(v, dict) else {}
+
+    # `type` is declared before both fields, so it is already in `info.data` when they are read.
+    @field_validator("username")
+    @classmethod
+    def username_valid(cls, v, info: ValidationInfo):
+        problem = _cloudflare_id_problem(str(info.data.get("type", "")), username=v)
+        if problem:
+            raise ValueError(problem)
+        return v
+
+    @field_validator("extra")
+    @classmethod
+    def extra_ids_valid(cls, v, info: ValidationInfo):
+        problem = _cloudflare_id_problem(str(info.data.get("type", "")), extra=v)
+        if problem:
+            raise ValueError(problem)
+        return v
 
     @field_validator("type")
     @classmethod
@@ -474,8 +518,23 @@ def protect_tunnel_route(pid: int, request: Request, body: AccessProtectIn):
     if hostname not in served:
         raise HTTPException(400, f"{hostname} is not a route of this tunnel")
 
+    # Read before anything is created, as a saved service reads it (`_access_provider` in
+    # `app/api/services.py`): what already stands in front of the name is only known from
+    # the account. An empty listing goes on, and the creation says whether the token may write.
     overview = provider.access_overview()
+    if overview["permission"] == "missing":
+        raise HTTPException(
+            403, f"The tunnel token may not read Access applications: add {READ_PERMISSION}",
+        )
+    if overview["permission"] == "error":
+        raise HTTPException(502, "Cloudflare did not return the Access applications")
     if overview["permission"] == "ok":
+        # Never a second application on a name that has one of its own, whatever it lets in:
+        # the panel's second request used to add one next to the application a rename had
+        # just carried, and the first was then recorded nowhere.
+        exact = exact_application(hostname, overview["apps"])
+        if exact is not None:
+            raise HTTPException(409, already_has_application(hostname, exact))
         if classify_host(hostname, overview["apps"])["state"] == "protected":
             raise HTTPException(409, f"{hostname} is already protected by Access")
         known = {p["id"] for p in overview["policies"]}
@@ -484,7 +543,9 @@ def protect_tunnel_route(pid: int, request: Request, body: AccessProtectIn):
             raise HTTPException(400, "Unknown Access policy: " + ", ".join(unknown))
 
     created = provider.create_access_app(hostname, policy_ids)
-    if not created["ok"]:
+    # Recorded on the services of the route, then written into the path of their deletion:
+    # an id without the shape of one counts as a creation that failed, whatever the provider.
+    if not created["ok"] or not is_access_app_id(created["id"]):
         if created["refused"]:
             raise HTTPException(
                 403, f"The tunnel token may not create Access applications: add {EDIT_PERMISSION}",
@@ -554,6 +615,14 @@ def update_provider(pid: int, request: Request, body: ProviderUpdate):
     if not row:
         conn.close()
         raise HTTPException(404, "Provider not found")
+
+    # The check `ProviderIn` runs on the same fields, here because this body carries no type.
+    # Only the fields sent are judged: a body that leaves the ids out still saves on a row
+    # restored with a malformed one. The panel sends them every time, and is told which.
+    problem = _cloudflare_id_problem(row["type"], body.username, body.extra)
+    if problem:
+        conn.close()
+        raise HTTPException(422, f"Nothing was changed -- {problem[0].lower()}{problem[1:]}")
 
     # `.strip()` still runs on the stored name: a row renamed to spaces by this route
     # before the model refused it is still in the table.

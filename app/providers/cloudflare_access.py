@@ -200,6 +200,77 @@ def classify_host(hostname: str, apps: Iterable[Mapping[str, Any]]) -> dict[str,
     return {"state": state, "reason": reason, "apps": covering, "policies": sorted(policy_names)}
 
 
+# The scale `classify_host` reads a name on, weakest first. Comparing two protections is
+# what keeps a save from ever leaving a name less protected than it found it.
+STRENGTH_RANK = {"open": 0, "partial": 1, "protected": 2}
+
+
+def app_strength(app: Mapping[str, Any]) -> str:
+    """What one application makes of a name it decides, on the scale of `classify_host`."""
+    weakness = _app_weakness(app)
+    if weakness == "everyone_bypass":
+        return "open"
+    return "partial" if weakness else "protected"
+
+
+def _clean_host(hostname: str) -> str:
+    return (hostname or "").strip().strip(".").lower()
+
+
+def covers_whole(app: Mapping[str, Any], hostname: str) -> bool:
+    """True when the application stands in front of the whole hostname, wildcard or not."""
+    host = _clean_host(hostname)
+    return bool(host) and any(
+        not path and fnmatchcase(host, pattern) for pattern, path in app_patterns(app)
+    )
+
+
+def exact_application(hostname: str, apps: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The application written for this very name, whatever its policies, or None.
+
+    Nothing creates a second one next to it. Two applications on one name cannot be told
+    apart in the dashboard, and which of them Cloudflare applies is not Vauxtra's to promise.
+    """
+    host = _clean_host(hostname)
+    for app in apps:
+        if host and (host, "") in app_patterns(app):
+            return app
+    return None
+
+
+def deciding_application(
+    hostname: str, apps: Iterable[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """The application that decides the root of this hostname, the one `classify_host` reads."""
+    host = _clean_host(hostname)
+    root: tuple[tuple[int, int], Mapping[str, Any]] | None = None
+    for app in apps:
+        for pattern, path in app_patterns(app):
+            if not path and fnmatchcase(host, pattern) and (
+                root is None or _specificity(pattern) > root[0]
+            ):
+                root = (_specificity(pattern), app)
+    return root[1] if root is not None else None
+
+
+def app_label(app: Mapping[str, Any]) -> str:
+    """How a refusal or the journal names an application: its name, else its id."""
+    return str(app.get("name") or app.get("id") or "")
+
+
+def already_has_application(hostname: str, app: Mapping[str, Any]) -> str:
+    """Why no application is created on a name that already has one of its own.
+
+    A save that timed out while Cloudflare was creating the application can leave it in
+    the account and recorded nowhere, and trying again lands here: the sentence says so.
+    """
+    return (
+        f"{hostname} already has an Access application of its own ({app_label(app)}), "
+        "maybe left by a save that timed out. Edit it in Cloudflare, or delete it there "
+        "and try again."
+    )
+
+
 def unknown_host(reason: str) -> dict[str, Any]:
     return {"state": "unknown", "reason": reason, "apps": [], "policies": []}
 

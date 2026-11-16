@@ -7,6 +7,59 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
 
 ## [Unreleased]
 
+### Security
+
+- **A rename no longer leaves a tunnel route without its Access login.** Renaming a
+  protected service moved the route and left the Access application on the name the service
+  had left, so the new name answered to anyone. The application now follows: a new one is
+  created for the new name, with the same policies and session length, before the route
+  moves, and the old one is deleted once the tunnel no longer answers for its name: a
+  wildcard rule or the catch-all rule still answering for it keeps the application in
+  place, on a rename as on a deleted service. Nothing is created when the new name is
+  already at least as protected, by an application of its own or by a stricter one such as
+  a wildcard: the service lets go of its id, and the journal names what protects the name.
+  One of the new name's own that lets in more refuses the rename with 409. An application
+  edited in the Cloudflare dashboard is left as it is, and the rename is then refused with
+  409 unless something else already protects the new name. One deleted in the dashboard is
+  named in `errors` unless the account shows something else protecting the new name. A
+  login written by hand in the dashboard, which no service records, no longer stays behind
+  on the old name either: a rename that would publish the new name less protected is
+  refused with 409, unless `access_policy_ids` are sent for it, while an account the token
+  cannot read lets the rename through, as before. A service never keeps the id of an
+  application that does not cover its name, and one back in the tunnel lets go of the id it
+  kept while out of it.
+- **The probe took a redirect that only mentioned Access for an Access login.** A route
+  counted as protected when its redirect carried `/cdn-cgi/access/` anywhere, an
+  application's own `/login?next=/cdn-cgi/access/` included. The redirect is now resolved
+  the way a browser reads it, and only a `*.cloudflareaccess.com` host, or the route's own
+  `/cdn-cgi/access/` path, counts. That path is taken as written, so one holding `%` or a
+  `.` or `..` segment does not count: a browser follows `/cdn-cgi/access/../../admin` to the
+  application's own `/admin`, outside the login.
+- **Cloudflare ids must have the shape Cloudflare gives them.** An account id is 32
+  hexadecimal characters and a tunnel id a UUID, and both are written into API paths: `../`
+  in one aimed the stored token at another endpoint. Any other value is refused with 422
+  when a provider is saved or tested, and one already stored counts as absent. A DNS zone id
+  of the wrong shape is ignored, and the zone is found by name. Ids read back from
+  Cloudflare are held to their shape too before they enter a path or a row: a zone or a DNS
+  record id of another shape is skipped, and an Access application id without the shape of
+  one counts as a failed creation (502), so it is never recorded. Without its tunnel's id,
+  withdrawing a route no longer deletes every CNAME of its name: only a record aimed at
+  that tunnel may go, so none does, and the name is reported as not removed.
+
+### Changed
+
+- **`POST` and `PUT /api/services` protect a tunnel route in the same request.** With
+  `access_policy_ids`, the Access application is created before the route is published, so
+  the name never answers without a login, and the answer carries an `access` block with its
+  id, hostname and policies. Every refusal comes before any provider is written to: a name
+  that already has an Access application of its own, whatever its state (409, naming it: a
+  save retried after a timeout lands here), a name Access already covers (409), an unknown
+  policy (400), a token without *Access: Apps and Policies Read* or *Edit* (403), a listing
+  of the applications Cloudflare did not return in full (502). A service created disabled
+  gets its application too. `POST /api/providers/{pid}/access/apps` refuses the same names,
+  so the panel, which still protects a route in a second request after the save, never
+  gives it a second application.
+
 ---
 
 ## [1.10.0] - 2026-11-15
