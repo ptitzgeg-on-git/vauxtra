@@ -252,10 +252,17 @@ class PushReportsProviderRefusalTests(_IsolatedDB):
 class CloudflareTunnelDeleteTests(unittest.TestCase):
     """A listing that failed is not a zone with nothing in it."""
 
+    # Ids in the shape Cloudflare gives them: the provider treats any other shape as absent,
+    # a zone's or a record's included, and without its tunnel id it deletes no record at all.
+    ACCOUNT = "0123456789abcdef0123456789abcdef"
+    TUNNEL = "12345678-1234-1234-1234-123456789abc"
+    ZONE = "00112233445566778899aabbccddeeff"
+    RECORD = "fedcba9876543210fedcba9876543210"
+
     def _provider(self, responses):
         from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
 
-        provider = CloudflareTunnelProvider("", "acct", "token", {"tunnel_id": "tun-1"})
+        provider = CloudflareTunnelProvider("", self.ACCOUNT, "token", {"tunnel_id": self.TUNNEL})
         calls: list = []
 
         def fake_request(method, path, **kwargs):
@@ -277,19 +284,19 @@ class CloudflareTunnelDeleteTests(unittest.TestCase):
     def test_a_matching_record_is_deleted(self) -> None:
         provider, calls = self._provider(
             [
-                [{"id": "rec-1", "content": "tun-1.cfargotunnel.com"}],
-                {"id": "rec-1"},
+                [{"id": self.RECORD, "content": f"{self.TUNNEL}.cfargotunnel.com"}],
+                {"id": self.RECORD},
             ]
         )
         self.assertTrue(provider._delete_dns_record("app.example.com"))  # noqa: SLF001
-        self.assertIn(("DELETE", "/zones/zone-1/dns_records/rec-1"), calls)
+        self.assertIn(("DELETE", f"/zones/zone-1/dns_records/{self.RECORD}"), calls)
 
     def test_a_zone_whose_name_differs_is_not_used(self) -> None:
         from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
 
-        provider = CloudflareTunnelProvider("", "acct", "token", {"tunnel_id": "tun-1"})
+        provider = CloudflareTunnelProvider("", self.ACCOUNT, "token", {"tunnel_id": self.TUNNEL})
         provider._request = lambda *a, **k: [  # noqa: SLF001
-            {"id": "wrong-zone", "name": "notexample.com"}
+            {"id": self.ZONE, "name": "notexample.com"}
         ]
         self.assertEqual(provider._find_zone("app.example.com"), "")  # noqa: SLF001
 
@@ -306,6 +313,10 @@ class _FakeZone:
 
 class CloudflareRecordTargetingTests(unittest.TestCase):
     """`name` is a server-side filter, not a promise about what comes back."""
+
+    # A zone id in the shape Cloudflare gives it: `_find_zone` skips any other, and these
+    # tests would then be about the shape rather than the name.
+    ZONE = "00112233445566778899aabbccddeeff"
 
     def _provider(self, records, zones=None):
         from app.providers.cloudflare import CloudflareProvider
@@ -335,7 +346,7 @@ class CloudflareRecordTargetingTests(unittest.TestCase):
 
         class _Zones:
             def list(self, **kwargs):
-                return list(zones if zones is not None else [_FakeZone("zone-1", kwargs.get("name", ""))])
+                return list(zones if zones is not None else [_FakeZone(outer.ZONE, kwargs.get("name", ""))])
 
         class _Client:
             dns = type("_DNS", (), {"records": _Records()})()
@@ -370,7 +381,7 @@ class CloudflareRecordTargetingTests(unittest.TestCase):
         self.assertEqual(self.deleted[0]["dns_record_id"], "r1")
 
     def test_a_zone_whose_name_differs_is_not_cached(self) -> None:
-        provider = self._provider([], zones=[_FakeZone("wrong", "notexample.com")])
+        provider = self._provider([], zones=[_FakeZone(self.ZONE, "notexample.com")])
         self.assertIsNone(provider._find_zone("app.example.com"))  # noqa: SLF001
 
 

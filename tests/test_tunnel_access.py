@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import unittest
+from fnmatch import fnmatchcase
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -21,6 +22,7 @@ from app.api import providers as providers_api
 from app.api import services as services_api
 from app.api import sync as sync_api
 from app.providers import cloudflare_access as access
+from app.providers import cloudflare_tunnel as tunnel_mod
 from app.providers.base import ProviderListingRefused
 from app.providers.cloudflare_tunnel import CloudflareTunnelProvider
 
@@ -28,6 +30,10 @@ ALLOW_ME = {"id": "p-me", "name": "Moi", "decision": "allow", "include": [{"emai
 BYPASS_IPS = {"id": "p-ip", "name": "IP OK", "decision": "bypass", "include": [{"ip": {"ip": "203.0.113.7/32"}}]}
 BYPASS_ALL = {"id": "p-all", "name": "Public", "decision": "bypass", "include": [{"everyone": {}}]}
 ALLOW_ALL = {"id": "p-pin", "name": "Any mail", "decision": "allow", "include": [{"everyone": {}}]}
+
+# Ids in the shape Cloudflare gives them: the provider treats any other shape as absent.
+ACCOUNT = "0123456789abcdef0123456789abcdef"
+TUNNEL = "12345678-1234-1234-1234-123456789abc"
 
 
 def _app(domain, *policies, app_id="a1", destinations=None):
@@ -125,48 +131,79 @@ REFUSED = {"ok": False, "status": 403, "result": None, "errors": [{"code": 10000
 
 class AccessOverviewTests(unittest.TestCase):
     def _provider(self, by_path):
-        provider = CloudflareTunnelProvider("", "acc", "token", {"tunnel_id": "t1"})
+        provider = CloudflareTunnelProvider("", ACCOUNT, "token", {"tunnel_id": TUNNEL})
         provider._request_detailed = _Responses(by_path)
         return provider
 
     def test_an_empty_listing_is_unverified_not_open(self):
-        provider = self._provider({"/accounts/acc/access/apps": _ok([]),
-                                   "/accounts/acc/access/policies": _ok([])})
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps": _ok([]),
+                                   f"/accounts/{ACCOUNT}/access/policies": _ok([])})
         overview = provider.access_overview()
         self.assertEqual((overview["permission"], overview["reason"]), ("unverified", "empty_listing"))
 
     def test_a_refusal_is_a_missing_permission(self):
-        provider = self._provider({"/accounts/acc/access/apps": REFUSED})
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps": REFUSED})
         self.assertEqual(provider.access_overview()["permission"], "missing")
 
     def test_a_listing_is_read_to_the_last_page(self):
         pages = {1: [_app(f"h{n}.example.com", ALLOW_ME, app_id=str(n)) for n in range(50)],
                  2: [_app("last.example.com", ALLOW_ME, app_id="last")]}
         provider = self._provider({
-            "/accounts/acc/access/apps": lambda kw: _ok(pages[kw["params"]["page"]]),
-            "/accounts/acc/access/policies": _ok([BYPASS_IPS]),
+            f"/accounts/{ACCOUNT}/access/apps": lambda kw: _ok(pages[kw["params"]["page"]]),
+            f"/accounts/{ACCOUNT}/access/policies": _ok([BYPASS_IPS]),
         })
         overview = provider.access_overview()
         self.assertEqual((overview["permission"], len(overview["apps"])), ("ok", 51))
         self.assertEqual([p["name"] for p in overview["policies"]], ["IP OK"])
 
+    def test_a_listing_still_full_on_the_last_page_read_is_not_the_whole_account(self):
+        """Read as complete, it called open a name whose wildcard sat on a page never reached."""
+        size, cap = tunnel_mod.ACCESS_PAGE_SIZE, tunnel_mod.ACCESS_MAX_PAGES
+
+        def full(kw):
+            page = kw["params"]["page"]
+            return _ok([_app(f"h{page}-{n}.example.com", ALLOW_ME, app_id=f"a{page}-{n}")
+                        for n in range(size)])
+
+        # No answer for the policies: reading them after a cut listing would raise here.
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps": full})
+        overview = provider.access_overview()
+        self.assertEqual(overview, {"permission": "error", "reason": "truncated",
+                                    "apps": [], "policies": []})
+        pages = [kw["params"]["page"] for _method, _path, kw in provider._request_detailed.calls]
+        self.assertEqual(pages, list(range(1, cap + 1)))
+
+    def test_a_listing_that_ends_on_the_last_page_allowed_is_complete(self):
+        size, cap = tunnel_mod.ACCESS_PAGE_SIZE, tunnel_mod.ACCESS_MAX_PAGES
+
+        def pages(kw):
+            page = kw["params"]["page"]
+            count = size if page < cap else size - 1
+            return _ok([_app(f"h{page}-{n}.example.com", ALLOW_ME, app_id=f"a{page}-{n}")
+                        for n in range(count)])
+
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps": pages,
+                                   f"/accounts/{ACCOUNT}/access/policies": _ok([])})
+        overview = provider.access_overview()
+        self.assertEqual((overview["permission"], len(overview["apps"])), ("ok", size * cap - 1))
+
     def test_reading_an_application_that_was_deleted_says_it_is_gone(self):
         """Measured on 2026-11-15: 404, code 11021, on an id deleted the minute before."""
         gone = {"ok": False, "status": 404, "result": None,
                 "errors": [{"code": 11021, "message": "access.api.error.unknown_application"}]}
-        provider = self._provider({"/accounts/acc/access/apps/app-1": gone})
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps/app-1": gone})
         found = provider.get_access_app("app-1")
         self.assertEqual((found["ok"], found["gone"], found["refused"]), (False, True, False))
 
     def test_deleting_an_application_sends_one_delete_on_its_id(self):
-        provider = self._provider({"/accounts/acc/access/apps/app-1": _ok({"id": "app-1"})})
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps/app-1": _ok({"id": "app-1"})})
         deleted = provider.delete_access_app("app-1")
         self.assertEqual([c[:2] for c in provider._request_detailed.calls],
-                         [("DELETE", "/accounts/acc/access/apps/app-1")])
+                         [("DELETE", f"/accounts/{ACCOUNT}/access/apps/app-1")])
         self.assertTrue(deleted["ok"])
 
     def test_a_refusal_to_delete_is_not_read_as_gone(self):
-        provider = self._provider({"/accounts/acc/access/apps/app-1": REFUSED})
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps/app-1": REFUSED})
         deleted = provider.delete_access_app("app-1")
         self.assertEqual((deleted["ok"], deleted["gone"], deleted["refused"]), (False, False, True))
 
@@ -178,7 +215,7 @@ class AccessOverviewTests(unittest.TestCase):
         self.assertEqual(provider._request_detailed.calls, [])
 
     def test_creating_an_application_sends_one_host_and_the_chosen_policies(self):
-        provider = self._provider({"/accounts/acc/access/apps": _ok({"id": "new-app"})})
+        provider = self._provider({f"/accounts/{ACCOUNT}/access/apps": _ok({"id": "new-app"})})
         created = provider.create_access_app("Listo.Example.com", ["p-ip", "p-me"])
         method, _path, kwargs = provider._request_detailed.calls[0]
         self.assertEqual((method, created["ok"], created["id"]), ("POST", True, "new-app"))
@@ -186,12 +223,74 @@ class AccessOverviewTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["policies"], [{"id": "p-ip", "precedence": 1},
                                                       {"id": "p-me", "precedence": 2}])
 
+    def test_a_created_id_without_the_shape_of_one_counts_as_not_created(self):
+        """Recorded on the service, it would be written into the path of its deletion."""
+        for bad in ("../../zones/x", "", "a/b", "x" * 65):
+            with self.subTest(bad=bad):
+                provider = self._provider({f"/accounts/{ACCOUNT}/access/apps": _ok({"id": bad})})
+                created = provider.create_access_app("listo.example.com", ["p-ip"])
+                self.assertEqual((created["ok"], created["id"], created["refused"]),
+                                 (False, "", False))
+
+
+class ServingRuleTests(unittest.TestCase):
+    """Which ingress rule still answers for a name, read the way cloudflared reads it."""
+
+    def _provider(self, ingress):
+        provider = CloudflareTunnelProvider("", ACCOUNT, "token", {"tunnel_id": TUNNEL})
+        provider._get_configuration = lambda: None if ingress is None else {"ingress": ingress}
+        return provider
+
+    def test_the_name_s_own_rule_is_reported_before_a_wildcard_that_also_serves_it(self):
+        provider = self._provider([
+            {"hostname": "*.team.example.com", "service": "http://10.0.0.2:80"},
+            {"hostname": "a.team.example.com", "service": "http://10.0.0.3:80"},
+            {"service": "http_status:404"},
+        ])
+        self.assertEqual(provider.serving_rule("A.Team.Example.com."),
+                         {"hostname": "a.team.example.com"})
+        self.assertEqual(provider.serving_rule("b.team.example.com"),
+                         {"hostname": "*.team.example.com"})
+        self.assertIsNone(provider.serving_rule("team.example.com"))
+        self.assertIsNone(provider.serving_rule("b.example.com"))
+
+    def test_a_last_rule_without_a_hostname_serves_every_name_unless_it_only_answers_a_status(self):
+        served = self._provider([
+            {"hostname": "a.example.com", "service": "http://10.0.0.3:80"},
+            {"service": "http://10.0.0.4:80"},
+        ])
+        self.assertEqual(served.serving_rule("b.example.com"), {"hostname": ""})
+        closed = self._provider([
+            {"hostname": "a.example.com", "service": "http://10.0.0.3:80"},
+            {"service": "http_status:404"},
+        ])
+        self.assertIsNone(closed.serving_rule("b.example.com"))
+
+    def test_a_rule_that_only_answers_a_status_serves_nothing(self):
+        provider = self._provider([
+            {"hostname": "a.example.com", "service": "http_status:404"},
+            {"service": "http_status:404"},
+        ])
+        self.assertIsNone(provider.serving_rule("a.example.com"))
+
+    def test_a_configuration_that_cannot_be_read_never_says_a_name_is_gone(self):
+        with self.assertRaises(ProviderListingRefused):
+            self._provider(None).serving_rule("a.example.com")
+
+    def test_the_route_listing_still_gives_a_wildcard_as_written(self):
+        """What the drift check and the Access tab read: routes, not every name served."""
+        provider = self._provider([
+            {"hostname": "*.example.com", "service": "http://10.0.0.2:80"},
+            {"service": "http://10.0.0.3:80"},
+        ])
+        self.assertEqual({h["id"] for h in provider.list_hosts()}, {"*.example.com"})
+
 
 class _FakeTunnel:
     HOST_ID_IS_HOSTNAME = True
 
     def __init__(self, overview, hosts=("board.example.com", "listo.example.com"), create=None,
-                 apps=None, delete=None, withdraw=True):
+                 apps=None, delete=None, withdraw=True, catch_all=False):
         self.overview = overview
         self.hosts = hosts
         self.create = create or {"ok": True, "refused": False, "status": 200, "id": "app-9", "errors": []}
@@ -200,6 +299,8 @@ class _FakeTunnel:
         self.apps = apps or {}
         self.delete = delete or {"ok": True, "gone": False, "refused": False, "status": 200, "errors": []}
         self.withdraw = withdraw
+        # A last ingress rule without a hostname that serves something: every name answers.
+        self.catch_all = catch_all
         self.read = []
         self.deleted = []
 
@@ -210,6 +311,16 @@ class _FakeTunnel:
         if self.hosts is None:
             raise ProviderListingRefused("no")
         return [{"id": h} for h in self.hosts]
+
+    def serving_rule(self, hostname):
+        if self.hosts is None:
+            raise ProviderListingRefused("no")
+        if hostname in self.hosts:
+            return {"hostname": hostname}
+        for pattern in self.hosts:
+            if fnmatchcase(hostname, pattern):
+                return {"hostname": pattern}
+        return {"hostname": ""} if self.catch_all else None
 
     def create_access_app(self, hostname, policy_ids):
         self.created.append((hostname, policy_ids))
@@ -321,15 +432,64 @@ class AccessRouteTests(unittest.TestCase):
                             "policies": []})
         with self.assertRaises(HTTPException) as ctx:
             self._protect(fake)
-        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual((ctx.exception.status_code, ctx.exception.detail), (
+            409, "listo.example.com already has an Access application of its own "
+                 "(listo.example.com), maybe left by a save that timed out. Edit it in "
+                 "Cloudflare, or delete it there and try again."))
+        self.assertEqual(fake.created, [])
+
+    def test_a_name_with_an_application_of_its_own_gets_no_second_one_whatever_it_lets_in(self):
+        """Two applications on one name: which of them Cloudflare applies is not ours to say."""
+        for policy in (ALLOW_ALL, BYPASS_ALL):
+            with self.subTest(policy=policy["name"]):
+                fake = _FakeTunnel({"permission": "ok", "reason": "", "policies": [],
+                                    "apps": [_app("listo.example.com", policy, app_id="hand")]})
+                with self.assertRaises(HTTPException) as ctx:
+                    self._protect(fake, policy_ids=("p-me",))
+                self.assertEqual(ctx.exception.status_code, 409)
+                self.assertIn("already has an Access application of its own (listo.example.com)",
+                              ctx.exception.detail)
+                self.assertEqual(fake.created, [])
+
+    def test_a_wildcard_that_lets_anyone_in_does_not_stop_a_stricter_application(self):
+        fake = _FakeTunnel({"permission": "ok", "reason": "", "policies": [],
+                            "apps": [_app("*.example.com", ALLOW_ALL, app_id="wide")]})
+        self._protect(fake, policy_ids=("p-me",))
+        self.assertEqual(fake.created, [("listo.example.com", ["p-me"])])
 
     def test_a_token_without_the_edit_permission_says_which_one_to_add(self):
-        fake = _FakeTunnel({"permission": "missing", "reason": "refused", "apps": [], "policies": []},
+        # An empty listing is what a token without any Access permission reads: the creation
+        # is what tells.
+        fake = _FakeTunnel({"permission": "unverified", "reason": "empty_listing", "apps": [],
+                            "policies": []},
                            create={"ok": False, "refused": True, "status": 403, "id": "", "errors": []})
         with self.assertRaises(HTTPException) as ctx:
             self._protect(fake)
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertIn(access.EDIT_PERMISSION, ctx.exception.detail)
+
+    def test_an_account_the_token_cannot_read_refuses_before_anything_is_created(self):
+        """What already stands in front of the name is only known from the account."""
+        for overview, said in (
+            ({"permission": "missing", "reason": "refused"},
+             (403, f"The tunnel token may not read Access applications: add {access.READ_PERMISSION}")),
+            ({"permission": "error", "reason": "unreachable"},
+             (502, "Cloudflare did not return the Access applications")),
+            ({"permission": "error", "reason": "truncated"},
+             (502, "Cloudflare did not return the Access applications")),
+        ):
+            with self.subTest(reason=overview["reason"]):
+                fake = _FakeTunnel({**overview, "apps": [], "policies": []})
+                with self.assertRaises(HTTPException) as ctx:
+                    self._protect(fake)
+                self.assertEqual((ctx.exception.status_code, ctx.exception.detail), said)
+                self.assertEqual(fake.created, [])
+
+    def test_a_listing_cut_short_leaves_every_route_unknown(self):
+        item = self._list(_FakeTunnel({"permission": "error", "reason": "truncated", "apps": [],
+                                       "policies": []}))
+        self.assertEqual((item["permission"], item["reason"]), ("error", "truncated"))
+        self.assertEqual({(h["state"], h["reason"]) for h in item["hosts"]}, {("unknown", "truncated")})
 
 
 def _created_app(hostname, app_id="app-9"):
@@ -396,12 +556,37 @@ class AccessFollowsTheRouteTests(AccessRouteTests):
         self.assertEqual(fake.deleted, ["app-9"])
         self.assertNotIn("listo.example.com", fake.hosts)
 
+    def test_a_created_id_without_the_shape_of_one_is_never_recorded(self):
+        fake = _FakeTunnel(dict(self.OVERVIEW), create={"ok": True, "refused": False, "status": 200,
+                                                        "id": "../apps", "errors": []})
+        with self.assertRaises(HTTPException) as ctx:
+            self._protect(fake)
+        self.assertEqual((ctx.exception.status_code, ctx.exception.detail),
+                         (502, "Cloudflare did not create the Access application"))
+        self.assertEqual(self._column("listo", "access_app_id"), "")
+
     def test_a_route_still_served_keeps_its_application(self):
         """The login goes last: never off a route that still answers."""
         fake = self._protected(apps={"app-9": _created_app("listo.example.com")}, withdraw=False)
         errors = self._delete(fake)["errors"]
         self.assertEqual(fake.deleted, [])
         self.assertIn("Access application left in place: the route is still served", errors)
+
+    def test_a_name_a_wildcard_rule_still_serves_keeps_its_application(self):
+        """Its own rule gone, cloudflared sends the name to `*.example.com`: it still answers."""
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")})
+        fake.hosts = (*fake.hosts, "*.example.com")
+        errors = self._delete(fake)["errors"]
+        self.assertEqual(fake.deleted, [])
+        self.assertEqual(errors, ["Access application left in place: the tunnel still answers "
+                                  "for this name through its rule for *.example.com"])
+
+    def test_a_name_the_catch_all_rule_still_serves_keeps_its_application(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")}, catch_all=True)
+        errors = self._delete(fake)["errors"]
+        self.assertEqual(fake.deleted, [])
+        self.assertEqual(errors, ["Access application left in place: the tunnel still answers "
+                                  "for this name through its catch-all rule"])
 
     def test_an_application_edited_to_cover_more_is_left_in_place(self):
         app = _created_app("listo.example.com")
@@ -449,6 +634,14 @@ class AccessFollowsTheRouteTests(AccessRouteTests):
         fake = self._protected(apps={"app-9": _created_app("listo.example.com")}, withdraw=False)
         errors = self._bulk_delete(fake, "listo")["errors"]
         self.assertIn("listo.example.com: Access application left in place: the route is still served", errors)
+
+    def test_a_bulk_delete_names_the_rule_that_still_serves_the_route(self):
+        fake = self._protected(apps={"app-9": _created_app("listo.example.com")})
+        fake.hosts = (*fake.hosts, "*.example.com")
+        errors = self._bulk_delete(fake, "listo")["errors"]
+        self.assertEqual(fake.deleted, [])
+        self.assertIn("listo.example.com: Access application left in place: the tunnel still "
+                      "answers for this name through its rule for *.example.com", errors)
 
 
 if __name__ == "__main__":

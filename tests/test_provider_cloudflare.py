@@ -3,6 +3,9 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+# A zone id in the shape Cloudflare gives it: the provider treats any other shape as absent.
+ZONE = "0123456789abcdef0123456789abcdef"
+
 
 def _make_zone(zone_id: str, name: str) -> MagicMock:
     z = MagicMock()
@@ -78,17 +81,24 @@ class TestCloudflareProvider(unittest.TestCase):
         self.assertFalse(p._is_ip("example.com"))
 
     def test_find_zone_uses_configured_id(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         result = p._find_zone("app.example.com")
-        self.assertEqual(result, "zone123")
+        self.assertEqual(result, ZONE)
         # Should NOT call the API when zone_id is pre-configured
         client.zones.list.assert_not_called()
 
     def test_find_zone_auto_detects_zone(self):
         p, client = self._make_provider()
-        client.zones.list.return_value = [_make_zone("zone456", "example.com")]
+        client.zones.list.return_value = [_make_zone(ZONE, "example.com")]
         result = p._find_zone("app.example.com")
-        self.assertEqual(result, "zone456")
+        self.assertEqual(result, ZONE)
+
+    def test_find_zone_skips_a_zone_whose_id_has_not_the_shape_of_one(self):
+        """Read from the answer, the id goes into a raw API path, where `../` would aim the
+        token at another endpoint: it is held to the shape of a configured zone id."""
+        p, client = self._make_provider()
+        client.zones.list.return_value = [_make_zone("../../accounts/x", "example.com")]
+        self.assertIsNone(p._find_zone("app.example.com"))
 
     def test_find_zone_returns_none_when_not_found(self):
         p, client = self._make_provider()
@@ -107,7 +117,7 @@ class TestCloudflareProvider(unittest.TestCase):
         self.assertFalse(p.test_connection())
 
     def test_list_rewrites_with_configured_zone(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         client.dns.records.list.side_effect = lambda zone_id, type: {
             "A": [_make_record("r1", "app.example.com", "1.2.3.4", "A")],
             "AAAA": [],
@@ -119,7 +129,7 @@ class TestCloudflareProvider(unittest.TestCase):
         self.assertEqual(result[0]["answer"], "1.2.3.4")
 
     def test_add_rewrite_creates_new_record(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         # No existing records
         client.dns.records.list.return_value = []
         client.dns.records.create.return_value = _make_record("new1", "app.example.com", "1.2.3.4")
@@ -128,7 +138,7 @@ class TestCloudflareProvider(unittest.TestCase):
         client.dns.records.create.assert_called_once()
 
     def test_add_rewrite_idempotent_when_exists(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         client.dns.records.list.return_value = [
             _make_record("r1", "app.example.com", "1.2.3.4")
         ]
@@ -138,7 +148,7 @@ class TestCloudflareProvider(unittest.TestCase):
         client.dns.records.create.assert_not_called()
 
     def test_add_rewrite_updates_when_content_differs(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         client.dns.records.list.return_value = [
             _make_record("r1", "app.example.com", "1.1.1.1")  # Different IP
         ]
@@ -153,14 +163,14 @@ class TestCloudflareProvider(unittest.TestCase):
         self.assertFalse(result)
 
     def test_add_rewrite_returns_false_on_api_error(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         client.dns.records.list.return_value = []
         client.dns.records.create.side_effect = Exception("API error")
         result = p.add_rewrite("app.example.com", "1.2.3.4")
         self.assertFalse(result)
 
     def test_delete_rewrite_success(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         client.dns.records.list.return_value = [
             _make_record("r1", "app.example.com", "1.2.3.4")
         ]
@@ -168,11 +178,11 @@ class TestCloudflareProvider(unittest.TestCase):
         result = p.delete_rewrite("app.example.com", "1.2.3.4")
         self.assertTrue(result)
         client.dns.records.delete.assert_called_once_with(
-            dns_record_id="r1", zone_id="zone123"
+            dns_record_id="r1", zone_id=ZONE
         )
 
     def test_delete_rewrite_returns_false_when_not_found(self):
-        p, client = self._make_provider(zone_id="zone123")
+        p, client = self._make_provider(zone_id=ZONE)
         client.dns.records.list.return_value = []  # Record not found
         result = p.delete_rewrite("app.example.com", "1.2.3.4")
         self.assertFalse(result)
@@ -185,7 +195,7 @@ class TestCloudflareProvider(unittest.TestCase):
 
     def test_cname_not_proxied(self):
         """CNAME records must never be proxied (Cloudflare error 1014 risk)."""
-        p, client = self._make_provider(zone_id="zone123", proxied=True)
+        p, client = self._make_provider(zone_id=ZONE, proxied=True)
         client.dns.records.list.return_value = []
         p.add_rewrite("app.example.com", "cdn.otherdomain.com")
         call_kwargs = client.dns.records.create.call_args[1]
@@ -193,7 +203,7 @@ class TestCloudflareProvider(unittest.TestCase):
 
     def test_the_write_probe_it_never_runs_is_not_a_warning(self):
         """The DNS write check is never run here; it said so as a failed warning."""
-        p, _ = self._make_provider(zone_id="zone123")
+        p, _ = self._make_provider(zone_id=ZONE)
         p._api_request = MagicMock(return_value={"ok": True, "status": 200, "result": {}, "errors": []})
         result = p.validate_permissions()
         self.assertTrue(result["ok"])
@@ -207,7 +217,7 @@ class TestCloudflareProvider(unittest.TestCase):
         """One listing Cloudflare filters, where `list_rewrites` walks every zone."""
         p, client = self._make_provider()
         client.zones.list.side_effect = lambda name, per_page: (
-            [_make_zone("zone456", "example.com")] if name == "example.com" else []
+            [_make_zone(ZONE, "example.com")] if name == "example.com" else []
         )
         client.dns.records.list.return_value = [
             _make_record("r1", "app.example.com", "203.0.113.7", "A"),
@@ -221,7 +231,7 @@ class TestCloudflareProvider(unittest.TestCase):
             [{"domain": "app.example.com", "answer": "203.0.113.7", "type": "A", "proxied": False}],
         )
         client.dns.records.list.assert_called_once_with(
-            zone_id="zone456", name={"exact": "app.example.com"}
+            zone_id=ZONE, name={"exact": "app.example.com"}
         )
 
     def test_records_for_raises_when_the_zone_lookup_fails(self):

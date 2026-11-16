@@ -269,10 +269,12 @@ Limitations:
    service form when a route uses this tunnel. Vauxtra creates an Access application from
    policies that already exist and never changes a policy. It records the application it
    created on the service, and deleting that service deletes the application too, once the
-   route is gone. It is left in place, and the deletion says why, when the route is still
-   served or when the application was edited in Cloudflare to cover more than this route.
-   It also stays, silently, while another service still carries it. An application written
-   by hand in Cloudflare is never touched.
+   route is gone. It is left in place, and the deletion says why, when the tunnel still
+   answers for the name, through its route, a wildcard route or its catch-all rule, or when
+   the application was edited in Cloudflare to cover more than this route. It also stays,
+   silently, while another service still carries it. An application written by hand in
+   Cloudflare is never touched, and a rename that would leave it behind, publishing the new
+   name less protected than the old one, is refused.
 
 **Note on the checks that are not run:** a routine test leaves two of them out, and the card
 says so ("Passed, 2 checks not run") and lists them in grey. Neither is a warning, and
@@ -879,7 +881,7 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/services` | List all services |
-| `POST` | `/api/services` | Create a service — 400 naming any unknown tag/environment/provider id, 409 if the hostname is taken |
+| `POST` | `/api/services` | Create a service: 400 naming any unknown tag/environment/provider id, 409 if the hostname is taken. In tunnel mode, `access_policy_ids` (reusable policy ids, 25 at most) puts the route behind a new Access application, created before the route is published. Refused before anything is written: 409 if the hostname already has an Access application of its own, whatever its state (the answer names it: a save retried after a timeout lands here), 409 if Access already covers the hostname, 400 for a policy the account does not hold, 403 if the token may not read applications ("Access: Apps and Policies Read") or create them ("Access: Apps and Policies Edit"), 502 if Cloudflare did not list them in full, or did not answer the creation with a well-formed id. The answer then carries `access: {application_id, hostname, policy_ids}`. A service created disabled gets its application too |
 | `GET` | `/api/services/history` | Recent service activity |
 | `GET` | `/api/services/public-target/suggest` | Suggest public target IP |
 | `POST` | `/api/services/preflight` | Preflight validation. A check marked `blocking` is a promise that the save route refuses the same body. Add `service_id` to preflight an edit: the public target is then resolved from that service's stored row, exactly as the `PUT` resolves it. |
@@ -888,9 +890,9 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `POST` | `/api/services/check-all` | Trigger health check for all. Returns `results`: `{id, status, latency_ms}` per probed service, and `skipped` for the rest, split into `skipped_tunnel` (checked through their provider) and `skipped_no_port` (port 0, published in DNS alone). |
 | `POST` | `/api/services/bulk` | Enable, disable or delete several ids at once — `{ids: [1, 2], action: "enable"}`. Enabling and disabling are not a flag flip: each service also has its proxy host re-deployed or suspended and its DNS record added or removed, so a provider that refuses is named in `errors[]` while the rest still apply. |
 | `GET` | `/api/services/{sid}` | One service, with its provider names, tags, environments and push targets resolved |
-| `PUT` | `/api/services/{sid}` | Update a service — same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included |
+| `PUT` | `/api/services/{sid}` | Update a service: same 400 / 409 as the creation, missing provider target and unresolvable public DNS target included, and the same `access_policy_ids`, refused with 409 while the application the service recorded still exists and covers the hostname; one that no longer does is let go, left in Cloudflare and named in the journal. A tunnel service renamed without them takes its Access application along: a new one for the new name, with the same policies, before the route moves, and the old one deleted once the tunnel no longer answers for its name. To carry it, the account is read first, with the same 403 / 502 as the creation. Nothing is created when the new name is already at least as protected, by an application of its own or by a stricter one such as a wildcard: the service lets go of its id, and the journal names what protects the name. An application of the new name's own that lets in more refuses the rename with 409. An application that cannot follow (edited in Cloudflare, or made of policies that are not reusable) refuses the rename with 409 unless something else already protects the new name, and one Cloudflare will not return refuses it with 403 or 502: nothing is changed on either. A login written by hand in Cloudflare is not left behind either: a rename that would publish the new name less protected than the old one is refused with 409, unless `access_policy_ids` are sent for it; when the token cannot read the account, the rename goes through. A service back in the tunnel lets go of the id it kept while out of it, and a new name is then held to the same rule. `access` is in the answer when an application was created |
 | `PATCH` | `/api/services/{sid}` | Set `tag_ids`, `environment_ids` or `icon_url` and nothing else. No provider is called, a key left out keeps its value, any other key is a 422 |
-| `DELETE` | `/api/services/{sid}` | Delete a service and withdraw its routes. The Access application Vauxtra created for it goes too, once the route is gone; one it kept is named in `errors[]` |
+| `DELETE` | `/api/services/{sid}` | Delete a service and withdraw its routes. The Access application Vauxtra created for it goes too, once the tunnel no longer answers for the name, through its route, a wildcard route or the catch-all rule; one it kept is named in `errors[]`, with the reason |
 | `POST` | `/api/services/{sid}/push` | Push to providers |
 | `POST` | `/api/services/{sid}/push/dry-run` | Dry-run push (preview) |
 | `GET` | `/api/services/{sid}/drift` | Check for drift |
@@ -906,14 +908,14 @@ All endpoints accept `Authorization: Bearer <api_key>` or session cookies.
 | `GET` | `/api/providers/types` | Supported provider types |
 | `GET` | `/api/providers/health` | All providers health (batch) |
 | `GET` | `/api/providers/tunnels/health` | Tunnel providers health |
-| `GET` | `/api/providers/tunnels/access` | Which tunnel routes Cloudflare Access protects (`protected`, `partial`, `open`, `unknown`), and whether the token may read Access. An empty listing reads as `unverified`, never as open: Cloudflare returns the same empty list to a token without "Access: Apps and Policies Read" |
+| `GET` | `/api/providers/tunnels/access` | Which tunnel routes Cloudflare Access protects (`protected`, `partial`, `open`, `unknown`), and whether the token may read Access. An empty listing reads as `unverified`, never as open: Cloudflare returns the same empty list to a token without "Access: Apps and Policies Read". A listing that fills all 10 pages of 50 Vauxtra reads counts as `error`, reason `truncated`, never as complete |
 | `POST` | `/api/providers/validate-draft` | Validate before saving |
 | `PUT` | `/api/providers/{pid}` | Update a provider |
 | `DELETE` | `/api/providers/{pid}` | Delete a provider. `?force=true` unlinks the services still using it; add `?withdraw=true` to take its proxy hosts and DNS records down first, without it they stay published on a provider Vauxtra no longer knows about |
 | `GET` | `/api/providers/{pid}/health` | Single provider health |
 | `POST` | `/api/providers/{pid}/test` | Test connection + diagnostics |
 | `POST` | `/api/providers/{pid}/validate` | Validate permissions |
-| `POST` | `/api/providers/{pid}/access/apps` | Protect one tunnel route with a new Access application built from reusable policies (`{hostname, policy_ids}`). The application id is recorded on the services that publish this hostname (`recorded_on` counts them), so deleting the service deletes it. Needs the `write` scope and a token with "Access: Apps and Policies Edit" |
+| `POST` | `/api/providers/{pid}/access/apps` | Protect one tunnel route with a new Access application built from reusable policies (`{hostname, policy_ids}`). The application id is recorded on the services that publish this hostname (`recorded_on` counts them), so deleting the service deletes it. Refused before anything is created: 409 if the hostname already has an Access application of its own, whatever its state, or Access already protects it, 403 or 502 when the account's applications cannot be read in full. Needs the `write` scope and a token with "Access: Apps and Policies Edit" |
 
 #### Direct provider access
 

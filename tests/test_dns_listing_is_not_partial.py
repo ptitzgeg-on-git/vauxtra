@@ -35,6 +35,9 @@ from app import models
 from app.api import providers as providers_api
 from app.api import sync as sync_api
 
+# A zone id in the shape Cloudflare gives it: the provider treats any other shape as absent.
+ZONE = "0123456789abcdef0123456789abcdef"
+
 
 def _request(method: str = "GET", path: str = "/") -> Request:
     return Request({"type": "http", "method": method, "path": path, "headers": []})
@@ -80,7 +83,7 @@ class CloudflareListingTests(unittest.TestCase):
 
     def test_a_complete_listing_still_returns_every_managed_type(self) -> None:
         """The behaviour the handler was hiding behind is unchanged."""
-        p, client = _cloudflare(zone_id="zone123")
+        p, client = _cloudflare(zone_id=ZONE)
         client.dns.records.list.side_effect = lambda zone_id, type: {
             "A": [_record("r1", "app.example.com", "198.51.100.7", "A", True)],
             "AAAA": [_record("r2", "app.example.com", "2001:db8::1", "AAAA")],
@@ -101,7 +104,7 @@ class CloudflareListingTests(unittest.TestCase):
 
     def test_a_failure_partway_through_is_raised_not_returned_short(self) -> None:
         """The A records were already collected. Handing them back is the whole defect."""
-        p, client = _cloudflare(zone_id="zone123")
+        p, client = _cloudflare(zone_id=ZONE)
 
         def _list(zone_id, type):
             if type == "A":
@@ -298,12 +301,12 @@ class PushAgainstTheRealProviderTests(_CallerCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.provider, self.client = _cloudflare(zone_id="zone123")
+        self.provider, self.client = _cloudflare(zone_id=ZONE)
         conn = models.get_db()
         conn.execute(
             """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
                VALUES (4, 'Cloudflare', 'cloudflare', 'https://api.cloudflare.com',
-                       'zone123', 'token', '{}', 1)"""
+                       '0123456789abcdef0123456789abcdef', 'token', '{}', 1)"""
         )
         conn.commit()
         conn.close()

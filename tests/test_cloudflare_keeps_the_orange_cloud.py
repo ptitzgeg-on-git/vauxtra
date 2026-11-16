@@ -31,6 +31,9 @@ from app.api import sync as sync_api
 
 TUNNEL = "0f0f0f0f-1111-2222-3333-444444444444.cfargotunnel.com"
 
+# A zone id in the shape Cloudflare gives it: the provider treats any other shape as absent.
+ZONE = "0123456789abcdef0123456789abcdef"
+
 
 def _request(method: str = "GET", path: str = "/") -> Request:
     return Request({"type": "http", "method": method, "path": path, "headers": []})
@@ -84,7 +87,7 @@ def _cloudflare(zone: _Zone, *, proxied: bool = False):
     cf_module._HAS_CF, cf_module._cf = True, mock_module
     try:
         provider = cf_module.CloudflareProvider(
-            "https://api.cloudflare.com/client/v4", "zone123", "test_token", {"proxied": proxied}
+            "https://api.cloudflare.com/client/v4", ZONE, "test_token", {"proxied": proxied}
         )
     finally:
         cf_module._HAS_CF, cf_module._cf = orig
@@ -253,7 +256,7 @@ class APushKeepsTheFlagTests(unittest.TestCase):
         conn.execute(
             """INSERT INTO providers (id, name, type, url, username, password, extra, enabled)
                VALUES (4, 'Cloudflare', 'cloudflare', 'https://api.cloudflare.com',
-                       'zone123', 'token', '{}', 1)"""
+                       '0123456789abcdef0123456789abcdef', 'token', '{}', 1)"""
         )
         cur = conn.execute(
             """INSERT INTO services

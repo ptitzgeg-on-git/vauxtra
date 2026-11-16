@@ -11,6 +11,7 @@ Storage convention (DB columns):
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from urllib.parse import urlparse
 
 from app.config import PROVIDER_TIMEOUT
@@ -22,6 +23,7 @@ from app.providers.cloudflare_access import (
     new_application_body,
     summarize_policy,
 )
+from app.validators import cloudflare_id
 
 ACCESS_PAGE_SIZE = 50
 ACCESS_MAX_PAGES = 10
@@ -31,8 +33,12 @@ class CloudflareTunnelProvider(ProxyProvider):
     HOST_ID_IS_HOSTNAME = True
 
     def __init__(self, url: str, account_id: str, api_token: str, extra: dict | None = None):
-        self.account_id = (account_id or "").strip()
-        self.tunnel_id = str((extra or {}).get("tunnel_id", "")).strip()
+        # Both ids are written into every API path. One that is not the shape Cloudflare
+        # gives it is treated as absent, which every method already handles, instead of
+        # being sent: a restored backup can hold anything in these columns.
+        self.account_id = cloudflare_id(account_id, "account")
+        extra = extra if isinstance(extra, dict) else {}
+        self.tunnel_id = cloudflare_id(extra.get("tunnel_id"), "tunnel")
 
         base = (url or "").strip().rstrip("/")
         if not base:
@@ -94,7 +100,7 @@ class CloudflareTunnelProvider(ProxyProvider):
 
         tunnels = self._request("GET", f"/accounts/{self.account_id}/cfd_tunnel", params={"is_deleted": "false", "per_page": 10})
         if isinstance(tunnels, list) and len(tunnels) == 1:
-            candidate = str(tunnels[0].get("id", "")).strip()
+            candidate = cloudflare_id(tunnels[0].get("id"), "tunnel")
             if candidate:
                 self.tunnel_id = candidate
         elif isinstance(tunnels, list) and len(tunnels) > 1:
@@ -118,7 +124,9 @@ class CloudflareTunnelProvider(ProxyProvider):
                 # CNAME in the wrong zone.
                 if str(zone.get("name", "")).strip(".").lower() != candidate.strip(".").lower():
                     continue
-                zone_id = str(zone.get("id", "")).strip()
+                # Read from an answer, written into every DNS path below: held to the shape
+                # of a zone id like the ones the operator configures.
+                zone_id = cloudflare_id(zone.get("id"), "zone")
                 if zone_id:
                     return zone_id
         return ""
@@ -243,7 +251,8 @@ class CloudflareTunnelProvider(ProxyProvider):
         records = existing if isinstance(existing, list) else []
 
         for rec in records:
-            rec_id = str(rec.get("id", "")).strip()
+            # Written into the path of the PUT below, so held to the shape of a record id.
+            rec_id = cloudflare_id(rec.get("id"), "record")
             if not rec_id:
                 continue
             if (
@@ -285,7 +294,12 @@ class CloudflareTunnelProvider(ProxyProvider):
             return False
 
         tunnel_id = self._resolve_tunnel_id()
-        tunnel_target = f"{tunnel_id}.cfargotunnel.com" if tunnel_id else ""
+        if not tunnel_id:
+            # Without its tunnel, no CNAME of the name can be told to be this provider's: one
+            # aimed at another tunnel or at a host outside Cloudflare would be deleted with
+            # the rest. Not removed, so reported as not removed.
+            return False
+        tunnel_target = f"{tunnel_id}.cfargotunnel.com"
         existing = self._request(
             "GET",
             f"/zones/{zone_id}/dns_records",
@@ -300,11 +314,11 @@ class CloudflareTunnelProvider(ProxyProvider):
 
         ok = True
         for rec in existing:
-            rec_id = str(rec.get("id", "")).strip()
+            rec_id = cloudflare_id(rec.get("id"), "record")
             if not rec_id:
                 continue
             content = str(rec.get("content", "")).strip().lower()
-            if tunnel_target and content != tunnel_target.lower():
+            if content != tunnel_target.lower():
                 continue
             deleted = self._request("DELETE", f"/zones/{zone_id}/dns_records/{rec_id}")
             ok = ok and (deleted is not None)
@@ -372,6 +386,36 @@ class CloudflareTunnelProvider(ProxyProvider):
                 }
             )
         return hosts
+
+    def serving_rule(self, hostname: str) -> dict | None:
+        """The ingress rule that still answers for `hostname`, or None when none does.
+
+        `list_hosts` lists routes: it gives a wildcard rule as written and skips the rule
+        without a hostname. Yet either keeps a name reachable once its own rule is gone,
+        since cloudflared sends `a.example.com` to a `*.example.com` rule, and anything no
+        rule names to the last one. So the name counts as served by any rule whose pattern
+        covers it, and by a rule without a hostname, unless that rule only answers an
+        `http_status:`. `fnmatchcase` is broader than cloudflared on a pattern it would
+        refuse, and broader only ever keeps an Access application in place.
+
+        Returns {"hostname": the rule's pattern, "" for a rule without one}, the exact rule
+        first. Raises `ProviderListingRefused` when the configuration cannot be read: a name
+        that may still be served is never judged gone.
+        """
+        config = self._get_configuration()
+        if config is None:
+            raise ProviderListingRefused("Cloudflare would not return the tunnel configuration")
+        host = (hostname or "").strip().strip(".").lower()
+        found = None
+        for rule in self._normalize_ingress(config.get("ingress")):
+            if str(rule.get("service", "")).strip().startswith("http_status:"):
+                continue
+            pattern = str(rule.get("hostname", "")).strip().lower()
+            if pattern == host:
+                return {"hostname": pattern}
+            if found is None and (not pattern or fnmatchcase(host, pattern)):
+                found = {"hostname": pattern}
+        return found
 
     def create_host(
         self,
@@ -642,7 +686,11 @@ class CloudflareTunnelProvider(ProxyProvider):
     # -- Cloudflare Access ---------------------------------------------------------------
 
     def _access_listing(self, path: str) -> dict:
-        """Every page of an Access listing, and whether Cloudflare refused it outright."""
+        """Every page of an Access listing, and whether Cloudflare refused it outright.
+
+        `truncated` when the last page read was full: more may follow, and a name the listing
+        does not show may be protected by an application it did not reach.
+        """
         items: list[dict] = []
         for page in range(1, ACCESS_MAX_PAGES + 1):
             resp = self._request_detailed(
@@ -659,7 +707,9 @@ class CloudflareTunnelProvider(ProxyProvider):
             items.extend(r for r in result if isinstance(r, dict))
             if len(result) < ACCESS_PAGE_SIZE:
                 break
-        return {"ok": True, "refused": False, "status": 200, "items": items}
+        else:
+            return {"ok": True, "refused": False, "status": 200, "items": items, "truncated": True}
+        return {"ok": True, "refused": False, "status": 200, "items": items, "truncated": False}
 
     def access_overview(self) -> dict:
         """Access applications and reusable policies of the account, as far as the token sees.
@@ -667,6 +717,8 @@ class CloudflareTunnelProvider(ProxyProvider):
         `permission` is the honest part of the answer (see `app/providers/cloudflare_access.py`
         for why an empty list cannot be trusted): `ok` with at least one application read,
         `unverified` on an empty listing, `missing` when Cloudflare refused, `error` otherwise.
+        A listing cut short is an `error` too, reason `truncated`: read as complete, it would
+        call open a name whose wildcard sits on a page it never reached.
         `apps` is raw and carries policy rules, so it is for classification here, never for
         the response body.
         """
@@ -680,6 +732,8 @@ class CloudflareTunnelProvider(ProxyProvider):
                 "apps": [],
                 "policies": [],
             }
+        if apps["truncated"]:
+            return {"permission": "error", "reason": "truncated", "apps": [], "policies": []}
         policies = self._access_listing(f"/accounts/{self.account_id}/access/policies")
         return {
             "permission": "ok" if apps["items"] else "unverified",
@@ -688,21 +742,31 @@ class CloudflareTunnelProvider(ProxyProvider):
             "policies": [summarize_policy(p) for p in policies["items"]] if policies["ok"] else [],
         }
 
-    def create_access_app(self, hostname: str, policy_ids: list[str]) -> dict:
-        """Put a self-hosted Access application in front of one hostname."""
+    def create_access_app(
+        self, hostname: str, policy_ids: list[str], session_duration: str = "24h",
+    ) -> dict:
+        """Put a self-hosted Access application in front of one hostname.
+
+        `session_duration` is there for a rename: the application that follows a service to
+        its new name keeps the session length the operator gave the one it replaces.
+        """
         if not self.account_id:
             return {"ok": False, "refused": False, "status": None, "id": "", "errors": ["missing_account_id"]}
         resp = self._request_detailed(
             "POST",
             f"/accounts/{self.account_id}/access/apps",
-            json=new_application_body(hostname, policy_ids),
+            json=new_application_body(hostname, policy_ids, session_duration),
         )
         result = resp["result"] if isinstance(resp["result"], dict) else {}
+        # The id is recorded on the service and written into later paths: one that does not
+        # have the shape of an application id counts as a creation that failed.
+        app_id = str(result.get("id") or "").strip()
+        well_formed = is_access_app_id(app_id)
         return {
-            "ok": bool(resp["ok"] and result.get("id")),
+            "ok": bool(resp["ok"] and well_formed),
             "refused": is_permission_refusal(resp),
             "status": resp["status"],
-            "id": str(result.get("id") or ""),
+            "id": app_id if well_formed else "",
             "errors": [str(e.get("message") or "") for e in resp["errors"] if isinstance(e, dict)],
         }
 

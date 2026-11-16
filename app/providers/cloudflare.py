@@ -18,6 +18,7 @@ import requests
 from app.config import PROVIDER_TIMEOUT
 from app.providers.base import DNSProvider
 from app.text import plural
+from app.validators import cloudflare_id
 
 try:
     import cloudflare as _cf
@@ -34,7 +35,9 @@ class CloudflareProvider(DNSProvider):
             raise RuntimeError(
                 "Package 'cloudflare' not installed — rebuild the Docker image."
             )
-        self._configured_zone_id = zone_id.strip() if zone_id else ""
+        # Written into API paths, so one that is not the shape of a zone id is treated as
+        # absent, as the tunnel treats its ids: the zone is then found by name.
+        self._configured_zone_id = cloudflare_id(zone_id, "zone")
         self._zone_cache: dict[str, str] = {}  # domain → zone_id (per-domain cache)
         self._api_token = (api_token or "").strip()
         # The SDK's own default is a 60-second read timeout, retried twice: three minutes
@@ -112,9 +115,14 @@ class CloudflareProvider(DNSProvider):
                     # later record into someone else's zone, so the answer is checked.
                     if not self._same_name(zone.name, candidate):
                         continue
-                    self._zone_cache[domain] = zone.id
-                    self._zone_cache[candidate] = zone.id
-                    return zone.id
+                    # And its id is held to the shape of a configured one: `validate_permissions`
+                    # writes it into a raw API path, where `../` would aim the token elsewhere.
+                    zone_id = cloudflare_id(zone.id, "zone")
+                    if not zone_id:
+                        continue
+                    self._zone_cache[domain] = zone_id
+                    self._zone_cache[candidate] = zone_id
+                    return zone_id
             except Exception:
                 if strict:
                     raise

@@ -222,9 +222,10 @@ class ProvidersApiTests(IsolatedDBTestCase):
                     name="Tunnel",
                     type="cloudflare_tunnel",
                     url="",
-                    username="account-id",
+                    # Ids in the shape Cloudflare gives them: any other shape is refused.
+                    username="0123456789abcdef0123456789abcdef",
                     password="token",
-                    extra={"tunnel_id": "tunnel-123"},
+                    extra={"tunnel_id": "12345678-1234-1234-1234-123456789abc"},
                 ),
             )
 
