@@ -20,6 +20,7 @@ would fire.
 
 import hashlib
 import pathlib
+import sys
 
 import pytest
 
@@ -59,6 +60,31 @@ def operator_database_is_left_alone():
     if after is None:
         pytest.fail(f"The suite deleted {_DB}.\n\n{_ADVICE}")
     pytest.fail(f"The suite modified {_DB}.\n\n{_ADVICE}")
+
+
+@pytest.fixture(autouse=True)
+def the_scheduler_is_never_left_running():
+    """Fail the test that leaves the real background scheduler running.
+
+    Opening the app's lifespan (`with TestClient(app)`) starts it, and `init_db()` writes
+    `check_interval = 5` on a fresh database, so a health check is registered every five
+    minutes on a daemon thread that outlives the test. When it fires, it opens whatever
+    database `app.models` points at by then: another test's temporary file, or, once every
+    test has restored the paths, `data/vauxtra.db`, which the guard above then reports as
+    created by the suite. Whether that happened depended on how long the rest of the run
+    took. Here the test that started the scheduler fails at once, and the scheduler is
+    stopped before it can fire.
+    """
+    yield
+    scheduler = sys.modules.get("app.scheduler")
+    if scheduler is None or not scheduler._scheduler.running:
+        return
+    scheduler._scheduler.shutdown(wait=False)
+    pytest.fail(
+        "This test left the background scheduler running. Opening the app's lifespan starts "
+        "it: patch app.scheduler.start and app.scheduler.configure for the duration, as "
+        "tests/test_docker_fault_boundary.py does."
+    )
 
 
 @pytest.fixture(autouse=True)
