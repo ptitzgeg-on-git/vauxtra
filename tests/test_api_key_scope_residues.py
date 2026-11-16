@@ -61,6 +61,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import app.auth as auth
 import app.db as app_db
+import app.scheduler as scheduler
 from app import models
 from app.api.api_keys import ApiKeyCreate, _split_scopes, verify_api_key
 from vauxtra_mcp import client as mcp_client
@@ -128,8 +129,12 @@ class BlankAndUnknownScopeRows(unittest.TestCase):
         models.DB_PATH = app_db.DB_PATH = os.path.join(self._tmpdir.name, "scope-residues.test.db")
         models.init_db()
 
+        # The client below is entered by hand, which runs the lifespan, and the lifespan
+        # starts the real scheduler unless it is patched for the duration.
         self._patchers = [
             patch.object(auth, "APP_PASSWORD", PASSWORD),
+            patch.object(scheduler, "start", lambda interval_minutes=0: None),
+            patch.object(scheduler, "configure", lambda interval_minutes=0: None),
         ]
         for p in self._patchers:
             p.start()

@@ -108,11 +108,20 @@ class TestMetricsEndpoint(unittest.TestCase):
 
     def test_metrics_no_auth_required(self):
         """Prometheus scrape path must be accessible without auth."""
+        from unittest.mock import patch
+
         from fastapi.testclient import TestClient
 
+        import app.scheduler as scheduler
         from app.main import app
-        # Remove auth header entirely
-        with TestClient(app) as plain_client:
+
+        # A client with no auth header, opened as a context manager so the lifespan runs.
+        # The lifespan starts the real scheduler, which would outlive this test.
+        with (
+            patch.object(scheduler, "start", lambda interval_minutes=0: None),
+            patch.object(scheduler, "configure", lambda interval_minutes=0: None),
+            TestClient(app) as plain_client,
+        ):
             r = plain_client.get("/metrics")
         self.assertEqual(r.status_code, 200)
 
