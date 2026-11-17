@@ -215,10 +215,11 @@ class NoWordLostItsAccentsTests(unittest.TestCase):
         "es": {"como", "cual", "cuando", "cuanto", "donde", "quien", "publica"},
         # `pode` (he can) / `pôde` (he could), `publica` / `pública`, as in Spanish.
         "pt": {"pode", "publica"},
-        # `konnte`/`könnte`, `wurden`/`würden` and `waren`/`wären` are indicative against
-        # subjunctive, `lange` (long) is not `Länge` (length), and `eintragen` (to enter) is
-        # not `Einträgen` (the dative plural of `Eintrag`, which this test lowercases first).
-        "de": {"eintragen", "konnte", "lange", "waren", "wurden"},
+        # `konnte`/`könnte`, `wurde`/`würde`, `wurden`/`würden` and `waren`/`wären` are
+        # indicative against subjunctive, `lange` (long) is not `Länge` (length), and `eintragen`
+        # (to enter) is not `Einträgen` (the dative plural of `Eintrag`, which this test
+        # lowercases first).
+        "de": {"eintragen", "konnte", "lange", "waren", "wurde", "wurden"},
         "nl": set(),
     }
 

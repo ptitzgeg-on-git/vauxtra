@@ -266,8 +266,8 @@ describe('ExposeModal, a route without a port', () => {
   it('refuses a route behind a proxy that has no port', async () => {
     renderWithProviders(<ExposeModal isOpen onClose={vi.fn()} mode="edit" service={{ ...SERVICE, target_port: 0 }} />);
     await targetField();
-    // Submitted directly: a click stops at the browser's own `required` on the empty field
-    // first, and this is the rule behind it, the one the API applies.
+    // Submitted directly, as a click on Continue now is too: the form opts out of the
+    // browser's own checks (`noValidate`), so this is the rule the API applies.
     const button = continueButton();
     if (!(button instanceof HTMLButtonElement) || !button.form) throw new Error('Continue is not tied to the form');
     fireEvent.submit(button.form);

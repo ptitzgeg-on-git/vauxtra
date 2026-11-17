@@ -94,6 +94,19 @@ const uiModeFor = (exposeMode: 'proxy_dns' | 'tunnel', proxyId: string, dnsId: s
   return 'dns_proxy'; // default for legacy / empty records
 };
 
+/**
+ * A tunnel hostname as the form keeps it: empty when it is the route's own address. Empty
+ * means "the public address", and the payload writes that address out in its place, so a
+ * saved route that followed its name comes back with the name spelled out; read as typed, a
+ * rename then left the tunnel on the old name. What remains is a name of the operator's own.
+ */
+export const ownTunnelHostname = (hostname: unknown, subdomain: unknown, domain: unknown): string => {
+  const raw = String(hostname || '');
+  const address = fqdnOf({ subdomain: String(subdomain || ''), domain: String(domain || '') });
+  const comparable = (value: string) => value.trim().toLowerCase().replace(/\.+$/, '');
+  return address && comparable(raw) === comparable(address) ? '' : raw;
+};
+
 /** The edit form, seeded from the row `GET /api/services` returned. */
 export const toFormState = (service?: Service | null): FormState => {
   if (!service) return initialForm;
@@ -114,7 +127,7 @@ export const toFormState = (service?: Service | null): FormState => {
     public_target_mode: service.public_target_mode === 'auto' ? 'auto' : 'manual',
     auto_update_dns: Boolean(service.auto_update_dns),
     tunnel_provider_id: service.tunnel_provider_id ? String(service.tunnel_provider_id) : '',
-    tunnel_hostname: String(service.tunnel_hostname || ''),
+    tunnel_hostname: ownTunnelHostname(service.tunnel_hostname, service.subdomain, service.domain),
     proxy_provider_id: proxyId,
     dns_provider_id: dnsId,
     dns_ip: String(service.dns_ip || ''),
@@ -130,9 +143,27 @@ export const toFormState = (service?: Service | null): FormState => {
 };
 
 /**
+ * The port a template names, read the way the form reads a port.
+ *
+ * 0 is a service published in DNS alone, as in `toFormState`. A template saved from such a
+ * form has no port at all (`null`: 1 to 65535 is all the API stores), and that reads as 0
+ * too, or the route would be probed on 80, a port it never had. Behind a proxy or a tunnel
+ * there is always a port to forward to, and 80 stands in for a missing one.
+ */
+const templatePort = (raw: unknown, uiMode: UiExposeMode): number => {
+  const dnsOnly = uiMode === 'dns_only';
+  const fallback = dnsOnly ? 0 : initialForm.target_port;
+  if (raw === null || raw === undefined || raw === '') return fallback;
+  const port = Number(raw);
+  if (!Number.isFinite(port)) return fallback;
+  return port > 0 || (port === 0 && dnsOnly) ? port : fallback;
+};
+
+/**
  * A fresh form seeded from `GET /api/templates/{id}/apply`: the template decides scheme,
  * port, mode, providers, domain and both halves of the label control; subdomain and target
- * stay for the user to fill.
+ * stay for the user to fill. Both are empty here: spreading `initialForm` alone put its
+ * subdomain back, to be erased on every route made from the template.
  */
 export const templateToFormState = (
   tpl: TemplateApplyResult | Record<string, unknown> | null | undefined,
@@ -142,15 +173,16 @@ export const templateToFormState = (
   const exposeMode = record.expose_mode === 'tunnel' ? 'tunnel' : 'proxy_dns';
   const proxyId = record.proxy_provider_id ? String(record.proxy_provider_id) : '';
   const dnsId = record.dns_provider_id ? String(record.dns_provider_id) : '';
-  const port = Number(record.target_port);
+  const uiMode = uiModeFor(exposeMode, proxyId, dnsId);
   return {
     ...initialForm,
+    subdomain: '',
     domain: String(record.domain || ''),
-    target_port: Number.isFinite(port) && port > 0 ? port : initialForm.target_port,
+    target_port: templatePort(record.target_port, uiMode),
     forward_scheme: record.forward_scheme === 'https' ? 'https' : 'http',
     websocket: Boolean(record.websocket),
     expose_mode: exposeMode,
-    ui_expose_mode: uiModeFor(exposeMode, proxyId, dnsId),
+    ui_expose_mode: uiMode,
     public_target_mode: record.public_target_mode === 'auto' ? 'auto' : 'manual',
     tunnel_provider_id: record.tunnel_provider_id ? String(record.tunnel_provider_id) : '',
     proxy_provider_id: proxyId,
@@ -168,6 +200,19 @@ export const templateToFormState = (
 /** The `subdomain.domain` a form describes, or `null` while either half is missing. */
 export const fqdnOf = (formData: Pick<FormState, 'subdomain' | 'domain'>): string | null =>
   formData.subdomain && formData.domain ? `${formData.subdomain}.${formData.domain}` : null;
+
+/** The form fields a refused "Continue" can point at, each under its own control. */
+export type FieldErrorKey =
+  | 'subdomain'
+  | 'domain'
+  | 'target_ip'
+  | 'target_port'
+  | 'tunnel_provider'
+  | 'providers'
+  | 'dns_ip';
+
+/** Every problem the form has at once, as translated sentences keyed by the field they sit under. */
+export type FieldErrors = Partial<Record<FieldErrorKey, string>>;
 
 // The capability rule this file used to carry a third copy of now lives in `lib/providers.ts`.
 // That copy had no `supports_tunnel` branch, so both call sites patched around it inline and a

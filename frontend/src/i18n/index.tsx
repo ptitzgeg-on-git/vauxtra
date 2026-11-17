@@ -205,7 +205,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
           // themselves and hand `t()` a string, which silently disabled the plural
           // lookup the string was written for.
           const text = k === 'count' && typeof v === 'number' ? formatCount(lang, v) : String(v);
-          val = val.replace(new RegExp(`\\{${k}\\}`, 'g'), text);
+          // Given as a function, so the value is written as it is: given as a string, a
+          // `$&`, `` $` ``, `$'` or `$$` in it was read as a replacement pattern.
+          val = val.replace(new RegExp(`\\{${k}\\}`, 'g'), () => text);
         }
       }
       return val;

@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
@@ -56,6 +57,7 @@ import type {
   TunnelAccessResponse,
 } from '@/types/api';
 import {
+  type FieldErrors,
   type FormState,
   type Provider,
   autoPublicTarget,
@@ -66,6 +68,7 @@ import {
   preflightDetailText,
   toFormState,
 } from './types';
+import { parseTarget, proxyHostTarget, withTargetSplit } from './target';
 import { TUNNEL_ACCESS_KEY } from '@/components/features/monitoring/useTunnelAccess';
 import { ServiceForm } from './ServiceForm';
 import { ServicePreview } from './ServicePreview';
@@ -255,13 +258,52 @@ export function ExposeModal({
   const [step, setStep] = useState<Step>('configure');
   const [formError, setFormError] = useState<string | null>(null);
   const formErrorRef = useRef<HTMLDivElement | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  // Set by the first refused "Continue", and kept until the form closes: from then on each
+  // field says what is wrong with it, and stops saying it as soon as it is put right.
+  const [attempted, setAttempted] = useState(false);
+  // A refused save, said on the review step it leaves the operator on.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saveErrorRef = useRef<HTMLDivElement | null>(null);
+  // The opening of the dialog now on screen, null while it is closed. Every request the dialog
+  // makes carries the opening it was started in, and its answer touches the dialog only while
+  // that same opening is on screen: closed since, even if opened again, the form on screen is
+  // not the one that asked. A read whose opening is gone (the checks, the dry run, the lookup
+  // "Detect" waits for) is dropped, since nothing changed on the server. A write whose opening
+  // is gone (the save, the labels, the template) is said in a toast alone (ux-audit.md § 3.7),
+  // and sets nothing in the dialog. Caches are invalidated either way: the server changed
+  // whoever is looking.
+  const openingRef = useRef<object | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    openingRef.current = {};
+    return () => {
+      openingRef.current = null;
+    };
+  }, [isOpen]);
+  // A ref, not state: an answer read by a callback from an older render still sees the
+  // opening on screen now.
+  const isOnScreen = (opening: object | null) => opening !== null && opening === openingRef.current;
 
   // The banner sits at the top of a body that scrolls, and "Continue" sits at the bottom of
   // it, so the answer to a click could land entirely off screen. Bring it back into view.
   useEffect(() => {
     if (formError) formErrorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   }, [formError]);
+  // The same for a refused save, which only ever said so in a toast (ux-audit.md § 1.8).
+  useEffect(() => {
+    if (saveError) saveErrorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [saveError]);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  // What the checks were asked about, and so what "Create" acts on: the body it sends and the
+  // Access policies it applies once the route exists, frozen together. Read from the form at
+  // "Create" instead, they could differ from what the review showed: lists fetched again since
+  // rebuild another body, and a late "Detect" answer still writes the DNS target. The pair is
+  // taken at the click, on "Continue" or on "Check again", with the body sent to the checks:
+  // what is typed while they run is not in it. Going back to the form drops it, "Check again"
+  // replaces it, and without one "Create" is off: a review with no reviewed body publishes
+  // nothing.
+  const [reviewed, setReviewed] = useState<{ payload: ServicePayload; accessPolicyIds: string[] } | null>(null);
   const [dryRun, setDryRun] = useState<DryRunPlan | null>(null);
   // `labelsOnly`: the save went through `PATCH`, and the last step says no provider was asked.
   // `access`: the Access application asked for a tunnel route, see `protectRoute`.
@@ -288,20 +330,28 @@ export function ExposeModal({
     queryKey: ['providers'],
     queryFn: () => api.get<Provider[]>('/providers'),
     enabled: isOpen,
+    // The form's links to set up what it lacks open in another tab, and what was added there
+    // has to be here on the way back (ux-audit.md § 1.7). The app turns this off for every
+    // other read; with its staleTime of 0, `true` reads again on each return to the window.
+    refetchOnWindowFocus: true,
   });
 
   const { data: domains = [], isLoading: isLoadingDomains, isError: domainsError } = useQuery<string[]>({
     queryKey: ['domains'],
     queryFn: () => api.get<string[]>('/domains'),
     enabled: isOpen,
+    // As for the integrations above: a domain added in another tab is offered on return.
+    refetchOnWindowFocus: true,
   });
 
   const { data: providerTypes = {} } = useProviderTypes({ enabled: isOpen });
 
+  // Their setup links open another tab too (`SetupLink`), so they are read again on return.
   const { data: tags = [], isLoading: isLoadingTags, isError: tagsError } = useQuery<Tag[]>({
     queryKey: ['tags'],
     queryFn: () => api.get<Tag[]>('/tags'),
     enabled: isOpen,
+    refetchOnWindowFocus: true,
   });
 
   const {
@@ -312,6 +362,7 @@ export function ExposeModal({
     queryKey: ['environments'],
     queryFn: () => api.get<Environment[]>('/environments'),
     enabled: isOpen,
+    refetchOnWindowFocus: true,
   });
 
   const providerTypeMap = providerTypes;
@@ -347,6 +398,20 @@ export function ExposeModal({
     ? providerHasCapability(selectedDnsProvider, 'public_dns', providerTypeMap)
     : false;
   const selectedDnsIsLocal = Boolean(selectedDnsProvider) && !selectedDnsIsExternal;
+
+  // Where a LAN record left empty points: at the proxy the route goes through (ux-audit.md
+  // § 1.2), or in DNS alone at the service itself. Worked out from the form it is given, so
+  // the hint, `validate` and the payload give one answer, and a change of proxy carries the
+  // record along. It used to be copied into the field by the proxy select alone, and only when
+  // the resolver had been picked first, which the form's own order makes the rare case.
+  const proxyDnsTarget = proxyHostTarget(selectedProxy?.url);
+  const localDnsFallbackOf = (form: FormState): string =>
+    form.expose_mode !== 'proxy_dns' || !selectedDnsIsLocal
+      ? ''
+      : form.ui_expose_mode === 'dns_only'
+        ? form.target_ip.trim()
+        : proxyDnsTarget;
+
   const shouldSuggestTarget =
     isOpen &&
     formData.expose_mode === 'proxy_dns' &&
@@ -369,6 +434,20 @@ export function ExposeModal({
     enabled: shouldSuggestTarget,
     staleTime: 45_000,
   });
+  // "Detect" waits for this lookup, and the opening is taken at its click, before the answer
+  // is awaited: an answer whose opening is gone resolves to nothing, so it writes no target
+  // into the form opened since. In the same opening, the guard in `ServiceForm` drops an
+  // answer once the target, the DNS or the proxy has changed since the click.
+  const refetchTargetForThisOpening = async () => {
+    const opening = openingRef.current;
+    const result = await refetchTargetSuggestion();
+    return isOnScreen(opening) ? result : undefined;
+  };
+
+  // The lookup's answer is for a public zone, and only there does the form show it. A disabled
+  // query still hands back what it last read, so a lookup made a moment before for a public
+  // zone, or in a form since discarded, stood in for the LAN record the hint announces.
+  const suggestedDnsTarget = selectedDnsIsExternal ? String(targetSuggestion?.recommended || '').trim() : '';
 
   const fqdnPreview = fqdnOf(formData) ?? t('expose.preview.host_placeholder');
 
@@ -376,126 +455,175 @@ export function ExposeModal({
   // answer differently for a provider the catalogue has not resolved.
   const publicTarget = autoPublicTarget(formData, selectedDnsProvider, providerTypeMap);
 
-  /** Every payload rule lives here: what the API receives on create, edit and preflight. */
-  const buildPayload = (): ServicePayload => {
-    const tunnelHostname = (formData.tunnel_hostname.trim() || fqdnPreview).toLowerCase();
-    const manualDnsTarget = formData.dns_ip.trim();
-    const suggestedDnsTarget = String(targetSuggestion?.recommended || '').trim();
-    const localDnsFallback =
-      formData.expose_mode === 'proxy_dns' && formData.ui_expose_mode === 'dns_only' && selectedDnsIsLocal
-        ? formData.target_ip.trim()
-        : '';
+  /**
+   * Every payload rule lives here: what the API receives on create, edit and preflight.
+   *
+   * `form` is the form on screen, or the one "Continue" is about to put there, which differs
+   * from it by a split target alone. The name, the public target and the providers are read
+   * from the screen's.
+   */
+  const buildPayload = (form: FormState = formData): ServicePayload => {
+    const tunnelHostname = (form.tunnel_hostname.trim() || fqdnPreview).toLowerCase();
+    const manualDnsTarget = form.dns_ip.trim();
 
     return {
-      subdomain: formData.subdomain.trim().toLowerCase(),
-      domain: formData.domain.trim().toLowerCase(),
-      target_ip: formData.target_ip.trim(),
-      target_port: Number(formData.target_port),
-      forward_scheme: formData.forward_scheme,
-      websocket: formData.websocket,
-      expose_mode: formData.expose_mode,
-      public_target_mode: formData.expose_mode === 'proxy_dns' ? publicTarget.mode : 'manual',
-      auto_update_dns: formData.expose_mode === 'proxy_dns' ? publicTarget.autoUpdateDns : false,
+      subdomain: form.subdomain.trim().toLowerCase(),
+      domain: form.domain.trim().toLowerCase(),
+      target_ip: form.target_ip.trim(),
+      target_port: Number(form.target_port),
+      forward_scheme: form.forward_scheme,
+      websocket: form.websocket,
+      expose_mode: form.expose_mode,
+      public_target_mode: form.expose_mode === 'proxy_dns' ? publicTarget.mode : 'manual',
+      auto_update_dns: form.expose_mode === 'proxy_dns' ? publicTarget.autoUpdateDns : false,
       tunnel_provider_id:
-        formData.expose_mode === 'tunnel' && formData.tunnel_provider_id ? Number(formData.tunnel_provider_id) : null,
-      tunnel_hostname: formData.expose_mode === 'tunnel' ? tunnelHostname : '',
+        form.expose_mode === 'tunnel' && form.tunnel_provider_id ? Number(form.tunnel_provider_id) : null,
+      tunnel_hostname: form.expose_mode === 'tunnel' ? tunnelHostname : '',
       enabled: isEditMode ? Boolean(service?.enabled ?? true) : true,
       proxy_provider_id:
-        formData.expose_mode === 'proxy_dns' && formData.proxy_provider_id ? Number(formData.proxy_provider_id) : null,
+        form.expose_mode === 'proxy_dns' && form.proxy_provider_id ? Number(form.proxy_provider_id) : null,
       dns_provider_id:
-        formData.expose_mode === 'proxy_dns' && formData.dns_provider_id ? Number(formData.dns_provider_id) : null,
-      dns_ip: formData.expose_mode === 'proxy_dns' ? manualDnsTarget || suggestedDnsTarget || localDnsFallback : '',
-      tag_ids: formData.tag_ids,
-      environment_ids: formData.environment_ids,
-      icon_url: formData.icon_url,
-      extra_proxy_provider_ids: formData.extra_proxy_provider_ids
+        form.expose_mode === 'proxy_dns' && form.dns_provider_id ? Number(form.dns_provider_id) : null,
+      dns_ip: form.expose_mode === 'proxy_dns' ? manualDnsTarget || suggestedDnsTarget || localDnsFallbackOf(form) : '',
+      tag_ids: form.tag_ids,
+      environment_ids: form.environment_ids,
+      icon_url: form.icon_url,
+      extra_proxy_provider_ids: form.extra_proxy_provider_ids
         .filter(
-          (id) => id !== (formData.expose_mode === 'tunnel' ? formData.tunnel_provider_id : formData.proxy_provider_id),
+          (id) => id !== (form.expose_mode === 'tunnel' ? form.tunnel_provider_id : form.proxy_provider_id),
         )
         .map((id) => Number(id)),
       extra_dns_provider_ids:
-        formData.expose_mode === 'proxy_dns'
-          ? formData.extra_dns_provider_ids.filter((id) => id !== formData.dns_provider_id).map((id) => Number(id))
+        form.expose_mode === 'proxy_dns'
+          ? form.extra_dns_provider_ids.filter((id) => id !== form.dns_provider_id).map((id) => Number(id))
           : [],
     };
   };
 
-  /** The first thing wrong with the form, as a translated sentence, or null when it can be sent. */
-  const validate = (): string | null => {
-    if (!formData.domain || !formData.subdomain || !formData.target_ip) {
-      return t('expose.validation.required_fields');
-    }
+  /**
+   * Everything wrong with the form, one translated sentence per field, keyed by the field it
+   * is drawn under; empty when the form can be sent. It used to stop at the first problem, so
+   * a form with three gaps took three refusals to fill, each said away from its field
+   * (ux-audit.md § 1.6). Keys go in in the order the fields are drawn, so the first one is
+   * the first field an operator meets.
+   */
+  const validate = (form: FormState = formData): FieldErrors => {
+    const problems: FieldErrors = {};
     // The same rules as `app/validators.py`. Without them "Continue" sent the name anyway and
-    // came back with a 422 the panel could only describe as "the checks could not run".
-    const badSubdomain = subdomainProblem(formData.subdomain, { allowWildcard: true });
-    if (badSubdomain) return t(subdomainProblemKey(badSubdomain));
-    const badDomain = domainProblem(formData.domain);
-    if (badDomain) return t(domainProblemKey(badDomain));
-    // Last of the three, because it is the only one that needs both halves to be sound
-    // first: two legal halves can still make a name no zone will carry.
-    const badFqdn = fqdnProblem(formData.subdomain, formData.domain);
-    if (badFqdn) return t(fqdnProblemKey(badFqdn));
-    if (formData.expose_mode === 'tunnel' && !formData.tunnel_provider_id) {
-      return t('expose.validation.tunnel_provider_required');
+    // came back with a 422 the panel could only describe as "the checks could not run". An
+    // empty half is one of their answers, so a missing name is said by the same rules.
+    const badSubdomain = subdomainProblem(form.subdomain, { allowWildcard: true });
+    if (badSubdomain) problems.subdomain = t(subdomainProblemKey(badSubdomain));
+    const badDomain = domainProblem(form.domain);
+    if (badDomain) problems.domain = t(domainProblemKey(badDomain));
+    // Only once both halves are sound: two legal halves can still make a name no zone will
+    // carry. Under the subdomain, where the field draws the same rule.
+    const badFqdn = !badSubdomain && !badDomain ? fqdnProblem(form.subdomain, form.domain) : null;
+    if (badFqdn) problems.subdomain = t(fqdnProblemKey(badFqdn));
+
+    // A local resolver in DNS alone publishes the service's own LAN address (see
+    // `localDnsFallbackOf`), so there the target is the record as well as the destination.
+    if (!form.target_ip.trim()) {
+      problems.target_ip =
+        form.ui_expose_mode === 'dns_only'
+          ? t('expose.validation.target_required_dns_only')
+          : t('expose.validation.target_required');
     }
-    if (
-      formData.expose_mode === 'proxy_dns' &&
-      !formData.proxy_provider_id &&
-      !formData.dns_provider_id &&
-      formData.extra_proxy_provider_ids.length === 0 &&
-      formData.extra_dns_provider_ids.length === 0
-    ) {
-      return formData.ui_expose_mode === 'dns_only'
-        ? t('expose.validation.dns_required_dns_only')
-        : t('expose.validation.provider_required');
-    }
+
     // `validate_port_when_forwarded` in `app/api/services.py`: 0 is only for a name published
     // in DNS alone, and a proxy host or a tunnel rule pointed at it is a route to nowhere.
     const forwarded =
-      formData.expose_mode === 'tunnel' ||
-      Boolean(formData.proxy_provider_id) ||
-      formData.extra_proxy_provider_ids.length > 0;
-    if (!formData.target_port && forwarded) return t('expose.validation.port_required');
+      form.expose_mode === 'tunnel' ||
+      Boolean(form.proxy_provider_id) ||
+      form.extra_proxy_provider_ids.length > 0;
+    if (!form.target_port && forwarded) problems.target_port = t('expose.validation.port_required');
 
-    const manualDnsTarget = formData.dns_ip.trim();
-    const suggestedDnsTarget = String(targetSuggestion?.recommended || '').trim();
+    if (form.expose_mode === 'tunnel' && !form.tunnel_provider_id) {
+      problems.tunnel_provider = t('expose.validation.tunnel_provider_required');
+    }
+    if (
+      form.expose_mode === 'proxy_dns' &&
+      !form.proxy_provider_id &&
+      !form.dns_provider_id &&
+      form.extra_proxy_provider_ids.length === 0 &&
+      form.extra_dns_provider_ids.length === 0
+    ) {
+      problems.providers =
+        form.ui_expose_mode === 'dns_only'
+          ? t('expose.validation.dns_required_dns_only')
+          : t('expose.validation.provider_required');
+    }
 
-    if (formData.expose_mode === 'proxy_dns' && formData.dns_provider_id) {
+    // The same three answers as the payload, in the same order, so what passes here is what
+    // is sent: `suggestedDnsTarget` is empty unless the zone is public.
+    const manualDnsTarget = form.dns_ip.trim();
+
+    if (form.expose_mode === 'proxy_dns' && form.dns_provider_id) {
       if (publicTarget.mode === 'manual' && !manualDnsTarget) {
-        if (formData.ui_expose_mode === 'dns_only') {
+        if (form.ui_expose_mode === 'dns_only') {
           // A local resolver may answer with the service's own LAN address, and that is what
-          // `localDnsFallback` publishes. A public zone must not carry one, so `target_ip`
+          // `localDnsFallbackOf` publishes. A public zone must not carry one, so `target_ip`
           // gives it nothing: without a target of its own there is simply nothing to write.
-          if (!formData.target_ip.trim()) return t('expose.validation.target_required_dns_only');
           if (selectedDnsIsExternal && !suggestedDnsTarget) {
-            return t('expose.validation.dns_target_external_required');
+            problems.dns_ip = t('expose.validation.dns_target_external_required');
           }
         } else if (selectedDnsIsExternal) {
-          return t('expose.validation.dns_target_external_required');
-        } else if (selectedDnsIsLocal) {
-          return t('expose.validation.dns_target_local_required');
+          problems.dns_ip = t('expose.validation.dns_target_external_required');
+        } else if (selectedDnsIsLocal && !localDnsFallbackOf(form)) {
+          // Left empty, the record points at the proxy; only a route whose proxy has no
+          // address to offer leaves it nothing to point at.
+          problems.dns_ip = t('expose.validation.dns_target_local_required');
         }
       }
       if (publicTarget.mode === 'auto' && !manualDnsTarget && !suggestedDnsTarget) {
-        // Three states reach here as the same empty string: a lookup that failed, one still
-        // in flight, and one that answered with nothing. Only the last is a fact about the
-        // proxy -- the other two are facts about a question that has no answer yet, and
-        // saying "this proxy cannot" of them sends the operator to check the wrong thing.
-        if (targetSuggestionError) return t('expose.validation.auto_target_unread');
-        if (isFetchingTargetSuggestion) return t('expose.validation.auto_target_pending');
-        return t('expose.validation.no_auto_target');
+        if (!selectedDnsProvider && providersError) {
+          // The provider list could not be read, so it says nothing about the route's DNS
+          // provider. On the failed read, not on an empty list: rows an earlier read left in
+          // the cache do not prove the provider is missing either.
+          problems.dns_ip = t('expose.validation.auto_target_dns_unread');
+        } else if (!selectedDnsProvider) {
+          // A fact about the DNS provider, not the proxy, so it is said before the three below:
+          // the route's DNS provider is gone from the list, or of a type this build does not
+          // know. There is then no public zone to fill, and even a lookup that answered would
+          // not be used (`suggestedDnsTarget` reads it for a public zone only).
+          problems.dns_ip = t('expose.validation.auto_target_dns_unknown');
+        } else {
+          // Three states reach here as the same empty string: a lookup that failed, one still
+          // in flight, and one that answered with nothing. Only the last is a fact about the
+          // proxy -- the other two are facts about a question that has no answer yet, and
+          // saying "this proxy cannot" of them sends the operator to check the wrong thing.
+          problems.dns_ip = targetSuggestionError
+            ? t('expose.validation.auto_target_unread')
+            : isFetchingTargetSuggestion
+              ? t('expose.validation.auto_target_pending')
+              : t('expose.validation.no_auto_target');
+        }
       }
     }
-    return null;
+    return problems;
   };
 
+  // Drawn under the fields once "Continue" has been refused, and worked out again on each
+  // render from then on, so a field that is put right stops saying it is wrong.
+  const fieldErrors: FieldErrors = attempted ? validate() : {};
+
   const runPreflight = useMutation({
-    mutationFn: (body: PreflightRequest) => api.post<PreflightResult>('/services/preflight', body),
-    onSuccess: (result) => {
+    mutationFn: ({ payload }: { payload: ServicePayload; accessPolicyIds: string[]; opening: object | null }) => {
+      const body: PreflightRequest = { ...payload, service_id: serviceId };
+      return api.post<PreflightResult>('/services/preflight', body);
+    },
+    onSuccess: (result, { payload, accessPolicyIds, opening }) => {
+      // Checks asked by a dialog closed since are dropped: shown in the form opened after it,
+      // they put a route that form never asked about one click away from being published.
+      if (!isOnScreen(opening)) return;
       setPreflight(result);
+      setReviewed({ payload, accessPolicyIds });
       setStep('review');
     },
-    onError: (err: unknown) => {
+    onError: (err: unknown, { opening }) => {
+      // Dropped too: nothing changed on the server, and a toast over a new form would speak of
+      // checks it never asked for.
+      if (!isOnScreen(opening)) return;
       // A 422 is the body being refused, not the checks failing to run, and saying the second
       // about the first sends an operator looking at their providers over a typed character.
       const fallback = isHttpStatus(err, 422) ? t('expose.preflight.rejected') : t('expose.preflight.failed');
@@ -538,7 +666,14 @@ export function ExposeModal({
   };
 
   const saveService = useMutation({
-    mutationFn: async ({ payload, accessPolicyIds }: { payload: ServicePayload; accessPolicyIds: string[] }) => {
+    mutationFn: async ({
+      payload,
+      accessPolicyIds,
+    }: {
+      payload: ServicePayload;
+      accessPolicyIds: string[];
+      opening: object | null;
+    }) => {
       // Both routes publish on the multi-sync targets themselves (`push_extra_targets`) and
       // answer what failed in `errors`. A `POST /push` after them published everything a
       // second time, and reported every failure twice.
@@ -548,7 +683,7 @@ export function ExposeModal({
       const access = await protectRoute(payload, accessPolicyIds);
       return { persisted, payload, access };
     },
-    onSuccess: (result) => {
+    onSuccess: (result, { opening }) => {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
@@ -573,50 +708,68 @@ export function ExposeModal({
           { icon: <TriangleAlert className="h-4 w-4 text-warning" aria-hidden="true" />, duration: 8000 },
         );
       }
+      // Saved from a dialog closed since: the toasts above said it, and the form opened after
+      // it stays the form, with whatever has been typed in it.
+      if (!isOnScreen(opening)) return;
       setSaveOutcome({ host, errors: allErrors, access: result.access });
       setStep('done');
     },
-    onError: (err: unknown) => {
+    onError: (err: unknown, { opening }) => {
       const fallback = isEditMode ? t('expose.toast.update_failed') : t('expose.toast.create_failed');
-      toast.error(translateApiError(err, t, fallback), { duration: 5000 });
+      const message = translateApiError(err, t, fallback);
+      // Under the buttons of the dialog that asked, while it is on screen: the step stays put,
+      // and a toast in the opposite corner is gone after five seconds with the reason it gave
+      // (ux-audit.md § 1.8). Once that dialog is closed, a toast is all that is left to say it,
+      // and only then (§ 3.7).
+      if (isOnScreen(opening)) setSaveError(message);
+      else toast.error(message, { duration: 5000 });
     },
   });
 
   // Labels alone: one `PATCH`, no checks and no push. No provider holds a label, and
   // `saveService` would publish the whole route again for one.
   const saveLabels = useMutation({
-    mutationFn: (labels: ServiceLabelsPayload) => api.patch<Service>(`/services/${serviceId}`, labels),
-    onSuccess: (saved) => {
+    mutationFn: ({ labels }: { labels: ServiceLabelsPayload; opening: object | null }) =>
+      api.patch<Service>(`/services/${serviceId}`, labels),
+    onSuccess: (saved, { opening }) => {
       queryClient.invalidateQueries({ queryKey: ['services'] });
       queryClient.invalidateQueries({ queryKey: ['logs'] });
       const host = publicHostOf(saved);
       toast.success(t('expose.toast.labels_updated', { host }), { duration: 4500 });
+      if (!isOnScreen(opening)) return;
       setSaveOutcome({ host, errors: [], labelsOnly: true });
       setStep('done');
     },
-    onError: (err: unknown) => {
-      // In the banner as well as the toast: the wizard stays on this step, and a toast in the
-      // opposite corner is gone before the operator has looked for it.
+    onError: (err: unknown, { opening }) => {
+      // In the banner as well as the toast while the dialog that asked is on screen: the wizard
+      // stays on this step, and a toast in the opposite corner is gone before the operator has
+      // looked for it. Closed since, the toast alone.
       const message = translateApiError(err, t, t('expose.toast.update_failed'));
-      setFormError(message);
+      if (isOnScreen(opening)) setFormError(message);
       toast.error(message, { duration: 5000 });
     },
   });
 
+  // A read, like the checks: asked by a dialog closed since, its answer is dropped, success or
+  // failure alike.
   const runDryRun = useMutation({
-    mutationFn: () => api.post<DryRunPlan>(`/services/${serviceId}/push/dry-run`),
-    onSuccess: (plan) => setDryRun(plan),
-    onError: (err: unknown) => {
+    mutationFn: (_request: { opening: object | null }) => api.post<DryRunPlan>(`/services/${serviceId}/push/dry-run`),
+    onSuccess: (plan, { opening }) => {
+      if (isOnScreen(opening)) setDryRun(plan);
+    },
+    onError: (err: unknown, { opening }) => {
+      if (!isOnScreen(opening)) return;
       toast.error(translateApiError(err, t, t('expose.dry_run.failed')), { duration: 5000 });
     },
   });
 
   const saveTemplate = useMutation({
-    mutationFn: (body: TemplateIn) => api.post<Template>('/templates', body),
-    onSuccess: (created) => {
+    mutationFn: ({ body }: { body: TemplateIn; opening: object | null }) => api.post<Template>('/templates', body),
+    onSuccess: (created, { body, opening }) => {
       queryClient.invalidateQueries({ queryKey: ['templates'] });
-      setTemplateDraftName('');
-      toast.success(t('expose.template.saved', { name: created?.name ?? templateDraftName.trim() }));
+      // The name field of a dialog opened since holds what was typed there, not this name.
+      if (isOnScreen(opening)) setTemplateDraftName('');
+      toast.success(t('expose.template.saved', { name: created?.name ?? body.name }));
     },
     onError: (err: unknown) => {
       if (isHttpStatus(err, 409)) {
@@ -641,7 +794,11 @@ export function ExposeModal({
       tunnel_provider_id: payload.tunnel_provider_id,
       public_target_mode: payload.public_target_mode,
       domain: payload.domain,
-      dns_ip: payload.dns_ip,
+      // A target the operator gave or the lookup found, never one worked out from this
+      // route: the LAN fallback is this proxy's address or this service's own, and frozen
+      // into a template it would stay behind when either changes (ux-audit.md § 1.2).
+      // The lookup is read where the payload reads it, for a public zone alone.
+      dns_ip: payload.expose_mode === 'proxy_dns' ? formData.dns_ip.trim() || suggestedDnsTarget : '',
       tag_ids: payload.tag_ids,
       // Both halves of the label control, because the form offers both. The tags used to
       // travel alone from here: the environments were chosen on the form, left out of this
@@ -661,22 +818,49 @@ export function ExposeModal({
       // No provider is asked anything, so neither `validate` nor the checks run: a provider
       // that is down must not block a change it will never see.
       setFormError(null);
-      saveLabels.mutate(labelsOnly);
+      saveLabels.mutate({ labels: labelsOnly, opening: openingRef.current });
       return;
     }
-    const problem = validate();
-    if (problem) {
-      setFormError(problem);
-      toast.error(problem);
+    // Enter submits from inside the target field, so the split made on leaving it has not run:
+    // it runs here as well, and its result is what the form shows from now on.
+    const parsed = parseTarget(formData.target_ip);
+    const form = parsed ? withTargetSplit(formData, parsed) : formData;
+    const problems = Object.values(validate(form)).filter((message): message is string => Boolean(message));
+    if (problems.length > 0) {
+      // Each problem under its own field, and the first of those fields focused. Rendered
+      // before the focus moves, so the fields are marked by then. No toast: it said the
+      // first problem a second time, away from its field (ux-audit.md § 1.6).
+      flushSync(() => {
+        setFormData(form);
+        setAttempted(true);
+      });
+      const firstInvalid = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+      if (firstInvalid) {
+        setFormError(null);
+        firstInvalid.focus();
+      } else {
+        // The field is not drawn, for one while its list is still loading: the banner says
+        // the first problem instead, so a refused "Continue" is never a silent one.
+        setFormError(problems[0]);
+      }
       return;
     }
     setFormError(null);
-    runPreflight.mutate({ ...buildPayload(), service_id: serviceId });
+    // A refusal said on an earlier review is not this review's.
+    setSaveError(null);
+    setFormData(form);
+    runPreflight.mutate({ payload: buildPayload(form), accessPolicyIds: form.access_policy_ids, opening: openingRef.current });
   };
 
   const handleSave = () => {
+    if (!reviewed) return;
     if (preflight && preflight.summary.blocking_failures > 0) return;
-    saveService.mutate({ payload: buildPayload(), accessPolicyIds: formData.access_policy_ids });
+    setSaveError(null);
+    saveService.mutate({
+      payload: reviewed.payload,
+      accessPolicyIds: reviewed.accessPolicyIds,
+      opening: openingRef.current,
+    });
   };
 
   const handleSaveTemplate = () => {
@@ -685,14 +869,17 @@ export function ExposeModal({
       toast.error(t('expose.template.name_required'));
       return;
     }
-    saveTemplate.mutate(buildTemplatePayload(name));
+    saveTemplate.mutate({ body: buildTemplatePayload(name), opening: openingRef.current });
   };
 
   const handleClose = () => {
     setFormData(seedForm());
     setStep('configure');
     setFormError(null);
+    setAttempted(false);
+    setSaveError(null);
     setPreflight(null);
+    setReviewed(null);
     setDryRun(null);
     setSaveOutcome(null);
     setTemplateDraftName('');
@@ -748,10 +935,16 @@ export function ExposeModal({
 
   const blockingFailures = preflight?.summary.blocking_failures ?? 0;
   const warningCount = preflight?.summary.warnings ?? 0;
-  // Only what the save acts on: policies ticked on a tunnel, then left behind by a switch to
-  // another mode, are not sent.
+  // Only what the save acts on, read from what the review froze: policies ticked on a tunnel,
+  // then left behind by a switch to another mode, are not sent, and the host named is the one
+  // the Access application will be made for.
   const pendingAccess =
-    formData.expose_mode === 'tunnel' && formData.tunnel_provider_id ? formData.access_policy_ids.length : 0;
+    reviewed &&
+    reviewed.payload.expose_mode === 'tunnel' &&
+    reviewed.payload.tunnel_provider_id &&
+    reviewed.accessPolicyIds.length > 0
+      ? { count: reviewed.accessPolicyIds.length, host: reviewed.payload.tunnel_hostname }
+      : null;
   const doneWithWarnings = Boolean(saveOutcome && (saveOutcome.errors.length > 0 || saveOutcome.access?.ok === false));
 
   const stepLabels: Record<Step, string> = {
@@ -782,9 +975,7 @@ export function ExposeModal({
           {t('common.cancel')}
         </Button>
         {labelsOnly ? (
-          // `formNoValidate`: the browser's own `required` guards the route fields, and this
-          // save sends none of them.
-          <Button type="submit" form={formId} formNoValidate loading={saveLabels.isPending} leftIcon={<Check />}>
+          <Button type="submit" form={formId} loading={saveLabels.isPending} leftIcon={<Check />}>
             {t('expose.labels_only.save')}
           </Button>
         ) : (
@@ -803,21 +994,46 @@ export function ExposeModal({
   } else if (step === 'review') {
     footer = (
       <>
-        <Button variant="ghost" onClick={() => setStep('configure')} className="mr-auto">
+        {/* Neither "Back" nor "Check again" while the save is out: its answer would land on a
+            form or a review it no longer belongs to, said there under the wrong body, or the
+            route saved twice. The dialog can still be closed, and the answer then goes to a
+            toast. Nor "Back" while "Check again" runs: its answer would bring the review back
+            on the body sent at the click, over a form changed since. Closing stays open, and
+            that answer is then dropped. */}
+        <Button
+          variant="ghost"
+          disabled={saveService.isPending || runPreflight.isPending}
+          onClick={() => {
+            setSaveError(null);
+            setReviewed(null);
+            setStep('configure');
+          }}
+          className="mr-auto"
+        >
           {t('common.back')}
         </Button>
         <Button
           variant="outline"
           leftIcon={<RefreshCw />}
           loading={runPreflight.isPending}
-          onClick={() => runPreflight.mutate({ ...buildPayload(), service_id: serviceId })}
+          disabled={saveService.isPending}
+          onClick={() => {
+            setSaveError(null);
+            // Checked again as it would be sent now, and that body and those policies become
+            // the pair reviewed.
+            runPreflight.mutate({
+              payload: buildPayload(),
+              accessPolicyIds: formData.access_policy_ids,
+              opening: openingRef.current,
+            });
+          }}
         >
           {t('expose.preflight.rerun')}
         </Button>
         <Button
           onClick={handleSave}
           loading={saveService.isPending}
-          disabled={blockingFailures > 0 || runPreflight.isPending}
+          disabled={!reviewed || blockingFailures > 0 || runPreflight.isPending}
           leftIcon={<Check />}
         >
           {isEditMode ? t('expose.save_route') : t('expose.create_route')}
@@ -848,7 +1064,16 @@ export function ExposeModal({
       />
 
       {step === 'configure' && (
-        <form id={formId} onSubmit={handleContinue} className="space-y-8 animate-in fade-in animate-duration-200">
+        // `noValidate`: the browser's own bubbles said a third time, one field at a time, what
+        // `validate` now says under every field at once (ux-audit.md § 1.6). It also lets the
+        // labels-only save through, which sends none of the route fields.
+        <form
+          ref={formRef}
+          id={formId}
+          noValidate
+          onSubmit={handleContinue}
+          className="space-y-8 animate-in fade-in animate-duration-200"
+        >
           {formError && (
             <div ref={formErrorRef}>
               <InlineAlert tone="danger" onDismiss={() => setFormError(null)}>
@@ -874,10 +1099,12 @@ export function ExposeModal({
             targetSuggestion={targetSuggestion}
             isFetchingTargetSuggestion={isFetchingTargetSuggestion}
             targetSuggestionError={targetSuggestionError}
-            refetchTargetSuggestion={refetchTargetSuggestion}
+            refetchTargetSuggestion={refetchTargetForThisOpening}
             tags={tags}
             environments={environments}
             isLoadingTaxonomy={isLoadingTags || isLoadingEnvironments}
+            errors={fieldErrors}
+            proxyDnsTarget={proxyDnsTarget}
           />
 
           <ServicePreview
@@ -929,6 +1156,13 @@ export function ExposeModal({
 
       {step === 'review' && preflight && (
         <div className="space-y-6 animate-in fade-in animate-duration-200">
+          {saveError && (
+            <div ref={saveErrorRef}>
+              <InlineAlert tone="danger" onDismiss={() => setSaveError(null)}>
+                {saveError}
+              </InlineAlert>
+            </div>
+          )}
           {blockingFailures > 0 ? (
             <InlineAlert tone="danger" title={t('expose.preflight.blocked_title', { count: blockingFailures })}>
               {t('expose.preflight.blocked_body', { count: blockingFailures })}
@@ -942,12 +1176,9 @@ export function ExposeModal({
               {t('expose.preflight.passed_body')}
             </InlineAlert>
           )}
-          {pendingAccess > 0 && (
+          {pendingAccess && (
             <InlineAlert tone="info">
-              {t('expose.access.review', {
-                count: pendingAccess,
-                host: (formData.tunnel_hostname.trim() || fqdnPreview).toLowerCase(),
-              })}
+              {t('expose.access.review', { count: pendingAccess.count, host: pendingAccess.host })}
             </InlineAlert>
           )}
 
@@ -1026,7 +1257,7 @@ export function ExposeModal({
                   variant="outline"
                   leftIcon={<FlaskConical />}
                   loading={runDryRun.isPending}
-                  onClick={() => runDryRun.mutate()}
+                  onClick={() => runDryRun.mutate({ opening: openingRef.current })}
                 >
                   {dryRun ? t('expose.dry_run.rerun') : t('expose.dry_run.run')}
                 </Button>
@@ -1109,10 +1340,10 @@ export function ExposeModal({
                           <li key={update.field} className="flex flex-wrap items-center gap-2 text-sm">
                             <span className="font-mono text-xs text-foreground">{update.field}</span>
                             <span className="font-mono text-xs text-muted-foreground line-through">
-                              {String(update.old ?? '—')}
+                              {String(update.old ?? '-')}
                             </span>
                             <ArrowRight aria-hidden="true" className="h-3 w-3 text-muted-foreground" />
-                            <span className="font-mono text-xs text-foreground">{String(update.new ?? '—')}</span>
+                            <span className="font-mono text-xs text-foreground">{String(update.new ?? '-')}</span>
                             <span className="text-xs text-muted-foreground">({update.source})</span>
                           </li>
                         ))}

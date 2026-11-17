@@ -1,6 +1,6 @@
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRightLeft, Globe, RefreshCw, Server, Waypoints } from 'lucide-react';
+import { ArrowRightLeft, ExternalLink, Globe, RefreshCw, Server, Waypoints } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/cn';
@@ -32,11 +32,14 @@ import type { Environment, ProviderTypesResponse, Tag } from '@/types/api';
 import {
   autoPublicTarget,
   fqdnOf,
+  ownTunnelHostname,
   providerHasCapability,
+  type FieldErrors,
   type FormState,
   type Provider,
   type UiExposeMode,
 } from './types';
+import { parseTarget, withTargetSplit, type ParsedTarget } from './target';
 import { AccessPicker } from './AccessPicker';
 
 interface TargetSuggestion {
@@ -71,10 +74,26 @@ interface ServiceFormProps {
    * suggestion itself cannot tell the two apart: both arrive as an absent `recommended`.
    */
   targetSuggestionError?: boolean;
-  refetchTargetSuggestion: () => void;
+  /**
+   * Resolves with the lookup's fresh answer, which "Detect" fills in; `isError` keeps a failed
+   * one out. It resolves to nothing once the dialog that asked has been closed. What it hands
+   * back is read once the answer is in, from the query of the proxy chosen by then, which may
+   * not be the one of the click: "Detect" holds the form to the click itself.
+   */
+  refetchTargetSuggestion: () => Promise<{ data?: TargetSuggestion; isError?: boolean } | undefined>;
   tags: Tag[];
   environments: Environment[];
   isLoadingTaxonomy: boolean;
+  /**
+   * What a refused "Continue" found, each under its own field. Computed by `ExposeModal`,
+   * which owns the rules; a field's own live check, when it has one, is drawn first.
+   */
+  errors?: FieldErrors;
+  /**
+   * The proxy address a LAN record left empty points at, as the payload resolves it, or empty
+   * when the route has none to offer. Only drawn here: `ExposeModal` decides it.
+   */
+  proxyDnsTarget?: string;
 }
 
 const MODE_ICONS: Record<UiExposeMode, ReactNode> = {
@@ -82,6 +101,24 @@ const MODE_ICONS: Record<UiExposeMode, ReactNode> = {
   dns_proxy: <ArrowRightLeft />,
   tunnel: <Waypoints />,
 };
+
+/**
+ * A page that sets up what the form lacks, opened in a tab of its own. Followed in this one,
+ * it left the form and lost what was typed in it (ux-audit.md § 1.7). Back here, the lists
+ * these links feed are read again when the window gets focus back, so they hold what was just
+ * added. The icon says "new tab" to the eye only, so the link says it in words to a screen
+ * reader, in text the screen does not show.
+ */
+function SetupLink({ to, children }: { to: string; children: ReactNode }) {
+  const t = useT();
+  return (
+    <Link to={to} target="_blank" rel="noopener noreferrer" className="font-medium text-primary hover:underline">
+      {children}
+      <ExternalLink aria-hidden="true" className="ml-0.5 inline h-3 w-3" />
+      <span className="sr-only"> {t('ui.opens_in_new_tab')}</span>
+    </Link>
+  );
+}
 
 /** One of the three exposure modes, as a selectable card wrapping a real radio input. */
 function ModeOption({
@@ -249,6 +286,8 @@ export function ServiceForm({
   tags,
   environments,
   isLoadingTaxonomy,
+  errors,
+  proxyDnsTarget = '',
 }: ServiceFormProps) {
   const t = useT();
   const modeGroupName = useId();
@@ -276,7 +315,7 @@ export function ServiceForm({
   const dnsProviders = allProviders.filter((p) => providerHasCapability(p, 'dns', providerTypeMap));
   const tunnelProviders = proxyProviders.filter((p) => providerHasCapability(p, 'supports_tunnel', providerTypeMap));
   const hasTunnelProvider = tunnelProviders.length > 0;
-  // Standard (non-tunnel) proxy providers — used for "Primary reverse proxy" in proxy_dns
+  // Standard (non-tunnel) proxy providers, used for "Primary reverse proxy" in proxy_dns
   // mode and for "additional reverse providers" in both modes.
   const tunnelIds = new Set(tunnelProviders.map((p) => p.id));
   const standardProxyProviders = proxyProviders.filter((p) => !tunnelIds.has(p.id));
@@ -315,30 +354,44 @@ export function ServiceForm({
   // forward to the port, and the server refuses them a 0.
   const portOptional = formData.ui_expose_mode === 'dns_only';
 
-  // Auto-sync tunnel_hostname when subdomain/domain change in tunnel mode.
-  // Only auto-fill when the user hasn't typed a custom hostname.
-  const prevFqdn = `${formData.subdomain}.${formData.domain}`;
-  const tunnelHostnameIsDefault = !formData.tunnel_hostname || formData.tunnel_hostname === prevFqdn;
+  // The tunnel hostname is an override: empty, it is the route's own address, which the
+  // payload writes out on save, so a rename takes the tunnel along. It used to be written out
+  // on every keystroke instead, until a half-typed name no longer looked derived and the field
+  // kept it (ux-audit.md § 1.1). Only a name other than the route's is called custom.
+  const customTunnelHostname =
+    ownTunnelHostname(formData.tunnel_hostname, formData.subdomain, formData.domain).trim() !== '';
 
-  const parseTargetInput = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed || !/^https?:\/\//i.test(trimmed)) {
-      setFormData((prev) => ({ ...prev, target_ip: value }));
-      return;
-    }
-    try {
-      const parsed = new URL(trimmed);
-      const parsedPort = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
-      setFormData((prev) => ({
-        ...prev,
-        target_ip: parsed.hostname,
-        target_port: Number.isFinite(parsedPort) ? parsedPort : prev.target_port,
-        forward_scheme: parsed.protocol === 'https:' ? 'https' : 'http',
-      }));
-      toast.success(t('expose.target_parsed'));
-    } catch {
-      setFormData((prev) => ({ ...prev, target_ip: value }));
-    }
+  // A target with a scheme or a port in it is split into the three fields once it is whole:
+  // when it is pasted, or when the field is left. Split on every keystroke, through `new URL`,
+  // a URL still being typed came apart (ux-audit.md § 1.10). "Continue" splits it too, by the
+  // same rule (`withTargetSplit`), for a value sent with Enter from inside the field.
+  const splitTarget = (parsed: ParsedTarget) => {
+    setFormData((prev) => withTargetSplit(prev, parsed));
+    toast.success(t('expose.target_parsed'));
+  };
+
+  // "Detect" asks the lookup again and fills in what it answers now. It used to start the
+  // lookup and fill in the answer it already held, the one from before the click
+  // (ux-audit.md § 1.11). A failed lookup fills nothing: its data is the previous answer.
+  // Nor does an answer land in a form changed while it was awaited: it fills the field only
+  // if the field, the DNS and the proxy are still the ones of the click, and one changed
+  // drops it, even for a DNS of the same scope. A target typed since is the operator's; the
+  // DNS says what the answer means (a public address is no LAN record); and the answer is a
+  // proxy's, read once it is in from the query of the proxy chosen by then. A new click asks
+  // again. The mode needs no check of its own: DNS alone empties the proxy, and a tunnel
+  // empties the proxy, the DNS and the field. An answer whose dialog was closed since comes
+  // back empty (`ExposeModal` checks the opening), so the form opened after it is left as
+  // it is.
+  const detectTarget = async () => {
+    const { dns_ip: fieldAtClick, dns_provider_id: dnsAtClick, proxy_provider_id: proxyAtClick } = formData;
+    const result = await refetchTargetSuggestion();
+    const recommended = String(result?.data?.recommended || '').trim();
+    if (!recommended || result?.isError) return;
+    setFormData((prev) =>
+      prev.dns_ip === fieldAtClick && prev.dns_provider_id === dnsAtClick && prev.proxy_provider_id === proxyAtClick
+        ? { ...prev, dns_ip: recommended }
+        : prev,
+    );
   };
 
   const toggleExtra = (role: 'proxy' | 'dns', providerId: string, checked: boolean) => {
@@ -386,11 +439,7 @@ export function ServiceForm({
     </option>
   );
 
-  const integrationsLink = (
-    <Link to="/providers" className="font-medium text-primary hover:underline">
-      {t('expose.mode.add_provider')}
-    </Link>
-  );
+  const integrationsLink = <SetupLink to="/providers">{t('expose.mode.add_provider')}</SetupLink>;
 
   const extraProxyCandidates = standardProxyProviders.filter((p) => String(p.id) !== formData.proxy_provider_id);
   const extraDnsCandidates = dnsProviders.filter((p) => String(p.id) !== formData.dns_provider_id);
@@ -430,7 +479,7 @@ export function ServiceForm({
                 ? t(subdomainProblemKey(subdomainError))
                 : fqdnError
                   ? t(fqdnProblemKey(fqdnError))
-                  : undefined
+                  : errors?.subdomain
             }
             hint={
               showFqdnPreview ? (
@@ -450,13 +499,7 @@ export function ServiceForm({
               placeholder={t('expose.field.subdomain_placeholder')}
               onChange={(e) => {
                 const sub = e.target.value.replace(/\s+/g, '').toLowerCase();
-                setFormData((prev) => {
-                  const next: FormState = { ...prev, subdomain: sub };
-                  if (prev.expose_mode === 'tunnel' && tunnelHostnameIsDefault && sub && prev.domain) {
-                    next.tunnel_hostname = `${sub}.${prev.domain}`;
-                  }
-                  return next;
-                });
+                setFormData((prev) => ({ ...prev, subdomain: sub }));
               }}
             />
           </Field>
@@ -464,7 +507,7 @@ export function ServiceForm({
           <Field
             label={t('expose.field.domain')}
             required
-            error={domainError ? t(domainProblemKey(domainError)) : undefined}
+            error={domainError ? t(domainProblemKey(domainError)) : errors?.domain}
             hint={
               domains.length === 0 && domainsError ? (
                 // "You have no domains" and "we could not read your domains" are the same
@@ -475,9 +518,7 @@ export function ServiceForm({
               ) : domains.length === 0 && !isLoadingDomains ? (
                 <>
                   {t('expose.field.domain_hint_prefix')}{' '}
-                  <Link to="/settings?tab=dns" className="font-medium text-primary hover:underline">
-                    {t('expose.field.domain_hint_link')}
-                  </Link>{' '}
+                  <SetupLink to="/settings?tab=dns">{t('expose.field.domain_hint_link')}</SetupLink>{' '}
                   {t('expose.field.domain_hint_suffix')}
                 </>
               ) : undefined
@@ -492,13 +533,7 @@ export function ServiceForm({
               value={formData.domain}
               onValueChange={(raw) => {
                 const dom = raw.trim().toLowerCase();
-                setFormData((prev) => {
-                  const next: FormState = { ...prev, domain: dom };
-                  if (prev.expose_mode === 'tunnel' && tunnelHostnameIsDefault && prev.subdomain && dom) {
-                    next.tunnel_hostname = `${prev.subdomain}.${dom}`;
-                  }
-                  return next;
-                });
+                setFormData((prev) => ({ ...prev, domain: dom }));
               }}
             />
           </Field>
@@ -575,7 +610,6 @@ export function ServiceForm({
                   dns_provider_id: '',
                   dns_ip: '',
                   extra_proxy_provider_ids: [],
-                  tunnel_hostname: prev.tunnel_hostname || fqdnOf(prev) || '',
                 }))
               }
             >
@@ -599,7 +633,12 @@ export function ServiceForm({
         />
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
           <div className="md:col-span-2">
-            <Field label={t('expose.field.target')} required hint={t('expose.field.target_hint')}>
+            <Field
+              label={t('expose.field.target')}
+              required
+              error={errors?.target_ip}
+              hint={t('expose.field.target_hint')}
+            >
               <Input
                 type="text"
                 required
@@ -608,7 +647,19 @@ export function ServiceForm({
                 className="font-mono"
                 leftIcon={<Server />}
                 value={formData.target_ip}
-                onChange={(e) => parseTargetInput(e.target.value)}
+                onChange={(e) => setFormData((prev) => ({ ...prev, target_ip: e.target.value }))}
+                onPaste={(e) => {
+                  // Only what was pasted is read: a URL dropped into the field is the whole
+                  // target, whatever the field held before it.
+                  const parsed = parseTarget(e.clipboardData.getData('text/plain'));
+                  if (!parsed) return;
+                  e.preventDefault();
+                  splitTarget(parsed);
+                }}
+                onBlur={(e) => {
+                  const parsed = parseTarget(e.currentTarget.value);
+                  if (parsed) splitTarget(parsed);
+                }}
                 placeholder={t('expose.field.target_placeholder')}
               />
             </Field>
@@ -617,6 +668,7 @@ export function ServiceForm({
           <Field
             label={t('expose.field.port')}
             required={!portOptional}
+            error={errors?.target_port}
             hint={portOptional ? t('expose.field.port_optional_hint') : undefined}
           >
             <Input
@@ -704,7 +756,7 @@ export function ServiceForm({
             {formData.expose_mode === 'tunnel' && (
               <>
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                  <Field label={t('expose.field.tunnel_provider')} required>
+                  <Field label={t('expose.field.tunnel_provider')} required error={errors?.tunnel_provider}>
                     <Select
                       value={formData.tunnel_provider_id}
                       disabled={tunnelProviders.length === 0}
@@ -728,9 +780,9 @@ export function ServiceForm({
                   <Field
                     label={t('expose.field.tunnel_hostname')}
                     hint={
-                      tunnelHostnameIsDefault
-                        ? t('expose.field.tunnel_hostname_auto')
-                        : t('expose.field.tunnel_hostname_custom', { fqdn: fqdnPreview })
+                      customTunnelHostname
+                        ? t('expose.field.tunnel_hostname_custom', { fqdn: fqdnPreview })
+                        : t('expose.field.tunnel_hostname_auto')
                     }
                   >
                     <Input
@@ -770,27 +822,21 @@ export function ServiceForm({
             {formData.expose_mode === 'proxy_dns' && (
               <>
                 <div className={cn('grid grid-cols-1 gap-5', formData.ui_expose_mode !== 'dns_only' && 'md:grid-cols-2')}>
-                  {/* Primary reverse proxy — hidden in DNS-only mode */}
+                  {/* Primary reverse proxy: hidden in DNS-only mode */}
                   {formData.ui_expose_mode !== 'dns_only' && (
                     <Field label={t('expose.field.primary_proxy')}>
                       <Select
                         value={formData.proxy_provider_id}
                         disabled={standardProxyProviders.length === 0}
                         onChange={(e) => {
+                          // The proxy's address is no longer copied into the LAN record here.
+                          // Copied once, it stayed behind when the proxy changed, and it was
+                          // never copied when the resolver was picked second (ux-audit.md
+                          // § 1.2). A LAN record left empty follows the proxy, on render.
                           const nextProxyId = e.target.value;
-                          const selectedProvider = standardProxyProviders.find((p) => String(p.id) === nextProxyId);
-                          let inferredDnsTarget = '';
-                          if (selectedProvider?.url) {
-                            try {
-                              inferredDnsTarget = new URL(selectedProvider.url).hostname;
-                            } catch {
-                              inferredDnsTarget = '';
-                            }
-                          }
                           setFormData((prev) => ({
                             ...prev,
                             proxy_provider_id: nextProxyId,
-                            dns_ip: prev.dns_ip.trim() || !isLocalDns ? prev.dns_ip : inferredDnsTarget,
                             extra_proxy_provider_ids: prev.extra_proxy_provider_ids.filter((id) => id !== nextProxyId),
                           }));
                         }}
@@ -801,17 +847,17 @@ export function ServiceForm({
                     </Field>
                   )}
 
-                  {/* Primary DNS provider — always shown */}
+                  {/* Primary DNS provider: always shown */}
                   <Field
                     label={t('expose.field.primary_dns')}
                     required={formData.ui_expose_mode === 'dns_only'}
-                    error={dnsValidationError}
+                    error={dnsValidationError ?? errors?.providers}
                     hint={dnsScopeHint}
                   >
                     <Select
                       value={formData.dns_provider_id}
                       disabled={dnsProviders.length === 0}
-                      invalid={Boolean(dnsValidationError)}
+                      invalid={Boolean(dnsValidationError ?? errors?.providers)}
                       onChange={(e) => {
                         const nextDnsProviderId = e.target.value;
                         const nextDnsProvider = dnsProviders.find((p) => String(p.id) === nextDnsProviderId);
@@ -883,6 +929,7 @@ export function ServiceForm({
                   <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
                     <Field
                       label={isLocalDns ? t('expose.field.dns_target_local') : t('expose.field.dns_target_external')}
+                      error={errors?.dns_ip}
                       labelAddon={
                         <FieldHint
                           text={
@@ -907,6 +954,10 @@ export function ServiceForm({
                               {t('expose.use_this')}
                             </button>
                           </>
+                        ) : isLocalDns && proxyDnsTarget && !formData.dns_ip.trim() ? (
+                          // Said in words as well as in the placeholder: a placeholder is grey
+                          // and reads as an example, and this is where the record will point.
+                          t('expose.field.dns_target_proxy_hint', { host: proxyDnsTarget })
                         ) : undefined
                       }
                     >
@@ -921,7 +972,7 @@ export function ServiceForm({
                           onChange={(e) => setFormData((prev) => ({ ...prev, dns_ip: e.target.value }))}
                           placeholder={
                             isLocalDns
-                              ? t('expose.field.dns_target_local_placeholder')
+                              ? proxyDnsTarget || t('expose.field.dns_target_local_placeholder')
                               : t('expose.field.dns_target_external_placeholder')
                           }
                         />
@@ -931,12 +982,7 @@ export function ServiceForm({
                             variant="outline"
                             leftIcon={<RefreshCw />}
                             loading={isFetchingTargetSuggestion}
-                            onClick={() => {
-                              refetchTargetSuggestion();
-                              if (targetSuggestion?.recommended) {
-                                setFormData((prev) => ({ ...prev, dns_ip: String(targetSuggestion.recommended) }));
-                              }
-                            }}
+                            onClick={() => void detectTarget()}
                           >
                             {t('expose.detect')}
                           </Button>
@@ -958,7 +1004,7 @@ export function ServiceForm({
                       <InlineAlert tone="info" title={t('expose.detect_none')} />
                     )}
 
-                    {/* Auto-update DNS — only for external DNS with auto capability */}
+                    {/* Auto-update DNS: only for external DNS with auto capability */}
                     {publicTarget.canOfferAuto && (
                       <Switch
                         size="sm"
@@ -999,9 +1045,7 @@ export function ServiceForm({
               ) : (
                 <>
                   {t('expose.field.tags_empty')}{' '}
-                  <Link to="/settings?tab=tags" className="font-medium text-primary hover:underline">
-                    {t('expose.field.manage_taxonomy')}
-                  </Link>
+                  <SetupLink to="/settings?tab=tags">{t('expose.field.manage_taxonomy')}</SetupLink>
                 </>
               )
             }
@@ -1018,9 +1062,7 @@ export function ServiceForm({
               ) : (
                 <>
                   {t('expose.field.environments_empty')}{' '}
-                  <Link to="/settings?tab=environments" className="font-medium text-primary hover:underline">
-                    {t('expose.field.manage_taxonomy')}
-                  </Link>
+                  <SetupLink to="/settings?tab=environments">{t('expose.field.manage_taxonomy')}</SetupLink>
                 </>
               )
             }
