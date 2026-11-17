@@ -60,6 +60,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — versioning 
   so the panel, which still protects a route in a second request after the save, never
   gives it a second application.
 
+### Fixed
+
+- **The service form keeps what was typed, and saves what it reviewed.** An address is split
+  into host, port and scheme on paste, on leaving the field or on Continue, not on each
+  keystroke. The tunnel hostname follows the address until given its own. A LAN record
+  points at the target, or at the proxy's host behind a proxy, worked out on send; a proxy
+  on a loopback, on `::/96` or on a name the LAN cannot resolve asks for the address.
+  Problems show under their fields, a refused save is said in the dialog, and the route
+  saved is the one checked, Access policies included. Setup links open in a new tab, Detect
+  no longer overwrites a target typed while it waited, a template no longer fills in `app`,
+  and an answer to a closed dialog no longer lands in the next one.
+
 ---
 
 ## [1.10.0] - 2026-11-15
