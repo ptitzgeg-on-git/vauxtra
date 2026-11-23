@@ -1,12 +1,12 @@
 # The ranges the image accepts. The image installs `requirements.txt`, the hashed lock that
 # `make lock` generates from this file with pip-compile; never edit the lock by hand.
-fastapi>=0.141.1
+fastapi>=0.165.0
 uvicorn[standard]>=0.53.0
-python-multipart>=0.0.32
+python-multipart>=0.0.34
 itsdangerous>=2.2
 requests>=2.34.2
 cryptography>=50.0.1
-apprise>=1.13.1
+apprise>=2.3.0
 apscheduler>=3.11.3
 cloudflare>=5.7.0,<6
 sse-starlette>=3.4.11
